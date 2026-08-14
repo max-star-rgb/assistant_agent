@@ -11,7 +11,7 @@
 | Does not own | Agent Server HTTP 生命周期、Tool schema、Memory 后端、媒体 wire、Provider 凭据 |
 | 源码与 schema 入口 | `src/assistant_agent/native_agent/` |
 | 验证入口 | `docs/authority.toml` 中 `runtime-event-stream.verification` |
-| 相邻 authority | Agent Server 见 [`gateway-architecture.md`](gateway-architecture.md)；Tool 见 [`tool-calling-architecture.md`](tool-calling-architecture.md) |
+| 相邻 authority | Agent Server 见 [`agent-server-architecture.md`](agent-server-architecture.md)；Tool 见 [`tool-calling-architecture.md`](tool-calling-architecture.md) |
 
 ## 生产运行图
 

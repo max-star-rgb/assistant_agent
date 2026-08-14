@@ -1,20 +1,16 @@
 # Scripts 入口索引
 
-这里只保留当前 runtime、观测、评测和专项验收仍在使用的入口。一次性排障或已由 pytest、
-eval、Gateway 主链路覆盖的 probe 不应继续沉积到本目录。
+这里只保留当前 Agent Server、观测、评测和专项验收仍在使用的入口。一次性排障或已由 pytest、
+eval、Agent Server 主链路覆盖的 probe 不应继续沉积到本目录。
 
 - `scripts/check_documentation_authority.py`：离线校验 `docs/authority.toml` 的 owner、路由、排他事实与
   changed-path 复核范围；输出结构化 JSON，不读取 `.env`、不联网、不改写文档。
 
 ## Realtime runtime
 
-- `scripts/run_server.py`: starts the FastAPI backend with Gateway, media, HTTP,
-  memory, trace, and tool-governed runtime routes. 启动完成后默认打印从实际 app/runtime
-  收集的精简运维摘要，包括 bind、健康检查、Provider、Tool 分类计数、Worker、已启用集成、
-  安全开关，以及 Runtime completeness ledger、LangSmith native tracing、Gateway lifecycle、Agent-Service
-  delivery audit 和 Gateway text log 的分层观测位置；只有排查 Tool 装配时才使用
-  `--startup-details` 展开按 plugin ownership 分组的完整清单。
-  本地 completeness ledger 不保留 Memory 正文；单条 Mem0 演化用其原生 history API 钻取。
+- `scripts/run_server.py`：调用本环境的 `langgraph dev` 启动 `langgraph.json` 所声明的
+  Agent Server、原生 Graph 与 media custom route；它只负责 host/port/reload/env-file 参数，不构造项目自有
+  Runtime，也不打印旧 runtime completeness 或 Gateway lifecycle 摘要。
 - `scripts/run_qdrant.py`：PyCharm-friendly 本地 Qdrant supervisor。它只启动
   `docker/mem0/compose.yaml` 的 `visual-memory` profile 和 `qdrant` service，等待
   `http://127.0.0.1:6333/healthz` 就绪，并作为一个 Run process 持续运行。仓库已提供共享配置
@@ -52,8 +48,8 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
 - `scripts/agent_cli.py`：通过公开 `langgraph_sdk` 调用 Agent Server 的 thread/run/stream/cancel CLI。
 - `scripts/media_simulator.py`: server-backed Media-Agent protocol simulator for
   `/agent-service/v1`; type text repeatedly, or use `/new [sessionId]` to open a
-  new media session. In interactive mode, `/deep research` selects
-  `assistantMode=deep_research` for subsequent turns and `/standard` switches back;
+  new media session. In interactive mode, `/planning` selects planning mode for
+  subsequent turns and `/fast` switches back;
   these local commands are not sent as chat text. If the server closes the
   connection during an interactive turn (for example close code 1012 during a
   service restart), the client reconnects the same media session and preserves
@@ -70,8 +66,8 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
   `--citations` 显式协商 `urlCitationAnnotationsV1`，但不承担 App UI 渲染；需要检查媒体 wire
   来源时显式增加 `--citation-debug`，该参数也会自动启用 citation capability。
   The handshake marks `clientInfo.clientType=media_simulator`
-  so trace and Gateway metadata can distinguish local protocol tests from
-  ordinary media-agent calls. It is not a generic Gateway/Assistant client and
+  so trace and Agent Server custom-route metadata can distinguish local protocol tests from
+  ordinary media-agent calls. It is not a generic Agent Server client and
   uses an explicit bounded receive limit for Base64 IMAGE response frames.
 
 For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
@@ -80,8 +76,8 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 ## Observability and local operations
 
 - `scripts/trace_metrics.py`: redacted trace metric summary.
-- Gateway lifecycle 由 `scripts/run_server.py` 写入 `.data/gateway_events.jsonl`；仓库当前没有
-  独立 viewer，按 `run_id`、`turn_id` 或 `trace_id` 使用标准 JSONL/文本工具检索。
+- 生产 Graph 生命周期以 Agent Server/LangSmith native trace 为准。`.data/gateway_events.jsonl` 只属于仍显式
+  启用旧兼容观测模块的外围入口，不由 `scripts/run_server.py` 自动生成，也不能作为原生 Graph 事实源。
 
 ## Eval and evidence
 

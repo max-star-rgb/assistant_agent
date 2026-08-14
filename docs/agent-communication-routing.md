@@ -8,10 +8,10 @@
 | --- | --- |
 | 定位 | Multi-agent instance routing、delegation 与 A2A adapter 的当前权威 |
 | Owns | AgentDirectory、routing/delegation policy、transport、control plane、A2A JSON-RPC 与隔离边界 |
-| Does not own | 生产父图、Gateway frame、Tool 执行、Memory/context 策略 |
+| Does not own | 生产父图、Agent Server/media wire、Tool 执行、Memory/context 策略 |
 | 源码与 schema 入口 | `src/assistant_agent/multi_agent/`；当前无生产 A2A HTTP route |
 | 验证入口 | `docs/authority.toml` 中 `agent-communication.verification` |
-| 相邻 authority | Runtime 见 [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md)；Gateway 见 [`gateway-architecture.md`](gateway-architecture.md) |
+| 相邻 authority | Runtime 见 [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md)；Agent Server 见 [`agent-server-architecture.md`](agent-server-architecture.md) |
 
 ## 当前边界
 

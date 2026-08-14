@@ -31,7 +31,8 @@ manifest 只用于 coding agent 选择工程文档，不进入产品 Runtime，�
 
 - 入口层只负责接入和归一化请求；生产主运行时是 `native_agent.AssistantRootGraph`，fast 分支使用
   `create_agent`，planning 分支使用显式 StateGraph 并复用同一个 fast Agent。
-- Gateway 负责 session/run/cancel/interrupt/reconnect/stream frame 生命周期，不承担主大脑职责。
+- LangGraph Agent Server 负责 assistant/thread/run/checkpoint/cancel/interrupt/resume/stream 生命周期；媒体
+  custom route 只做协议归一化与连接关联，不承担主大脑职责。
 - 生产主链的本地显式工具调用使用标准 `BaseTool -> ToolNode` 与 `ToolRuntime` 注入；read Tool 使用官方
   retry middleware；fast 模式不触发 HITL，planning 模式对非 read Tool 使用原生 HITL；副作用幂等归具体 Tool 或业务 API。旧
   `ActionValidator -> ToolExecutor -> ToolRegistry -> tool` 只保留给尚未迁移的外围入口。配置为 `qwen` provider 的百炼兼容
@@ -86,7 +87,7 @@ manifest 只用于 coding agent 选择工程文档，不进入产品 Runtime，�
 
 - 功能、代码设计优先拥抱原生langgraph。
 - 新代码优先放入既有分层，公共契约优先使用 Pydantic model；不要为单次需求制造新架构。
-- Tool、Provider、Memory、Gateway、Context、多 Agent 和 durable task 的具体规则以 manifest 匹配的 authority 为准。
+- Tool、Provider、Memory、Agent Server、Context、多 Agent 和 durable task 的具体规则以 manifest 匹配的 authority 为准。
 - 工具结果必须结构化，失败必须返回可解释错误；外部能力必须经过 adapter、mock/unconfigured 和安全 profile 边界。
 - Memory tool、MCP、A2A、durable task 和入口层都保持薄适配，不把治理逻辑散落到入口脚本或 route 中。
 - 业务功能建议从具体模块导入；只有明确包级公共入口才放进 `__init__.py` 聚合导出。

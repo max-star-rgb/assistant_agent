@@ -6,7 +6,7 @@
 
 Core project docs:
 
-- Agent Server deployment and native resource lifecycle: [docs/gateway-architecture.md](docs/gateway-architecture.md)
+- Agent Server deployment and native resource lifecycle: [docs/agent-server-architecture.md](docs/agent-server-architecture.md)
 - Runtime and provider event streaming: [docs/runtime-event-stream-architecture.md](docs/runtime-event-stream-architecture.md)
 - Tool calling governance: [docs/tool-calling-architecture.md](docs/tool-calling-architecture.md)
 - Observability architecture and trace contract: [docs/observability-harness.md](docs/observability-harness.md)
@@ -38,13 +38,13 @@ Provider profiles and external-provider configuration are documented in [docs/to
 | `runtime/` | Tool、Provider、媒体、Context 与 durable task 仍复用的中立 DTO/外围治理模块；不拥有 Graph 生命周期 |
 | `context/` | 尚未迁移入口使用的旧 Context compiler 与专项能力 |
 | `skills/` | Skill 加载、召回、校验、目录、执行与持久化 |
-| `tools/` | 具体 Tool/Plugin 实现；生产由 `native_agent.tools` 适配为标准 BaseTool |
+| `tools/` | 具体 Tool/Plugin 实现；生产内建 Tool 自身实现标准 `BaseTool`，由 `native_agent.tools` 静态装配 |
 | `agent_server/` | Agent Server graph factory、认证、公开 SDK client 与媒体 custom route |
-| `gateway/` | Graph 内部仍复用的 legacy 事件/取消/交付小类型；不拥有生产 session/run/runtime |
+| `gateway/` | 外围兼容入口仍复用的旧 wire/事件/取消小类型；不拥有生产 Agent Server 或 Graph 生命周期 |
 | `media/` | 音频边缘适配、视频摄取/观察、统一 image/text embedding 及视觉 adapter |
 | `automation/` | durable task、proactive wake 和通知 |
 | `multi_agent/` | Agent routing、delegation、transport 和 A2A |
-| `observability/` | 旧本地审计、历史诊断与评测辅助；生产执行树使用 LangSmith native tracing |
+| `observability/` | 本地兼容 ledger、历史诊断与评测辅助；生产执行树使用 LangSmith native tracing |
 | `improvement/` | 离线改进证据、提案、评估和报告 |
 | `providers/` | 跨入口共享的 Provider 配置、错误治理和 adapter |
 | `memory/` | Mem0 transport 与旧 Memory bundle 兼容；生产最小 backend 位于 `native_agent.memory` |

@@ -11,7 +11,7 @@ Last updated: 2026-08-14
 | Does not own | Agent Server thread/run/checkpoint、Assistant 推理、Tool/Memory 策略和媒体服务内部实现 |
 | 源码与 schema 入口 | `src/assistant_agent/agent_server/media_*.py`、`src/assistant_agent/api/rendering_3d_callback.py` |
 | 验证入口 | `docs/authority.toml` 中 `media-agent-protocol.verification` |
-| 相邻 authority | Agent Server 部署见 `gateway-architecture.md`；视觉能力见 `multimodal-embedding-architecture.md` |
+| 相邻 authority | Agent Server 部署见 [`agent-server-architecture.md`](agent-server-architecture.md)；视觉能力见 [`multimodal-embedding-architecture.md`](multimodal-embedding-architecture.md) |
 
 ## 1. 连接与 envelope
 
@@ -153,7 +153,7 @@ run/checkpoint，也不宣称跨进程、离线或 exactly-once 投递；没有 
 
 相同 `user + vendor sessionId` 通过确定性 UUID 映射到同一个 native thread；重连不会创建第二份对话轴。
 custom route 创建 run 时使用 `stream_resumable=true` 与 `on_disconnect=continue`，内部订阅临时断开后从最后
-event ID 调用 `threads.join_stream`，而不是重建 Gateway session/runtime。同一连接的重复 `chatIndex` 在创建
+event ID 调用 `threads.join_stream`，而不是重建项目自有 session/runtime。同一连接的重复 `chatIndex` 在创建
 第二个 run 前拒绝，后续不同 chat 使用 Agent Server `enqueue`。
 
 媒体 WebSocket 断开时仍 best-effort cancel 该连接的活动 reactive run。主动 durable 行释放 connection lease，

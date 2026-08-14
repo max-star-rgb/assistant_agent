@@ -6,10 +6,10 @@
 | --- | --- |
 | 定位 | 真实 run/trace 的机器事实诊断与证据降级当前权威 |
 | Owns | trace_id 取证顺序、LangSmith/local 查询、证据降级、归因格式与敏感信息处理 |
-| Does not own | trace schema、Runtime 行为、Gateway wire contract、评测准入 |
+| Does not own | trace schema、Graph 行为、Agent Server/media wire contract、评测准入 |
 | 源码与 schema 入口 | `src/assistant_agent/observability/trace_query.py`、`trace_store.py`、`trajectory_debug.py` |
 | 验证入口 | `docs/authority.toml` 中 `observability-diagnosis.verification` |
-| 相邻 authority | `docs/observability-harness.md`、`docs/gateway-architecture.md`、`evals/README.md` |
+| 相邻 authority | [`observability-harness.md`](observability-harness.md)、[`agent-server-architecture.md`](agent-server-architecture.md)、[`../evals/README.md`](../evals/README.md) |
 
 ## 1. 诊断顺序
 
@@ -19,7 +19,7 @@
 2. 若该环境显式启用 LangSmith，在对应 project 中按 trace/run identity 查询 actual graph，核对 root、node、
    LLM、Tool、status、latency 与 Feedback。
 3. 查询本地 canonical JSONL，确认 `run.started`、terminal、Tool 与 delivery 最小事实。
-4. 涉及 Gateway 时再查 lifecycle/delivery JSONL，按 `session_id`、`turn_id`、`run_id` 对齐。
+4. 涉及旧兼容入口或媒体交付时，再查本地 lifecycle/delivery JSONL，按 `session_id`、`turn_id`、`run_id` 对齐。
 5. 比较各证据时间戳与缺口，再结合源码归因；远端未命中不能自动推断 Runtime 未执行。
 
 不得为了诊断启用真实 Provider或写入远端。LangSmith 不可达、无权限或查无记录时，明确标记远端证据缺失，
@@ -44,7 +44,7 @@
 
 - 定位：trace/run、环境、时间与证据来源；
 - 事实：按时间排序的关键 event/node/Tool/terminal；
-- 归因：最早可证明的失败边界，并区分 Runtime、Provider、Tool、Gateway、exporter；
+- 归因：最早可证明的失败边界，并区分 Graph、Provider、Tool、Agent Server/custom route、exporter；
 - 限制：缺少的远端/本地事实以及不能据此得出的结论；
 - 下一步：最小可复现或应人工沉淀的 regression case。
 

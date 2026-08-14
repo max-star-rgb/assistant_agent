@@ -8,7 +8,7 @@
 | --- | --- |
 | 定位 | 生产 Graph 原生 tracing 与旧本地审计兼容边界的当前权威 |
 | Owns | LangSmith native tracing、callback 传播、脱敏与旧 trace reader/ledger 边界 |
-| Does not own | Graph 路由、Gateway wire、Provider 语义、评测 Dataset 与发布决策 |
+| Does not own | Graph 路由、Agent Server/media wire、Provider 语义、评测 Dataset 与发布决策 |
 | 源码与 schema 入口 | `src/assistant_agent/native_agent/`、`src/assistant_agent/observability/` |
 | 验证入口 | `docs/authority.toml` 中 `runtime-observability.verification`；核心不变量 `OBS-001` |
 | 相邻 authority | [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md)、[`observability-diagnosis-runbook.md`](observability-diagnosis-runbook.md)、[`../evals/README.md`](../evals/README.md) |

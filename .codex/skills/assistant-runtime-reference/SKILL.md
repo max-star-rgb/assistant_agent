@@ -1,17 +1,17 @@
 ---
 name: assistant-runtime-reference
-description: Project-local workflow for assistant_agent Gateway work. Use when Codex needs to design, review, debug, migrate, or test assistant_agent.gateway, realtime phone/gateway protocol frames, session history, cancel, interrupt, multiturn behavior, WebSocket frame transport, or compare with the legacy /home/lenovo1/pycharm_project/runTime implementation.
+description: Project-local workflow for assistant_agent Agent Server and media protocol work. Use when Codex needs to design, review, debug, migrate, or test LangGraph Agent Server deployment, media custom routes, realtime wire compatibility, cancel/interrupt/reconnect behavior, or compare with the legacy /home/lenovo1/pycharm_project/runTime implementation.
 ---
 
-# Assistant Runtime Reference
+# Agent Server 与旧 Runtime 参考
 
-Use this skill when Gateway behavior in `assistant_agent` must be designed, reviewed, debugged, migrated, tested, or compared with the legacy compatibility project at `/home/lenovo1/pycharm_project/runTime`.
+Use this skill when Agent Server deployment or Media-Agent compatibility in `assistant_agent` must be designed, reviewed, debugged, migrated, tested, or compared with the legacy project at `/home/lenovo1/pycharm_project/runTime`.
 
 `assistant_agent` remains the authoritative project. `runTime` is reference material for protocol compatibility and regression behavior only.
 
 ## Primary Project Entry
 
-Read `docs/gateway-architecture.md` first for current `assistant_agent` Gateway responsibilities, entry-layer boundaries, realtime backend contract, code map, OpenClaw reference boundary, and update rules.
+Read `docs/agent-server-architecture.md` first for the current production entry, native resource lifecycle, custom-route boundary and code map.
 
 When the task touches `/agent-service/v1`, media `assistantControl` / `chat` / `audio` / `video` / `interrupt`, `chatResponse`, `chatResponseAck`, H.264 Hex video, Media-Agent streaming semantics, or media-side compatibility examples, also read `docs/media-agent-service-websocket.md`. That file is the single authority for the Media-Agent wire protocol and replaces ad hoc temporary protocol notes.
 
@@ -21,7 +21,7 @@ Use the legacy `runTime` files only after that current project entry, and only w
 
 ## When To Read runTime
 
-Read the legacy implementation when the task touches any of these:
+Only read the legacy implementation when the task explicitly requires compatibility with one of these removed or historical surfaces:
 
 - Gateway wire protocol frame names or payload semantics: `message.user`, `run.started`, `stream.chunk`, `run.end`, `run.cancel`, `ping`/`pong`, call frames, config frames, or unknown-frame errors.
 - Gateway session lifecycle behavior: user session tracking, generated `turn_id`/`run_id`, active run registration, run end reasons, default `expects_reply`, backend error conversion, active-run cleanup, idle timeout, hangup grace, or config update behavior.
@@ -57,17 +57,17 @@ Avoid `runTime/src/openclaw_gateway_runtime/agent_runtime/**`, `skills/**`, and 
 
 ## Working Rules
 
-- Treat `docs/gateway-architecture.md` as the current Gateway architecture authority.
-- Preserve the assistant public backend interface: `RealtimeAgentRequest`, `RealtimeAgentEvent`, `RealtimeAgentResult`, `RealtimeAgentBackend`, and `RealtimeCancelToken`.
-- Default new assistant Gateway session code to `AgentGraphRealtimeBackend`; do not add a second agent loop.
-- Use `assistant_agent.gateway` for current Gateway code. Do not add removed runtime-compatibility entrypoints.
+- Treat `docs/agent-server-architecture.md` as the current production deployment authority.
+- Preserve the public Media-Agent wire in `docs/media-agent-service-websocket.md`; map it mechanically to Agent Server thread/run/stream/cancel through the public SDK.
+- Do not add a project-owned session manager, realtime backend, checkpoint facade or second agent loop.
+- Treat `assistant_agent.gateway` as legacy-neutral wire/event helpers for peripheral compatibility only; new production lifecycle code belongs under `assistant_agent.agent_server`.
 - Keep wire frame names stable unless the user explicitly requests a protocol break.
 - Treat `runTime` as compatibility reference and regression-test source, not as code to import from `assistant_agent`.
 - If `runTime` behavior conflicts with current `assistant_agent` docs or explicit user direction, follow `assistant_agent` and explain the compatibility difference.
 
 ## Validation
 
-For assistant Gateway changes, run the smallest relevant subset:
+For Agent Server or media custom-route changes, run the smallest relevant subset:
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q
@@ -83,5 +83,5 @@ cd /home/lenovo1/pycharm_project/runTime && conda run -n hello_agent env PYTHONP
 For skill/doc-only changes:
 
 ```bash
-git diff --check -- AGENTS.md docs/gateway-architecture.md docs/media-agent-service-websocket.md .codex/skills/assistant-runtime-reference src/assistant_agent/gateway src/assistant_agent/api/gateway_runtime.py src/assistant_agent/api/gateway_websocket.py tests/core/contract/test_gateway_contract.py scripts/run_client.py
+git diff --check -- AGENTS.md docs/agent-server-architecture.md docs/media-agent-service-websocket.md .codex/skills/assistant-runtime-reference src/assistant_agent/agent_server src/assistant_agent/gateway tests/core/contract/test_gateway_contract.py scripts/agent_cli.py scripts/media_simulator.py
 ```
