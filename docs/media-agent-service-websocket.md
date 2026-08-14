@@ -1,6 +1,6 @@
 # Media-Agent WebSocket 接口权威文档
 
-Last updated: 2026-08-13
+Last updated: 2026-08-14
 
 ## Authority contract
 
@@ -32,10 +32,11 @@ Last updated: 2026-08-13
 
 ## 2. 握手
 
-首个业务消息应为 `assistantControl`：
+首个业务消息应为 `assistantControl`。需要 durable 主动投递的媒体客户端必须声明
+`clientCapabilities.chatResponseAck=true`：
 
 ```json
-{"number":"user-1","callType":"AUDIO"}
+{"number":"user-1","callType":"AUDIO","clientCapabilities":{"chatResponseAck":true}}
 ```
 
 `number` 必填；`callType` 只允许 `AUDIO|VIDEO`。成功响应仍为 `assistantControl`：
@@ -100,6 +101,24 @@ Graph 完成后发唯一成功终包：
 `{"code":0,"message":"acknowledged","deliveryId":"..."}`。ACK 不改变 Graph/run 终态，也不触发长期
 记忆提交。
 
+### 主动 `chatResponse`
+
+Graph 前序业务 node 可产生主动消息 intent；固定 `delivery_dispatch` 在主回答 publish 后、Memory commit 前
+将它写入 durable Store。媒体连接按 native thread 主动 pull，无需先收到对应 `chat` 请求，仍复用现有
+`chatResponse` envelope：
+
+```json
+{
+  "message": "chatResponse",
+  "body": "{\"number\":\"user-1\",\"message\":{\"type\":\"BRIEF\",\"chatIndex\":\"proactive:message-1\",\"content\":{\"intentResult\":{\"description\":\"提醒正文\",\"status\":\"SUCCESS\"}}},\"displayOnly\":false,\"display_only\":false,\"sequence\":1,\"final\":true,\"deliveryId\":\"message-1\"}"
+}
+```
+
+`message_id` 同时是稳定 `deliveryId`，`chatIndex` 固定为 `proactive:<message_id>`。同一 thread 一次只有
+一条 in-flight；客户端必须按 `deliveryId` 幂等展示。durable 消息只有匹配这两个字段的 ACK 才完成，语义为
+at-least-once；缺少 ACK capability 时保持 queued，不降级为 socket 写成功。`connection_ephemeral` 只在
+enqueue 时已有有效在线 presence 才排队，在线写成功后记为 sent-unacknowledged，离线不补投。
+
 ## 5. audio、video 与 3D callback
 
 `audio` 继续做字段校验后的传输层 ACK，不把原始音频写入 Graph State。`video` 校验独立 Annex-B H.264
@@ -135,10 +154,12 @@ custom route 创建 run 时使用 `stream_resumable=true` 与 `on_disconnect=con
 event ID 调用 `threads.join_stream`，而不是重建 Gateway session/runtime。同一连接的重复 `chatIndex` 在创建
 第二个 run 前拒绝，后续不同 chat 使用 Agent Server `enqueue`。
 
-媒体 WebSocket 本身断开时，当前兼容策略 best-effort cancel 该连接仍活动的 run；已完成但未 ACK 的终包不会
-跨连接重投。Agent Server 的 stream resume 解决执行事件订阅恢复，不等于媒体 delivery outbox。尚未迁移的
-能力是周期 progress、durable task/workflow 主动通知、后台实时视觉 observer/视觉提醒和跨连接 delivery
-outbox；citation、生成图片 detail、H.264 显式视觉引用和在线 3D artifact 投影已支持。
+媒体 WebSocket 断开时仍 best-effort cancel 该连接的活动 reactive run。主动 durable 行释放 connection lease，
+相同 `user + vendor sessionId` 重连到同一 native thread 后重发未 ACK 行；reactive chat 的既有终包仍只由
+当前连接关联，不纳入主动 Outbox。Agent Server stream resume 解决执行事件订阅恢复，与媒体 delivery
+outbox 保持两套不同语义。当前主动 Store 是单实例/共享持久卷 SQLite；多主机共享事务实现、周期 progress、
+durable task/workflow 生产者和后台视觉 observer 生产者仍未迁移。citation、生成图片 detail、H.264 显式
+视觉引用和在线 3D artifact 投影已支持。
 
 ## 8. 验证
 

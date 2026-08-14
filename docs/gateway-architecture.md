@@ -1,6 +1,6 @@
 # Agent Server 部署架构
 
-Last updated: 2026-08-13
+Last updated: 2026-08-14
 
 ## Authority contract
 
@@ -47,6 +47,7 @@ Media service +-- /agent-service/v1 custom route
 | Store | Agent Server | 可选跨 thread namespace 数据资源，供 LangMem 等后端使用 |
 | media connection | custom route | 一次 WebSocket 传输连接，不是 thread |
 | delivery ID | custom route | 媒体响应 ACK 关联，不是 run 或 checkpoint |
+| proactive delivery Store | Graph composition + custom route | Graph 幂等入队，媒体连接 presence/claim/ACK；不是 LangGraph BaseStore |
 
 同一 conversation 复用 `thread_id`；每次输入创建新 run。连接断开不应被解释成删除 thread 或 Store。
 并发策略由 run API 的 `multitask_strategy` 指定；当前媒体入口使用 `enqueue`。取消通过原生 run cancel，
@@ -76,10 +77,18 @@ mock/local 模式可用 `X-Assistant-User`、`X-Assistant-Tenant` 构造多个�
 - 关联 connection、vendor session、thread、run、chat 和 delivery；
 - 调用公开 SDK 创建 thread/run、消费 stream、取消 run；
 - 将原生终态机械投影为媒体响应并处理 ACK；
+- 按 native thread 从主动投递 Store 串行 claim，机械投影 `chatResponse` 并处理 ACK/重连补投；
 - 承载不执行 Graph 的 callback route。
 
 它不得构造 `AgentGraphRuntime`，不得实现排队、checkpoint、长期记忆策略或 Tool 执行。Graph State 也不放
 WebSocket、SDK client、Provider client 或回调对象。
+
+主动投递不引入全局 dispatcher 或第二套 Runtime。Graph 在固定 `delivery_dispatch` node 只写 SQLite
+`ProactiveDeliveryStore`；每个成功握手的媒体连接启动 thread-specific pull pump，以短 presence/claim lease
+隔离连接。durable 行只有匹配 `chatResponseAck` 才进入 acknowledged，断线或 ACK timeout 释放为 queued，
+相同 `user + vendor sessionId` 重连到同一 native thread 后继续；ephemeral 离线时直接 skipped。当前实现完整
+支持单实例或共享持久卷，不宣称本地 SQLite 可覆盖多主机部署；未来多副本只替换薄 Store 实现，不把
+LangGraph `BaseStore` 当消息队列。
 
 H.264 解码与 3D callback 属于媒体边缘资源。解码后的有界 JPEG 引用保存在 SQLite frame index，Graph
 State 只携带 `video_id`；视觉 Tool 在 worker 中按引用读取。该本地实现要求 API/worker 共享受控数据卷，
