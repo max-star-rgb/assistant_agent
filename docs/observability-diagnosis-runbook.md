@@ -48,8 +48,8 @@
 - 限制：缺少的远端/本地事实以及不能据此得出的结论；
 - 下一步：最小可复现或应人工沉淀的 regression case。
 
-经人工确认且适合回归的异常，只能脱敏后加入 LangSmith 固定 Dataset，并通过
-`evals/langsmith_runtime_regression` 重放。不得建立自动 runtime audit、定时抓取或 webhook 替代链路。
+经人工确认且适合回归的异常，可在后续原生行为评测重建时脱敏加入固定 Dataset。当前没有 Runtime
+Regression runner；不得恢复旧 Runtime facade，也不得建立自动 runtime audit、定时抓取或 webhook 替代链路。
 
 ## 4. 维护条件
 

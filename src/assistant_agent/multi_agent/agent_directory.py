@@ -117,7 +117,7 @@ def default_agent_instance(
     return AgentInstance(
         agent_id=DEFAULT_AGENT_ID,
         display_name="Default Agent",
-        description="Default local AgentGraphRuntime instance.",
+        description="Default local agent invocation endpoint.",
         role="controller",
         capabilities=[
             "chat",

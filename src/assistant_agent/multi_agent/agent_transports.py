@@ -11,7 +11,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from assistant_agent.runtime.state import AgentState
+from assistant_agent.api.models import AgentRunResponse
 from assistant_agent.multi_agent.a2a_protocol import A2A_JSONRPC_VERSION
 from assistant_agent.multi_agent.models import (
     AgentArtifact,
@@ -34,7 +34,7 @@ class AgentTransport(Protocol):
 
 
 class LocalAgentTransport:
-    """In-process transport backed by local AgentGraphRuntime-like objects."""
+    """In-process transport backed by explicitly injected agent invokers."""
 
     name = "local"
 
@@ -53,7 +53,7 @@ class LocalAgentTransport:
                 transport_name=self.name,
             )
         try:
-            state = runtime.run_state(_request_from_task(task))
+            response = runtime.invoke(_request_from_task(task))
         except Exception as exc:  # pragma: no cover - defensive transport boundary
             return _failed_result(
                 task,
@@ -62,7 +62,15 @@ class LocalAgentTransport:
                 detail={"agent_id": task.target_agent_id, "transport": self.name},
                 transport_name=self.name,
             )
-        return _result_from_state(task, state, transport_name=self.name)
+        if not isinstance(response, AgentRunResponse):
+            return _failed_result(
+                task,
+                "agent_transport_invalid_response",
+                "Local agent invoker did not return AgentRunResponse.",
+                detail={"agent_id": task.target_agent_id, "transport": self.name},
+                transport_name=self.name,
+            )
+        return _result_from_response(task, response, transport_name=self.name)
 
 
 class RemoteAgentAllowlist:
@@ -457,35 +465,38 @@ def _request_from_task(task: AgentTask) -> UserRequest:
     )
 
 
-def _result_from_state(task: AgentTask, state: AgentState, *, transport_name: str) -> AgentTaskResult:
-    errors = [
-        AgentCommunicationError(
-            code=str(error.details.get("code") or "agent_run_error"),
-            message=sanitize_error_message(error.message),
-            detail=sanitize_error_detail(error.details),
-            recoverable=bool(error.details.get("retryable", False)),
-        )
-        for error in state.errors
-    ]
+def _result_from_response(
+    task: AgentTask,
+    response: AgentRunResponse,
+    *,
+    transport_name: str,
+) -> AgentTaskResult:
     artifacts = []
-    if state.response is not None:
+    if response.response_text:
         artifacts.append(
             AgentArtifact(
                 kind="text",
-                text=state.response.message,
-                data=sanitize_error_detail(state.response.data or {}),
-                output_refs=list(state.response.output_refs),
+                text=response.response_text,
+                data=sanitize_error_detail(response.data),
                 metadata={"source": "agent_response"},
             )
         )
-    status = _agent_task_result_status(state.status)
+    errors = [
+        AgentCommunicationError(
+            code=error.code or "agent_run_error",
+            message=sanitize_error_message(error.message),
+            detail=sanitize_error_detail(error.detail),
+            recoverable=error.recoverable,
+        )
+        for error in response.errors
+    ]
     return AgentTaskResult(
         task_id=task.task_id,
         target_agent_id=task.target_agent_id,
-        status=status,
+        status=_agent_task_result_status(response.status),
         artifacts=artifacts,
-        run_id=state.run_id,
-        trace_id=state.trace_id,
+        run_id=response.run_id,
+        trace_id=response.trace_id,
         errors=errors,
         metadata={
             "transport": transport_name,

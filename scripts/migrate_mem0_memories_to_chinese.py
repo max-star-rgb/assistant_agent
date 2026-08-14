@@ -29,7 +29,7 @@ from assistant_agent.memory.mem0.transport import (
     urllib_mem0_transport,
 )
 from assistant_agent.multi_agent.models import DEFAULT_AGENT_ID
-from assistant_agent.runtime.assistant_run_service import load_env_file
+from assistant_agent.config_env import load_env_file
 from assistant_agent.runtime.chat_adapter import (
     ChatAdapter,
     ChatRequest,

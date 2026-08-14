@@ -19,7 +19,7 @@ Core project docs:
 - Media-Agent WebSocket contract: [docs/media-agent-service-websocket.md](docs/media-agent-service-websocket.md)
 - 统一 SigLIP2 image/text embedding、短期视觉回忆与历史找物: [docs/multimodal-embedding-architecture.md](docs/multimodal-embedding-architecture.md)
 - Core pytest、临时 TDD 与 incubating 边界: [tests/README.md](tests/README.md)
-- System eval、上线前 Release Review 与 incubating 运行规则: [evals/README.md](evals/README.md)
+- System eval、原生 evaluation target 与当前评测缺口: [evals/README.md](evals/README.md)
 
 ## Local Environment
 
@@ -35,7 +35,7 @@ Provider profiles and external-provider configuration are documented in [docs/to
 | package | responsibility |
 | --- | --- |
 | `native_agent/` | 生产父 StateGraph、fast create_agent、planning 子图、Provider/Tool/Memory 装配 |
-| `runtime/` | 尚未迁移的外围入口与旧 checkpoint/runtime 兼容代码；不是生产 Agent Server 主链 |
+| `runtime/` | Tool、Provider、媒体、Context 与 durable task 仍复用的中立 DTO/外围治理模块；不拥有 Graph 生命周期 |
 | `context/` | 尚未迁移入口使用的旧 Context compiler 与专项能力 |
 | `skills/` | Skill 加载、召回、校验、目录、执行与持久化 |
 | `tools/` | 具体 Tool/Plugin 实现；生产由 `native_agent.tools` 适配为标准 BaseTool |

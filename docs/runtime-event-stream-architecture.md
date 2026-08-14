@@ -73,11 +73,14 @@ resume 协议。模型 token 和 Tool 消息由 LangChain/LangGraph 原生 callb
 Agent Server/LangGraph `Command(resume=...)`。model/tool call limit、只读 Tool retry 与 summarization 均由
 官方 middleware 承担。
 
-## 兼容代码边界
+## 已退役兼容边界
 
-`src/assistant_agent/runtime/` 与 `src/assistant_agent/workflows/` 仍保留旧外围消费者，后续逐项迁移；它们不被
-生产 `agent_server/` 或 `native_agent/` 导入，也不是 `langgraph.json` 的生产 graph。主动投递的中立 DTO/Store
-位于 `assistant_agent.proactive_delivery`，旧模块仅作 import compatibility，不拥有生产执行。
+旧 assistant loop、Graph app、通用 Runtime facade、Workflow host 与旧 checkpoint/Memory node bundle 已删除。
+`src/assistant_agent/runtime/` 只保留仍被 Tool、Provider、媒体、Context 或 durable task 使用的中立 DTO 与外围
+治理模块；它不拥有 Graph 生命周期。主动投递的中立 DTO/Store 位于 `assistant_agent.proactive_delivery`。
+
+评测侧只保留直接调用本生产父图的 `NativeGraphEvaluationTarget` 基元。旧 Runtime/Workflow/Release Review
+runner 因绑定旧 state/evidence 合同而删除，后续行为评测必须基于标准 messages 与 native trace 重新建立。
 
 ## 验证
 

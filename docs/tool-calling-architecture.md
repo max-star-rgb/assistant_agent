@@ -38,8 +38,9 @@ lookup。
 应用显式 allowlist、read-only effect 和 `<namespace>_<server>_<tool>` 命名。主链不建立 MCP proxy、ToolSpec
 镜像或 Registry。
 
-本地 Plugin 仍可复用其纯构造逻辑和 Provider adapter，但生产装配清单是代码中的显式列表。旧动态 Plugin、
-Tool CLI、MCP server、durable task 等外围入口仍保留旧治理链，迁移前不得被描述为生产 Assistant 主链。
+本地 Plugin 仍可复用其纯构造逻辑和 Provider adapter，但生产装配清单是代码中的显式列表。Tool CLI、离线
+MCP Tool 开发入口与 durable task 等外围能力仍可保留旧治理模块，但旧 Agent Runtime/Workflow host 已删除，
+这些外围模块不得被描述为生产 Assistant 主链。
 
 ## Provider-native 能力
 

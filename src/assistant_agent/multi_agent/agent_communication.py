@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Iterable, Mapping
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from assistant_agent.multi_agent.models import (
     DEFAULT_AGENT_ID,
@@ -23,10 +23,6 @@ from assistant_agent.multi_agent.agent_delegation_context import (
 from assistant_agent.multi_agent.agent_delegation_policy import AgentDelegationPolicy
 from assistant_agent.multi_agent.agent_directory import AgentDirectory, default_agent_instance
 from assistant_agent.multi_agent.agent_transports import AgentTransport, LocalAgentTransport
-
-if TYPE_CHECKING:
-    from assistant_agent.runtime.runtime import AgentGraphRuntime
-
 
 class AgentCommunicationService:
     """Route protocol-neutral tasks to enabled agent instances."""
@@ -150,12 +146,12 @@ class AgentCommunicationService:
 
 
 def create_default_agent_communication_service(
-    runtime: AgentGraphRuntime,
+    runtime: Any,
     *,
     agent_id: str = DEFAULT_AGENT_ID,
     directory: AgentDirectory | None = None,
 ) -> AgentCommunicationService:
-    """Create an offline local service for the default agent runtime."""
+    """Create an offline local service for an injected agent invoker."""
 
     return AgentCommunicationService(
         directory=directory or AgentDirectory(),

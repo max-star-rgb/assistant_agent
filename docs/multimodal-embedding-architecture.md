@@ -250,7 +250,7 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock /home/lenovo1/miniconda3/envs/hello_agent/bi
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
   scripts/run_system_multimodal_embedding_eval.py --dry-run
 
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_release_review.py --inspect
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/check_documentation_authority.py --repo-root .
 ```
 
 真实本地 CUDA 使用 `--allow-local-model`；真实 Chat/Judge 与 LangSmith publish/run 使用各自 operator gate。

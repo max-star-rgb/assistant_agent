@@ -29,8 +29,9 @@ metadata；Tool artifact 和 message content 是否记录遵循 LangSmith/部署
 runtime、历史记录与外围入口；它们不是新父图的执行依赖，也不得反向决定 graph route、resume、cancel 或
 terminal。历史诊断仍按 [`observability-diagnosis-runbook.md`](observability-diagnosis-runbook.md) 操作。
 
-Release Review 可以把 production graph 作为 target，但 Dataset、Experiment 与 Score 的 owner 仍是
-`evals/README.md`。不得从评测或本地 ledger 构造第二棵“看起来像”生产执行树。
+未来行为评测可以把 production graph 作为 target，但 Dataset、Experiment 与 Score 的 owner 仍是
+`evals/README.md`。当前旧 Release Review runner 已删除；不得从评测或本地 ledger 构造第二棵“看起来像”
+生产执行树。
 
 ## 验证
 

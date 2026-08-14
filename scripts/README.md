@@ -49,10 +49,7 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
   Mem0 记忆为简体中文。默认命令只读；更新要求 real Provider mode、已配置的 Qwen 和
   Mem0，并同时传入 `--apply` 与 `--allow-real-provider`。输出只包含数量、memory ID、
   状态和稳定错误码，不持久化记忆正文或 Provider 响应。
-- `scripts/agent_cli.py`：HTTP/SSE 产品 CLI，与 Web UI 共用 `/agent/run`。默认请求
-  `text/event-stream` 并逐 delta 输出；`--no-stream` 可验证 JSON 表示，交互模式支持
-  `/standard`、`/deep research`、`/new`，Ctrl-C 会按 `user_id + session_id + run_id`
-  请求取消当前 run。terminal annotations 只打印本轮实际引用来源的紧凑诊断，不修改正文。
+- `scripts/agent_cli.py`：通过公开 `langgraph_sdk` 调用 Agent Server 的 thread/run/stream/cancel CLI。
 - `scripts/media_simulator.py`: server-backed Media-Agent protocol simulator for
   `/agent-service/v1`; type text repeatedly, or use `/new [sessionId]` to open a
   new media session. In interactive mode, `/deep research` selects
@@ -62,20 +59,8 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
   service restart), the client reconnects the same media session and preserves
   the selected mode. Because delivery is ambiguous, it never retries the interrupted
   chat automatically and asks the operator to resend it. When a successful terminal
-  response contains a structured `workflow://` output ref, the client then tails the
-  identity-scoped Workflow status/events HTTP facade by cursor. In interactive mode,
-  `waiting_input` opens a Workflow-specific prompt, submits the response with the
-  persisted resume token, and continues tailing instead of sending a new chat turn.
-  Non-interactive mode stops at action-required state. On completion the client reads
-  the identity-scoped `/workflows/{workflow_id}/result` artifact and prints its full
-  `content`. It does not reconstruct progress or final output from legacy
-  `plan.work_items`. Default workflow output is product-facing:
-  the structured start response carries no mode-specific confirmation copy, the internal
-  bootstrap planner is hidden, and admitted Plan progress uses persisted work-item
-  `display_title` values and completion count; when multiple
-  work-item runs overlap it lists the active stages as one parallel progress update, while
-  hiding raw event names and workflow IDs. Use `--workflow-details` to expose
-  cursor-based events and identifiers for debugging.
+  response arrives it prints only the Agent Server-projected media result; it does not
+  poll a parallel Workflow facade.
   当成功终包包含结构化 `task://` output ref 且显式传入 `--wait-proactive` 时，Simulator 不轮询
   Task HTTP facade，而是在同一 Agent-Service WebSocket 上等待 `durable-task:<task_id>` 主动
   `chatResponse`。服务重启导致连接关闭时，它使用相同 `sessionId + userNumber` 重新握手并继续
@@ -102,54 +87,21 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 
 - `scripts/run_demo_flows.py`: offline scenario matrix for regression demos.
 - `scripts/run_evals.py`: offline eval harness for lower-layer behavior checks.
-- `scripts/run_system_tool_evals.py`: 真实 LLM + 真实 Tool 的 system eval；
-  要求 `MULTIMODAL_AGENT_PROVIDER_MODE=real` 和 `--allow-real-tools`，产物写入
-  `.data/evals/system/tools/`。好单库购物链路可显式设置
-  `MULTIMODAL_AGENT_SHOPPING_PROVIDER=haodanku` 并运行
-  `shopping_search_real_single_need`。
-- `scripts/run_system_shopping_eval.py`: 不经过 LLM，直接通过本地 Tool 治理链路调用真实
-  `shopping_search`；要求 `--allow-real-tools`、real 模式、好单库 Provider 和 key，
-  并硬断言真实候选、来源、正价格与 HTTP(S) 购买链接。
-- `scripts/run_system_calendar_create_eval.py`: 不经过 LLM、`AgentGraphRuntime` 或 assistant
-  loop，通过完整本地 Tool 治理链执行 `calendar_create`，验证首次提交、幂等回放和真实 SQLite
+- `scripts/run_system_calendar_create_eval.py`: 不经过 LLM 或 Assistant Graph，通过完整本地 Tool
+  治理链执行 `calendar_create`，验证首次提交、幂等回放和真实 SQLite
   终态。无参数默认执行，`--dry-run` 无副作用；产物写入
   `.data/evals/system/tools/calendar/create/<run>/`，不要求 real Provider mode。
 - `scripts/run_system_calendar_search_eval.py`: 在 run-scoped SQLite 中通过 adapter 预置合成事件，
   再只通过完整本地 Tool 治理链执行一次 `calendar_search`，验证返回事件和只读终态。无参数默认
   执行，产物写入
   `.data/evals/system/tools/calendar/search/<run>/`。
-- `scripts/run_system_context_eval.py`: 捕获真实 Runtime 编译的 `ChatRequest`
-  和 Provider payload；要求 real 模式与 `--allow-unredacted-context`，产物写入
-  `.data/evals/system/context/`。
 - `scripts/run_system_multimodal_embedding_eval.py`: 验证本地 SigLIP2 联合 image/text ONNX
   资产。`--dry-run` 不加载模型；真实 CUDA session 必须显式传入 `--allow-local-model`，结果写入
   `.data/evals/system/multimodal_embedding/`，不保存向量、文本、图片内容或媒体路径。dry-run 还列出
   固定 5 FPS、latest-wins、纯语义选帧、VLM 文本索引和无 query-time VLM 的架构检查面；流水线行为
   由离线 pytest 验证。
-- `scripts/run_release_review.py`：上线前 Release Review 的唯一稳定入口。`--inspect` 离线检查 Git YAML
-  scenario；`--sync` 同步固定 LangSmith Dataset；`--configure-evaluators --model-config-id <uuid>` 默认规划
-  grounding/response-quality 两条独立 Dataset rule，显式 `--apply` 才创建或更新且不运行 Judge；`--run`
-  以一个原生 LangSmith Project / Experiment 执行
-  Decision fixture backend 与隔离 Staging；`--record-decision` 保存 operator 的人工发布决定。真实运行
-  必须同时显式允许 real Provider 和 Staging 副作用，不会静默回退 mock。Dataset、Feedback、
-  清理和产物契约统一见 [`evals/README.md`](../evals/README.md)。
-- `scripts/run_langsmith_runtime_regressions.py`：LangSmith Runtime Regression 唯一稳定入口。案例由人工从
-  日常异常 trace 脱敏并沉淀到固定 Dataset；`--inspect` 只校验 active Example object，
-  `--configure-evaluators --model-config-id <uuid>` 默认只规划三个 Dataset evaluator，显式 `--apply` 才会
-  创建或更新远端规则且不会运行 Judge；
-  `--preflight` 校验真实 Provider 与 LangSmith exporter，`--run` 通过生产 `AgentGraphRuntime` 创建原生
-  LangSmith Experiment，并等待 Runtime/LLM 子树和三项 Feedback 完整。preflight/run 都要求
-  `--allow-real-provider` 与 `--allow-runtime-side-effects`。流程与 schema 见
-  [`evals/README.md`](../evals/README.md#3-日常异常到-runtime-regression-的唯一闭环)。
-- `scripts/run_langsmith_workflow_regressions.py`：M3 Durable Workflow 原生 LangSmith Experiment
-  入口。`--inspect` 只在本地检查 typed Example、四项 Feedback 和 operator evidence 契约，不创建
-  LangSmith client；`--preflight`/`--run` 必须显式允许 real Provider 与 Workflow 副作用（兼容
-  `--allow-runtime-side-effects`），可用 `--env-file` 加载未跟踪配置，并检查远端 Dataset、隔离 artifact、
-  shared official SQLite saver 与 production `WorkflowGraphHost` composition readiness。`--run` 直接执行
-  production compiled graph，并等待真实 native tree 与四项 Feedback 完整且全部通过。固定 Dataset 不存在时
-  先显式运行 `--sync`，从 Git-owned `examples.json` 幂等创建四类严格 Example。
-- 最终 Graph API capability matrix 是 `assistant_agent.runtime.graph_capability_evidence` 的只读机器合同，
-  由显式 TDD 验证 tracked evidence anchor；它不新增 runner，也不调用 Provider、LangSmith 或真实 Workflow DB。
+- 旧 Runtime/Workflow/Release Review LangSmith runner 已随旧 Graph Runtime 删除。后续评测重建必须直接消费
+  Agent Server 或 `NativeGraphEvaluationTarget` 的标准 messages/native trace，当前不得宣称存在上线前行为门禁。
 - `scripts/run_improvement_lab.py`: offline, non-mutating improvement proposal runner.
 
 ## Specialized integrations

@@ -36,7 +36,7 @@ PUBLIC_CAPABILITY_TAGS = {
     MEDIA_INSPECT_TOOL_NAME,
 }
 PRIVATE_TEXT_MARKERS = (
-    "AgentGraphRuntime",
+    "NativeGraphEvaluationTarget",
     "ProviderConfig",
     "assistant_agent.",
     "/home/",

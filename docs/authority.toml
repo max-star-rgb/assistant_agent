@@ -88,7 +88,6 @@ source_globs = [
   "src/assistant_agent/native_agent/tools.py",
   "src/assistant_agent/tools/**",
   "src/assistant_agent/mcp/**",
-  "src/assistant_agent/workflows/**",
   "src/assistant_agent/automation/durable_tasks/**",
   "src/assistant_agent/runtime/action_validator.py",
   "src/assistant_agent/runtime/tool_execution_backend.py",
@@ -114,9 +113,6 @@ source_globs = [
   "src/assistant_agent/native_agent/root_graph.py",
   "src/assistant_agent/native_agent/state.py",
   "src/assistant_agent/memory/**",
-  "src/assistant_agent/runtime/assistant_graph_state.py",
-  "src/assistant_agent/runtime/assistant_loop_graph.py",
-  "src/assistant_agent/runtime/assistant_graph_app.py",
   "tests/core/integration/test_memory_lifecycle.py",
 ]
 thin_references = ["README.md", "docs/context_engineering_status.md", "scripts/README.md"]
@@ -260,29 +256,23 @@ exclusive_literals = []
 exclusive_allowlist = []
 
 [[domains]]
-id = "release-review-eval"
+id = "system-eval"
 authority = "evals/README.md"
 read_when = [
-  "system eval 或上线前 Release Review",
-  "LangSmith Dataset、Experiment、Release Review 或 Feedback 完整性",
+  "system eval、真实能力专项验证或 operator 副作用门禁",
+  "原生 Graph evaluation target 或未来行为评测重建",
 ]
 source_globs = [
-  "evals/release_review/**",
-  "evals/langsmith_runtime_regression/**",
   "evals/system/**",
   "src/assistant_agent/evaluation/**",
-  "scripts/run_release_review.py",
-  "scripts/run_langsmith_runtime_regressions.py",
-  "tests/tdd/release-review-native-experiment/**",
-  "tests/tdd/langsmith-parallel-evaluation/**",
 ]
 thin_references = [
   "docs/observability-harness.md",
   "scripts/README.md",
 ]
 verification = [
-  "python scripts/run_release_review.py --inspect",
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/langsmith-parallel-evaluation",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python scripts/run_system_calendar_create_eval.py --dry-run",
+  "python -m compileall -q src/assistant_agent/evaluation evals/system",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
