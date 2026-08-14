@@ -35,6 +35,10 @@ from assistant_agent.runtime.graph_invocation_claims import (
     InMemoryGraphInvocationClaimStore,
 )
 from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
+from assistant_agent.runtime.proactive_delivery import (
+    ProactiveDeliveryStore,
+    SQLiteProactiveDeliveryStore,
+)
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.run_phase import RunPhase
 from assistant_agent.runtime.state import AgentState
@@ -57,6 +61,7 @@ class AgentServerGraphWorker:
     chat_adapter: Any
     trace_store: InMemoryTraceStore
     invocation_claim_store: InMemoryGraphInvocationClaimStore
+    proactive_delivery_store: ProactiveDeliveryStore | None = None
 
     def __post_init__(self) -> None:
         self._runtime_context: GraphRuntimeContext | None = None
@@ -125,6 +130,7 @@ class AgentServerGraphWorker:
             trace_store=self.trace_store,
             agent_state=state,
             invocation_claim_store=self.invocation_claim_store,
+            proactive_delivery_store=self.proactive_delivery_store,
             invocation_token=execution.run_id,
         )
         graph_state = assistant_turn_state_from_agent_state(state)
@@ -202,6 +208,9 @@ class AgentServerExecutionOwner:
             chat_adapter=chat_adapter,
             trace_store=InMemoryTraceStore(),
             invocation_claim_store=InMemoryGraphInvocationClaimStore(max_entries=32),
+            proactive_delivery_store=SQLiteProactiveDeliveryStore(
+                config.proactive_delivery_store_path
+            ),
         )
         memory_bundle = create_memory_node_bundle(config, langmem_store=store)
         return cls(worker=worker, memory_bundle=memory_bundle)

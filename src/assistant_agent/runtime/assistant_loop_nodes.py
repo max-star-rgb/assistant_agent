@@ -59,6 +59,11 @@ from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
 from assistant_agent.runtime.graph_invocation_claims import (
     graph_invocation_owner_digest,
 )
+from assistant_agent.runtime.proactive_delivery import (
+    ProactiveDeliveryIntent,
+    ProactiveDispatchState,
+)
+from assistant_agent.runtime.proactive_messages import ProactiveMessage
 from assistant_agent.runtime.output_models import (
     AssistantTextOutput,
     AssistantToolCall,
@@ -247,6 +252,69 @@ def publish_response_node(
     updated["response_publish"] = ResponsePublishState(
         status="published",
         final_fact_id=final_fact_id,
+    ).model_dump(mode="json")
+    return validate_assistant_turn_state(updated)
+
+
+class ProactiveDeliveryUnavailableError(RuntimeError):
+    """A pending graph delivery cannot reach its durable enqueue boundary."""
+
+
+def delivery_dispatch_node(
+    state: AssistantTurnState,
+    runtime: Runtime[GraphRuntimeContext],
+) -> AssistantTurnState:
+    """Persist pending intents after response publish without changing graph control."""
+
+    validated = validate_assistant_turn_state(state)
+    pending = tuple(
+        ProactiveDeliveryIntent.model_validate(item)
+        for item in validated["pending_deliveries"]
+    )
+    if not pending:
+        return validated
+    message_ids = tuple(item.message_id for item in pending)
+    updated = dict(validated)
+    context = runtime.context
+    invocation_kind = context.invocation_kind if context is not None else "invoke"
+    if invocation_kind in {"replay", "fork"}:
+        updated["pending_deliveries"] = []
+        updated["delivery_dispatch"] = ProactiveDispatchState(
+            status="skipped",
+            message_ids=message_ids,
+            issue_code="time_travel_delivery_disabled",
+        ).model_dump(mode="json")
+        return validate_assistant_turn_state(updated)
+
+    store = context.proactive_delivery_store if context is not None else None
+    if store is None:
+        raise ProactiveDeliveryUnavailableError(
+            "Pending proactive delivery requires a configured store."
+        )
+    request = validated["request"]
+    run = validated["run"]
+    records = []
+    for intent in pending:
+        records.append(
+            store.enqueue(
+                ProactiveMessage(
+                    message_id=intent.message_id,
+                    user_id=str(request["user_id"]),
+                    session_id=str(request["session_id"]),
+                    kind=intent.kind,
+                    content=intent.content,
+                    delivery_mode=intent.delivery_mode,
+                    source_run_id=str(run["run_id"]),
+                    source_trace_id=str(run["trace_id"]),
+                )
+            )
+        )
+    updated["pending_deliveries"] = []
+    all_skipped = all(record.status == "skipped_offline" for record in records)
+    updated["delivery_dispatch"] = ProactiveDispatchState(
+        status="skipped" if all_skipped else "queued",
+        message_ids=message_ids,
+        issue_code="connection_offline" if all_skipped else None,
     ).model_dump(mode="json")
     return validate_assistant_turn_state(updated)
 

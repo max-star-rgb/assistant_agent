@@ -100,6 +100,13 @@ class ProviderConfig:
     visual_reminder_max_active: int = 16
     visual_reminder_terminal_history_limit: int = 64
     proactive_message_delivery_timeout_seconds: float = 95.0
+    proactive_delivery_store_path: str = (
+        ".local/agent_server/proactive_deliveries.sqlite3"
+    )
+    proactive_delivery_ack_timeout_seconds: float = 15.0
+    proactive_delivery_lease_seconds: float = 30.0
+    proactive_delivery_presence_ttl_seconds: float = 45.0
+    proactive_delivery_poll_interval_seconds: float = 0.25
     openai_vision_base_url: str = "https://api.openai.com/v1"
     openai_vision_model: str = "gpt-4o-mini"
     qwen_vision_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -301,6 +308,16 @@ class ProviderConfig:
             raise ValueError("visual reminder terminal history limit must be positive")
         if self.proactive_message_delivery_timeout_seconds <= 0:
             raise ValueError("proactive message delivery timeout must be positive")
+        if not self.proactive_delivery_store_path.strip():
+            raise ValueError("proactive delivery store path must be non-empty")
+        if self.proactive_delivery_ack_timeout_seconds <= 0:
+            raise ValueError("proactive delivery ACK timeout must be positive")
+        if self.proactive_delivery_lease_seconds <= 0:
+            raise ValueError("proactive delivery lease must be positive")
+        if self.proactive_delivery_presence_ttl_seconds <= 0:
+            raise ValueError("proactive delivery presence TTL must be positive")
+        if self.proactive_delivery_poll_interval_seconds <= 0:
+            raise ValueError("proactive delivery poll interval must be positive")
         if not (
             0.0
             < self.context_compaction_target_ratio
@@ -504,6 +521,26 @@ class ProviderConfig:
             proactive_message_delivery_timeout_seconds=_float_env(
                 source.get("PROACTIVE_MESSAGE_DELIVERY_TIMEOUT_SECONDS"),
                 95.0,
+            ),
+            proactive_delivery_store_path=(
+                source.get("PROACTIVE_DELIVERY_STORE_PATH")
+                or ".local/agent_server/proactive_deliveries.sqlite3"
+            ),
+            proactive_delivery_ack_timeout_seconds=_float_env(
+                source.get("PROACTIVE_DELIVERY_ACK_TIMEOUT_SECONDS"),
+                15.0,
+            ),
+            proactive_delivery_lease_seconds=_float_env(
+                source.get("PROACTIVE_DELIVERY_LEASE_SECONDS"),
+                30.0,
+            ),
+            proactive_delivery_presence_ttl_seconds=_float_env(
+                source.get("PROACTIVE_DELIVERY_PRESENCE_TTL_SECONDS"),
+                45.0,
+            ),
+            proactive_delivery_poll_interval_seconds=_float_env(
+                source.get("PROACTIVE_DELIVERY_POLL_INTERVAL_SECONDS"),
+                0.25,
             ),
             openai_vision_base_url=source.get(
                 "OPENAI_VISION_BASE_URL", "https://api.openai.com/v1"
