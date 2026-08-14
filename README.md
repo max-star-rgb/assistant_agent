@@ -34,19 +34,20 @@ Provider profiles and external-provider configuration are documented in [docs/to
 
 | package | responsibility |
 | --- | --- |
-| `runtime/` | assistant loop、运行状态、Provider stream、执行生命周期和应用编排 |
-| `context/` | Context 构建、预算、压缩、渲染和 Tool catalog |
+| `native_agent/` | 生产父 StateGraph、fast create_agent、planning 子图、Provider/Tool/Memory 装配 |
+| `runtime/` | 尚未迁移的外围入口与旧 checkpoint/runtime 兼容代码；不是生产 Agent Server 主链 |
+| `context/` | 尚未迁移入口使用的旧 Context compiler 与专项能力 |
 | `skills/` | Skill 加载、召回、校验、目录、执行与持久化 |
-| `tools/` | Tool 契约、Registry、治理边界和 Plugin |
+| `tools/` | 具体 Tool/Plugin 实现；生产由 `native_agent.tools` 适配为标准 BaseTool |
 | `agent_server/` | Agent Server graph factory、认证、公开 SDK client 与媒体 custom route |
 | `gateway/` | Graph 内部仍复用的 legacy 事件/取消/交付小类型；不拥有生产 session/run/runtime |
 | `media/` | 音频边缘适配、视频摄取/观察、统一 image/text embedding 及视觉 adapter |
 | `automation/` | durable task、proactive wake 和通知 |
 | `multi_agent/` | Agent routing、delegation、transport 和 A2A |
-| `observability/` | canonical trace、日志、metrics 和 LangSmith native tracing |
+| `observability/` | 旧本地审计、历史诊断与评测辅助；生产执行树使用 LangSmith native tracing |
 | `improvement/` | 离线改进证据、提案、评估和报告 |
 | `providers/` | 跨入口共享的 Provider 配置、错误治理和 adapter |
-| `memory/` | Graph-native Memory bundle、commit ledger、Mem0/LangMem/disabled 后端 |
+| `memory/` | Mem0 transport 与旧 Memory bundle 兼容；生产最小 backend 位于 `native_agent.memory` |
 | `api/` | 不执行 Graph 的 callback 与共享协议模型；生产 HTTP 由 Agent Server 提供 |
 | `mcp/` | MCP 配置、client、registration 和 server adapter |
 | `config/` | 进程配置装配 |
@@ -54,15 +55,13 @@ Provider profiles and external-provider configuration are documented in [docs/to
 领域模型和稳定协议由所属 package 就近维护，例如 `tools/models.py`、
 `context/models.py` 和 `multi_agent/a2a_protocol.py`。
 
-可信 Python Tool 插件可通过 `MULTIMODAL_AGENT_TOOL_PLUGIN_MODULES` 显式配置，重启后生效。可用
-`python -m assistant_agent.tools.cli plugins` 查看只读装配报告；该机制会执行所配置 module 的进程内代码，
-不是不可信代码沙箱。具体协议和治理边界见 Tool calling 文档。
+旧外围入口仍可通过 `MULTIMODAL_AGENT_TOOL_PLUGIN_MODULES` 使用动态 Python Plugin；该机制会执行所配置
+module 的进程内代码，不是不可信代码沙箱。生产 `assistant-native-v1` 只使用受信静态 Tool 清单和官方 MCP
+allowlist，不加载动态 module。具体边界见 Tool calling 文档。
 
-长期记忆由固定的 `memory_recall` / `memory_commit` Graph 节点定位，规范化正文冻结在
-`state.memory_context`；assistant/tool 只消费其有序文本。composition root 一次只装配一个
-`MemoryNodeBundle`：默认离线 `disabled`，也可显式选择直接 Mem0 节点或使用 LangGraph
-`BaseStore` 的可选 LangMem 节点。回答先进入产品事件流，随后 commit；最小 ledger 负责外部写入去重，
-replay/fork 默认不写长期记忆。具体配置、time-travel 和 mock/real 边界见长期记忆架构文档。
+长期记忆由父图固定的 `memory_recall` / `memory_commit` 节点定位，正文冻结在 `state.memory_context`。
+composition root 一次只装配一个最小 `MemoryBackend`：默认离线 `disabled`，也可显式选择 Mem0、使用
+LangGraph `BaseStore` 的 LangMem，或注入第三方 adapter。具体配置和 mock/real 边界见长期记忆架构文档。
 
 Basic check（只运行稳定的 `tests/core` 核心框架安全网）：
 

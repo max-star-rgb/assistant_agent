@@ -49,8 +49,8 @@ class MockAssistantChatModel(BaseChatModel):
         run_manager: Any | None = None,
         **kwargs: Any,
     ) -> ChatResult:
-        del stop, run_manager, kwargs
-        message = self._response_message(messages)
+        del stop, run_manager
+        message = self._response_message(messages, **kwargs)
         return ChatResult(generations=[ChatGeneration(message=message)])
 
     async def _agenerate(
@@ -69,8 +69,8 @@ class MockAssistantChatModel(BaseChatModel):
         run_manager: Any | None = None,
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
-        del stop, run_manager, kwargs
-        message = self._response_message(messages)
+        del stop, run_manager
+        message = self._response_message(messages, **kwargs)
         yield ChatGenerationChunk(
             message=AIMessageChunk(
                 content=message.content,
@@ -106,7 +106,21 @@ class MockAssistantChatModel(BaseChatModel):
         normalized = [convert_to_openai_tool(tool) for tool in tools]
         return self.bind(tools=normalized, tool_choice=tool_choice, **kwargs)
 
-    def _response_message(self, messages: list[AnyMessage]) -> AIMessage:
+    def _response_message(self, messages: list[AnyMessage], **kwargs: Any) -> AIMessage:
+        structured = _mock_structured_tool_call(kwargs.get("tools"))
+        if structured is not None and kwargs.get("tool_choice") == "any":
+            name, arguments = structured
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": name,
+                        "args": arguments,
+                        "id": f"mock-structured-{name}",
+                        "type": "tool_call",
+                    }
+                ],
+            )
         query = _last_human_text(messages)
         input_tokens = len(query)
         output_tokens = 12
@@ -191,6 +205,51 @@ def _last_human_text(messages: list[AnyMessage]) -> str:
                 if isinstance(block, dict) and block.get("type") == "text"
             )
     return ""
+
+
+def _mock_structured_tool_call(tools: Any) -> tuple[str, dict[str, Any]] | None:
+    if not isinstance(tools, list) or not tools or not isinstance(tools[0], dict):
+        return None
+    function = tools[0].get("function")
+    if not isinstance(function, dict):
+        return None
+    name = function.get("name")
+    if name == "NativePlanProposal":
+        return name, {
+            "schema_version": "native_plan_v1",
+            "nodes": [
+                {
+                    "node_id": "answer",
+                    "display_title": "完成用户目标",
+                    "objective": "完成用户目标并给出可靠答案",
+                    "depends_on": [],
+                    "acceptance_contract": {
+                        "schema_version": "native_step_acceptance_v1",
+                        "output": {
+                            "artifact_type": "text",
+                            "description": "最终文本答案",
+                        },
+                        "criteria": [
+                            {
+                                "criterion_id": "answer_complete",
+                                "statement": "答案完整回应用户目标",
+                            }
+                        ],
+                    },
+                }
+            ],
+            "deliverable_bindings": [
+                {"deliverable": "answer", "producer_node_id": "answer"}
+            ],
+            "constraint_bindings": [],
+        }
+    if name == "VerificationResult":
+        return name, {
+            "status": "passed",
+            "repair_work_item_ids": [],
+            "reason": "mock verification passed",
+        }
+    return None
 
 
 __all__ = [

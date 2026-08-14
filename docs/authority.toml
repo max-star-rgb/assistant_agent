@@ -14,11 +14,12 @@ source_globs = [
   "scripts/run_server.py",
   "scripts/agent_cli.py",
   "tests/core/contract/test_gateway_contract.py",
-  "tests/tdd/agent_server_native_runtime/**",
+  "tests/tdd/native-agent-parent-graph/test_agent_server_factory.py",
+  "tests/tdd/native-agent-parent-graph/test_media_native_adapter.py",
 ]
 thin_references = ["README.md", "scripts/README.md"]
 verification = [
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_gateway_contract.py tests/tdd/agent_server_native_runtime",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_gateway_contract.py tests/tdd/native-agent-parent-graph/test_agent_server_factory.py tests/tdd/native-agent-parent-graph/test_media_native_adapter.py",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python scripts/agent_cli.py --help",
 ]
 exclusive_literals = []
@@ -37,6 +38,7 @@ source_globs = [
   "src/assistant_agent/agent_server/media_session.py",
   "src/assistant_agent/api/rendering_3d_callback.py",
   "src/assistant_agent/media/artifact_delivery.py",
+  "src/assistant_agent/media/generated_artifacts.py",
   "src/assistant_agent/media/video/**",
   "scripts/media_simulator.py",
 ]
@@ -55,14 +57,16 @@ read_when = [
   "Provider stream、LLMEvent、thread bridge、取消或 terminal result",
 ]
 source_globs = [
-  "src/assistant_agent/runtime/**",
-  "src/assistant_agent/providers/llm_events.py",
-  "src/assistant_agent/gateway/runtime_event_mapping.py",
+  "src/assistant_agent/native_agent/root_graph.py",
+  "src/assistant_agent/native_agent/fast_agent.py",
+  "src/assistant_agent/native_agent/planning_graph.py",
+  "src/assistant_agent/native_agent/state.py",
+  "src/assistant_agent/native_agent/models.py",
 ]
 thin_references = ["README.md", "docs/gateway-architecture.md"]
 verification = [
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q",
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/native-langgraph-m5/test_graph_api_matrix.py",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/integration/test_runtime_lifecycle.py",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/native-agent-parent-graph",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
@@ -75,6 +79,7 @@ read_when = [
   "Plugin、MCP、durable workflow、Provider-native 能力或副作用治理",
 ]
 source_globs = [
+  "src/assistant_agent/native_agent/tools.py",
   "src/assistant_agent/tools/**",
   "src/assistant_agent/mcp/**",
   "src/assistant_agent/workflows/**",
@@ -86,6 +91,7 @@ source_globs = [
 thin_references = ["README.md", "scripts/README.md"]
 verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_tool_contract.py",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_extension_contract.py",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
@@ -98,6 +104,9 @@ read_when = [
   "记忆读取、写入、time-travel、Mem0/LangMem/disabled 后端装配",
 ]
 source_globs = [
+  "src/assistant_agent/native_agent/memory.py",
+  "src/assistant_agent/native_agent/root_graph.py",
+  "src/assistant_agent/native_agent/state.py",
   "src/assistant_agent/memory/**",
   "src/assistant_agent/runtime/assistant_graph_state.py",
   "src/assistant_agent/runtime/assistant_loop_graph.py",
@@ -107,7 +116,7 @@ source_globs = [
 thin_references = ["README.md", "docs/context_engineering_status.md", "scripts/README.md"]
 verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/integration/test_memory_lifecycle.py",
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/langgraph-memory-nodes",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/native-agent-parent-graph/test_native_memory.py",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
@@ -137,6 +146,8 @@ read_when = [
   "AssistantContextPack、ChatRequest 编译、Tool observation 或 context report",
 ]
 source_globs = [
+  "src/assistant_agent/native_agent/fast_agent.py",
+  "src/assistant_agent/native_agent/state.py",
   "src/assistant_agent/context/**",
   "src/assistant_agent/runtime/system_prompt_policy.py",
 ]

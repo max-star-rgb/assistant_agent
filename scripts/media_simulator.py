@@ -82,7 +82,7 @@ async def run_media_console(
         citations=citations,
     )
     chat_counter = 0
-    assistant_mode = "standard"
+    assistant_mode = "fast"
     try:
         if initial_text:
             chat_counter += 1
@@ -323,7 +323,7 @@ async def _send_chat_and_print_responses(
     stream: bool,
     chat_response_ack: bool,
     citation_debug: bool = False,
-    assistant_mode: str = "standard",
+    assistant_mode: str = "fast",
 ) -> MediaChatOutcome:
     await websocket.send(
         json.dumps(
@@ -870,7 +870,7 @@ def chat_body(
     user_number: str,
     speaker_number: str,
     stream: bool,
-    assistant_mode: str = "standard",
+    assistant_mode: str = "fast",
     now: Callable[[], str] | None = None,
 ) -> JsonObject:
     timestamp = now() if now is not None else _now_iso()
@@ -904,9 +904,7 @@ def parse_console_command(line: str) -> tuple[str, str | None]:
         return "new", value
     if normalized in {"/help", "/h", "/?"}:
         return "help", None
-    if normalized == "/deep" and value is not None and value.lower() == "research":
-        return "mode", "deep_research"
-    if normalized in {"/deep_research", "/standard"}:
+    if normalized in {"/fast", "/planning"}:
         return "mode", normalized.removeprefix("/")
     return "unknown", stripped
 
@@ -1042,7 +1040,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--workflow-details",
         action="store_true",
-        help="Print raw durable Workflow events in addition to product progress.",
+        help="Print legacy durable-task Workflow events in addition to product progress.",
     )
     parser.add_argument(
         "--wait-proactive",
@@ -1098,11 +1096,11 @@ def _intent_status(body: JsonObject) -> str | None:
     return None
 
 
-def _print_console_help(session_id: str, *, assistant_mode: str = "standard") -> None:
+def _print_console_help(session_id: str, *, assistant_mode: str = "fast") -> None:
     print(
         "Type text and press Enter to send chat. "
         f"Current session: {session_id}. Assistant mode: {assistant_mode}. "
-        "Commands: /deep research, /standard, /new [sessionId], "
+        "Commands: /fast, /planning, /new [sessionId], "
         "/session <sessionId>, /help, /quit.",
         flush=True,
     )

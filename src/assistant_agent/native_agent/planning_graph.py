@@ -13,19 +13,19 @@ from langgraph.types import RetryPolicy, Send
 
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.models import (
+    NativePlanProposal,
     PlanningArtifact,
     VerificationResult,
     WorkerResult,
 )
 from assistant_agent.native_agent.state import PlanningState, WorkerState
-from assistant_agent.workflows.models import WorkflowPlanV2Proposal
 
 
 class NativePlanAdmissionError(ValueError):
     """A structured proposal violates deterministic local DAG rules."""
 
 
-def admit_native_plan(proposal: WorkflowPlanV2Proposal) -> WorkflowPlanV2Proposal:
+def admit_native_plan(proposal: NativePlanProposal) -> NativePlanProposal:
     """Validate graph references, acyclicity and terminal deliverable ownership."""
 
     node_ids = [node.node_id for node in proposal.nodes]
@@ -79,7 +79,7 @@ def build_planning_graph(
         raise ValueError("planning workers require the shared AssistantFastAgent")
     if max_repairs < 0:
         raise ValueError("max_repairs must be non-negative")
-    structured_planner = model.with_structured_output(WorkflowPlanV2Proposal)
+    structured_planner = model.with_structured_output(NativePlanProposal)
     structured_verifier = model.with_structured_output(VerificationResult)
 
     async def planner_node(state: PlanningState) -> dict[str, Any]:
@@ -91,8 +91,8 @@ def build_planning_graph(
         )
         admitted = admit_native_plan(
             proposal
-            if isinstance(proposal, WorkflowPlanV2Proposal)
-            else WorkflowPlanV2Proposal.model_validate(proposal)
+            if isinstance(proposal, NativePlanProposal)
+            else NativePlanProposal.model_validate(proposal)
         )
         return {
             "plan": admitted,

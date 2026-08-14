@@ -1,184 +1,67 @@
 from __future__ import annotations
 
-from dataclasses import fields
+import asyncio
+from typing import Any
+
+from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.graph import END, START, StateGraph
 import pytest
 
-from assistant_agent.memory.node_bundle import MemoryNodeBundle
-from assistant_agent.runtime.assistant_graph_state import (
-    MemoryCommitState,
-    MemoryContext,
-    MemoryContextItem,
-    assistant_turn_state_from_request,
-    validate_assistant_turn_state,
-)
-from assistant_agent.runtime.chat_adapter import ChatResult
-from assistant_agent.runtime.event_sink import ListEventSink
-from assistant_agent.runtime.requests import UserRequest
-from assistant_agent.runtime.runtime import AgentGraphRuntime
-from assistant_agent.runtime.session_store import InMemorySessionStore
-from tests.core.support import ScriptedChatAdapter, offline_config, sealed_registry
+from assistant_agent.native_agent.context import AssistantRunContext
+from assistant_agent.native_agent.root_graph import build_assistant_root_graph
+from assistant_agent.native_agent.state import FastAgentState, PlanningState
 
 
-class _MemoryProbe:
+class _Memory:
+    backend_id = "probe"
+
     def __init__(self) -> None:
-        self.recall_calls = 0
-        self.commit_calls = 0
-        self.memory_text = "frozen-memory"
+        self.events = []
 
-    def recall_node(self, state, runtime):
-        del runtime
-        validated = validate_assistant_turn_state(state)
-        if validated.get("memory_context") is not None:
-            return validated
-        self.recall_calls += 1
-        updated = dict(validated)
-        updated["memory_context"] = MemoryContext(
-            backend_id="probe",
-            status="ready",
-            snapshot_id=f"snapshot-{self.recall_calls}",
-            items=(
-                MemoryContextItem(
-                    memory_id="memory-sentinel",
-                    text=self.memory_text,
-                    source="probe",
-                    relevance=1.0,
-                ),
+    async def recall(self, **_kwargs: Any):
+        self.events.append("recall")
+        return ("memory-sentinel",)
+
+    async def commit(self, **_kwargs: Any):
+        self.events.append("commit")
+
+
+def _branch(schema, name):
+    def answer(_state):
+        return {"messages": [AIMessage(content="answer-sentinel")]}
+
+    builder = StateGraph(schema, context_schema=AssistantRunContext)
+    builder.add_node("answer", answer)
+    builder.add_edge(START, "answer")
+    builder.add_edge("answer", END)
+    return builder.compile(name=name)
+
+
+@pytest.mark.core_invariant("MEMORY-001")
+def test_parent_graph_owns_one_recall_and_commit_for_each_mode() -> None:
+    async def run(mode):
+        backend = _Memory()
+        graph = build_assistant_root_graph(
+            memory_backend=backend,
+            fast_agent=_branch(FastAgentState, "AssistantFastAgent"),
+            planning_graph=_branch(PlanningState, "AssistantPlanningGraph"),
+        )
+        result = await graph.ainvoke(
+            {
+                "messages": [HumanMessage(content="request-sentinel")],
+                "execution_mode": mode,
+            },
+            context=AssistantRunContext(
+                user_id="user-sentinel",
+                tenant_id="tenant-sentinel",
             ),
-        ).model_dump(mode="json")
-        return validate_assistant_turn_state(updated)
-
-    def commit_node(self, state, runtime):
-        del runtime
-        validated = validate_assistant_turn_state(state)
-        updated = dict(validated)
-        if validated["turn_provenance"] == "time_travel":
-            updated["memory_commit"] = MemoryCommitState(
-                status="skipped",
-                issue_code="time_travel_commit_disabled",
-            ).model_dump(mode="json")
-            return validate_assistant_turn_state(updated)
-        self.commit_calls += 1
-        updated["memory_commit"] = MemoryCommitState(
-            status="succeeded",
-            memory_event_id=f"event-{validated['turn_origin_id']}",
-        ).model_dump(mode="json")
-        return validate_assistant_turn_state(updated)
-
-
-def _bundle(client: _MemoryProbe) -> MemoryNodeBundle:
-    return MemoryNodeBundle(
-        backend_id="probe",
-        recall_node=client.recall_node,
-        commit_node=client.commit_node,
-    )
-
-
-def _completed_state():
-    state = assistant_turn_state_from_request(
-        UserRequest(user_id="user-1", session_id="session-1", text="request"),
-        run_id="origin-run",
-        trace_id="trace-1",
-        agent_id="agent-1",
-    )
-    state["run"]["status"] = "completed"
-    state["final_response"] = {
-        "message": "response",
-        "followup_question": None,
-        "output_refs": [],
-        "citations": [],
-    }
-    state["response_publish"] = {
-        "status": "published",
-        "final_fact_id": "fact-1",
-        "issue_code": None,
-    }
-    return state
-
-
-@pytest.mark.core_invariant("MEMORY-001")
-def test_memory_bundle_is_thin_and_runtime_graph_owns_recall_commit_order(
-    tmp_path,
-) -> None:
-    client = _MemoryProbe()
-    bundle = _bundle(client)
-    sink = ListEventSink()
-    original_commit = bundle.commit_node
-
-    def commit_after_publish(state, runtime):
-        assert any(event.type == "final_response" for event in sink.events)
-        return original_commit(state, runtime)
-
-    guarded = MemoryNodeBundle(
-        backend_id=bundle.backend_id,
-        recall_node=bundle.recall_node,
-        commit_node=commit_after_publish,
-        store=bundle.store,
-        aclose=bundle.aclose,
-    )
-    runtime = AgentGraphRuntime(
-        registry=sealed_registry(),
-        config=offline_config(),
-        chat_adapter=ScriptedChatAdapter(
-            [
-                ChatResult(
-                    provider="scripted",
-                    model="scripted",
-                    finish_reason="stop",
-                    response_text="response",
-                )
-            ]
-        ),
-        session_store=InMemorySessionStore(),
-        memory_bundle=guarded,
-    )
-    try:
-        state = runtime.run_state(
-            UserRequest(user_id="user-1", session_id="session-1", text="request"),
-            event_sink=sink,
-            run_id="run-1",
         )
-        graph = runtime.assistant_graph_app.graph.get_graph()
-    finally:
-        runtime.close()
+        return backend.events, result
 
-    assert tuple(field.name for field in fields(MemoryNodeBundle)) == (
-        "backend_id",
-        "recall_node",
-        "commit_node",
-        "store",
-        "aclose",
-    )
-    assert state.status == "completed"
-    assert client.recall_calls == 1
-    assert client.commit_calls == 1
-    edges = {(edge.source, edge.target) for edge in graph.edges}
-    assert {"memory_recall", "publish_response", "memory_commit"}.issubset(
-        graph.nodes
-    )
-    assert "time_travel_anchor" not in graph.nodes
-    assert ("memory_recall", "assistant") in edges
-    assert ("compose_response", "publish_response") in edges
-    assert ("publish_response", "memory_commit") in edges
-    assert ("memory_commit", "__end__") in edges
+    async def run_all():
+        return await asyncio.gather(run("fast"), run("planning"))
 
+    results = asyncio.run(run_all())
 
-@pytest.mark.core_invariant("MEMORY-001")
-def test_snapshot_is_frozen_and_derived_history_never_writes(tmp_path) -> None:
-    client = _MemoryProbe()
-    bundle = _bundle(client)
-    original = bundle.recall_node(_completed_state(), None)
-    original_snapshot = original["memory_context"]
-    client.memory_text = "new-backend-value"
-
-    for kind in ("replay", "fork"):
-        derived = dict(original)
-        derived["turn_provenance"] = "time_travel"
-        recalled = bundle.recall_node(derived, None)
-        committed = bundle.commit_node(recalled, None)
-        assert recalled["memory_context"] == original_snapshot
-        assert committed["memory_commit"]["issue_code"] == (
-            "time_travel_commit_disabled"
-        )
-
-    assert client.recall_calls == 1
-    assert client.commit_calls == 0
+    assert all(events == ["recall", "commit"] for events, _result in results)
+    assert all(result["memory_context"] == ("memory-sentinel",) for _events, result in results)

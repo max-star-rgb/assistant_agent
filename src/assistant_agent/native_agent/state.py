@@ -10,11 +10,11 @@ from langchain_core.messages import AnyMessage
 from pydantic import BaseModel, ConfigDict
 
 from assistant_agent.native_agent.models import (
+    NativePlanProposal,
     PlanningArtifact,
     VerificationResult,
     WorkerResult,
 )
-from assistant_agent.workflows.models import WorkflowPlanV2Proposal
 
 
 ExecutionMode = Literal["fast", "planning"]
@@ -126,7 +126,7 @@ class PlanningState(AgentState):
     """Planning-only channels kept out of the fast branch."""
 
     memory_context: Required[tuple[str, ...]]
-    plan: NotRequired[WorkflowPlanV2Proposal]
+    plan: NotRequired[NativePlanProposal]
     worker_results: NotRequired[
         Annotated[dict[str, WorkerResult], merge_worker_results]
     ]

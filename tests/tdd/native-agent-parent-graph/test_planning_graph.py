@@ -11,55 +11,55 @@ from langchain_core.runnables import RunnableLambda
 from langgraph.graph import END, START, StateGraph
 
 from assistant_agent.native_agent.context import AssistantRunContext
-from assistant_agent.native_agent.models import VerificationResult
+from assistant_agent.native_agent.models import (
+    NativeDeliverableBinding,
+    NativePlanNode,
+    NativePlanProposal,
+    PlanAcceptanceCriterion,
+    PlanArtifactContract,
+    PlanStepAcceptanceContract,
+    VerificationResult,
+)
 from assistant_agent.native_agent.planning_graph import (
     NativePlanAdmissionError,
     admit_native_plan,
     build_planning_graph,
 )
 from assistant_agent.native_agent.state import FastAgentState
-from assistant_agent.workflows.models import (
-    WorkflowAcceptanceCriterion,
-    WorkflowArtifactContract,
-    WorkflowDeliverableBindingProposal,
-    WorkflowPlanNodeV2,
-    WorkflowPlanV2Proposal,
-    WorkflowStepAcceptanceContract,
-)
 
 
-def _node(node_id: str, *, depends_on: tuple[str, ...] = ()) -> WorkflowPlanNodeV2:
-    return WorkflowPlanNodeV2(
+def _node(node_id: str, *, depends_on: tuple[str, ...] = ()) -> NativePlanNode:
+    return NativePlanNode(
         node_id=node_id,
         display_title=node_id,
         objective=f"完成 {node_id}",
-        depends_on=list(depends_on),
-        acceptance_contract=WorkflowStepAcceptanceContract(
-            schema_version="workflow_step_acceptance_v2",
-            output=WorkflowArtifactContract(
+        depends_on=depends_on,
+        acceptance_contract=PlanStepAcceptanceContract(
+            schema_version="native_step_acceptance_v1",
+            output=PlanArtifactContract(
                 artifact_type="text",
                 description=f"{node_id} output",
             ),
-            criteria=[
-                WorkflowAcceptanceCriterion(
+            criteria=(
+                PlanAcceptanceCriterion(
                     criterion_id=f"{node_id}_done",
                     statement=f"{node_id} is complete",
-                )
-            ],
+                ),
+            ),
         ),
     )
 
 
-def _proposal() -> WorkflowPlanV2Proposal:
-    return WorkflowPlanV2Proposal(
-        schema_version="workflow_plan_v2",
-        nodes=[_node("research"), _node("write", depends_on=("research",))],
-        deliverable_bindings=[
-            WorkflowDeliverableBindingProposal(
+def _proposal() -> NativePlanProposal:
+    return NativePlanProposal(
+        schema_version="native_plan_v1",
+        nodes=(_node("research"), _node("write", depends_on=("research",))),
+        deliverable_bindings=(
+            NativeDeliverableBinding(
                 deliverable="report",
                 producer_node_id="write",
-            )
-        ],
+            ),
+        ),
     )
 
 
@@ -71,7 +71,7 @@ class PlanningModel:
         self.verifier_calls = 0
 
     def with_structured_output(self, schema):
-        if schema is WorkflowPlanV2Proposal:
+        if schema is NativePlanProposal:
             def plan(_messages):
                 self.planner_calls += 1
                 return self.proposal
@@ -133,13 +133,13 @@ def test_planning_graph_admits_dag_and_reuses_fast_agent_by_wave() -> None:
 def test_planning_graph_uses_send_for_parallel_root_workers() -> None:
     proposal = _proposal().model_copy(
         update={
-            "nodes": [_node("one"), _node("two")],
-            "deliverable_bindings": [
-                WorkflowDeliverableBindingProposal(
+            "nodes": (_node("one"), _node("two")),
+            "deliverable_bindings": (
+                NativeDeliverableBinding(
                     deliverable="report",
                     producer_node_id="two",
-                )
-            ],
+                ),
+            ),
         }
     )
     calls: list[str] = []
@@ -208,10 +208,10 @@ def test_planning_graph_stops_when_repair_limit_is_reached() -> None:
 def test_native_plan_admission_rejects_cycles() -> None:
     proposal = _proposal().model_copy(
         update={
-            "nodes": [
+            "nodes": (
                 _node("one", depends_on=("two",)),
                 _node("two", depends_on=("one",)),
-            ]
+            )
         }
     )
 
