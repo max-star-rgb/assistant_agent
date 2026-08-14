@@ -13,6 +13,7 @@ class WorkerResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     work_item_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,119}$")
+    revision: int = Field(default=0, ge=0, le=100)
     content: str = Field(min_length=1, max_length=100_000)
     artifact_ids: tuple[str, ...] = Field(default=(), max_length=128)
 

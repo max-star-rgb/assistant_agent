@@ -48,6 +48,7 @@ class WorkerState(FastAgentState):
 
     work_item_id: Required[str]
     objective: Required[str]
+    revision: NotRequired[int]
 
 
 def merge_worker_results(
@@ -96,7 +97,16 @@ def _merge_keyed_models(left, right, *, model_type, identity_field, conflict_lab
     ).items():
         existing = merged.get(key)
         if existing is not None and existing != candidate:
-            raise ValueError(f"{conflict_label} conflict: {key}")
+            existing_revision = getattr(existing, "revision", None)
+            candidate_revision = getattr(candidate, "revision", None)
+            if (
+                existing_revision is None
+                or candidate_revision is None
+                or existing_revision == candidate_revision
+            ):
+                raise ValueError(f"{conflict_label} conflict: {key}")
+            if candidate_revision < existing_revision:
+                continue
         merged[key] = candidate
     return merged
 
