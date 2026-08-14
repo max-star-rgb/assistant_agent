@@ -5,7 +5,10 @@ from typing import Any
 
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.capability_output import build_capability_output_contract
-from assistant_agent.tools.ids import SHOPPING_SEARCH_CAPABILITY, SHOPPING_SEARCH_TOOL_NAME
+from assistant_agent.tools.ids import (
+    SHOPPING_SEARCH_CAPABILITY,
+    SHOPPING_SEARCH_TOOL_NAME,
+)
 from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.plugins.builtin.shopping.backend import (
     PriceCompareAdapter,
@@ -47,10 +50,13 @@ class ShoppingSearchTool(ToolBase):
         search_adapter: ProductSearchAdapter,
         compare_adapter: PriceCompareAdapter,
     ) -> None:
+        super().__init__()
         self.search_adapter = search_adapter
         self.compare_adapter = compare_adapter
 
-    def _run(self, input: ShoppingSearchRequest, context: ToolContext) -> ToolResult:
+    def _execute(
+        self, input: ShoppingSearchRequest, context: ToolContext
+    ) -> ToolResult:
         searches: list[ProductSearchResult] = []
         comparisons: list[PriceCompareResult | None] = []
         for need in input.needs:
@@ -158,9 +164,7 @@ def _build_result(
         ]
         errors.extend(need_errors)
         selection = (
-            _selection(need, selected_product)
-            if selected_product is not None
-            else None
+            _selection(need, selected_product) if selected_product is not None else None
         )
         if selection is not None:
             selections.append(selection)
@@ -226,9 +230,7 @@ def _build_result(
         )
         if output_ref
     ]
-    within_budget = (
-        request.total_budget is None or total_cost <= request.total_budget
-    )
+    within_budget = request.total_budget is None or total_cost <= request.total_budget
     return ShoppingSearchResult(
         outcome=outcome,
         scenario=request.scenario,
@@ -312,7 +314,7 @@ def _choose_basket(
 ) -> tuple[ProductResult | None, ...]:
     choices = [(*candidates, None) for candidates in candidate_groups]
     best: tuple[ProductResult | None, ...] = tuple(None for _ in needs)
-    best_score: tuple[int, int, int, float] = (-1, -1, -10**9, float("-inf"))
+    best_score: tuple[int, int, int, float] = (-1, -1, -(10**9), float("-inf"))
     for combination in product(*choices):
         total = sum(
             _unit_price(item) * need.quantity
@@ -372,9 +374,7 @@ def _summary(
     total = sum(item.subtotal for item in selections)
     if uncovered:
         prefix = (
-            f"已在 {total_budget:.2f} 元总预算内"
-            if total_budget is not None
-            else "已"
+            f"已在 {total_budget:.2f} 元总预算内" if total_budget is not None else "已"
         )
         return (
             f"{prefix}选出 {len(selections)} 项，合计 {total:.2f} 元；"
@@ -408,17 +408,13 @@ def _model_observation(data: dict[str, Any]) -> dict[str, Any]:
     if uncovered_required_needs:
         observation["uncovered_required_needs"] = uncovered_required_needs
     return {
-        key: value
-        for key, value in observation.items()
-        if value not in (None, [], {})
+        key: value for key, value in observation.items() if value not in (None, [], {})
     }
 
 
 def _selection_observation(selection: dict[str, Any]) -> dict[str, Any]:
     item = (
-        selection.get("product")
-        if isinstance(selection.get("product"), dict)
-        else {}
+        selection.get("product") if isinstance(selection.get("product"), dict) else {}
     )
     return {
         key: value

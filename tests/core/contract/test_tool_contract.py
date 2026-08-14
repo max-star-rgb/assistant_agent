@@ -11,7 +11,6 @@ from pydantic import BaseModel, ConfigDict
 import pytest
 
 from assistant_agent.native_agent.context import AssistantRunContext
-from assistant_agent.native_agent.tools import to_langchain_tool
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.input_binding import RuntimeInputBinding
 from assistant_agent.tools.models import ToolResult
@@ -33,7 +32,7 @@ class _ProbeTool(ToolBase):
         RuntimeInputBinding(field="user_id", source="runtime_identity", key="user_id"),
     )
 
-    def _run(self, input: _Input, context: ToolContext) -> ToolResult:
+    def _execute(self, input: _Input, context: ToolContext) -> ToolResult:
         return ToolResult(
             tool_name=self.name,
             success=True,
@@ -44,7 +43,7 @@ class _ProbeTool(ToolBase):
 
 @pytest.mark.core_invariant("TOOL-001")
 def test_native_tool_schema_hides_runtime_owned_arguments() -> None:
-    tool = to_langchain_tool(_ProbeTool())
+    tool = _ProbeTool()
 
     assert set(tool.tool_call_schema.model_fields) == {"value"}
     assert set(tool.args_schema.model_fields) == {"value", "runtime"}
@@ -52,7 +51,7 @@ def test_native_tool_schema_hides_runtime_owned_arguments() -> None:
 
 @pytest.mark.core_invariant("TOOL-001")
 def test_toolnode_injects_identity_and_returns_standard_tool_message() -> None:
-    tool = to_langchain_tool(_ProbeTool())
+    tool = _ProbeTool()
     builder = StateGraph(AgentState, context_schema=AssistantRunContext)
     builder.add_node("tools", ToolNode([tool]))
     builder.add_edge(START, "tools")

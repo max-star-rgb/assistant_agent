@@ -17,10 +17,10 @@
 
 生产 Agent 的硬边界是 LangChain 标准 Tool，不再是
 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`。受信 composition 显式列出内建 Plugin，构造既有
-具体 Tool 后一次性适配为 `StructuredTool`；新主链不做文件扫描、动态 Python module discovery 或 Registry
-lookup。
+具体 Tool；这些 Tool 本身继承 `BaseTool`，不再在生产装配时二次包装为通用 `StructuredTool`。新主链不做
+文件扫描、动态 Python module discovery 或 Registry lookup。
 
-每个适配后的 Tool：
+每个内建 Tool：
 
 - 模型只看到去除 runtime-owned 字段的 `tool_call_schema`；
 - 完整执行 schema 包含 `ToolRuntime[AssistantRunContext]`，由 `ToolNode` 注入身份、thread/run、Store 和
@@ -43,8 +43,11 @@ Tool CLI、MCP server、durable task 等外围入口仍保留旧治理链，迁�
 
 ## Provider-native 能力
 
-Qwen 等模型原生联网参数属于 `BaseChatModel` 请求能力，不伪装成本地 Tool。Provider adapter 继续负责特有
-参数、鉴权、base URL 与流式差异；是否调用候选本地 Tool 由模型按标准 tool calling 协议决定。
+Qwen 等模型原生联网参数属于 `BaseChatModel` 请求能力，不伪装成本地 Tool。生产主链的 Qwen/DashScope
+OpenAI-compatible 入口直接构造 `ChatOpenAI`，只通过 `base_url`、模型名以及 DashScope 确实支持的
+`extra_body` 参数表达差异。流式模式同时启用 usage 回传。`enable_source`、`enable_citation` 和
+`citation_format` 仅属于 DashScope 原生调用风格，不得塞入 OpenAI-compatible 请求。是否调用候选本地 Tool
+仍由模型按标准 tool calling 协议决定。
 
 ## 验证
 

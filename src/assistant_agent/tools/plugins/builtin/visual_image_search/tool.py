@@ -13,7 +13,10 @@ from assistant_agent.tools.plugins.builtin.visual_image_search.backend import (
     VisualImageSearchAdapter,
     create_visual_image_search_adapter,
 )
-from assistant_agent.tools.ids import VISUAL_IMAGE_SEARCH_CAPABILITY, VISUAL_IMAGE_SEARCH_TOOL_NAME
+from assistant_agent.tools.ids import (
+    VISUAL_IMAGE_SEARCH_CAPABILITY,
+    VISUAL_IMAGE_SEARCH_TOOL_NAME,
+)
 from assistant_agent.tools.base import ToolBase, ToolContext
 
 
@@ -31,9 +34,12 @@ class VisualImageSearchTool(ToolBase):
     llm_hidden_input_fields = ("limit",)
 
     def __init__(self, adapter: VisualImageSearchAdapter | None = None) -> None:
+        super().__init__()
         self.adapter = adapter or create_visual_image_search_adapter()
 
-    def _run(self, input: VisualImageSearchRequest, context: ToolContext) -> ToolResult:
+    def _execute(
+        self, input: VisualImageSearchRequest, context: ToolContext
+    ) -> ToolResult:
         result = self.adapter.search(input)
         data = result.model_dump(mode="json")
         model_observation = _visual_image_search_model_observation(data)

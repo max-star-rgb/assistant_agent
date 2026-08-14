@@ -61,9 +61,7 @@ def test_mock_chat_model_streams_standard_chunks() -> None:
 def test_mock_chat_model_supports_async_generation() -> None:
     model = MockAssistantChatModel()
 
-    result = asyncio.run(
-        model.ainvoke([HumanMessage(content="async-sentinel")])
-    )
+    result = asyncio.run(model.ainvoke([HumanMessage(content="async-sentinel")]))
 
     assert isinstance(result, AIMessage)
     assert "async-sentinel" in str(result.content)
@@ -102,6 +100,7 @@ def test_qwen_factory_preserves_provider_native_search_parameters() -> None:
         chat_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         chat_model="qwen-plus",
         qwen_chat_enable_thinking=True,
+        native_provider_streaming=True,
     )
 
     model = create_chat_model(config)
@@ -113,12 +112,11 @@ def test_qwen_factory_preserves_provider_native_search_parameters() -> None:
             "search_strategy": "turbo",
             "forced_search": False,
             "enable_search_extension": True,
-            "enable_source": True,
-            "enable_citation": True,
-            "citation_format": "[<number>]",
             "freshness": 7,
         },
     }
+    assert model.streaming is True
+    assert model.stream_usage is True
 
 
 def test_real_provider_factory_fails_closed_when_configuration_drifts() -> None:

@@ -33,9 +33,10 @@ class EmailSearchTool(ToolBase):
     llm_hidden_input_fields = ("limit",)
 
     def __init__(self, backend: EmailBackend) -> None:
+        super().__init__()
         self.backend = backend
 
-    def _run(
+    def _execute(
         self,
         input: EmailSearchRequest,
         context: ToolContext,
@@ -50,9 +51,7 @@ class EmailSearchTool(ToolBase):
             ],
             "next_page_token": result.next_page_token,
             "provider": result.provider,
-            "errors": [
-                item.model_dump(mode="json") for item in result.errors
-            ],
+            "errors": [item.model_dump(mode="json") for item in result.errors],
         }
         return _tool_result(
             tool_name=self.name,
@@ -80,9 +79,10 @@ class EmailReadTool(ToolBase):
     llm_hidden_input_fields = ("max_total_chars",)
 
     def __init__(self, backend: EmailBackend) -> None:
+        super().__init__()
         self.backend = backend
 
-    def _run(
+    def _execute(
         self,
         input: EmailReadRequest,
         context: ToolContext,
@@ -97,9 +97,7 @@ class EmailReadTool(ToolBase):
             "original_chars": result.original_chars,
             "truncated": result.truncated,
             "provider": result.provider,
-            "errors": [
-                item.model_dump(mode="json") for item in result.errors
-            ],
+            "errors": [item.model_dump(mode="json") for item in result.errors],
         }
         return _tool_result(
             tool_name=self.name,
@@ -165,8 +163,4 @@ def _tool_result(
 
 
 def _drop_empty(payload: dict[str, Any]) -> dict[str, Any]:
-    return {
-        key: value
-        for key, value in payload.items()
-        if value not in (None, [], {})
-    }
+    return {key: value for key, value in payload.items() if value not in (None, [], {})}

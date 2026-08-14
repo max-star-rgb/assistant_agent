@@ -67,13 +67,14 @@ class LocalFileReadTool(ToolBase):
         root: str | Path,
         max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
     ) -> None:
+        super().__init__()
         self.root = Path(root).expanduser().resolve()
         self.max_file_bytes = max_file_bytes
 
     def validate_call(self, input: FileReadRequest) -> None:
         _validated_relative_path(input.path)
 
-    def _run(self, input: FileReadRequest, context: ToolContext) -> ToolResult:
+    def _execute(self, input: FileReadRequest, context: ToolContext) -> ToolResult:
         try:
             relative_path = _validated_relative_path(input.path)
             resolved_path = (self.root / relative_path).resolve(strict=True)
@@ -144,7 +145,7 @@ class LocalFileReadTool(ToolBase):
             )
 
         end_char = min(len(text), input.cursor + input.max_chars)
-        content = text[input.cursor:end_char]
+        content = text[input.cursor : end_char]
         truncated = end_char < len(text)
         result = FileReadResult(
             status="succeeded",

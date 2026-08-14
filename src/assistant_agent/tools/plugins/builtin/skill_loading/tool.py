@@ -41,9 +41,10 @@ class LoadSkillTool(ToolBase):
     repeat_policy = "distinct_inputs"
 
     def __init__(self, *, root: str | Path | None = None) -> None:
+        super().__init__()
         self.root = Path(root).resolve() if root is not None else default_repo_root()
 
-    def _run(self, input: LoadSkillRequest, context: ToolContext) -> ToolResult:
+    def _execute(self, input: LoadSkillRequest, context: ToolContext) -> ToolResult:
         descriptor = _descriptor(
             self.root,
             input.skill_id,
@@ -98,9 +99,10 @@ class LoadSkillReferenceTool(ToolBase):
     repeat_policy = "distinct_inputs"
 
     def __init__(self, *, root: str | Path | None = None) -> None:
+        super().__init__()
         self.root = Path(root).resolve() if root is not None else default_repo_root()
 
-    def _run(
+    def _execute(
         self,
         input: LoadSkillReferenceRequest,
         context: ToolContext,
@@ -155,8 +157,7 @@ class LoadSkillReferenceTool(ToolBase):
             model_observation={
                 "status": result.status,
                 "summary": (
-                    f"已加载 {descriptor.name} 的 reference："
-                    f"{input.reference_id}。"
+                    f"已加载 {descriptor.name} 的 reference：{input.reference_id}。"
                 ),
                 "skill_id": result.skill_id,
                 "reference_id": result.reference_id,

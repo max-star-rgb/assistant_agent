@@ -81,19 +81,22 @@ class VideoUnderstandingBranch(ToolBase):
         context_window_size: int = DEFAULT_VIDEO_CONTEXT_WINDOW_SIZE,
         wall_clock_ms: Callable[[], int] | None = None,
     ) -> None:
+        super().__init__()
         self.adapter = (
             adapter
             or getattr(client, "video_adapter", None)
             or create_video_understanding_adapter()
         )
-        self.client = client or AdapterVisionUnderstandingClient(video_adapter=self.adapter)
+        self.client = client or AdapterVisionUnderstandingClient(
+            video_adapter=self.adapter
+        )
         self.context_store = context_store
         self.memory_store = memory_store
         self.semantic_store_pool = semantic_store_pool
         self.context_window_size = context_window_size
         self.wall_clock_ms = wall_clock_ms or (lambda: int(time() * 1000))
 
-    def _run(
+    def _execute(
         self, input: VideoUnderstandingRequest, context: ToolContext
     ) -> ToolResult:
         video_ref = input.video_ref or (input.video_ids[0] if input.video_ids else None)
@@ -108,10 +111,7 @@ class VideoUnderstandingBranch(ToolBase):
         if (
             video_ref
             and agent_service_text_only
-            and (
-                self.semantic_store_pool is not None
-                or self.memory_store is not None
-            )
+            and (self.semantic_store_pool is not None or self.memory_store is not None)
         ):
             snapshot = self._live_snapshot_for_request(
                 video_ref,
@@ -172,15 +172,11 @@ class VideoUnderstandingBranch(ToolBase):
         self._sync_client_video_adapter()
         trace_links: list[VisionInferenceTraceLink] = []
         source = (
-            "background_keyframe_observation"
-            if observation_mode
-            else "explicit_video"
+            "background_keyframe_observation" if observation_mode else "explicit_video"
         )
         media_kind = "live_view" if observation_mode else "explicit_video"
         prompt_version = (
-            "realtime-single-frame-v1"
-            if observation_mode
-            else "video-understanding-v1"
+            "realtime-single-frame-v1" if observation_mode else "video-understanding-v1"
         )
         frame_sequence = (
             input.metadata.get("frame_sequence")
@@ -234,9 +230,7 @@ class VideoUnderstandingBranch(ToolBase):
         payload = {
             **result.model_dump(mode="json"),
             "source": source,
-            "media_kind": (
-                "live_view" if observation_mode else "explicit_video"
-            ),
+            "media_kind": ("live_view" if observation_mode else "explicit_video"),
             "media_refs": [video_ref] if video_ref else [],
         }
         output_ref = result.output_ref
@@ -733,19 +727,25 @@ class VideoUnderstandingBranch(ToolBase):
                 diagnostics.observation_latency_ms if diagnostics is not None else None
             ),
             "semantic_publish_latency_ms": (
-                diagnostics.semantic_publish_latency_ms if diagnostics is not None else None
+                diagnostics.semantic_publish_latency_ms
+                if diagnostics is not None
+                else None
             ),
             "h264_decode_latency_ms": (
                 diagnostics.h264_decode_latency_ms if diagnostics is not None else None
             ),
             "keyframe_selection_latency_ms": (
-                diagnostics.keyframe_selection_latency_ms if diagnostics is not None else None
+                diagnostics.keyframe_selection_latency_ms
+                if diagnostics is not None
+                else None
             ),
             "queue_wait_latency_ms": (
                 diagnostics.queue_wait_latency_ms if diagnostics is not None else None
             ),
             "text_embedding_latency_ms": (
-                diagnostics.text_embedding_latency_ms if diagnostics is not None else None
+                diagnostics.text_embedding_latency_ms
+                if diagnostics is not None
+                else None
             ),
             "visual_memory_index_latency_ms": (
                 diagnostics.visual_memory_index_latency_ms
@@ -795,10 +795,14 @@ class VideoUnderstandingBranch(ToolBase):
                 diagnostics.jpeg_prepare_latency_ms if diagnostics is not None else None
             ),
             "connection_setup_latency_ms": (
-                diagnostics.connection_setup_latency_ms if diagnostics is not None else None
+                diagnostics.connection_setup_latency_ms
+                if diagnostics is not None
+                else None
             ),
             "instruction_update_latency_ms": (
-                diagnostics.instruction_update_latency_ms if diagnostics is not None else None
+                diagnostics.instruction_update_latency_ms
+                if diagnostics is not None
+                else None
             ),
             "media_commit_latency_ms": (
                 diagnostics.media_commit_latency_ms if diagnostics is not None else None
@@ -809,7 +813,9 @@ class VideoUnderstandingBranch(ToolBase):
                 else None
             ),
             "response_tail_latency_ms": (
-                diagnostics.response_tail_latency_ms if diagnostics is not None else None
+                diagnostics.response_tail_latency_ms
+                if diagnostics is not None
+                else None
             ),
             "response_latency_ms": (
                 diagnostics.response_latency_ms if diagnostics is not None else None
@@ -881,9 +887,7 @@ def _project_visual_semantic_snapshot(
         materials=list(record.materials) if record is not None else [],
         text_in_video=list(record.text_in_video) if record is not None else [],
         timestamps=(
-            [dict(item) for item in record.timestamps]
-            if record is not None
-            else []
+            [dict(item) for item in record.timestamps] if record is not None else []
         ),
         style_tags=list(record.style_tags) if record is not None else [],
         confidence=record.confidence if record is not None else None,
@@ -895,9 +899,7 @@ def _project_visual_semantic_snapshot(
         source_vision_run_id=(
             record.source_vision_run_id if record is not None else None
         ),
-        source_vlm_span_id=(
-            record.source_vlm_span_id if record is not None else None
-        ),
+        source_vlm_span_id=(record.source_vlm_span_id if record is not None else None),
         source_visual_record_id=(record.record_id if record is not None else None),
         keyframes=(
             [
@@ -936,9 +938,7 @@ def _sequence_gap(
 ) -> int:
     if target_sequence is None:
         return 0
-    snapshot_sequence = (
-        snapshot.last_success_sequence if snapshot is not None else None
-    )
+    snapshot_sequence = snapshot.last_success_sequence if snapshot is not None else None
     if snapshot_sequence is None:
         return target_sequence
     return max(0, target_sequence - snapshot_sequence)

@@ -37,7 +37,11 @@ class VisualMemoryTimeWindow(BaseModel):
 
     @model_validator(mode="after")
     def validate_bounds(self):
-        if self.start_ms is not None and self.end_ms is not None and self.start_ms > self.end_ms:
+        if (
+            self.start_ms is not None
+            and self.end_ms is not None
+            and self.start_ms > self.end_ms
+        ):
             raise ValueError("time window start must not follow end")
         return self
 
@@ -63,7 +67,9 @@ class VisualMemorySearchTool(ToolBase):
     repeat_policy = "distinct_inputs"
     requires_media = []
     runtime_input_bindings = (
-        RuntimeInputBinding(field="session_id", source="runtime_identity", key="session_id"),
+        RuntimeInputBinding(
+            field="session_id", source="runtime_identity", key="session_id"
+        ),
     )
 
     def __init__(
@@ -74,6 +80,7 @@ class VisualMemorySearchTool(ToolBase):
         limit: int = 12,
         timeline_context_service: VisualTimelineContextService | None = None,
     ) -> None:
+        super().__init__()
         self.semantic_store_pool = semantic_store_pool
         self.text_index = text_index
         self.limit = limit
@@ -88,7 +95,9 @@ class VisualMemorySearchTool(ToolBase):
         if self.timeline_context_service is None:
             self.timeline_context_service = service
 
-    def _run(self, input: VisualMemorySearchInput, context: ToolContext) -> ToolResult:
+    def _execute(
+        self, input: VisualMemorySearchInput, context: ToolContext
+    ) -> ToolResult:
         user_id = context.user_id or ""
         semantic_store = self.semantic_store_pool.peek(user_id, input.session_id)
         if semantic_store is None:
@@ -117,8 +126,7 @@ class VisualMemorySearchTool(ToolBase):
                         user_id=user_id,
                         session_id=input.session_id,
                         request_id=(
-                            context.run_id
-                            or f"visual-memory-{int(time() * 1000)}"
+                            context.run_id or f"visual-memory-{int(time() * 1000)}"
                         ),
                         query=input.query,
                         search_mode=input.search_mode,
@@ -146,7 +154,11 @@ class VisualMemorySearchTool(ToolBase):
             data=data,
             model_observation=data,
             voice_summary=_voice_summary(result),
-            error=("visual memory history is unavailable" if result.status == "unavailable" else None),
+            error=(
+                "visual memory history is unavailable"
+                if result.status == "unavailable"
+                else None
+            ),
         )
 
     def _compact_timeline(
@@ -184,13 +196,13 @@ class VisualMemorySearchTool(ToolBase):
                     "coverage": None,
                     "compaction": None,
                     "errors": [
-                    {
-                        "code": "visual_memory_context_hard_limit",
-                        "message": (
-                            "visual timeline could not be compacted below the hard limit"
-                        ),
-                        "recoverable": True,
-                    }
+                        {
+                            "code": "visual_memory_context_hard_limit",
+                            "message": (
+                                "visual timeline could not be compacted below the hard limit"
+                            ),
+                            "recoverable": True,
+                        }
                     ],
                 },
             )
@@ -217,8 +229,7 @@ class VisualMemorySearchTool(ToolBase):
                 "returned_observation_count": len(projection.observations),
                 "truncated": (
                     result.truncated
-                    or len(projection.observations)
-                    < result.returned_observation_count
+                    or len(projection.observations) < result.returned_observation_count
                 ),
                 "timeline_summary": projection.timeline_summary,
                 "coverage": projection.coverage,
@@ -235,7 +246,9 @@ def _time_bounds(
         return None, None
     until = window.end_ms
     if until is None:
-        until = _non_negative_int(request_metadata.get("_trusted_visual_memory_as_of_ms"))
+        until = _non_negative_int(
+            request_metadata.get("_trusted_visual_memory_as_of_ms")
+        )
     if until is None:
         until = int(time() * 1000)
     since = window.start_ms
@@ -245,7 +258,11 @@ def _time_bounds(
 
 
 def _non_negative_int(value) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        else None
+    )
 
 
 def _voice_summary(result: VisualMemorySearchResult) -> str:

@@ -44,9 +44,12 @@ class CalendarSearchTool(ToolBase):
     llm_hidden_input_fields = ("limit",)
 
     def __init__(self, adapter: CalendarAdapter | None = None) -> None:
+        super().__init__()
         self.adapter = adapter or MockCalendarAdapter()
 
-    def _run(self, input: CalendarSearchRequest, context: ToolContext) -> ToolResult:
+    def _execute(
+        self, input: CalendarSearchRequest, context: ToolContext
+    ) -> ToolResult:
         result = _calendar_adapter_for_context(self.adapter, context).search(input)
         return _tool_result(
             tool_name=self.name,
@@ -79,9 +82,12 @@ class CalendarCreateTool(ToolBase):
     )
 
     def __init__(self, adapter: CalendarAdapter | None = None) -> None:
+        super().__init__()
         self.adapter = adapter or MockCalendarAdapter()
 
-    def _run(self, input: CalendarCreateRequest, context: ToolContext) -> ToolResult:
+    def _execute(
+        self, input: CalendarCreateRequest, context: ToolContext
+    ) -> ToolResult:
         result = _calendar_adapter_for_context(self.adapter, context).create(input)
         return _tool_result(
             tool_name=self.name,
@@ -118,9 +124,12 @@ class ContactsSearchTool(ToolBase):
     llm_hidden_input_fields = ("limit",)
 
     def __init__(self, adapter: ContactsAdapter | None = None) -> None:
+        super().__init__()
         self.adapter = adapter or MockContactsAdapter()
 
-    def _run(self, input: ContactsSearchRequest, context: ToolContext) -> ToolResult:
+    def _execute(
+        self, input: ContactsSearchRequest, context: ToolContext
+    ) -> ToolResult:
         result = self.adapter.search(input)
         return _tool_result(
             tool_name=self.name,

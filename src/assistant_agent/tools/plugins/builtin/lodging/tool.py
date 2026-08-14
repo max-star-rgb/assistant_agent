@@ -28,9 +28,10 @@ class LodgingSearchTool(ToolBase):
     llm_hidden_input_fields = ("limit",)
 
     def __init__(self, adapter: LodgingSearchAdapter | None = None) -> None:
+        super().__init__()
         self.adapter = adapter or MockLodgingSearchAdapter()
 
-    def _run(
+    def _execute(
         self,
         input: LodgingSearchRequest,
         context: ToolContext,

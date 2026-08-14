@@ -4,7 +4,10 @@ from typing import Any
 
 from assistant_agent.tools.capability_output import build_capability_output_contract
 from assistant_agent.tools.models import ToolResult
-from assistant_agent.tools.plugins.builtin.web_access.fetch_models import WebFetchRequest, WebFetchResult
+from assistant_agent.tools.plugins.builtin.web_access.fetch_models import (
+    WebFetchRequest,
+    WebFetchResult,
+)
 from assistant_agent.tools.plugins.builtin.web_access.fetch_backend import (
     WebFetchAdapter,
     create_web_fetch_adapter,
@@ -26,9 +29,10 @@ class WebFetchTool(ToolBase):
     llm_hidden_input_fields = ("max_chars", "content_format")
 
     def __init__(self, adapter: WebFetchAdapter | None = None) -> None:
+        super().__init__()
         self.adapter = adapter or create_web_fetch_adapter()
 
-    def _run(self, input: WebFetchRequest, context: ToolContext) -> ToolResult:
+    def _execute(self, input: WebFetchRequest, context: ToolContext) -> ToolResult:
         result = self.adapter.fetch(input)
         data = result.model_dump(mode="json")
         model_observation = _web_fetch_model_observation(data)

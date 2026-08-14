@@ -60,15 +60,19 @@ class ImageTo3DTool(ToolBase):
     repeat_policy = "once_per_run"
 
     def __init__(self, adapter: ImageTo3DStarter) -> None:
+        super().__init__()
         self.adapter = adapter
 
-    def _run(self, input: ImageTo3DRequest, context: ToolContext) -> ToolResult:
+    def _execute(self, input: ImageTo3DRequest, context: ToolContext) -> ToolResult:
         if not context.session_id:
             return ToolResult(
                 tool_name=self.name,
                 success=False,
                 error="image_to_3d requires runtime session identity",
-                model_observation={"status": "failed", "message": "缺少会话身份，无法生成3D模型。"},
+                model_observation={
+                    "status": "failed",
+                    "message": "缺少会话身份，无法生成3D模型。",
+                },
             )
         latest_image_id = context.metadata.get("latest_generated_image_id")
         src_image = (

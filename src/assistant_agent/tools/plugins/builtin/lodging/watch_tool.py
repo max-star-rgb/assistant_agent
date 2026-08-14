@@ -35,9 +35,10 @@ class HotelPriceWatchCreateTool(ToolBase):
     repeat_policy = "distinct_inputs"
 
     def __init__(self, service: DurableTaskService) -> None:
+        super().__init__()
         self.service = service
 
-    def _run(
+    def _execute(
         self,
         input: HotelPriceWatchGoal,
         context: ToolContext,
