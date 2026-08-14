@@ -26,10 +26,6 @@ from assistant_agent.native_agent.tools import (
     create_mcp_tools,
     create_native_tools,
 )
-from assistant_agent.proactive_delivery import (
-    ProactiveDeliveryStore,
-    SQLiteProactiveDeliveryStore,
-)
 
 
 @dataclass
@@ -39,7 +35,6 @@ class AgentServerExecutionOwner:
     model: BaseChatModel
     tools: list[BaseTool]
     memory_backend: MemoryBackend
-    proactive_delivery_store: ProactiveDeliveryStore
     graph: Any
     _close_targets: tuple[Any, ...] = ()
 
@@ -63,7 +58,7 @@ class AgentServerExecutionOwner:
         """Build configured clients without blocking the Agent Server loop."""
 
         config = ProviderConfig.from_env()
-        model, local_tools, memory_backend, proactive_delivery_store = await asyncio.to_thread(
+        model, local_tools, memory_backend = await asyncio.to_thread(
             _compose_sync,
             config,
             store,
@@ -85,13 +80,11 @@ class AgentServerExecutionOwner:
             memory_backend=memory_backend,
             fast_agent=fast_agent,
             planning_graph=planning_graph,
-            proactive_delivery_store=proactive_delivery_store,
         )
         return cls(
             model=model,
             tools=tools,
             memory_backend=memory_backend,
-            proactive_delivery_store=proactive_delivery_store,
             graph=graph,
             _close_targets=(memory_backend, model, *tools),
         )
@@ -108,7 +101,7 @@ class AgentServerExecutionOwner:
 def _compose_sync(
     config: ProviderConfig,
     store: BaseStore | None,
-) -> tuple[BaseChatModel, list[BaseTool], MemoryBackend, ProactiveDeliveryStore]:
+) -> tuple[BaseChatModel, list[BaseTool], MemoryBackend]:
     model = create_chat_model(config)
     tools = create_native_tools(
         config,
@@ -120,10 +113,7 @@ def _compose_sync(
         config,
         langmem_store=store,
     )
-    proactive_delivery_store = SQLiteProactiveDeliveryStore(
-        config.proactive_delivery_store_path
-    )
-    return model, tools, memory_backend, proactive_delivery_store
+    return model, tools, memory_backend
 
 
 def _authorize_context(user: BaseUser, context: AgentServerRunContext) -> None:
@@ -132,13 +122,17 @@ def _authorize_context(user: BaseUser, context: AgentServerRunContext) -> None:
     if "assistant:developer" in permissions:
         return
     if identity != context.user_id:
-        raise PermissionError("Authenticated principal cannot delegate this user context.")
+        raise PermissionError(
+            "Authenticated principal cannot delegate this user context."
+        )
     try:
         tenant_id = str(user["tenant_id"])
     except (KeyError, TypeError):
         tenant_id = str(getattr(user, "tenant_id", ""))
     if not tenant_id or tenant_id != context.tenant_id:
-        raise PermissionError("Authenticated principal tenant does not match run context.")
+        raise PermissionError(
+            "Authenticated principal tenant does not match run context."
+        )
 
 
 async def _close_if_supported(value: Any) -> None:

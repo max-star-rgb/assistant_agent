@@ -73,6 +73,10 @@ class ToolCallingModel(RecordingModel):
 class WriteCallingModel(RecordingModel):
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         del stop, run_manager, kwargs
+        if any(isinstance(message, ToolMessage) for message in messages):
+            return ChatResult(
+                generations=[ChatGeneration(message=AIMessage(content="写入完成"))]
+            )
         return ChatResult(
             generations=[
                 ChatGeneration(
@@ -111,7 +115,9 @@ def test_fast_agent_uses_dynamic_memory_prompt_and_standard_messages() -> None:
 
     assert isinstance(result["messages"][-1], AIMessage)
     assert result["messages"][-1].content == "完成"
-    system = next(message for message in model.calls[0] if isinstance(message, SystemMessage))
+    system = next(
+        message for message in model.calls[0] if isinstance(message, SystemMessage)
+    )
     assert "用户偏好简洁" in str(system.content)
     assert "不可信历史数据" in str(system.content)
 
@@ -190,7 +196,7 @@ def test_fast_agent_retries_only_allowlisted_read_tool() -> None:
     )
 
 
-def test_fast_agent_interrupts_before_trusted_write_tool() -> None:
+def test_fast_mode_executes_trusted_write_tool_without_interrupt() -> None:
     calls = 0
 
     def write_probe(value: str) -> str:
@@ -208,12 +214,47 @@ def test_fast_agent_interrupts_before_trusted_write_tool() -> None:
     agent = build_fast_agent(WriteCallingModel(calls=[]), [tool])
 
     result = agent.invoke(
-        {"messages": [HumanMessage(content="写入")]},
+        {
+            "messages": [HumanMessage(content="写入")],
+            "execution_mode": "fast",
+        },
+        context=_context(),
+    )
+
+    assert calls == 1
+    assert "__interrupt__" not in result
+    assert result["messages"][-1].content == "写入完成"
+
+
+def test_planning_mode_interrupts_before_trusted_write_tool() -> None:
+    calls = 0
+
+    def write_probe(value: str) -> str:
+        """Write one value after approval."""
+
+        nonlocal calls
+        calls += 1
+        return value
+
+    tool = StructuredTool.from_function(
+        write_probe,
+        name="write_probe",
+        metadata={"effect": "write"},
+    )
+    agent = build_fast_agent(WriteCallingModel(calls=[]), [tool])
+
+    result = agent.invoke(
+        {
+            "messages": [HumanMessage(content="规划后写入")],
+            "execution_mode": "planning",
+        },
         context=_context(),
     )
 
     assert calls == 0
-    assert result["__interrupt__"][0].value["action_requests"][0]["name"] == "write_probe"
+    assert (
+        result["__interrupt__"][0].value["action_requests"][0]["name"] == "write_probe"
+    )
 
 
 def test_fast_agent_installs_native_limits_retry_summary_and_hitl() -> None:

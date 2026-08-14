@@ -181,16 +181,18 @@ def _provider_extra_body(
 ) -> dict[str, Any] | None:
     if provider != "qwen":
         return None
-    return {
+    extra_body: dict[str, Any] = {
         "enable_thinking": config.qwen_chat_enable_thinking,
-        "enable_search": True,
-        "search_options": {
+        "enable_search": config.qwen_chat_enable_search,
+    }
+    if config.qwen_chat_enable_search:
+        extra_body["search_options"] = {
             "search_strategy": "turbo",
             "forced_search": False,
             "enable_search_extension": True,
             "freshness": 7,
-        },
-    }
+        }
+    return extra_body
 
 
 def _last_human_text(messages: list[AnyMessage]) -> str:

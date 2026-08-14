@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
 from langchain.agents import AgentState
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.mcp.config import MCPServerConfig
@@ -106,6 +107,18 @@ def test_native_tool_hides_and_injects_runtime_identity() -> None:
         "user_id": "user-1",
         "context_user_id": "user-1",
     }
+
+
+def test_native_tool_cannot_be_called_through_legacy_direct_run() -> None:
+    """Catches bypassing ToolRuntime identity injection through ToolBase.run."""
+
+    with pytest.raises(ValidationError):
+        IdentityProbeTool().run(
+            {
+                "query": "sentinel",
+                "user_id": "forged-user",
+            }
+        )
 
 
 def test_mock_native_tool_assembly_is_static_and_unique() -> None:

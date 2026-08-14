@@ -88,6 +88,7 @@ def build_planning_graph(
                 "messages": [HumanMessage(content=state["objective"])],
                 "memory_context": tuple(state.get("memory_context", ())),
                 "memory_status": state.get("memory_status", "empty"),
+                "execution_mode": state["execution_mode"],
             },
             context=runtime.context,
         )
@@ -102,14 +103,12 @@ def build_planning_graph(
         return {}
 
     def finalize_node(state: PlanningState) -> dict[str, Any]:
-        by_id = {
-            item.work_item_id: item for item in state.get("worker_results", ())
-        }
-        ordered = [
-            by_id.get(node.node_id) for node in state["plan"].nodes
-        ]
+        by_id = {item.work_item_id: item for item in state.get("worker_results", ())}
+        ordered = [by_id.get(node.node_id) for node in state["plan"].nodes]
         body = "\n\n".join(
-            f"[{item.work_item_id}] {item.content}" for item in ordered if item is not None
+            f"[{item.work_item_id}] {item.content}"
+            for item in ordered
+            if item is not None
         )
         return {"messages": [AIMessage(content=f"规划任务已完成\n\n{body}".rstrip())]}
 
@@ -141,9 +140,7 @@ def build_planning_graph(
 
 
 def _ready_worker_sends(state: PlanningState) -> list[Send]:
-    completed = {
-        item.work_item_id for item in state.get("worker_results", ())
-    }
+    completed = {item.work_item_id for item in state.get("worker_results", ())}
     sends = []
     for node in state["plan"].nodes:
         if node.node_id in completed or not set(node.depends_on).issubset(completed):
@@ -154,6 +151,7 @@ def _ready_worker_sends(state: PlanningState) -> list[Send]:
                 {
                     "messages": [],
                     "memory_context": tuple(state.get("memory_context", ())),
+                    "execution_mode": "planning",
                     "work_item_id": node.node_id,
                     "objective": node.objective,
                 },

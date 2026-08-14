@@ -1,9 +1,9 @@
-"""Checkpoint intent and transport-neutral durable proactive delivery store."""
+"""Transport-neutral durable proactive delivery store."""
 
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, Protocol
@@ -52,30 +52,6 @@ class ProactiveDeliveryConflictError(ValueError):
 
 class ProactiveDeliveryOwnershipError(ValueError):
     """A transition did not match the message target or active lease owner."""
-
-
-class ProactiveDeliveryIntent(BaseModel):
-    """One checkpoint-safe delivery request produced by a graph node."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
-
-    message_id: str = Field(min_length=1, max_length=160)
-    kind: str = Field(pattern=r"^[a-z][a-z0-9_.-]{0,79}$")
-    content: str = Field(min_length=1, max_length=500)
-    delivery_mode: ProactiveDeliveryMode = "durable"
-
-
-class ProactiveDispatchState(BaseModel):
-    """Prompt-invisible checkpoint result of the graph enqueue boundary."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
-
-    status: Literal["not_requested", "queued", "skipped"] = "not_requested"
-    message_ids: tuple[str, ...] = Field(default=(), max_length=32)
-    issue_code: str | None = Field(
-        default=None,
-        pattern=r"^[a-z0-9][a-z0-9_.-]{0,159}$",
-    )
 
 
 class ProactiveDeliveryRecord(BaseModel):
@@ -155,27 +131,6 @@ class ProactiveDeliveryStore(Protocol):
     ) -> ProactiveDeliveryRecord: ...
 
     def get(self, message_id: str) -> ProactiveDeliveryRecord: ...
-
-
-def append_pending_delivery(
-    pending: Sequence[ProactiveDeliveryIntent | dict[str, object]],
-    intent: ProactiveDeliveryIntent | dict[str, object],
-) -> tuple[ProactiveDeliveryIntent, ...]:
-    """Append one stable intent without allowing identity drift."""
-
-    normalized = ProactiveDeliveryIntent.model_validate(intent)
-    existing = tuple(ProactiveDeliveryIntent.model_validate(item) for item in pending)
-    for item in existing:
-        if item.message_id != normalized.message_id:
-            continue
-        if item != normalized:
-            raise ProactiveDeliveryConflictError(
-                "pending proactive delivery identity conflict"
-            )
-        return existing
-    if len(existing) >= 32:
-        raise ValueError("pending proactive delivery limit exceeded")
-    return (*existing, normalized)
 
 
 class SQLiteProactiveDeliveryStore:
@@ -506,9 +461,7 @@ class SQLiteProactiveDeliveryStore:
                 (thread_id, connection_id, user_id, expires_at),
             )
 
-    def _expire_stale_leases(
-        self, connection: sqlite3.Connection, now: float
-    ) -> None:
+    def _expire_stale_leases(self, connection: sqlite3.Connection, now: float) -> None:
         connection.execute(
             """
             UPDATE proactive_delivery_outbox
@@ -593,13 +546,10 @@ class _SQLiteTransaction:
 __all__ = [
     "ProactiveDeliveryMode",
     "ProactiveDeliveryConflictError",
-    "ProactiveDeliveryIntent",
     "ProactiveDeliveryOwnershipError",
     "ProactiveDeliveryRecord",
     "ProactiveDeliveryStatus",
     "ProactiveDeliveryStore",
-    "ProactiveDispatchState",
     "ProactiveMessage",
     "SQLiteProactiveDeliveryStore",
-    "append_pending_delivery",
 ]

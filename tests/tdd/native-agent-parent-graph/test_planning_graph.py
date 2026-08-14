@@ -47,6 +47,7 @@ class PlanningModel:
 
     def with_structured_output(self, schema):
         if schema is NativePlanProposal:
+
             def plan(_messages):
                 self.planner_calls += 1
                 return self.proposal
@@ -55,10 +56,10 @@ class PlanningModel:
         raise AssertionError(schema)
 
 
-def _fast_agent(calls: list[str]):
+def _fast_agent(calls: list[tuple[str, str | None]]):
     async def answer(state: FastAgentState):
         objective = str(state["messages"][-1].content)
-        calls.append(objective)
+        calls.append((objective, state.get("execution_mode")))
         return {"messages": [AIMessage(content=f"result:{objective}")]}
 
     builder = StateGraph(FastAgentState, context_schema=AssistantRunContext)
@@ -81,7 +82,7 @@ def _invoke(graph):
 
 
 def test_planning_graph_admits_dag_and_reuses_fast_agent_by_wave() -> None:
-    calls: list[str] = []
+    calls: list[tuple[str, str | None]] = []
     fast_agent = _fast_agent(calls)
     model = PlanningModel(_proposal())
     graph = build_planning_graph(model, fast_agent)
@@ -90,7 +91,10 @@ def test_planning_graph_admits_dag_and_reuses_fast_agent_by_wave() -> None:
 
     assert graph.name == "AssistantPlanningGraph"
     assert model.planner_calls == 1
-    assert calls == ["完成 research", "完成 write"]
+    assert calls == [
+        ("完成 research", "planning"),
+        ("完成 write", "planning"),
+    ]
     assert [item.work_item_id for item in result["worker_results"]] == [
         "research",
         "write",
@@ -104,7 +108,7 @@ def test_planning_graph_uses_send_for_parallel_root_workers() -> None:
             "nodes": (_node("one"), _node("two")),
         }
     )
-    calls: list[str] = []
+    calls: list[tuple[str, str | None]] = []
     graph = build_planning_graph(
         PlanningModel(proposal),
         _fast_agent(calls),
@@ -112,14 +116,16 @@ def test_planning_graph_uses_send_for_parallel_root_workers() -> None:
 
     result = _invoke(graph)
 
-    assert Counter(calls) == Counter(["完成 one", "完成 two"])
+    assert Counter(calls) == Counter(
+        [("完成 one", "planning"), ("完成 two", "planning")]
+    )
     assert {item.work_item_id for item in result["worker_results"]} == {
         "one",
         "two",
     }
-    assert result["messages"][-1].content.index("[one]") < result[
-        "messages"
-    ][-1].content.index("[two]")
+    assert result["messages"][-1].content.index("[one]") < result["messages"][
+        -1
+    ].content.index("[two]")
 
 
 def test_mock_provider_emits_the_minimal_native_plan_contract() -> None:

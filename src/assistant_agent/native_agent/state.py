@@ -13,11 +13,6 @@ from assistant_agent.native_agent.models import (
     NativePlanProposal,
     WorkerResult,
 )
-from assistant_agent.proactive_delivery import (
-    ProactiveDeliveryIntent,
-    ProactiveDispatchState,
-)
-
 
 ExecutionMode = Literal["fast", "planning"]
 MemoryStatus = Literal["ready", "empty", "degraded"]
@@ -37,14 +32,13 @@ class FastAgentState(AgentState):
 
     memory_context: NotRequired[tuple[str, ...]]
     memory_status: NotRequired[MemoryStatus]
+    execution_mode: NotRequired[ExecutionMode]
 
 
 class AssistantRootState(FastAgentState):
     """Minimal state shared across the parent graph's two branches."""
 
     execution_mode: Required[ExecutionMode]
-    pending_deliveries: NotRequired[tuple[ProactiveDeliveryIntent, ...]]
-    delivery_dispatch: NotRequired[ProactiveDispatchState]
 
 
 class WorkerState(FastAgentState):
@@ -59,9 +53,7 @@ class PlanningState(AgentState):
 
     memory_context: Required[tuple[str, ...]]
     plan: NotRequired[NativePlanProposal]
-    worker_results: NotRequired[
-        Annotated[list[WorkerResult], operator.add]
-    ]
+    worker_results: NotRequired[Annotated[list[WorkerResult], operator.add]]
 
 
 __all__ = [

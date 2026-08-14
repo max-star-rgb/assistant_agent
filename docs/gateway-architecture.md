@@ -46,14 +46,13 @@ manager、cancel token、checkpoint facade 或产品状态机。
 | LangGraph Store | Agent Server | 可选跨 thread 数据资源，供 LangMem 等后端使用 |
 | media connection | custom route | 一次 WebSocket 传输连接，不是 thread |
 | delivery ID | custom route/outbox | 媒体 ACK 关联，不是 run 或 checkpoint |
-| proactive delivery Store | Graph composition + custom route | 原生节点幂等入队，媒体连接 presence/claim/ACK；不是 LangGraph Store |
+| proactive delivery Store | custom route 与显式产品 publisher | 媒体连接 presence/claim/ACK；不是 LangGraph Store |
 
 factory lifespan 创建 `AgentServerExecutionOwner`，持有标准 `BaseChatModel` Provider adapter、静态本地
-`BaseTool` 与官方 MCP tools、一个 `MemoryBackend`、独立 `ProactiveDeliveryStore`、已编译但不绑定
-checkpointer 的 `AssistantRootGraph`，以及对应 close targets。LangMem 可引用 Server 注入的 Store；主动投递
-Store 则作为原生 `delivery_dispatch` 节点的 closure 资源，不进入 Graph State 或 Runtime context。
+`BaseTool` 与官方 MCP tools、一个 `MemoryBackend`、已编译但不绑定 checkpointer 的 `AssistantRootGraph`，
+以及对应 close targets。LangMem 可引用 Server 注入的 Store。
 
-composition 只构造标准模型、Tool、Memory backend、主动投递 Store 与 `AssistantRootGraph`，不构造平行 Graph
+composition 只构造标准模型、Tool、Memory backend 与 `AssistantRootGraph`，不构造平行 Graph
 Runtime、产品状态投影器或 Workflow host。
 
 ## Auth 与身份
@@ -78,10 +77,9 @@ custom route 只负责：
 messages/updates/values；短暂订阅断开后按 last event ID 调用 `threads.join_stream`。WebSocket 断开时
 best-effort cancel 当前连接仍活动的 reactive runs；delivery ACK 不改变 run 或 checkpoint。
 
-主动投递不引入全局 dispatcher 或第二套 Runtime。父 `AssistantRootGraph` 在 fast/planning 汇流后检查严格
-`pending_deliveries` channel；非空时进入固定 `delivery_dispatch` 节点，用 `Runtime.execution_info` 的 native
-thread/run 和认证 context 的 user 形成 envelope，并按稳定 message ID 幂等写入 Store，随后进入
-`memory_commit`。媒体连接启动 thread-specific pull pump；durable 行只有匹配 ACK 才完成，断线或超时释放为
+主动投递不进入 `AssistantRootGraph`；当前图没有业务生产者，因此不保留休眠的 state channel 或 dispatch
+节点。显式产品 publisher 可按稳定 message ID 写入独立 Store。媒体连接启动 thread-specific pull pump；
+durable 行只有匹配 ACK 才完成，断线或超时释放为
 queued，ephemeral 离线时直接 skipped。当前 SQLite 实现面向单实例或共享受控卷，不宣称多主机一致性。
 
 H.264 解码与 3D callback 属于媒体边缘资源。解码后的有界 JPEG 引用保存在 SQLite frame index，Graph State
@@ -94,6 +92,5 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
   tests/core/contract/test_gateway_contract.py \
   tests/tdd/native-agent-parent-graph/test_agent_server_factory.py \
   tests/tdd/native-agent-parent-graph/test_media_native_adapter.py \
-  tests/tdd/native-proactive-delivery/test_native_dispatch.py \
   tests/tdd/native-proactive-delivery/test_media_delivery_pump.py
 ```

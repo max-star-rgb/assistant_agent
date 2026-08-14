@@ -17,12 +17,11 @@ source_globs = [
   "tests/core/contract/test_gateway_contract.py",
   "tests/tdd/native-agent-parent-graph/test_agent_server_factory.py",
   "tests/tdd/native-agent-parent-graph/test_media_native_adapter.py",
-  "tests/tdd/native-proactive-delivery/test_native_dispatch.py",
   "tests/tdd/native-proactive-delivery/test_media_delivery_pump.py",
 ]
 thin_references = ["README.md", "scripts/README.md"]
 verification = [
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_gateway_contract.py tests/tdd/native-agent-parent-graph/test_agent_server_factory.py tests/tdd/native-agent-parent-graph/test_media_native_adapter.py tests/tdd/native-proactive-delivery/test_native_dispatch.py tests/tdd/native-proactive-delivery/test_media_delivery_pump.py",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_gateway_contract.py tests/tdd/native-agent-parent-graph/test_agent_server_factory.py tests/tdd/native-agent-parent-graph/test_media_native_adapter.py tests/tdd/native-proactive-delivery/test_media_delivery_pump.py",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python scripts/agent_cli.py --help",
 ]
 exclusive_literals = []
@@ -57,7 +56,7 @@ id = "runtime-event-stream"
 authority = "docs/runtime-event-stream-architecture.md"
 read_when = [
   "AssistantRootGraph、fast create_agent、planning StateGraph 或原生 state channel",
-  "LangGraph stream、interrupt/resume、checkpoint、主动投递 dispatch 或 terminal messages",
+  "LangGraph stream、interrupt/resume、checkpoint 或 terminal messages",
 ]
 source_globs = [
   "src/assistant_agent/native_agent/root_graph.py",
@@ -65,14 +64,11 @@ source_globs = [
   "src/assistant_agent/native_agent/planning_graph.py",
   "src/assistant_agent/native_agent/state.py",
   "src/assistant_agent/native_agent/models.py",
-  "src/assistant_agent/proactive_delivery.py",
-  "tests/tdd/native-proactive-delivery/test_native_dispatch.py",
 ]
 thin_references = ["README.md", "docs/gateway-architecture.md"]
 verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/integration/test_runtime_lifecycle.py",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/native-agent-parent-graph",
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/native-proactive-delivery/test_native_dispatch.py",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
@@ -85,6 +81,9 @@ read_when = [
   "Plugin、MCP、durable workflow、Provider-native 能力或副作用治理",
 ]
 source_globs = [
+  ".env.example",
+  "src/assistant_agent/config/**",
+  "src/assistant_agent/native_agent/providers.py",
   "src/assistant_agent/native_agent/tools.py",
   "src/assistant_agent/tools/**",
   "src/assistant_agent/mcp/**",

@@ -33,9 +33,9 @@ manifest 只用于 coding agent 选择工程文档，不进入产品 Runtime，�
   `create_agent`，planning 分支使用显式 StateGraph 并复用同一个 fast Agent。
 - Gateway 负责 session/run/cancel/interrupt/reconnect/stream frame 生命周期，不承担主大脑职责。
 - 生产主链的本地显式工具调用使用标准 `BaseTool -> ToolNode` 与 `ToolRuntime` 注入；read Tool 使用官方
-  retry middleware，write/dangerous Tool 使用原生 HITL，副作用幂等归具体 Tool 或业务 API。旧
+  retry middleware；fast 模式不触发 HITL，planning 模式对非 read Tool 使用原生 HITL；副作用幂等归具体 Tool 或业务 API。旧
   `ActionValidator -> ToolExecutor -> ToolRegistry -> tool` 只保留给尚未迁移的外围入口。配置为 `qwen` provider 的百炼兼容
-  Chat Completions 固定启用的
+  Chat Completions 通过显式配置启用的
   Provider-native 只读联网属于模型生成能力，不投影为本地 Tool，也不进入该执行链。
 - Provider 运行只分 `mock` 和 `real`。mock 模式下主 LLM 与 Provider-backed tools 强制使用 mock；real 模式下主 LLM 必须完整配置，Provider-backed tools 只注册已完整配置的真实实现，禁止静默回退到 mock。
 - Tool exposure 和入口路由不得用关键词、正则、高信号话术或手写请求规则推断用户意图；候选 Tool 由受信静态装配、MCP allowlist、entry/media/env 等结构化事实决定，具体调用与参数由 LLM 判断。

@@ -105,8 +105,8 @@ Graph 完成后发唯一成功终包：
 
 ### 主动 `chatResponse`
 
-Graph 前序业务 node 可产生主动消息 intent；固定 `delivery_dispatch` 在主回答 publish 后、Memory commit 前
-将它写入 durable Store。媒体连接按 native thread 主动 pull，无需先收到对应 `chat` 请求，仍复用现有
+主动消息由显式产品 publisher 写入 durable Store，不经过当前 `AssistantRootGraph`。媒体连接按 native
+thread 主动 pull，无需先收到对应 `chat` 请求，仍复用现有
 `chatResponse` envelope：
 
 ```json

@@ -77,6 +77,7 @@ def test_execution_owner_composes_only_native_model_tools_memory_and_graph(
         assert owner.tools and all(isinstance(tool, BaseTool) for tool in owner.tools)
         assert owner.memory_backend.backend_id == "disabled"
         assert owner.graph.name == "AssistantRootGraph"
+        assert not hasattr(owner, "proactive_delivery_store")
         assert not hasattr(owner, "worker")
         assert not hasattr(owner, "tool_executor")
         assert not hasattr(owner, "product_event_projector")

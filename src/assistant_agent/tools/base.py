@@ -89,16 +89,12 @@ class Tool(Protocol):
         """Execute the tool and return a structured result."""
 
 
-_DIRECT_CALL = object()
-
-
 class ToolBase(BaseTool):
     """Direct LangChain Tool base with the project's governed result contract.
 
     Production built-ins implement the small synchronous ``_execute(input,
-    context)`` business hook directly. ``__init_subclass__`` only keeps older
-    peripheral subclasses operational while they migrate; composition never
-    wraps concrete tools in a second ``StructuredTool``.
+    context)`` business hook directly. Composition never wraps concrete tools
+    in a second ``StructuredTool``.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, extra="allow")
@@ -124,40 +120,6 @@ class ToolBase(BaseTool):
             return
         super().__setattr__(name, value)
 
-    def __init_subclass__(cls, **kwargs: Any) -> None:
-        """Bridge existing business hooks while making the object itself native."""
-
-        super().__init_subclass__(**kwargs)
-        legacy_execute = cls.__dict__.get("_run")
-        if legacy_execute is not None and legacy_execute is not ToolBase._run:
-            cls._execute = legacy_execute
-
-            def native_or_legacy_run(
-                self: ToolBase,
-                *args: Any,
-                **run_kwargs: Any,
-            ) -> Any:
-                # BaseTool supplies ToolRuntime by keyword. A positional call
-                # here comes from an existing business hook's ``super()._run``.
-                if "runtime" in run_kwargs:
-                    return ToolBase._run(self, **run_kwargs)
-                return legacy_execute(self, *args, **run_kwargs)
-
-            cls._run = native_or_legacy_run
-
-        legacy_init = cls.__dict__.get("__init__")
-        if (
-            legacy_execute is not None
-            and legacy_init is not None
-            and legacy_init is not ToolBase.__init__
-        ):
-
-            def native_init(self: ToolBase, *args: Any, **init_kwargs: Any) -> None:
-                ToolBase.__init__(self)
-                legacy_init(self, *args, **init_kwargs)
-
-            cls.__init__ = native_init
-
     def __init__(self) -> None:
         validate_tool_input_contract(self)
         super().__init__(
@@ -172,6 +134,15 @@ class ToolBase(BaseTool):
         context: ToolContext | None = None,
     ) -> ToolResult:
         """Serve the shrinking registry-based compatibility surface."""
+
+        return self._execute_governed(input, context)
+
+    def _execute_governed(
+        self,
+        input: BaseModel | dict[str, Any],
+        context: ToolContext | None = None,
+    ) -> ToolResult:
+        """Validate one business invocation and normalize its safe result."""
 
         try:
             payload = self._validate_input(input)
@@ -194,27 +165,6 @@ class ToolBase(BaseTool):
                 ),
             )
 
-    def run(
-        self,
-        tool_input: str | dict[str, Any],
-        verbose: Any = _DIRECT_CALL,
-        *args: Any,
-        **kwargs: Any,
-    ) -> Any:
-        """Keep direct legacy calls while ``invoke`` remains fully native."""
-
-        direct_call = (
-            isinstance(verbose, ToolContext)
-            or (verbose is _DIRECT_CALL and not args and not kwargs)
-            or (verbose is None and not args and not kwargs)
-        )
-        if direct_call:
-            context = verbose if isinstance(verbose, ToolContext) else None
-            return self.run_legacy(tool_input, context)
-        if verbose is _DIRECT_CALL:
-            return super().run(tool_input, *args, **kwargs)
-        return super().run(tool_input, verbose, *args, **kwargs)
-
     def _run(
         self,
         runtime: ToolRuntime[AssistantRunContext],
@@ -234,7 +184,7 @@ class ToolBase(BaseTool):
         payload: Mapping[str, Any],
         runtime: ToolRuntime[AssistantRunContext],
     ) -> tuple[str, dict[str, Any]]:
-        result = self.run_legacy(
+        result = self._execute_governed(
             _bind_native_input(self, payload, runtime),
             _tool_context(runtime),
         )

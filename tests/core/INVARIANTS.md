@@ -12,7 +12,7 @@
 | TOOL-001 | 生产本地 Tool 使用标准 `BaseTool`/`ToolNode`；模型可见 schema 隐藏 runtime-owned 参数，`ToolRuntime` 注入受信身份，结果为标准 `ToolMessage(content, artifact)`。 | `tests/core/contract/test_tool_contract.py` |
 | EXT-001 | 生产本地 Tool 由受信静态清单装配；MCP 使用官方 adapter、显式 allowlist 与确定性 namespace，二者都输出标准 `BaseTool`。 | `tests/core/contract/test_extension_contract.py` |
 | MEMORY-001 | 长期记忆只在父图固定 `memory_recall` / `memory_commit` 节点读写；两种执行模式每 run 各一次，worker 只读冻结 `memory_context`。 | `tests/core/integration/test_memory_lifecycle.py` |
-| CTX-001 | 生产上下文使用标准 messages、带明确 untrusted/frozen 标记的 Memory dynamic prompt，以及官方 limit/summarization/HITL middleware。 | `tests/core/integration/test_context_lifecycle.py` |
+| CTX-001 | 生产上下文使用标准 messages、带明确 untrusted/frozen 标记的 Memory dynamic prompt，以及官方 limit/summarization/HITL middleware；fast 自动放行，planning 对非 read Tool 触发 HITL。 | `tests/core/integration/test_context_lifecycle.py` |
 | GATE-001 | Agent Server 原生拥有生产 thread、run、queue、checkpoint、cancel 与 stream 生命周期；`/agent-service/v1` 只做媒体 wire 解析、原生资源关联和响应投影，不拥有平行 Graph Runtime。 | `tests/core/contract/test_gateway_contract.py` |
 | IDENT-001 | Agent Server auth principal、user/tenant context、thread、run、媒体 connection 与 delivery ID 相互分离；同一 conversation 的 `thread_id` 在后续 run 间稳定，不得以 `run_id` 或连接 ID 代替 thread。 | `tests/core/contract/test_gateway_contract.py`；`tests/core/integration/test_runtime_lifecycle.py`；`tests/core/integration/test_durable_lifecycle.py` |
 | DUR-001 | Durable schedule、resume、cancel、background queue 与 failure atomicity 依照通用状态机转换；同一 store 上重建 service/worker 后，已登记 schedule 按时恢复且仅执行一次。 | `tests/core/integration/test_durable_lifecycle.py` |

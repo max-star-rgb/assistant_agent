@@ -20,8 +20,8 @@ state 读取父图冻结的 `memory_context`，并从 `Runtime.context` 读取�
 `memory_context_untrusted_v1` 标记的 XML 数据边界，明确为 untrusted/frozen；身份、权限和 Tool 约束不从
 Memory 或用户文本生成。
 
-模型调用上限、Tool 调用上限、只读 Tool retry、长对话 summarization 与 write Tool HITL 全部使用官方
-middleware。summarization 采用输入窗口 70% 触发、保留 40% 的 token 阈值；它更新标准 message history，
+模型调用上限、Tool 调用上限、只读 Tool retry、长对话 summarization 与 planning 模式非 read Tool HITL
+全部使用官方 middleware；fast 模式自动放行。summarization 采用输入窗口 70% 触发、保留 40% 的 token 阈值；它更新标准 message history，
 不维护项目自建 conversation/summary state。
 
 planning worker 只获得自己的 objective、父图 Memory 快照和同一个 fast agent。worker transcript 不并入父图

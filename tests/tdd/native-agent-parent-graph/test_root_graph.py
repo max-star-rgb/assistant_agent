@@ -14,6 +14,7 @@ from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.root_graph import build_assistant_root_graph
 from assistant_agent.native_agent.state import (
     AssistantRootInput,
+    AssistantRootState,
     FastAgentState,
     PlanningState,
 )
@@ -85,7 +86,9 @@ def _invoke(graph, *, mode: str, text: str = "你好"):
     ("mode", "expected"),
     [("fast", "fast"), ("planning", "planning")],
 )
-def test_root_routes_structured_mode_and_owns_memory_once(mode: str, expected: str) -> None:
+def test_root_routes_structured_mode_and_owns_memory_once(
+    mode: str, expected: str
+) -> None:
     backend = MemoryProbe()
 
     result = _invoke(_root(backend), mode=mode)
@@ -131,9 +134,7 @@ def test_root_preserves_answer_when_commit_error_handler_recovers() -> None:
 
 def test_root_input_rejects_unknown_mode_and_extra_product_protocol() -> None:
     with pytest.raises(ValidationError):
-        AssistantRootInput.model_validate(
-            {"messages": [], "execution_mode": "turbo"}
-        )
+        AssistantRootInput.model_validate({"messages": [], "execution_mode": "turbo"})
     with pytest.raises(ValidationError):
         AssistantRootInput.model_validate(
             {
@@ -154,7 +155,9 @@ def test_root_graph_contains_only_native_parent_topology() -> None:
         "execution_router",
         "fast_agent",
         "planning_graph",
-        "delivery_dispatch",
         "memory_commit",
         "__end__",
     } <= set(graph.get_graph().nodes)
+    assert "delivery_dispatch" not in graph.get_graph().nodes
+    assert "pending_deliveries" not in AssistantRootState.__annotations__
+    assert "delivery_dispatch" not in AssistantRootState.__annotations__

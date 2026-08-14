@@ -166,6 +166,7 @@ class ProviderConfig:
     visual_context_image_reserve_tokens: int = 2_048
     visual_context_output_reserve_tokens: int = 2_048
     qwen_chat_enable_thinking: bool = False
+    qwen_chat_enable_search: bool = False
     qwen_chat_api_protocol: QwenChatApiProtocol = "dashscope"
     openai_chat_base_url: str = "https://api.openai.com/v1"
     openai_chat_model: str = "gpt-4o-mini"
@@ -748,6 +749,10 @@ class ProviderConfig:
             ),
             qwen_chat_enable_thinking=_bool_env(
                 source.get("QWEN_CHAT_ENABLE_THINKING"),
+                False,
+            ),
+            qwen_chat_enable_search=_bool_env(
+                source.get("QWEN_CHAT_ENABLE_SEARCH"),
                 False,
             ),
             qwen_chat_api_protocol=_qwen_chat_api_protocol(

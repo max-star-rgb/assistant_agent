@@ -22,7 +22,6 @@ START
   -> memory_recall
   -> execution_router
   -> fast_agent | planning_graph
-  -> delivery_dispatch（仅 pending_deliveries 非空）
   -> memory_commit
   -> END
 ```
@@ -39,17 +38,6 @@ ID、依赖引用和 DAG 无环，`Send` 按依赖分 wave 并行派发 worker�
 每个 worker 复用同一个 fast graph，不创建第二套 Runtime，也不重复父图 Memory 节点。当前不维护 verifier、
 repair、revision、acceptance contract、deliverable binding 或 artifact provenance；只有真实产品需求出现后才增加。
 
-## 原生主动投递节点
-
-主动投递是父图中的普通领域节点，不是旧 Runtime facade。任意前序业务节点可以写入 checkpoint-safe
-`pending_deliveries` tuple；fast/planning 汇流后仅在该 channel 非空时进入 `delivery_dispatch`。节点从
-`Runtime.execution_info` 取得 native thread/run，从 `AssistantRunContext` 取得认证 user，并通过 composition
-closure 中的 `ProactiveDeliveryStore` 幂等入队。Store/client 不进入 state、context 或 prompt。
-
-节点按稳定 `message_id` 提供重试幂等；LangGraph retry、resume 或相同 task 重放不会生成第二行。入队完成后
-清空 pending channel，记录 prompt-invisible `ProactiveDispatchState`，再进入唯一 `memory_commit`。缺少 Store
-或 native thread/run 身份时 fail closed。媒体 presence、claim、ACK 与重连投递属于 custom route，不决定图路由。
-
 ## State 与恢复
 
 生产 state channel、checkpoint 和 reducer 调度全部使用 LangGraph 原生能力。生产 state 以
@@ -58,7 +46,6 @@ closure 中的 `ProactiveDeliveryStore` 幂等入队。Store/client 不进入 st
 
 - `execution_mode`；
 - 冻结的 `memory_context` 与 `memory_status`；
-- checkpoint-safe `pending_deliveries` 与 `delivery_dispatch`；
 - planning 子图内部的 plan 与 worker result。
 
 已完成节点直接从 worker result 推导，不保存平行 completed-ID channel，也没有项目自定义 result/artifact
@@ -77,9 +64,9 @@ Memory 重试、error handler 和失败后的 `Command(update=..., goto=...)` �
 resume 协议。模型 token 和 Tool 消息由 LangChain/LangGraph 原生 callback/stream 产生；项目不再投影
 `GraphStreamPart`、`AgentEvent` 或产品 run 状态作为主链事实源。
 
-`HumanInTheLoopMiddleware` 只对显式标记为 write/dangerous 的受信 Tool 触发原生 interrupt；恢复使用
-Agent Server/LangGraph `Command(resume=...)`。model/tool call limit、只读 Tool retry 与 summarization 均由
-官方 middleware 承担。
+`HumanInTheLoopMiddleware` 使用 state-aware `when` predicate：fast 模式自动放行，planning 模式对非 read
+Tool 触发原生 interrupt；恢复使用 Agent Server/LangGraph `Command(resume=...)`。model/tool call limit、
+只读 Tool retry 与 summarization 均由官方 middleware 承担。
 
 ## 已退役兼容边界
 
@@ -95,6 +82,5 @@ runner 因绑定旧 state/evidence 合同而删除，后续行为评测必须基
 ```bash
 MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
   tests/core/integration/test_runtime_lifecycle.py \
-  tests/tdd/native-agent-parent-graph \
-  tests/tdd/native-proactive-delivery/test_native_dispatch.py
+  tests/tdd/native-agent-parent-graph
 ```

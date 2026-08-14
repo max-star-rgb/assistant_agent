@@ -26,9 +26,9 @@
 - 完整执行 schema 包含 `ToolRuntime[AssistantRunContext]`，由 `ToolNode` 注入身份、thread/run、Store 和
   当前 state；
 - 成功返回标准 `ToolMessage(content, artifact)`；失败抛出 `ToolException`；
-- metadata 至少声明 `effect=read|write|dangerous` 与 `source=builtin|mcp`。
+- metadata 至少声明 `effect=read|generate|write|dangerous` 与 `source=builtin|mcp`。
 
-只读 Tool 由 `ToolRetryMiddleware` 做有界重试。write/dangerous Tool 由
+只读 Tool 由 `ToolRetryMiddleware` 做有界重试。fast 模式不触发 HITL；planning 模式的非 read Tool 由
 `HumanInTheLoopMiddleware` 在执行前产生原生 interrupt。schema、身份与授权仍由具体 Tool/业务 adapter 校验；
 外部副作用幂等属于具体 Tool 或业务 API，主链不再维护通用 operation ledger。
 
@@ -46,7 +46,9 @@ MCP Tool 开发入口与 durable task 等外围能力仍可保留旧治理模块
 
 Qwen 等模型原生联网参数属于 `BaseChatModel` 请求能力，不伪装成本地 Tool。生产主链的 Qwen/DashScope
 OpenAI-compatible 入口直接构造 `ChatOpenAI`，只通过 `base_url`、模型名以及 DashScope 确实支持的
-`extra_body` 参数表达差异。流式模式同时启用 usage 回传。`enable_source`、`enable_citation` 和
+`extra_body` 参数表达差异。流式模式同时启用 usage 回传。联网默认关闭，只有
+`QWEN_CHAT_ENABLE_SEARCH=true` 才在 `extra_body` 中启用 `enable_search` 与 `search_options`。
+`enable_source`、`enable_citation` 和
 `citation_format` 仅属于 DashScope 原生调用风格，不得塞入 OpenAI-compatible 请求。是否调用候选本地 Tool
 仍由模型按标准 tool calling 协议决定。
 

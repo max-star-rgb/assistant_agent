@@ -90,9 +90,7 @@ def test_real_provider_factory_returns_base_chat_model_without_network() -> None
     assert model._llm_type == "openai-chat"
 
 
-def test_qwen_factory_preserves_provider_native_search_parameters() -> None:
-    """Catches native-provider features being lost during BaseChatModel migration."""
-
+def test_qwen_factory_disables_native_search_until_explicitly_enabled() -> None:
     config = ProviderConfig(
         provider_mode="real",
         chat_provider="qwen",
@@ -107,6 +105,26 @@ def test_qwen_factory_preserves_provider_native_search_parameters() -> None:
 
     assert model.extra_body == {
         "enable_thinking": True,
+        "enable_search": False,
+    }
+    assert model.streaming is True
+    assert model.stream_usage is True
+
+
+def test_qwen_factory_enables_native_search_from_explicit_config() -> None:
+    config = ProviderConfig(
+        provider_mode="real",
+        chat_provider="qwen",
+        chat_api_key="test-key",
+        chat_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        chat_model="qwen-plus",
+        qwen_chat_enable_search=True,
+    )
+
+    model = create_chat_model(config)
+
+    assert model.extra_body == {
+        "enable_thinking": False,
         "enable_search": True,
         "search_options": {
             "search_strategy": "turbo",
@@ -115,8 +133,16 @@ def test_qwen_factory_preserves_provider_native_search_parameters() -> None:
             "freshness": 7,
         },
     }
-    assert model.streaming is True
-    assert model.stream_usage is True
+
+
+def test_qwen_native_search_requires_explicit_environment_opt_in() -> None:
+    assert ProviderConfig.from_env({}).qwen_chat_enable_search is False
+    assert (
+        ProviderConfig.from_env(
+            {"QWEN_CHAT_ENABLE_SEARCH": "true"}
+        ).qwen_chat_enable_search
+        is True
+    )
 
 
 def test_real_provider_factory_fails_closed_when_configuration_drifts() -> None:

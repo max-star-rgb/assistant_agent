@@ -6,7 +6,6 @@ from functools import partial
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
-from langgraph.runtime import Runtime
 from langgraph.types import RetryPolicy
 
 from assistant_agent.native_agent.context import AssistantRunContext
@@ -18,16 +17,6 @@ from assistant_agent.native_agent.memory import (
     memory_recall_node,
 )
 from assistant_agent.native_agent.state import AssistantRootInput, AssistantRootState
-from assistant_agent.proactive_delivery import (
-    ProactiveDeliveryIntent,
-    ProactiveDeliveryStore,
-    ProactiveDispatchState,
-    ProactiveMessage,
-)
-
-
-class ProactiveDeliveryUnavailableError(RuntimeError):
-    """A native graph delivery cannot reach its durable enqueue boundary."""
 
 
 def build_assistant_root_graph(
@@ -35,7 +24,6 @@ def build_assistant_root_graph(
     memory_backend: MemoryBackend,
     fast_agent: Any,
     planning_graph: Any,
-    proactive_delivery_store: ProactiveDeliveryStore | None = None,
 ):
     """Compose the only top-level runtime without binding saver or Store."""
 
@@ -64,13 +52,6 @@ def build_assistant_root_graph(
     builder.add_node("fast_agent", fast_agent)
     builder.add_node("planning_graph", planning_graph)
     builder.add_node(
-        "delivery_dispatch",
-        partial(
-            delivery_dispatch_node,
-            store=proactive_delivery_store,
-        ),
-    )
-    builder.add_node(
         "memory_commit",
         partial(memory_commit_node, backend=memory_backend),
         error_handler=memory_commit_degraded,
@@ -82,17 +63,8 @@ def build_assistant_root_graph(
         route_execution_mode,
         {"fast": "fast_agent", "planning": "planning_graph"},
     )
-    builder.add_conditional_edges(
-        "fast_agent",
-        route_after_execution,
-        {"delivery_dispatch": "delivery_dispatch", "memory_commit": "memory_commit"},
-    )
-    builder.add_conditional_edges(
-        "planning_graph",
-        route_after_execution,
-        {"delivery_dispatch": "delivery_dispatch", "memory_commit": "memory_commit"},
-    )
-    builder.add_edge("delivery_dispatch", "memory_commit")
+    builder.add_edge("fast_agent", "memory_commit")
+    builder.add_edge("planning_graph", "memory_commit")
     builder.add_edge("memory_commit", END)
     return builder.compile(name="AssistantRootGraph")
 
@@ -109,74 +81,8 @@ def route_execution_mode(state: AssistantRootState) -> str:
     return state["execution_mode"]
 
 
-def route_after_execution(state: AssistantRootState) -> str:
-    """Enter the native delivery boundary only for explicit state intents."""
-
-    return "delivery_dispatch" if state.get("pending_deliveries") else "memory_commit"
-
-
-def delivery_dispatch_node(
-    state: AssistantRootState,
-    runtime: Runtime[AssistantRunContext],
-    *,
-    store: ProactiveDeliveryStore | None,
-) -> dict[str, object]:
-    """Idempotently persist checkpoint-safe intents using native run identity."""
-
-    pending = tuple(
-        item
-        if isinstance(item, ProactiveDeliveryIntent)
-        else ProactiveDeliveryIntent.model_validate(item)
-        for item in state.get("pending_deliveries", ())
-    )
-    if not pending:
-        return {}
-    if store is None:
-        raise ProactiveDeliveryUnavailableError(
-            "Pending proactive delivery requires a configured store."
-        )
-    execution = runtime.execution_info
-    context = runtime.context
-    if (
-        execution is None
-        or not execution.thread_id
-        or not execution.run_id
-        or context is None
-    ):
-        raise ProactiveDeliveryUnavailableError(
-            "Proactive delivery requires native thread, run and owner identity."
-        )
-    records = [
-        store.enqueue(
-            ProactiveMessage(
-                message_id=intent.message_id,
-                user_id=context.user_id,
-                session_id=execution.thread_id,
-                kind=intent.kind,
-                content=intent.content,
-                delivery_mode=intent.delivery_mode,
-                source_run_id=execution.run_id,
-                source_trace_id=execution.run_id,
-            )
-        )
-        for intent in pending
-    ]
-    all_skipped = all(record.status == "skipped_offline" for record in records)
-    return {
-        "pending_deliveries": (),
-        "delivery_dispatch": ProactiveDispatchState(
-            status="skipped" if all_skipped else "queued",
-            message_ids=tuple(intent.message_id for intent in pending),
-            issue_code="connection_offline" if all_skipped else None,
-        ),
-    }
-
-
 __all__ = [
-    "ProactiveDeliveryUnavailableError",
     "build_assistant_root_graph",
-    "delivery_dispatch_node",
     "execution_router_node",
-    "route_after_execution",
     "route_execution_mode",
 ]

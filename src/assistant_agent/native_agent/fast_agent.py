@@ -14,6 +14,7 @@ from langchain.agents.middleware import (
     ToolRetryMiddleware,
     dynamic_prompt,
 )
+from langchain.agents.middleware.types import ToolCallRequest
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 
@@ -45,7 +46,10 @@ def build_fast_agent(
         tool.name for tool in tools if (tool.metadata or {}).get("effect") == "read"
     ]
     interrupt_policy = {
-        tool.name: True
+        tool.name: {
+            "allowed_decisions": ["approve", "edit", "reject", "respond"],
+            "when": _planning_mode_requires_approval,
+        }
         for tool in tools
         if (tool.metadata or {}).get("effect") not in {None, "read"}
     }
@@ -88,6 +92,10 @@ def build_fast_agent(
         middleware=middleware,
         name="AssistantFastAgent",
     )
+
+
+def _planning_mode_requires_approval(request: ToolCallRequest) -> bool:
+    return request.state.get("execution_mode") == "planning"
 
 
 def render_minimal_system_prompt(

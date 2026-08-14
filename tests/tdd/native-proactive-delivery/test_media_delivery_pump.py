@@ -13,7 +13,7 @@ from assistant_agent.agent_server.proactive_delivery import (
     MediaProactiveDeliveryPump,
     ProactiveDeliveryAckError,
 )
-from assistant_agent.runtime.proactive_delivery import SQLiteProactiveDeliveryStore
+from assistant_agent.proactive_delivery import SQLiteProactiveDeliveryStore
 from assistant_agent.runtime.proactive_messages import ProactiveMessage
 
 
