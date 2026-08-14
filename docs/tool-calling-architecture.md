@@ -352,6 +352,11 @@ submission 投影为严格 checkpoint state，planner/worker/verifier profile su
 join、repair 与 interrupt/resume 都由 `DurableWorkflowGraph` 推进。旧 `run_work_item`、execution adapter、
 ready-node scheduler 与 worker 已在 retirement gate 闭合后删除。
 
+父 Workflow assignment 仍持久化每个 work item 的 model/tool budget slice；进入 profile child 时，
+composition root 将该 slice 与 canonical profile maxima 收敛为不可变 `GraphExecutionPolicy` 并通过
+LangGraph Runtime context 注入。Assistant child checkpoint 只保存实际使用计数与 `policy_digest`，不复制
+四个最大值字段；child validation 用同一 assignment 重算 digest，配置或预算漂移必须 fail closed。
+
 约束在 planner proposal 与获准执行 Plan 中使用两个不同的 Pydantic 边界：LLM Planner 生成
 `WorkflowConstraintProposal`，可以在完整 DAG 尚不存在时省略 `verifier_work_item_id`；Definition 生成
 具体 work items 后，只依据 owner 与依赖拓扑确定性选择共同下游 verifier，并构造严格的
@@ -562,7 +567,7 @@ Validator、持久化 stable operation scope 并取得 barrier owner 后才可�
   Store 事件且必须 fail-open；缺少完整 ingress trace context 时不阻止 Workflow 提交。
   claim 时为每个 work-item 原子预留 workflow quantum 与 model/tool call 预算，commit 时退回未使用额度，
   从而避免并行 run 超卖全局预算。Tool 预算为零时不再暴露 Tool，分配给该 run 的预算同时收窄
-  work-item assistant loop 的 iteration 上限。
+  work-item assistant loop 的 Runtime execution policy；checkpoint 只记录 digest 与实际使用计数。
 - **Memory**：记忆读写遵循 `MemoryPluginHost` 与 Plugin lifecycle；默认长期记忆不是主模型可调用 Tool。
 - **Gateway、CLI、API、demo、eval**：都是入口或观察形态，不能直接调用 Tool 实现来复制 Agent
   逻辑。

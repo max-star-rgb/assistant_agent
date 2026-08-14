@@ -70,16 +70,20 @@ state 不进入产品协议。
 
 `AssistantTurnGraph` 的 checkpoint boundary 是版本化、严格 JSON 的 `AssistantTurnState`：只保存 request、
 run、Tool trajectory、prompt-safe observation、稳定 context/capability/artifact reference、profile、phase、
-counter、pending Tool call 和 final response 等恢复事实。新 checkpoint 不再保存 `pending_interrupt` 或
-`invocation_kind`：前者来自 native `Interrupt.value`，后者来自 `GraphRuntimeContext`；旧 v4 payload 中这两个
-字段会在兼容验证入口剥离。`AgentState`、Provider/Tool client、Registry、
+counter、pending Tool call、`policy_digest` 和 final response 等恢复事实。模型/action Tool/control Tool
+的最大调用数属于不可变 `GraphExecutionPolicy`，只通过 `GraphRuntimeContext` 注入；checkpoint 只保存
+已使用计数与 digest，用于 resume/replay/fork 时拒绝配置漂移。`profile` 暂保留为可离线读取的 graph child
+身份，不再承载预算本身。新 checkpoint 不再保存 `pending_interrupt`、`invocation_kind` 或四个 max-limit
+字段：前者来自 native `Interrupt.value`，后两类来自 `GraphRuntimeContext`。旧 v4 payload 会在兼容验证
+入口把旧上限折叠为等价 digest，并剥离重复字段。`AgentState`、Provider/Tool client、Registry、
 Executor、service/store、callback、cancel token、媒体正文、任意 metadata/data 都不进入 checkpoint；节点仅在
 一次调用期间从 `GraphRuntimeContext` hydrate 运行对象，返回前重新投影 strict state。同一 conversation 的新
 turn 会显式覆盖所有 run-scoped channel，不能依靠 LangGraph merge 偶然清除上轮事实。
 
 同一 node/edge 实现还编译为 `standard`、`planner`、`worker`、`verifier` 四个稳定 profile child。
 profile 只能来自受信调用参数或父图 assignment，并同时收窄 Provider Tool schema、RunToolCatalog、Validator
-可执行集合和预算，不能从用户文本推断。standalone root 可绑定 saver；profile child 自身不绑定 saver，作为
+可执行集合和 `GraphExecutionPolicy`，不能从用户文本推断。policy digest 绑定 profile 与本次
+model/action/control 调用上限；计数继续随 checkpoint 恢复。standalone root 可绑定 saver；profile child 自身不绑定 saver，作为
 subgraph 时继承父图 checkpointer/namespace。父子图通过窄 input/output adapter 交换 assignment reference、
 objective、constraint、capability reference、response、Tool trajectory 和 artifact reference，不传递父图整份
 state 或动态 task UUID。

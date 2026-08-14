@@ -25,6 +25,7 @@ _CONTROL_TOOL_NAMES = frozenset(
     {LOAD_SKILL_TOOL_NAME, LOAD_SKILL_REFERENCE_TOOL_NAME}
 )
 _PROFILE_SCOPE_PREFIX = "graph_profile_scope_sha256:"
+_EXECUTION_POLICY_PREFIX = "graph_execution_policy_v1_sha256:"
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,23 @@ class AssistantGraphProfile:
     max_tool_iterations: int
     max_control_tool_iterations: int
     allowed_categories: frozenset[ToolCategory]
+
+
+@dataclass(frozen=True, slots=True)
+class GraphExecutionPolicy:
+    """Immutable invocation limits injected through LangGraph Runtime context."""
+
+    profile: AssistantGraphProfileName
+    model_call_limit: int
+    action_tool_call_limit: int
+    control_tool_call_limit: int
+    policy_digest: str
+
+
+class GraphExecutionPolicyMismatchError(ValueError):
+    """Raised when a Runtime policy does not match the checkpoint digest."""
+
+    code = "graph_execution_policy_mismatch"
 
 
 class GraphProfileMismatchError(ValueError):
@@ -130,6 +148,114 @@ ASSISTANT_GRAPH_PROFILES: Mapping[
 )
 
 
+def graph_execution_policy(
+    *,
+    profile: AssistantGraphProfileName,
+    model_call_limit: int,
+    action_tool_call_limit: int,
+    control_tool_call_limit: int,
+) -> GraphExecutionPolicy:
+    """Build one validated policy and its deterministic checkpoint digest."""
+
+    if model_call_limit < 1:
+        raise ValueError("model_call_limit must be positive")
+    if action_tool_call_limit < 0 or control_tool_call_limit < 0:
+        raise ValueError("Tool call limits must be non-negative")
+    assistant_graph_profile(profile)
+    payload = json.dumps(
+        {
+            "schema_version": 1,
+            "profile": profile,
+            "model_call_limit": model_call_limit,
+            "action_tool_call_limit": action_tool_call_limit,
+            "control_tool_call_limit": control_tool_call_limit,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    digest = f"{_EXECUTION_POLICY_PREFIX}{hashlib.sha256(payload).hexdigest()}"
+    return GraphExecutionPolicy(
+        profile=profile,
+        model_call_limit=model_call_limit,
+        action_tool_call_limit=action_tool_call_limit,
+        control_tool_call_limit=control_tool_call_limit,
+        policy_digest=digest,
+    )
+
+
+def validate_graph_execution_policy(
+    policy: GraphExecutionPolicy,
+) -> GraphExecutionPolicy:
+    """Reject manually constructed policies whose digest does not bind the fields."""
+
+    expected = graph_execution_policy(
+        profile=policy.profile,
+        model_call_limit=policy.model_call_limit,
+        action_tool_call_limit=policy.action_tool_call_limit,
+        control_tool_call_limit=policy.control_tool_call_limit,
+    )
+    if policy.policy_digest != expected.policy_digest:
+        raise GraphExecutionPolicyMismatchError(
+            "execution policy digest does not match its fields"
+        )
+    return policy
+
+
+def default_graph_execution_policy(
+    profile: AssistantGraphProfileName = "standard",
+) -> GraphExecutionPolicy:
+    """Return canonical profile limits for callers without a narrower slice."""
+
+    canonical = assistant_graph_profile(profile)
+    return graph_execution_policy(
+        profile=canonical.name,
+        model_call_limit=max(1, canonical.max_tool_iterations),
+        action_tool_call_limit=canonical.max_tool_iterations,
+        control_tool_call_limit=canonical.max_control_tool_iterations,
+    )
+
+
+def profile_execution_policy(
+    profile: AssistantGraphProfileName,
+    *,
+    model_call_limit: int | None = None,
+    tool_call_limit: int | None = None,
+) -> GraphExecutionPolicy:
+    """Apply an optional durable slice to canonical profile maxima."""
+
+    if model_call_limit is not None and model_call_limit < 1:
+        raise ValueError("profile model_call_limit must be positive")
+    if tool_call_limit is not None and tool_call_limit < 0:
+        raise ValueError("profile tool_call_limit must be non-negative")
+    canonical = assistant_graph_profile(profile)
+    effective_model_limit = min(
+        max(1, canonical.max_tool_iterations),
+        (
+            model_call_limit
+            if model_call_limit is not None
+            else max(1, canonical.max_tool_iterations)
+        ),
+    )
+    effective_tool_limit = min(
+        canonical.max_tool_iterations,
+        (
+            tool_call_limit
+            if tool_call_limit is not None
+            else canonical.max_tool_iterations
+        ),
+    )
+    return graph_execution_policy(
+        profile=canonical.name,
+        model_call_limit=effective_model_limit,
+        action_tool_call_limit=effective_tool_limit,
+        control_tool_call_limit=min(
+            canonical.max_control_tool_iterations,
+            effective_tool_limit,
+        ),
+    )
+
+
 def assistant_graph_profile(
     profile: AssistantGraphProfileName | AssistantGraphProfile,
 ) -> AssistantGraphProfile:
@@ -155,11 +281,6 @@ def profile_input_adapter(
 ) -> "AssistantTurnState":
     """Project only admitted identity and assignment facts into child state."""
 
-    if model_call_limit is not None and model_call_limit < 1:
-        raise ValueError("profile model_call_limit must be positive")
-    if tool_call_limit is not None and tool_call_limit < 0:
-        raise ValueError("profile tool_call_limit must be non-negative")
-
     from assistant_agent.runtime.assistant_graph_state import (
         AssistantTurnState,
         assistant_turn_state_from_request,
@@ -173,6 +294,11 @@ def profile_input_adapter(
         else ProfileInvocationInput.model_validate(assignment)
     )
     profile = assistant_graph_profile(invocation.profile)
+    execution_policy = profile_execution_policy(
+        profile.name,
+        model_call_limit=model_call_limit,
+        tool_call_limit=tool_call_limit,
+    )
     specs = _registered_specs(parent_state)
     parent_available = _parent_available_tool_names(parent_state)
     explicit = (
@@ -227,6 +353,7 @@ def profile_input_adapter(
             trace_id=_parent_text(parent_state, "trace_id"),
             agent_id=_parent_text(parent_state, "agent_id"),
             profile=profile.name,
+            execution_policy=execution_policy,
         )
     )
     child_request = cast(dict[str, Any], child["request"])
@@ -251,26 +378,6 @@ def profile_input_adapter(
         ],
         "exclusion_reason_codes": excluded_codes,
     }
-    # A profile with no Tool budget still needs one LLM decision turn. Persisted
-    # workflow slices can only narrow these trusted profile maxima.
-    profile_model_limit = max(1, profile.max_tool_iterations)
-    effective_model_limit = (
-        profile_model_limit
-        if model_call_limit is None
-        else min(profile_model_limit, model_call_limit)
-    )
-    effective_tool_limit = (
-        profile.max_tool_iterations
-        if tool_call_limit is None
-        else min(profile.max_tool_iterations, tool_call_limit)
-    )
-    child["max_assistant_iterations"] = effective_model_limit
-    child["max_tool_calls_per_run"] = effective_tool_limit
-    child["max_action_tool_calls_per_run"] = effective_tool_limit
-    child["max_control_tool_calls_per_run"] = min(
-        profile.max_control_tool_iterations,
-        effective_tool_limit,
-    )
     return cast(AssistantTurnState, validate_assistant_turn_state(child))
 
 
@@ -406,13 +513,19 @@ __all__ = [
     "ASSISTANT_GRAPH_PROFILES",
     "AssistantGraphProfile",
     "AssistantGraphProfileName",
+    "GraphExecutionPolicy",
+    "GraphExecutionPolicyMismatchError",
     "GraphProfileMismatchError",
     "GraphProfilePolicyError",
     "ProfileInvocationInput",
     "ProfileInvocationResult",
     "assistant_graph_profile",
+    "default_graph_execution_policy",
+    "graph_execution_policy",
     "profile_input_adapter",
+    "profile_execution_policy",
     "profile_output_adapter",
     "profile_scope_matches",
     "resolve_resume_profile",
+    "validate_graph_execution_policy",
 ]

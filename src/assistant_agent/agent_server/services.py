@@ -30,6 +30,7 @@ from assistant_agent.runtime.assistant_graph_state import (
     assistant_turn_state_from_agent_state,
     validate_assistant_turn_state,
 )
+from assistant_agent.runtime.assistant_graph_profiles import graph_execution_policy
 from assistant_agent.runtime.chat_adapter import create_chat_adapter
 from assistant_agent.runtime.graph_invocation_claims import (
     InMemoryGraphInvocationClaimStore,
@@ -118,6 +119,12 @@ class AgentServerGraphWorker:
             chat_max_tokens=self.config.chat_max_tokens,
             deep_research_chat_max_tokens=self.config.deep_research_chat_max_tokens,
         )
+        execution_policy = graph_execution_policy(
+            profile="standard",
+            model_call_limit=self.config.max_tool_iterations,
+            action_tool_call_limit=self.config.max_tool_iterations,
+            control_tool_call_limit=self.config.max_control_tool_iterations,
+        )
         self._runtime_context = GraphRuntimeContext(
             tool_executor=self.tool_executor,
             chat_adapter=self.chat_adapter,
@@ -126,17 +133,15 @@ class AgentServerGraphWorker:
             agent_state=state,
             invocation_claim_store=self.invocation_claim_store,
             invocation_token=execution.run_id,
+            execution_policy=execution_policy,
         )
-        graph_state = assistant_turn_state_from_agent_state(state)
+        graph_state = assistant_turn_state_from_agent_state(
+            state,
+            execution_policy=execution_policy,
+        )
         graph_state["turn_origin_id"] = value.turn_origin_id
         graph_state["memory_origin_run_id"] = value.turn_origin_id
         graph_state["run_phase"] = RunPhase.ACT.value
-        graph_state["max_assistant_iterations"] = self.config.max_tool_iterations
-        graph_state["max_tool_calls_per_run"] = self.config.max_tool_iterations
-        graph_state["max_action_tool_calls_per_run"] = self.config.max_tool_iterations
-        graph_state["max_control_tool_calls_per_run"] = (
-            self.config.max_control_tool_iterations
-        )
         return validate_assistant_turn_state(graph_state)
 
     def resolve(

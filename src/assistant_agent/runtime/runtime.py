@@ -22,6 +22,10 @@ from assistant_agent.runtime.assistant_interrupts import (
     AssistantInterruptRequest,
     AssistantResume,
 )
+from assistant_agent.runtime.assistant_graph_profiles import (
+    GraphExecutionPolicy,
+    graph_execution_policy,
+)
 from assistant_agent.runtime.assistant_graph_state import (
     apply_assistant_turn_state_to_agent_state,
     assistant_turn_state_from_loop_state,
@@ -841,11 +845,22 @@ class AgentGraphRuntime:
         if not workflow_work_item and not deep_research_start:
             self._embed_stable_request_text(state, request)
         state.context_source_result = self._load_context_source_result(state)
+        model_call_limit = _workflow_iteration_limit(
+            request,
+            configured=self.config.max_tool_iterations,
+        )
+        execution_policy = graph_execution_policy(
+            profile="standard",
+            model_call_limit=model_call_limit,
+            action_tool_call_limit=model_call_limit,
+            control_tool_call_limit=self.config.max_control_tool_iterations,
+        )
         services = self._prepare_graph_services(
             state,
             event_sink=event_sink,
             cancel_token=cancel_token,
             interrupt_request=interrupt_request,
+            execution_policy=execution_policy,
             execution_engine=(
                 "durable_plan_execute_start"
                 if deep_research_start
@@ -878,10 +893,7 @@ class AgentGraphRuntime:
             "current_step_index": 0,
             "run_phase": RunPhase.ACT,
             "trace_id": state.trace_id,
-            "max_tool_iterations": _workflow_iteration_limit(
-                request,
-                configured=self.config.max_tool_iterations,
-            ),
+            "max_tool_iterations": model_call_limit,
             "max_control_tool_iterations": self.config.max_control_tool_iterations,
             "tool_calls_used": 0,
             "action_tool_calls_used": 0,
@@ -897,7 +909,10 @@ class AgentGraphRuntime:
             "response_stream_ends_with_newline": False,
             "response_stream_separator_pending": False,
         }
-        initial_state = assistant_turn_state_from_loop_state(legacy_initial_state)
+        initial_state = assistant_turn_state_from_loop_state(
+            legacy_initial_state,
+            execution_policy=execution_policy,
+        )
         identity = GraphExecutionIdentity.for_assistant_turn(
             agent_id=self.agent_id,
             user_id=request.user_id,
@@ -1060,6 +1075,18 @@ class AgentGraphRuntime:
             invocation_kind=invocation_kind,
             refresh_memory=refresh_memory,
             graph_profile=persisted["profile"],
+            execution_policy=graph_execution_policy(
+                profile=persisted["profile"],
+                model_call_limit=_workflow_iteration_limit(
+                    continuation_request,
+                    configured=self.config.max_tool_iterations,
+                ),
+                action_tool_call_limit=_workflow_iteration_limit(
+                    continuation_request,
+                    configured=self.config.max_tool_iterations,
+                ),
+                control_tool_call_limit=self.config.max_control_tool_iterations,
+            ),
             invocation_token=claim_context.invocation_token,
             interrupt_request=(
                 time_travel_prepared.interrupt_request
@@ -1137,6 +1164,7 @@ class AgentGraphRuntime:
         graph_profile: Literal[
             "standard", "planner", "worker", "verifier"
         ] = "standard",
+        execution_policy: GraphExecutionPolicy | None = None,
         invocation_token: str | None = None,
         publish_start: bool = True,
     ) -> _GraphRunServices:
@@ -1201,6 +1229,7 @@ class AgentGraphRuntime:
                 invocation_kind=invocation_kind,
                 refresh_memory=refresh_memory,
                 graph_profile=graph_profile,
+                execution_policy=execution_policy,
                 interrupt_request=interrupt_request,
                 **(
                     {"invocation_token": invocation_token}

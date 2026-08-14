@@ -25,7 +25,10 @@ from assistant_agent.runtime.assistant_graph_state import (
     route_after_assistant_turn_state,
     validate_assistant_turn_state,
 )
-from assistant_agent.runtime.assistant_graph_profiles import AssistantGraphProfileName
+from assistant_agent.runtime.assistant_graph_profiles import (
+    AssistantGraphProfileName,
+    GraphExecutionPolicyMismatchError,
+)
 from assistant_agent.runtime.graph_runtime import (
     GraphRuntimeContext,
     bind_checkpointed_runtime_node,
@@ -80,6 +83,13 @@ def _reenter_for_runtime(
     runtime: Runtime[GraphRuntimeContext],
 ) -> AssistantTurnState:
     context = runtime.context
+    if context is not None and (
+        context.execution_policy.profile != state.get("profile")
+        or context.execution_policy.policy_digest != state.get("policy_digest")
+    ):
+        raise GraphExecutionPolicyMismatchError(
+            "Runtime execution policy does not match the checkpoint digest."
+        )
     persisted_run = state.get("run")
     if (
         context is None

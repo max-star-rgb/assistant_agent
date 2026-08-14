@@ -161,6 +161,10 @@ Expected: FAIL，原因是当前 selector 只接受 `next == ("prepare_invocatio
 
 ### Task 4: 移出 invocation/profile/预算重复字段
 
+> 实施复核：`profile` 仍被 history、profile output adapter 与 durable child validation 作为可离线读取的
+> graph child 身份，因此本阶段保留 `profile + policy_digest`，只移除四个重复 max-limit 字段。待这些
+> 离线消费者迁到 graph metadata/父 assignment 后，再单独评估删除 `profile`。
+
 **Files:**
 - Modify: `src/assistant_agent/runtime/graph_runtime.py`
 - Modify: `src/assistant_agent/runtime/assistant_graph_state.py`
@@ -174,15 +178,15 @@ Expected: FAIL，原因是当前 selector 只接受 `next == ("prepare_invocatio
 - Consumes: `GraphRuntimeContext.invocation_kind`、`GraphRuntimeContext.graph_profile`、LangGraph `Runtime.execution_info`
 - Produces: Memory 与节点策略只读取 native Runtime/context；checkpoint 仅保存恢复所需的 immutable policy digest。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 验证 state 缺少 `invocation_kind` 和 max-budget 字段时，resume/replay/fork Memory 策略及 Tool 分类预算仍由 `GraphRuntimeContext` 正确执行；profile mismatch 仍 fail closed。
 
-- [ ] **Step 2: 运行并确认 RED**
+- [x] **Step 2: 运行并确认 RED**
 
 当前 strict DTO 要求这些字段，测试应以 `assistant_state_invalid` 或缺失字段失败。
 
-- [ ] **Step 3: 最小实现 Runtime facts**
+- [x] **Step 3: 最小实现 Runtime facts**
 
 新增 immutable `GraphExecutionPolicy`：
 
@@ -198,7 +202,7 @@ class GraphExecutionPolicy:
 
 由 composition root 构造并放入 `GraphRuntimeContext`；节点计数保留在 state，最大值不再 checkpoint。若同一 graph 支持多个 profile，state 只保存 `policy_digest`；不同 graph identity 场景直接使用 `graph_id/profile child`。
 
-- [ ] **Step 4: 运行 TDD 并确认 GREEN**
+- [x] **Step 4: 运行 TDD 并确认 GREEN**
 
 运行 Task 4 测试，预期全部 PASS。
 
@@ -284,4 +288,3 @@ git diff --check
 - [ ] **Step 6: 独立代码审查**
 
 使用 `superpowers:requesting-code-review` 检查 native API 使用、checkpoint migration、resume/time-travel 与副作用安全；修复发现后重新运行最小相关测试。
-

@@ -9,6 +9,7 @@ from typing import Any, Protocol, cast
 from assistant_agent.context.models import ContextSection, ContextSourceResult
 from assistant_agent.context.service import ContextService
 from assistant_agent.runtime.assistant_graph_app import AssistantTurnGraphApp
+from assistant_agent.runtime.assistant_graph_profiles import profile_execution_policy
 from assistant_agent.runtime.assistant_graph_state import (
     AssistantTurnState,
     AssistantStateCompatibilityError,
@@ -151,6 +152,11 @@ class BranchProfileContextFactory:
         )
 
         cancel_token = services.cancel_reader(assignment)
+        execution_policy = profile_execution_policy(
+            assignment.profile,
+            model_call_limit=assignment.budget_slice.model_calls,
+            tool_call_limit=assignment.budget_slice.tool_calls,
+        )
         executor = ToolExecutor(
             registry=services.tool_registry,
             context_metadata={
@@ -177,6 +183,7 @@ class BranchProfileContextFactory:
                 assignment_ref=assignment.assignment_ref,
             ),
             graph_profile=assignment.profile,
+            execution_policy=execution_policy,
         )
 
     @staticmethod
@@ -253,15 +260,14 @@ class BranchProfileContextFactory:
             raise AssistantStateCompatibilityError(
                 "Child Tool scope does not match outer assignment."
             )
-        budget = assignment.budget_slice
-        if (
-            int(child["max_assistant_iterations"]) > budget.model_calls
-            or int(child["max_tool_calls_per_run"]) > budget.tool_calls
-            or int(child["max_action_tool_calls_per_run"]) > budget.tool_calls
-            or int(child["max_control_tool_calls_per_run"]) > budget.tool_calls
-        ):
+        expected_policy = profile_execution_policy(
+            assignment.profile,
+            model_call_limit=assignment.budget_slice.model_calls,
+            tool_call_limit=assignment.budget_slice.tool_calls,
+        )
+        if child["policy_digest"] != expected_policy.policy_digest:
             raise AssistantStateCompatibilityError(
-                "Child execution limits exceed persisted workflow budget slice."
+                "Child execution policy does not match persisted workflow budget slice."
             )
 
 

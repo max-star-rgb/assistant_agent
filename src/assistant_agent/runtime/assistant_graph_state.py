@@ -25,7 +25,14 @@ from pydantic import (
 )
 
 from assistant_agent.multi_agent.models import DEFAULT_AGENT_ID
-from assistant_agent.runtime.assistant_graph_profiles import AssistantGraphProfileName
+from assistant_agent.runtime.assistant_graph_profiles import (
+    AssistantGraphProfileName,
+    GraphExecutionPolicy,
+    GraphExecutionPolicyMismatchError,
+    default_graph_execution_policy,
+    graph_execution_policy,
+    validate_graph_execution_policy,
+)
 from assistant_agent.runtime.citations import UrlCitationAnnotation
 from assistant_agent.runtime.requests import (
     AgentResponse,
@@ -345,6 +352,9 @@ class _AssistantTurnStateModel(_CheckpointModel):
     graph_version: Literal["4"]
     state_schema_version: Literal[4]
     profile: AssistantGraphProfileName
+    policy_digest: str = Field(
+        pattern=r"^graph_execution_policy_v1_sha256:[0-9a-f]{64}$"
+    )
     turn_origin_id: str = Field(min_length=1, max_length=512)
     invocation_run_id: str = Field(min_length=1, max_length=512)
     invocation_run_ids: tuple[str, ...] = Field(min_length=1, max_length=1_000)
@@ -379,10 +389,6 @@ class _AssistantTurnStateModel(_CheckpointModel):
     tool_stream_started: bool = False
     last_llm_span_id: str | None = Field(default=None, max_length=256)
     last_llm_attempt_kind: str | None = Field(default=None, max_length=160)
-    max_assistant_iterations: int = Field(default=0, ge=0)
-    max_tool_calls_per_run: int = Field(default=0, ge=0)
-    max_action_tool_calls_per_run: int = Field(default=0, ge=0)
-    max_control_tool_calls_per_run: int = Field(default=0, ge=0)
 
 
 class AssistantTurnState(TypedDict):
@@ -392,6 +398,7 @@ class AssistantTurnState(TypedDict):
     graph_version: Literal["4"]
     state_schema_version: Literal[4]
     profile: AssistantGraphProfileName
+    policy_digest: str
     turn_origin_id: str
     invocation_run_id: str
     invocation_run_ids: tuple[str, ...]
@@ -422,10 +429,6 @@ class AssistantTurnState(TypedDict):
     tool_stream_started: bool
     last_llm_span_id: str | None
     last_llm_attempt_kind: str | None
-    max_assistant_iterations: int
-    max_tool_calls_per_run: int
-    max_action_tool_calls_per_run: int
-    max_control_tool_calls_per_run: int
 
 
 _STATE_ADAPTER = TypeAdapter(_AssistantTurnStateModel)
@@ -471,6 +474,7 @@ def assistant_turn_state_from_request(
     trace_id: str,
     agent_id: str = DEFAULT_AGENT_ID,
     profile: AssistantGraphProfileName = "standard",
+    execution_policy: GraphExecutionPolicy | None = None,
 ) -> AssistantTurnState:
     """Create a complete new-turn state so checkpoint merge cannot retain old channels."""
 
@@ -480,13 +484,18 @@ def assistant_turn_state_from_request(
         trace_id=trace_id,
         agent_id=agent_id,
     )
-    return assistant_turn_state_from_agent_state(state, profile=profile)
+    return assistant_turn_state_from_agent_state(
+        state,
+        profile=profile,
+        execution_policy=execution_policy,
+    )
 
 
 def assistant_turn_state_from_agent_state(
     state: AgentState,
     *,
     profile: AssistantGraphProfileName = "standard",
+    execution_policy: GraphExecutionPolicy | None = None,
 ) -> AssistantTurnState:
     """Explicitly project a runtime ``AgentState`` into checkpoint-safe primitives."""
 
@@ -516,11 +525,17 @@ def assistant_turn_state_from_agent_state(
     catalog = _project_catalog(state.run_tool_catalog)
     context_refs = _project_context_refs(state)
     final_response = _project_response(state.response)
+    policy = validate_graph_execution_policy(
+        execution_policy or default_graph_execution_policy(profile)
+    )
+    if policy.profile != profile:
+        raise ValueError("execution policy profile does not match state profile")
     envelope = _AssistantTurnStateModel(
         graph_name=ASSISTANT_GRAPH_NAME,
         graph_version=ASSISTANT_GRAPH_VERSION,
         state_schema_version=ASSISTANT_STATE_SCHEMA_VERSION,
         profile=profile,
+        policy_digest=policy.policy_digest,
         turn_origin_id=state.run_id,
         invocation_run_id=state.run_id,
         invocation_run_ids=(state.run_id,),
@@ -546,6 +561,7 @@ def assistant_turn_state_from_loop_state(
     graph_state: Mapping[str, Any],
     *,
     profile: AssistantGraphProfileName = "standard",
+    execution_policy: GraphExecutionPolicy | None = None,
 ) -> AssistantTurnState:
     """Project one legacy node result into the strict checkpoint contract.
 
@@ -556,7 +572,29 @@ def assistant_turn_state_from_loop_state(
     state = graph_state.get("state")
     if not isinstance(state, AgentState):
         raise TypeError("assistant node result requires AgentState")
-    projected = dict(assistant_turn_state_from_agent_state(state, profile=profile))
+    policy = execution_policy or graph_execution_policy(
+        profile=profile,
+        model_call_limit=max(1, _non_negative_int(graph_state.get("max_tool_iterations"))),
+        action_tool_call_limit=_non_negative_int(
+            graph_state.get(
+                "max_action_tool_calls_per_run",
+                graph_state.get(
+                    "max_tool_calls_per_run",
+                    graph_state.get("max_tool_iterations"),
+                ),
+            )
+        ),
+        control_tool_call_limit=_non_negative_int(
+            graph_state.get("max_control_tool_iterations")
+        ),
+    )
+    projected = dict(
+        assistant_turn_state_from_agent_state(
+            state,
+            profile=profile,
+            execution_policy=policy,
+        )
+    )
     projected.update(
         {
             "turn_origin_id": _bounded(
@@ -659,24 +697,6 @@ def assistant_turn_state_from_loop_state(
             "last_llm_attempt_kind": _bounded_optional(
                 graph_state.get("last_llm_attempt_kind"), 160
             ),
-            "max_assistant_iterations": _non_negative_int(
-                graph_state.get("max_tool_iterations")
-            ),
-            "max_tool_calls_per_run": _non_negative_int(
-                graph_state.get(
-                    "max_tool_calls_per_run",
-                    graph_state.get("max_tool_iterations"),
-                )
-            ),
-            "max_action_tool_calls_per_run": _non_negative_int(
-                graph_state.get(
-                    "max_action_tool_calls_per_run",
-                    graph_state.get("max_tool_iterations"),
-                )
-            ),
-            "max_control_tool_calls_per_run": _non_negative_int(
-                graph_state.get("max_control_tool_iterations")
-            ),
         }
     )
     return validate_assistant_turn_state(projected)
@@ -686,6 +706,7 @@ def assistant_loop_state_from_turn_state(
     value: Mapping[str, object],
     *,
     runtime_state: AgentState,
+    execution_policy: GraphExecutionPolicy,
     expected_context_refs: tuple[tuple[object, ...], ...] | None = None,
     expected_capability_refs: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
@@ -697,6 +718,13 @@ def assistant_loop_state_from_turn_state(
     """
 
     persisted = validate_assistant_turn_state(value)
+    if (
+        execution_policy.profile != persisted["profile"]
+        or execution_policy.policy_digest != persisted["policy_digest"]
+    ):
+        raise GraphExecutionPolicyMismatchError(
+            "Runtime execution policy does not match the checkpoint digest."
+        )
     if (
         expected_context_refs is not None
         and _context_ref_identity(persisted["context_refs"]) != expected_context_refs
@@ -807,16 +835,11 @@ def assistant_loop_state_from_turn_state(
         "tool_observations": observations,
         "last_llm_span_id": str(persisted.get("last_llm_span_id") or ""),
         "last_llm_attempt_kind": str(persisted.get("last_llm_attempt_kind") or ""),
-        "max_tool_iterations": max(
-            1,
-            int(persisted["max_assistant_iterations"]),
-        ),
-        "max_tool_calls_per_run": int(persisted["max_tool_calls_per_run"]),
-        "max_action_tool_calls_per_run": int(
-            persisted["max_action_tool_calls_per_run"]
-        ),
-        "max_control_tool_iterations": int(persisted["max_control_tool_calls_per_run"]),
-        "max_plan_steps": int(persisted["max_assistant_iterations"]),
+        "max_tool_iterations": execution_policy.model_call_limit,
+        "max_tool_calls_per_run": execution_policy.action_tool_call_limit,
+        "max_action_tool_calls_per_run": execution_policy.action_tool_call_limit,
+        "max_control_tool_iterations": execution_policy.control_tool_call_limit,
+        "max_plan_steps": execution_policy.model_call_limit,
         "response_stream_current_call_emitted": False,
         "response_stream_ends_with_newline": False,
         "response_stream_separator_pending": False,
@@ -1061,6 +1084,31 @@ def validate_assistant_turn_state(value: Mapping[str, object]) -> AssistantTurnS
     # during compatibility validation and is never written again.
     normalized.pop("pending_interrupt", None)
     normalized.pop("invocation_kind", None)
+    if "policy_digest" not in normalized:
+        legacy_policy = graph_execution_policy(
+            profile=cast(
+                AssistantGraphProfileName,
+                normalized.get("profile", "standard"),
+            ),
+            model_call_limit=max(
+                1,
+                _non_negative_int(normalized.get("max_assistant_iterations")),
+            ),
+            action_tool_call_limit=_non_negative_int(
+                normalized.get(
+                    "max_action_tool_calls_per_run",
+                    normalized.get("max_tool_calls_per_run"),
+                )
+            ),
+            control_tool_call_limit=_non_negative_int(
+                normalized.get("max_control_tool_calls_per_run")
+            ),
+        )
+        normalized["policy_digest"] = legacy_policy.policy_digest
+    normalized.pop("max_assistant_iterations", None)
+    normalized.pop("max_tool_calls_per_run", None)
+    normalized.pop("max_action_tool_calls_per_run", None)
+    normalized.pop("max_control_tool_calls_per_run", None)
     try:
         # Strict DTOs intentionally distinguish Python tuples from lists.  A
         # checkpoint is a JSON document, so validation must use JSON semantics

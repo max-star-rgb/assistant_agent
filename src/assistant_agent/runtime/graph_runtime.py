@@ -33,9 +33,12 @@ from assistant_agent.runtime.requests import RuntimeTaskUpdate, UserRequest
 from assistant_agent.runtime.assistant_graph_profiles import (
     assistant_graph_profile,
     AssistantGraphProfileName,
+    GraphExecutionPolicy,
     GraphProfileMismatchError,
     GraphProfilePolicyError,
+    default_graph_execution_policy,
     profile_scope_matches,
+    validate_graph_execution_policy,
 )
 from assistant_agent.runtime.assistant_interrupts import AssistantInterruptRequest
 from assistant_agent.tools.ids import (
@@ -187,7 +190,9 @@ class GraphRuntimeContext:
     invocation_kind: GraphInvocationKind = "invoke"
     refresh_memory: bool = False
     invocation_token: str = field(default_factory=lambda: secrets.token_urlsafe(24))
-    graph_profile: AssistantGraphProfileName = "standard"
+    execution_policy: GraphExecutionPolicy = field(
+        default_factory=default_graph_execution_policy
+    )
     interrupt_request: AssistantInterruptRequest | None = None
 
     def __init__(
@@ -210,7 +215,8 @@ class GraphRuntimeContext:
         invocation_kind: GraphInvocationKind = "invoke",
         refresh_memory: bool = False,
         invocation_token: str | None = None,
-        graph_profile: AssistantGraphProfileName = "standard",
+        graph_profile: AssistantGraphProfileName | None = None,
+        execution_policy: GraphExecutionPolicy | None = None,
         interrupt_request: AssistantInterruptRequest | None = None,
     ) -> None:
         if services is None:
@@ -263,8 +269,18 @@ class GraphRuntimeContext:
             "invocation_token",
             invocation_token or secrets.token_urlsafe(24),
         )
-        object.__setattr__(self, "graph_profile", graph_profile)
+        policy = validate_graph_execution_policy(
+            execution_policy
+            or default_graph_execution_policy(graph_profile or "standard")
+        )
+        if graph_profile is not None and policy.profile != graph_profile:
+            raise ValueError("execution policy profile does not match graph profile")
+        object.__setattr__(self, "execution_policy", policy)
         object.__setattr__(self, "interrupt_request", interrupt_request)
+
+    @property
+    def graph_profile(self) -> AssistantGraphProfileName:
+        return self.execution_policy.profile
 
     def __getattr__(self, name: str) -> Any:
         try:
@@ -336,6 +352,7 @@ def bind_checkpointed_runtime_node(
         legacy_state = assistant_loop_state_from_turn_state(
             graph_state,
             runtime_state=runtime_context.agent_state,
+            execution_policy=scoped_runtime_context.execution_policy,
         )
         enriched_state = _with_runtime_context(
             legacy_state,
@@ -350,7 +367,11 @@ def bind_checkpointed_runtime_node(
             state=result.get("state") if isinstance(result, dict) else None,
         )
         profile = graph_state.get("profile", "standard")
-        projected = assistant_turn_state_from_loop_state(result, profile=profile)
+        projected = assistant_turn_state_from_loop_state(
+            result,
+            profile=profile,
+            execution_policy=scoped_runtime_context.execution_policy,
+        )
         return _preserve_profile_scope(
             projected,
             graph_state,
@@ -468,6 +489,18 @@ def _scoped_runtime_context(
     *,
     expected_profile: AssistantGraphProfileName,
 ) -> GraphRuntimeContext:
+    if (
+        runtime_context.execution_policy.profile != graph_state.get("profile")
+        or runtime_context.execution_policy.policy_digest
+        != graph_state.get("policy_digest")
+    ):
+        from assistant_agent.runtime.assistant_graph_profiles import (
+            GraphExecutionPolicyMismatchError,
+        )
+
+        raise GraphExecutionPolicyMismatchError(
+            "Runtime execution policy does not match the checkpoint digest."
+        )
     catalog = graph_state.get("catalog", {})
     reason_codes = tuple(catalog.get("selection_reason_codes", ()))
     marker = f"graph_profile:{expected_profile}"
@@ -510,15 +543,13 @@ def _scoped_runtime_context(
         raise GraphProfilePolicyError(
             "checkpoint Tool scope exceeds the selected graph profile"
         )
+    policy = runtime_context.execution_policy
     if (
-        int(graph_state.get("max_tool_calls_per_run", 0)) > profile.max_tool_iterations
-        or int(graph_state.get("max_action_tool_calls_per_run", 0))
-        > profile.max_tool_iterations
-        or int(graph_state.get("max_control_tool_calls_per_run", 0))
-        > profile.max_control_tool_iterations
+        policy.action_tool_call_limit > profile.max_tool_iterations
+        or policy.control_tool_call_limit > profile.max_control_tool_iterations
     ):
         raise GraphProfilePolicyError(
-            "checkpoint Tool budget exceeds the selected graph profile"
+            "Runtime Tool budget exceeds the selected graph profile"
         )
     executor = copy(runtime_context.tool_executor)
     executor.registry = _ProfileToolRegistryView(
@@ -542,7 +573,7 @@ def _scoped_runtime_context(
         invocation_kind=runtime_context.invocation_kind,
         refresh_memory=runtime_context.refresh_memory,
         invocation_token=runtime_context.invocation_token,
-        graph_profile=runtime_context.graph_profile,
+        execution_policy=runtime_context.execution_policy,
         interrupt_request=runtime_context.interrupt_request,
     )
 
@@ -558,7 +589,6 @@ def _preserve_profile_scope(
     prior_reasons = tuple(prior_catalog.get("selection_reason_codes", ()))
     if marker not in prior_reasons:
         return projected
-    profile = assistant_graph_profile(expected_profile)
     allowed = frozenset(prior_catalog.get("available_tool_names", ()))
     current_catalog = projected.get("catalog", {})
     current_names = tuple(current_catalog.get("available_tool_names", ()))
@@ -582,20 +612,4 @@ def _preserve_profile_scope(
             )
         ),
     }
-    projected["max_assistant_iterations"] = min(
-        int(projected.get("max_assistant_iterations", 0)),
-        max(1, profile.max_tool_iterations),
-    )
-    projected["max_tool_calls_per_run"] = min(
-        int(projected.get("max_tool_calls_per_run", 0)),
-        profile.max_tool_iterations,
-    )
-    projected["max_action_tool_calls_per_run"] = min(
-        int(projected.get("max_action_tool_calls_per_run", 0)),
-        profile.max_tool_iterations,
-    )
-    projected["max_control_tool_calls_per_run"] = min(
-        int(projected.get("max_control_tool_calls_per_run", 0)),
-        profile.max_control_tool_iterations,
-    )
     return projected

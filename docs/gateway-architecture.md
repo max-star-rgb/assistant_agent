@@ -1,6 +1,6 @@
 # Agent Server 部署架构
 
-Last updated: 2026-08-13
+Last updated: 2026-08-14
 
 ## Authority contract
 
@@ -61,6 +61,8 @@ Agent Server 调用 `assistant_agent.agent_server.graph:assistant_graph` factory
 Graph 输入只含 `request_input`；可信身份、tenant、mode、entry profile 和 media capability 位于严格
 `AgentServerRunContext`。factory 必须用认证 principal 校验 context delegation。custom route 内部若要发起
 run，必须经公开同源 API 并转发 Authorization；不得用 `/noauth` 后再相信客户端可伪造的 context。
+worker composition 根据受信配置构造不可变 `GraphExecutionPolicy` 并放入 LangGraph Runtime context；
+Assistant checkpoint 只保存对应 digest 与已用计数，不复制模型或 Tool 最大调用数。
 
 mock/local 模式可用 `X-Assistant-User`、`X-Assistant-Tenant` 构造多个开发 principal。real mode 先验证
 `ASSISTANT_AGENT_SERVER_SERVICE_TOKEN`，再要求媒体服务提供 `X-Assistant-User`、
