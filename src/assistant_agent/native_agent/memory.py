@@ -10,8 +10,11 @@ import importlib
 from typing import Any, Protocol, runtime_checkable
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
+from langgraph.errors import NodeError
+from langgraph.graph import END
 from langgraph.runtime import Runtime
 from langgraph.store.base import BaseStore
+from langgraph.types import Command
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.identity import RequestIdentity
@@ -274,10 +277,17 @@ async def memory_recall_node(
     }
 
 
-def memory_recall_degraded(_error: BaseException) -> dict[str, Any]:
-    """Return the only fail-open recall state after graph-native retries."""
+def memory_recall_degraded(
+    _state: AssistantRootState,
+    error: NodeError,
+) -> Command[str]:
+    """Use LangGraph recovery to continue with an explicit degraded snapshot."""
 
-    return {"memory_context": (), "memory_status": "degraded"}
+    del error
+    return Command(
+        update={"memory_context": (), "memory_status": "degraded"},
+        goto="execution_router",
+    )
 
 
 async def memory_commit_node(
@@ -288,19 +298,24 @@ async def memory_commit_node(
 ) -> dict[str, Any]:
     """Commit after branch convergence without changing the produced answer."""
 
-    try:
-        await backend.commit(
-            context=runtime.context,
-            thread_id=_execution_value(runtime, "thread_id"),
-            run_id=_execution_value(runtime, "run_id"),
-            messages=tuple(state.get("messages", ())),
-            store=runtime.store,
-        )
-    except Exception:
-        # LangSmith observes the node exception boundary in the parent graph; memory
-        # failure is deliberately not copied into checkpointed product state.
-        return {}
+    await backend.commit(
+        context=runtime.context,
+        thread_id=_execution_value(runtime, "thread_id"),
+        run_id=_execution_value(runtime, "run_id"),
+        messages=tuple(state.get("messages", ())),
+        store=runtime.store,
+    )
     return {}
+
+
+def memory_commit_degraded(
+    _state: AssistantRootState,
+    error: NodeError,
+) -> Command[str]:
+    """Use LangGraph recovery to keep the answer when optional commit fails."""
+
+    del error
+    return Command(goto=END)
 
 
 def _create_langmem_manager(config: ProviderConfig, *, store: BaseStore | None):
@@ -428,6 +443,7 @@ __all__ = [
     "MemoryBackend",
     "MemoryBackendConfigurationError",
     "create_memory_backend",
+    "memory_commit_degraded",
     "memory_commit_node",
     "memory_recall_degraded",
     "memory_recall_node",

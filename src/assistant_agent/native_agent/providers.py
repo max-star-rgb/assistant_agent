@@ -219,34 +219,10 @@ def _mock_structured_tool_call(tools: Any) -> tuple[str, dict[str, Any]] | None:
             "nodes": [
                 {
                     "node_id": "answer",
-                    "display_title": "完成用户目标",
                     "objective": "完成用户目标并给出可靠答案",
                     "depends_on": [],
-                    "acceptance_contract": {
-                        "schema_version": "native_step_acceptance_v1",
-                        "output": {
-                            "artifact_type": "text",
-                            "description": "最终文本答案",
-                        },
-                        "criteria": [
-                            {
-                                "criterion_id": "answer_complete",
-                                "statement": "答案完整回应用户目标",
-                            }
-                        ],
-                    },
                 }
             ],
-            "deliverable_bindings": [
-                {"deliverable": "answer", "producer_node_id": "answer"}
-            ],
-            "constraint_bindings": [],
-        }
-    if name == "VerificationResult":
-        return name, {
-            "status": "passed",
-            "repair_work_item_ids": [],
-            "reason": "mock verification passed",
         }
     return None
 

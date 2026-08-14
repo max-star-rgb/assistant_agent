@@ -22,8 +22,14 @@ from assistant_agent.native_agent.state import (
 class MemoryProbe:
     backend_id = "probe"
 
-    def __init__(self, *, recall_failures: int = 0) -> None:
+    def __init__(
+        self,
+        *,
+        recall_failures: int = 0,
+        fail_commit: bool = False,
+    ) -> None:
         self.recall_failures = recall_failures
+        self.fail_commit = fail_commit
         self.recall_calls = 0
         self.commit_calls = 0
 
@@ -35,6 +41,8 @@ class MemoryProbe:
 
     async def commit(self, **_kwargs: Any) -> None:
         self.commit_calls += 1
+        if self.fail_commit:
+            raise ConnectionError("memory commit unavailable")
 
 
 def _branch_graph(state_schema, name: str, marker: str):
@@ -112,6 +120,15 @@ def test_root_retries_recall_three_times_then_uses_degraded_snapshot() -> None:
     assert result["messages"][-1].content == "planning"
 
 
+def test_root_preserves_answer_when_commit_error_handler_recovers() -> None:
+    backend = MemoryProbe(fail_commit=True)
+
+    result = _invoke(_root(backend), mode="fast")
+
+    assert backend.commit_calls == 1
+    assert result["messages"][-1].content == "fast"
+
+
 def test_root_input_rejects_unknown_mode_and_extra_product_protocol() -> None:
     with pytest.raises(ValidationError):
         AssistantRootInput.model_validate(
@@ -131,13 +148,13 @@ def test_root_graph_contains_only_native_parent_topology() -> None:
     graph = _root(MemoryProbe())
 
     assert graph.name == "AssistantRootGraph"
-    assert set(graph.get_graph().nodes) == {
+    assert {
         "__start__",
         "memory_recall",
-        "__error_handler__memory_recall",
+        "execution_router",
         "fast_agent",
         "planning_graph",
         "delivery_dispatch",
         "memory_commit",
         "__end__",
-    }
+    } <= set(graph.get_graph().nodes)

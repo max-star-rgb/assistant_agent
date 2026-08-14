@@ -20,6 +20,7 @@
 ```text
 START
   -> memory_recall
+  -> execution_router
   -> fast_agent | planning_graph
   -> delivery_dispatch（仅 pending_deliveries 非空）
   -> memory_commit
@@ -33,10 +34,10 @@ resume 与 Store 资源。
 fast 分支是 `create_agent` 编译出的 `AssistantFastAgent`，使用标准 `BaseChatModel`、`BaseTool`、`ToolRuntime`、
 messages channel 和官方 middleware，不维护项目自建 assistant/tool loop。
 
-planning 分支是显式 `AssistantPlanningGraph`：planner 输出严格 `NativePlanProposal`，本地 admission 校验引用、
-DAG 和 deliverable，`Send` 按依赖分 wave 并行派发 worker，join 后进入 verifier；局部 repair 以稳定 work item
-ID 和递增 revision 重跑，最后写入标准 `AIMessage`。每个 worker 复用同一个 fast graph，不创建第二套 Runtime，
-也不重复父图 Memory 节点。
+planning 分支是显式 `AssistantPlanningGraph`：planner 输出严格 `NativePlanProposal`，本地 admission 只校验节点
+ID、依赖引用和 DAG 无环，`Send` 按依赖分 wave 并行派发 worker，join 后直接 finalize 为标准 `AIMessage`。
+每个 worker 复用同一个 fast graph，不创建第二套 Runtime，也不重复父图 Memory 节点。当前不维护 verifier、
+repair、revision、acceptance contract、deliverable binding 或 artifact provenance；只有真实产品需求出现后才增加。
 
 ## 原生主动投递节点
 
@@ -51,17 +52,24 @@ closure 中的 `ProactiveDeliveryStore` 幂等入队。Store/client 不进入 st
 
 ## State 与恢复
 
-生产 state 以 `AgentState.messages` 的 `add_messages` reducer 为主。父图只增加：
+生产 state channel、checkpoint 和 reducer 调度全部使用 LangGraph 原生能力。生产 state 以
+`AgentState.messages` 的 `add_messages` reducer 为主；planning 并行结果使用
+`Annotated[list[WorkerResult], operator.add]` 声明原生列表累积。父图只增加：
 
 - `execution_mode`；
 - 冻结的 `memory_context` 与 `memory_status`；
 - checkpoint-safe `pending_deliveries` 与 `delivery_dispatch`；
-- planning 子图内部的 plan、worker result、artifact、verification 和 repair count。
+- planning 子图内部的 plan 与 worker result。
 
-worker result/artifact 以稳定 ID 合并；同 revision 内容冲突 fail closed，更高 repair revision 才能替换旧结果。
-Provider/Tool client、Memory backend、投递 Store、身份对象和 callback 不写入 checkpoint。旧
+已完成节点直接从 worker result 推导，不保存平行 completed-ID channel，也没有项目自定义 result/artifact
+reducer。Provider/Tool client、Memory backend、投递 Store、身份对象和 callback 不写入 checkpoint。旧
 `AssistantTurnState` checkpoint 不迁移进新图；旧 assistant/thread 仅作只读历史或外围兼容，新图使用版本化
 assistant ID `assistant-native-v1`。
+
+Memory 重试、error handler 和失败后的 `Command(update=..., goto=...)` 均是 LangGraph 原生 node 扩展能力，
+不是项目自研降级层。正常 recall 通过静态 edge 进入 `execution_router`；重试耗尽后 handler 写入显式
+`memory_status=degraded` 并用 `Command` 回到同一 router。commit 失败也由 node error handler 用 `Command`
+结束当前图，不覆盖已生成的答案。项目只声明“Memory 是辅助能力，因此失败仍继续”这一产品结果。
 
 ## 原生流与生命周期
 

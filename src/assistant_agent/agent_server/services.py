@@ -80,11 +80,7 @@ class AgentServerExecutionOwner:
             tool_call_limit=config.max_tool_iterations,
             context_window_tokens=config.context_input_token_limit,
         )
-        planning_graph = build_planning_graph(
-            model,
-            fast_agent,
-            max_repairs=2,
-        )
+        planning_graph = build_planning_graph(model, fast_agent)
         graph = build_assistant_root_graph(
             memory_backend=memory_backend,
             fast_agent=fast_agent,

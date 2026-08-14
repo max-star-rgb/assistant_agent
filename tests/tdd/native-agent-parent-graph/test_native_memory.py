@@ -7,10 +7,13 @@ from functools import partial
 import hashlib
 from typing import Any
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.errors import NodeError
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 from langgraph.store.memory import InMemoryStore
+from langgraph.types import Command
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.memory.mem0.models import (
@@ -21,6 +24,7 @@ from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.memory import (
     MemoryBackendConfigurationError,
     create_memory_backend,
+    memory_commit_degraded,
     memory_commit_node,
     memory_recall_degraded,
     memory_recall_node,
@@ -53,7 +57,11 @@ def _run_memory_graph(backend: ProbeBackend) -> dict[str, Any]:
     builder = StateGraph(AssistantRootState, context_schema=AssistantRunContext)
     builder.add_node("recall", partial(memory_recall_node, backend=backend))
     builder.add_node("answer", answer)
-    builder.add_node("commit", partial(memory_commit_node, backend=backend))
+    builder.add_node(
+        "commit",
+        partial(memory_commit_node, backend=backend),
+        error_handler=memory_commit_degraded,
+    )
     builder.add_edge(START, "recall")
     builder.add_edge("recall", "answer")
     builder.add_edge("answer", "commit")
@@ -94,6 +102,28 @@ def test_commit_failure_preserves_final_ai_message() -> None:
     assert len(backend.commit_calls) == 1
 
 
+def test_commit_node_leaves_failure_to_langgraph_node_policy() -> None:
+    """Catches a domain node swallowing errors before error_handler can recover."""
+
+    backend = ProbeBackend(fail_commit=True)
+    runtime = Runtime(
+        context=AssistantRunContext(user_id="user-1", tenant_id="tenant-1"),
+        store=InMemoryStore(),
+    )
+
+    with pytest.raises(RuntimeError, match="third-party unavailable"):
+        asyncio.run(
+            memory_commit_node(
+                {
+                    "messages": [AIMessage(content="最终回答")],
+                    "execution_mode": "fast",
+                },
+                runtime,
+                backend=backend,
+            )
+        )
+
+
 def test_disabled_and_degraded_recall_are_checkpoint_safe() -> None:
     disabled = create_memory_backend(ProviderConfig(provider_mode="mock"))
     runtime = Runtime(
@@ -108,10 +138,15 @@ def test_disabled_and_degraded_recall_are_checkpoint_safe() -> None:
             backend=disabled,
         )
     )
-    degraded = memory_recall_degraded(RuntimeError("secret backend response"))
+    degraded = memory_recall_degraded(
+        {"messages": [], "execution_mode": "fast"},
+        NodeError(node="memory_recall", error=RuntimeError("secret backend response")),
+    )
 
     assert empty == {"memory_context": (), "memory_status": "empty"}
-    assert degraded == {"memory_context": (), "memory_status": "degraded"}
+    assert isinstance(degraded, Command)
+    assert degraded.update == {"memory_context": (), "memory_status": "degraded"}
+    assert degraded.goto == "execution_router"
 
 
 class FakeMem0Client:

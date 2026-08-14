@@ -18,13 +18,15 @@
 长期记忆只在父图执行：
 
 ```text
-memory_recall -> fast | planning -> memory_commit
+memory_recall -> execution_router -> fast | planning -> memory_commit
 ```
 
 planning worker 只读取父图冻结的 `memory_context`，不持有 backend，也不重复 recall/commit。recall 使用
-LangGraph `RetryPolicy(max_attempts=3)`；最终失败由原生 error handler 写入
-`memory_context=()`、`memory_status=degraded`，随后继续回答。commit 异常 fail-open，不删除、不替换最终
-`AIMessage`，第三方原始错误不进入 state。
+LangGraph `RetryPolicy(max_attempts=3)`；最终失败由 LangGraph 原生 node error handler 返回
+`Command(update={memory_context: (), memory_status: degraded}, goto=execution_router)`，随后继续回答。commit
+异常同样由原生 error handler 返回 `Command(goto=END)`，不删除、不替换最终 `AIMessage`，第三方原始错误
+不进入 state。`RetryPolicy`、error handler 和 `Command` 是 LangGraph 扩展能力，不构成项目自研降级层；
+项目只声明 Memory 失败时仍继续回答并显式标记 degraded 这一产品结果。
 
 ## 最小 backend 协议
 

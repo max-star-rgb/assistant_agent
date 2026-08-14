@@ -12,6 +12,7 @@ from langgraph.types import RetryPolicy
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.memory import (
     MemoryBackend,
+    memory_commit_degraded,
     memory_commit_node,
     memory_recall_degraded,
     memory_recall_node,
@@ -59,6 +60,7 @@ def build_assistant_root_graph(
         ),
         error_handler=memory_recall_degraded,
     )
+    builder.add_node("execution_router", execution_router_node)
     builder.add_node("fast_agent", fast_agent)
     builder.add_node("planning_graph", planning_graph)
     builder.add_node(
@@ -71,15 +73,12 @@ def build_assistant_root_graph(
     builder.add_node(
         "memory_commit",
         partial(memory_commit_node, backend=memory_backend),
+        error_handler=memory_commit_degraded,
     )
     builder.add_edge(START, "memory_recall")
+    builder.add_edge("memory_recall", "execution_router")
     builder.add_conditional_edges(
-        "memory_recall",
-        route_execution_mode,
-        {"fast": "fast_agent", "planning": "planning_graph"},
-    )
-    builder.add_conditional_edges(
-        "__error_handler__memory_recall",
+        "execution_router",
         route_execution_mode,
         {"fast": "fast_agent", "planning": "planning_graph"},
     )
@@ -96,6 +95,12 @@ def build_assistant_root_graph(
     builder.add_edge("delivery_dispatch", "memory_commit")
     builder.add_edge("memory_commit", END)
     return builder.compile(name="AssistantRootGraph")
+
+
+def execution_router_node(_state: AssistantRootState) -> dict[str, object]:
+    """Expose one stable join point for normal and recovered recall execution."""
+
+    return {}
 
 
 def route_execution_mode(state: AssistantRootState) -> str:
@@ -171,6 +176,7 @@ __all__ = [
     "ProactiveDeliveryUnavailableError",
     "build_assistant_root_graph",
     "delivery_dispatch_node",
+    "execution_router_node",
     "route_after_execution",
     "route_execution_mode",
 ]
