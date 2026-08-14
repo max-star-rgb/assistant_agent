@@ -325,16 +325,6 @@ class PersistedRunToolCatalog(_CheckpointModel):
     registry_generation: str | None = Field(default=None, min_length=1, max_length=256)
 
 
-class PersistedInterrupt(_CheckpointModel):
-    schema_version: Literal[1] = 1
-    kind: Literal["approval", "input"]
-    prompt: str = Field(min_length=1, max_length=2_000)
-    action_ref: str = Field(min_length=1, max_length=256)
-    allowed_resume_kinds: tuple[Literal["approve", "reject", "provide_input"], ...] = (
-        Field(min_length=1, max_length=2)
-    )
-
-
 class PersistedCitation(_CheckpointModel):
     source_id: str = Field(min_length=1, max_length=256)
     title: str = Field(min_length=1, max_length=1_000)
@@ -358,7 +348,6 @@ class _AssistantTurnStateModel(_CheckpointModel):
     turn_origin_id: str = Field(min_length=1, max_length=512)
     invocation_run_id: str = Field(min_length=1, max_length=512)
     invocation_run_ids: tuple[str, ...] = Field(min_length=1, max_length=1_000)
-    invocation_kind: AssistantInvocationKind = "invoke"
     memory_origin_run_id: str = Field(min_length=1, max_length=512)
     turn_provenance: Literal["product_turn", "time_travel"]
     continuation: AssistantGraphContinuation = "assistant"
@@ -384,7 +373,6 @@ class _AssistantTurnStateModel(_CheckpointModel):
     context_refs: tuple[PersistedContextRef, ...] = Field(default=(), max_length=256)
     capability_refs: tuple[str, ...] = Field(default=(), max_length=64)
     catalog: PersistedRunToolCatalog = Field(default_factory=PersistedRunToolCatalog)
-    pending_interrupt: PersistedInterrupt | None = None
     final_response: PersistedResponse | None = None
     assistant_stream_started: bool = False
     assistant_stream_finished: bool = False
@@ -407,7 +395,6 @@ class AssistantTurnState(TypedDict):
     turn_origin_id: str
     invocation_run_id: str
     invocation_run_ids: tuple[str, ...]
-    invocation_kind: AssistantInvocationKind
     memory_origin_run_id: str
     turn_provenance: Literal["product_turn", "time_travel"]
     continuation: AssistantGraphContinuation
@@ -429,7 +416,6 @@ class AssistantTurnState(TypedDict):
     context_refs: tuple[PersistedContextRef, ...]
     capability_refs: tuple[str, ...]
     catalog: PersistedRunToolCatalog
-    pending_interrupt: PersistedInterrupt | None
     final_response: PersistedResponse | None
     assistant_stream_started: bool
     assistant_stream_finished: bool
@@ -538,7 +524,6 @@ def assistant_turn_state_from_agent_state(
         turn_origin_id=state.run_id,
         invocation_run_id=state.run_id,
         invocation_run_ids=(state.run_id,),
-        invocation_kind="invoke",
         memory_origin_run_id=state.memory_origin_run_id or state.run_id,
         turn_provenance=state.turn_provenance,
         continuation="memory_recall",
@@ -592,7 +577,6 @@ def assistant_turn_state_from_loop_state(
                     ]
                 )
             ),
-            "invocation_kind": graph_state.get("invocation_kind", "invoke"),
             "memory_origin_run_id": graph_state.get(
                 "memory_origin_run_id", state.memory_origin_run_id or state.run_id
             ),
@@ -803,7 +787,6 @@ def assistant_loop_state_from_turn_state(
         "turn_origin_id": str(persisted["turn_origin_id"]),
         "invocation_run_id": str(persisted["invocation_run_id"]),
         "invocation_run_ids": list(persisted["invocation_run_ids"]),
-        "invocation_kind": str(persisted["invocation_kind"]),
         "memory_origin_run_id": str(persisted["memory_origin_run_id"]),
         "turn_provenance": str(persisted["turn_provenance"]),
         "continuation": str(persisted["continuation"]),
@@ -921,7 +904,6 @@ def reenter_assistant_invocation(
     updated["invocation_run_ids"] = list(
         dict.fromkeys([*persisted["invocation_run_ids"], runtime_state.run_id])
     )
-    updated["invocation_kind"] = invocation_kind
     updated["turn_provenance"] = (
         "time_travel"
         if invocation_kind in {"replay", "fork"}
@@ -1073,12 +1055,18 @@ def validate_assistant_turn_state(value: Mapping[str, object]) -> AssistantTurnS
         or value.get("state_schema_version") != ASSISTANT_STATE_SCHEMA_VERSION
     ):
         raise AssistantStateCompatibilityError()
+    normalized = dict(value)
+    # v4 checkpoints may contain the former duplicate interrupt request.  The
+    # native task Interrupt is authoritative, so the state channel is dropped
+    # during compatibility validation and is never written again.
+    normalized.pop("pending_interrupt", None)
+    normalized.pop("invocation_kind", None)
     try:
         # Strict DTOs intentionally distinguish Python tuples from lists.  A
         # checkpoint is a JSON document, so validation must use JSON semantics
         # (where bounded tuples are represented by arrays).
         validated = _STATE_ADAPTER.validate_json(
-            json.dumps(value, ensure_ascii=False, allow_nan=False)
+            json.dumps(normalized, ensure_ascii=False, allow_nan=False)
         )
     except (TypeError, ValueError, ValidationError) as exc:
         raise ValueError("assistant_state_invalid") from exc
@@ -1090,8 +1078,6 @@ def route_after_assistant_turn_state(value: Mapping[str, object]) -> str:
 
     state = validate_assistant_turn_state(value)
     run = cast(Mapping[str, Any], state["run"])
-    if state.get("pending_interrupt") is not None:
-        return "await_input"
     if run["status"] in {"failed", "completed", "cancelled"}:
         return "finish"
     output = state.get("assistant_output")
@@ -1104,8 +1090,6 @@ def route_after_await_input_turn_state(value: Mapping[str, object]) -> str:
     """Continue from a resolved input gate without consulting request text."""
 
     state = validate_assistant_turn_state(value)
-    if state.get("pending_interrupt") is not None:
-        raise ValueError("assistant_interrupt_not_resolved")
     if state.get("pending_tool_calls"):
         return "execute_tool"
     return "assistant"

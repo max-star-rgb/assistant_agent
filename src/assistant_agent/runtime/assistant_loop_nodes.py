@@ -162,12 +162,6 @@ def prepare_invocation_node(
     return updated
 
 
-def time_travel_anchor_node(state: AssistantTurnState) -> AssistantTurnState:
-    """Stable no-side-effect boundary whose only successor is the gate."""
-
-    return validate_assistant_turn_state(state)
-
-
 def publish_response_node(
     state: AssistantTurnState,
     runtime: Runtime[GraphRuntimeContext],
@@ -1628,13 +1622,18 @@ def await_input_node(
     """Pause and resume at a real LangGraph node without preceding side effects."""
 
     state = validate_assistant_turn_state(graph_state)
-    pending_payload = state.get("pending_interrupt")
+    context = runtime.context
+    pending_payload = context.interrupt_request if context is not None else None
     if pending_payload is None:
         raise AssistantInterruptContractError(
             "assistant_interrupt_missing",
             "await_input requires one persisted interrupt request.",
         )
-    request = validate_assistant_interrupt_request(pending_payload)
+    request = (
+        pending_payload
+        if isinstance(pending_payload, AssistantInterruptRequest)
+        else validate_assistant_interrupt_request(pending_payload)
+    )
     _validate_interrupt_action_binding(state, request)
     resumed = validate_assistant_resume(
         interrupt(request.model_dump(mode="json"))
@@ -1658,8 +1657,7 @@ def _validate_interrupt_action_binding(
                 "Approval interrupt is not bound to the current pending Tool call.",
             )
         return
-    run = state["run"]
-    if request.action_ref != assistant_turn_action_ref(str(run["run_id"])):
+    if request.action_ref != assistant_turn_action_ref(str(state["turn_origin_id"])):
         raise AssistantInterruptContractError(
             "interrupt_action_ref_mismatch",
             "Input interrupt is not bound to the current assistant turn.",
@@ -1682,8 +1680,6 @@ def _apply_assistant_resume(
     run = dict(state["run"])
     run["status"] = "running"
     updated["run"] = run
-    updated["pending_interrupt"] = None
-
     if isinstance(resume, AssistantApproveResume):
         return validate_assistant_turn_state(updated)
 

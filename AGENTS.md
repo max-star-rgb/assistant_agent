@@ -50,7 +50,7 @@ manifest 只用于 coding agent 选择工程文档，不进入产品 Runtime，�
 - 测试、eval、无 key 环境只走 mock/local/offline。
 - 真实 Provider 只能在用户明确要求、`MULTIMODAL_AGENT_PROVIDER_MODE=real`、具体 Provider 显式配置同时满足时调用；不能因为检测到 key 自动启用。
 - 不写入或提交 API key、token、真实 `.env`、真实用户数据、provider 原始响应、真实媒体、大文件、缓存或生成物。
-- 不主动安装新依赖、不联网拉取依赖，除非用户明确要求并允许；需要安装时先询问用户。
+- 允许主动在虚拟环境hello_agent中安装新依赖以完成开发目标
 - 如果本轮调用了真实 Provider，最终报告必须说明调用范围和验证结果。
 
 ## 4. 本地命令
@@ -84,6 +84,7 @@ manifest 只用于 coding agent 选择工程文档，不进入产品 Runtime，�
 
 ## 6. 开发规则
 
+- 功能、代码设计优先拥抱原生langgraph。
 - 新代码优先放入既有分层，公共契约优先使用 Pydantic model；不要为单次需求制造新架构。
 - Tool、Provider、Memory、Gateway、Context、多 Agent 和 durable task 的具体规则以 manifest 匹配的 authority 为准。
 - 工具结果必须结构化，失败必须返回可解释错误；外部能力必须经过 adapter、mock/unconfigured 和安全 profile 边界。

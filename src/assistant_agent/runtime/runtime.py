@@ -898,11 +898,6 @@ class AgentGraphRuntime:
             "response_stream_separator_pending": False,
         }
         initial_state = assistant_turn_state_from_loop_state(legacy_initial_state)
-        if interrupt_request is not None:
-            initial_state["pending_interrupt"] = interrupt_request.model_dump(
-                mode="json"
-            )
-            initial_state = validate_assistant_turn_state(initial_state)
         identity = GraphExecutionIdentity.for_assistant_turn(
             agent_id=self.agent_id,
             user_id=request.user_id,
@@ -1066,6 +1061,11 @@ class AgentGraphRuntime:
             refresh_memory=refresh_memory,
             graph_profile=persisted["profile"],
             invocation_token=claim_context.invocation_token,
+            interrupt_request=(
+                time_travel_prepared.interrupt_request
+                if invocation_kind == "resume"
+                else None
+            ),
             publish_start=False,
         )
         bound_continuation = None
@@ -1149,7 +1149,11 @@ class AgentGraphRuntime:
             else None
         )
         projector_sink: EventSink | None = run_event_sink
-        if run_event_sink is not None and interrupt_request is not None:
+        if (
+            run_event_sink is not None
+            and interrupt_request is not None
+            and invocation_kind == "invoke"
+        ):
             projector_sink = _InterruptProductEventBarrier(run_event_sink)
         product_event_projector = ProductEventProjector(event_sink=projector_sink)
         tool_executor = ToolExecutor(
@@ -1197,6 +1201,7 @@ class AgentGraphRuntime:
                 invocation_kind=invocation_kind,
                 refresh_memory=refresh_memory,
                 graph_profile=graph_profile,
+                interrupt_request=interrupt_request,
                 **(
                     {"invocation_token": invocation_token}
                     if invocation_token is not None
@@ -2252,7 +2257,6 @@ def _prepare_refresh_memory_fork(
             },
             "assistant_output": None,
             "pending_tool_calls": [],
-            "pending_interrupt": None,
             "final_response": None,
             "turn_provenance": "time_travel",
             "context_refs": [

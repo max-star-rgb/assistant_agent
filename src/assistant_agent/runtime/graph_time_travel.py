@@ -94,10 +94,16 @@ class TimeTravelEffectPolicy:
         pending = state.get("pending_tool_calls")
         if not pending:
             return "safe"
-        continuation = state.get("continuation")
-        if continuation not in {"execute_tool", "await_input"}:
+        if next_nodes == ("prepare_invocation",):
+            # Compatibility with v4 checkpoints written by the former
+            # anchor/gate topology.  New checkpoints expose the semantic next
+            # node directly and do not consult this state field.
+            pending_target = state.get("continuation")
+        elif next_nodes in {("execute_tool",), ("await_input",)}:
+            pending_target = next_nodes[0]
+        else:
             return "forbidden"
-        if next_nodes not in {("prepare_invocation",), ("await_input",)}:
+        if pending_target not in {"execute_tool", "await_input"}:
             return "forbidden"
         if not isinstance(pending, (list, tuple)) or not pending:
             return "forbidden"

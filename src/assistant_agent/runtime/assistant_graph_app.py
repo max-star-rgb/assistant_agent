@@ -25,6 +25,7 @@ from assistant_agent.runtime.assistant_graph_state import (
 from assistant_agent.runtime.assistant_interrupts import (
     AssistantInterrupt,
     AssistantInterruptContractError,
+    AssistantInterruptRequest,
     AssistantResume,
     validate_assistant_interrupt_request,
     validate_assistant_resume,
@@ -66,6 +67,17 @@ from assistant_agent.observability.langsmith_native import (
 _MISSING_FINAL_STATE = object()
 _HISTORY_PAGE_SIZE = 100
 _HISTORY_SCAN_LIMIT = 500
+_NATIVE_REENTRY_NODES = frozenset(
+    {
+        "memory_recall",
+        "assistant",
+        "await_input",
+        "execute_tool",
+        "compose_response",
+        "publish_response",
+        "memory_commit",
+    }
+)
 
 
 class GraphExecutionError(RuntimeError):
@@ -315,6 +327,7 @@ class _PreparedGraphContinuation:
         default_factory=_ContinuationConsumption
     )
     resume_payload: Mapping[str, Any] | None = None
+    interrupt_request: AssistantInterruptRequest | None = None
 
 
 @dataclass(frozen=True)
@@ -596,10 +609,13 @@ class AssistantTurnGraphApp:
         snapshot = await self._resolve_history_snapshot(identity, request.selector)
         values: AssistantTurnState | None = None
         if kind == "replay":
-            if tuple(getattr(snapshot, "next", ()) or ()) != ("prepare_invocation",):
+            next_nodes = tuple(getattr(snapshot, "next", ()) or ())
+            if next_nodes != ("prepare_invocation",) and not (
+                len(next_nodes) == 1 and next_nodes[0] in _NATIVE_REENTRY_NODES
+            ):
                 raise GraphExecutionError(
                     "graph_checkpoint_not_replayable",
-                    "The selected checkpoint has no safe re-entry gate.",
+                    "The selected checkpoint has no safe native successor.",
                 )
         else:
             assert isinstance(request, GraphForkRequest)
@@ -657,14 +673,14 @@ class AssistantTurnGraphApp:
                 "graph_checkpoint_incompatible",
                 "Assistant checkpoint cannot be resumed by this graph version.",
             ) from exc
-        pending_payload = state.get("pending_interrupt")
-        if pending_payload is None or not _snapshot_interrupt_objects(snapshot):
+        try:
+            interrupt_request = _snapshot_interrupt_request(snapshot)
+        except AssistantInterruptContractError as exc:
             raise GraphExecutionError(
                 "graph_interrupt_not_pending",
                 "Assistant checkpoint has no pending native interrupt.",
-            )
+            ) from exc
         try:
-            interrupt_request = validate_assistant_interrupt_request(pending_payload)
             validated_resume = validate_assistant_resume(
                 resume.model_dump(mode="json")
                 if hasattr(resume, "model_dump")
@@ -683,6 +699,7 @@ class AssistantTurnGraphApp:
             runnable_config=_snapshot_config(snapshot),
             app_nonce=self._continuation_nonce,
             resume_payload=validated_resume.model_dump(mode="json"),
+            interrupt_request=interrupt_request,
         )
 
     def bind_time_travel_context(
@@ -725,6 +742,11 @@ class AssistantTurnGraphApp:
                 raise GraphExecutionError(
                     "graph_profile_mismatch",
                     "Resume context profile does not match this checkpoint.",
+                )
+            if context.interrupt_request != prepared.interrupt_request:
+                raise GraphExecutionError(
+                    "graph_resume_context_mismatch",
+                    "Resume context does not carry the selected native interrupt.",
                 )
             if (
                 runtime_state is None
@@ -828,9 +850,24 @@ class AssistantTurnGraphApp:
                         "Compiled graph does not expose native async state updates.",
                     )
                 begin_native()
-                config = await updater(
-                    config, prepared.fork_values, as_node="time_travel_anchor"
-                )
+                try:
+                    config = await updater(
+                        config,
+                        prepared.fork_values,
+                    )
+                except Exception as exc:
+                    raise GraphExecutionError(
+                        "graph_checkpoint_not_replayable",
+                        "The fork checkpoint cannot preserve its native successor.",
+                    ) from exc
+                updated_snapshot = await self._graph.aget_state(config)
+                if tuple(getattr(updated_snapshot, "next", ()) or ()) != tuple(
+                    getattr(prepared.snapshot, "next", ()) or ()
+                ):
+                    raise GraphExecutionError(
+                        "graph_checkpoint_not_replayable",
+                        "The fork update changed the checkpoint successor.",
+                    )
 
                 def begin() -> None:
                     return None
@@ -1121,14 +1158,14 @@ class AssistantTurnGraphApp:
                 "graph_profile_mismatch",
                 "Assistant checkpoint profile does not match this graph app.",
             )
-        pending_payload = state.get("pending_interrupt")
-        if pending_payload is None or not _snapshot_interrupt_objects(snapshot):
+        try:
+            request = _snapshot_interrupt_request(snapshot)
+        except AssistantInterruptContractError as exc:
             raise GraphExecutionError(
                 "graph_interrupt_not_pending",
                 "Assistant checkpoint has no pending native interrupt.",
-            )
+            ) from exc
         try:
-            request = validate_assistant_interrupt_request(pending_payload)
             validated_resume = validate_assistant_resume(
                 resume.model_dump(mode="json")
                 if hasattr(resume, "model_dump")
@@ -1665,7 +1702,22 @@ def _snapshot_interrupt_objects(snapshot: Any) -> tuple[Any, ...]:
         child = getattr(task, "state", None)
         if child is not None and hasattr(child, "tasks"):
             collected.extend(_snapshot_interrupt_objects(child))
-    return tuple(collected)
+    unique: dict[str, Any] = {}
+    for item in collected:
+        interrupt_id = getattr(item, "id", None)
+        key = str(interrupt_id) if interrupt_id is not None else repr(item)
+        unique.setdefault(key, item)
+    return tuple(unique.values())
+
+
+def _snapshot_interrupt_request(snapshot: Any) -> AssistantInterruptRequest:
+    interrupts = _snapshot_interrupt_objects(snapshot)
+    if len(interrupts) != 1:
+        raise AssistantInterruptContractError(
+            "assistant_interrupt_invalid",
+            "Checkpoint must contain exactly one native interrupt.",
+        )
+    return validate_assistant_interrupt_request(getattr(interrupts[0], "value", None))
 
 
 def _safe_time_travel_stream_part(part: GraphStreamPart) -> GraphStreamPart | None:
@@ -1810,7 +1862,9 @@ def _history_summary(
             "Native graph history does not belong to this assistant graph owner.",
         )
 
-    if next_nodes != ("prepare_invocation",):
+    if next_nodes != ("prepare_invocation",) and not (
+        len(next_nodes) == 1 and next_nodes[0] in _NATIVE_REENTRY_NODES
+    ):
         return None
     created_at = _history_created_at(snapshot)
     return GraphCheckpointSummary(

@@ -1,5 +1,5 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="Assistant Server" type="PythonConfigurationType" factoryName="Python">
+  <configuration default="false" name="Agent Server (Real)" type="PythonConfigurationType" factoryName="Python">
     <module name="hello_agent" />
     <option name="ENV_FILES" value="" />
     <option name="INTERPRETER_OPTIONS" value="" />
@@ -7,11 +7,7 @@
     <envs>
       <env name="PYTHONUNBUFFERED" value="1" />
       <env name="NO_PROXY" value="localhost,127.0.0.1,127.0.0.0/8,::1" />
-      <env name="MULTIMODAL_AGENT_OPERATIONAL_CONSOLE_LEVEL" value="WARNING" />
-      <env name="MULTIMODAL_AGENT_OPERATIONAL_CONSOLE_MODE" value="concise" />
-      <env name="MULTIMODAL_AGENT_OPERATIONAL_FILE_LEVEL" value="DEBUG" />
-      <env name="MULTIMODAL_AGENT_OPERATIONAL_LOGGING_ENABLED" value="1" />
-      <env name="MULTIMODAL_AGENT_OPERATIONAL_LOG_DIR" value="$PROJECT_DIR$/.data/logs" />
+      <env name="MULTIMODAL_AGENT_PROVIDER_MODE" value="real" />
     </envs>
     <option name="SDK_HOME" value="$USER_HOME$/miniconda3/envs/hello_agent/bin/python" />
     <option name="SDK_NAME" value="hello_agent" />
@@ -20,7 +16,7 @@
     <option name="ADD_CONTENT_ROOTS" value="true" />
     <option name="ADD_SOURCE_ROOTS" value="true" />
     <option name="SCRIPT_NAME" value="$PROJECT_DIR$/scripts/run_server.py" />
-    <option name="PARAMETERS" value="--host 0.0.0.0 --port 8089 --console-level WARNING --allow-local-trace-content --allow-local-provider-protocol-capture --allow-local-memory-trace-content" />
+    <option name="PARAMETERS" value="--host 127.0.0.1 --port 8000 --no-reload --env-file .env" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="false" />

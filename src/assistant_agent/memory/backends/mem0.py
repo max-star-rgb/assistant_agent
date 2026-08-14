@@ -257,9 +257,7 @@ def _identity(state: Any) -> RequestIdentity:
 
 def _invocation_policy(state: Any, runtime: Any) -> tuple[str, bool]:
     context = getattr(runtime, "context", None)
-    invocation_kind = str(
-        getattr(context, "invocation_kind", state.get("invocation_kind", "invoke"))
-    )
+    invocation_kind = str(getattr(context, "invocation_kind", "invoke"))
     refresh_memory = bool(getattr(context, "refresh_memory", False))
     return invocation_kind, invocation_kind == "fork" and refresh_memory
 

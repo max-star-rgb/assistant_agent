@@ -37,6 +37,7 @@ from assistant_agent.runtime.assistant_graph_profiles import (
     GraphProfilePolicyError,
     profile_scope_matches,
 )
+from assistant_agent.runtime.assistant_interrupts import AssistantInterruptRequest
 from assistant_agent.tools.ids import (
     LOAD_SKILL_REFERENCE_TOOL_NAME,
     LOAD_SKILL_TOOL_NAME,
@@ -187,6 +188,7 @@ class GraphRuntimeContext:
     refresh_memory: bool = False
     invocation_token: str = field(default_factory=lambda: secrets.token_urlsafe(24))
     graph_profile: AssistantGraphProfileName = "standard"
+    interrupt_request: AssistantInterruptRequest | None = None
 
     def __init__(
         self,
@@ -209,6 +211,7 @@ class GraphRuntimeContext:
         refresh_memory: bool = False,
         invocation_token: str | None = None,
         graph_profile: AssistantGraphProfileName = "standard",
+        interrupt_request: AssistantInterruptRequest | None = None,
     ) -> None:
         if services is None:
             if tool_executor is None or chat_adapter is None or invocation_claim_store is None:
@@ -261,6 +264,7 @@ class GraphRuntimeContext:
             invocation_token or secrets.token_urlsafe(24),
         )
         object.__setattr__(self, "graph_profile", graph_profile)
+        object.__setattr__(self, "interrupt_request", interrupt_request)
 
     def __getattr__(self, name: str) -> Any:
         try:
@@ -539,6 +543,7 @@ def _scoped_runtime_context(
         refresh_memory=runtime_context.refresh_memory,
         invocation_token=runtime_context.invocation_token,
         graph_profile=runtime_context.graph_profile,
+        interrupt_request=runtime_context.interrupt_request,
     )
 
 
@@ -548,15 +553,6 @@ def _preserve_profile_scope(
     *,
     expected_profile: AssistantGraphProfileName,
 ) -> AssistantTurnState:
-    # A trusted interrupt request is committed in the graph input before the
-    # assistant decision runs.  Legacy node projection must not erase that
-    # checkpoint channel while the native await_input edge is still pending.
-    projected["pending_interrupt"] = prior.get("pending_interrupt")
-    if prior.get("pending_interrupt") is not None:
-        run = dict(projected["run"])
-        run["status"] = "running"
-        projected["run"] = run
-        projected["final_response"] = None
     marker = f"graph_profile:{expected_profile}"
     prior_catalog = prior.get("catalog", {})
     prior_reasons = tuple(prior_catalog.get("selection_reason_codes", ()))

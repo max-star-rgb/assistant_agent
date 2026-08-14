@@ -155,9 +155,11 @@ def test_memory_bundle_is_thin_and_runtime_graph_owns_recall_commit_order(
     assert {"memory_recall", "publish_response", "memory_commit"}.issubset(
         graph.nodes
     )
-    assert ("compose_response", "time_travel_anchor") in edges
-    assert ("publish_response", "time_travel_anchor") in edges
-    assert ("memory_commit", "time_travel_anchor") in edges
+    assert "time_travel_anchor" not in graph.nodes
+    assert ("memory_recall", "assistant") in edges
+    assert ("compose_response", "publish_response") in edges
+    assert ("publish_response", "memory_commit") in edges
+    assert ("memory_commit", "__end__") in edges
 
 
 @pytest.mark.core_invariant("MEMORY-001")
@@ -170,7 +172,6 @@ def test_snapshot_is_frozen_and_derived_history_never_writes(tmp_path) -> None:
 
     for kind in ("replay", "fork"):
         derived = dict(original)
-        derived["invocation_kind"] = kind
         derived["turn_provenance"] = "time_travel"
         recalled = bundle.recall_node(derived, None)
         committed = bundle.commit_node(recalled, None)

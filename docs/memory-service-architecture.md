@@ -1,6 +1,6 @@
 # LangGraph 原生长期记忆架构
 
-最后更新：2026-08-13
+最后更新：2026-08-14
 
 ## Authority contract
 
@@ -113,6 +113,10 @@ lifecycle，也不复用 Tool operation 的业务模型。
 精确 resume/replay/fork 缺少 `memory_context` 时 fail closed，不回退当前 backend。refresh fork 是受信请求的
 显式 opt-in：它从 `memory_recall` 重新开始，因此不再是严格历史重现；其 `turn_provenance` 仍为
 `time_travel`，所以 commit 被节点拒绝。
+
+`invoke|resume|replay|fork` 属于单次执行事实，只从 LangGraph `Runtime.context` 读取，不进入
+`AssistantTurnState`。`turn_origin_id`、`memory_origin_run_id`、`turn_provenance` 和冻结的
+`memory_context` 仍是跨 invocation 的业务恢复事实，继续保存在 checkpoint。
 
 ## 6. 配置与资源生命周期
 

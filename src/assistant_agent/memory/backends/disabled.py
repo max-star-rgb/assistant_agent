@@ -19,9 +19,7 @@ def disabled_memory_recall_node(state: Any, runtime: Any) -> Any:
 
     validated = validate_assistant_turn_state(state)
     context = getattr(runtime, "context", None)
-    invocation_kind = str(
-        getattr(context, "invocation_kind", validated["invocation_kind"])
-    )
+    invocation_kind = str(getattr(context, "invocation_kind", "invoke"))
     refresh_memory = invocation_kind == "fork" and bool(
         getattr(context, "refresh_memory", False)
     )
@@ -51,9 +49,7 @@ def disabled_memory_commit_node(state: Any, runtime: Any) -> Any:
 
     validated = validate_assistant_turn_state(state)
     context = getattr(runtime, "context", None)
-    invocation_kind = str(
-        getattr(context, "invocation_kind", validated["invocation_kind"])
-    )
+    invocation_kind = str(getattr(context, "invocation_kind", "invoke"))
     updated = dict(validated)
     updated["memory_commit"] = MemoryCommitState(
         status="skipped",

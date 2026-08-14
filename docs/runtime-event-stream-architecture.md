@@ -1,6 +1,6 @@
 # Runtime Event Stream Architecture
 
-Last updated: 2026-08-13
+Last updated: 2026-08-14
 
 ## Authority contract
 
@@ -59,6 +59,10 @@ standard 模式只有一套主运行图：每个 `AgentGraphRuntime` 只编译�
 `assistant -> await_input -> execute_tool|assistant` 与
 `assistant -> compose_response` 之间按真实 conditional edge 循环、等待或收口。Provider adapter、
 Tool executor、event sink 与 cancel token 通过 LangGraph runtime context 注入，不存入 graph state。
+这些自定义 node 是 LangGraph Graph API 的应用语义扩展点，不构成第二套执行引擎。当前执行位置只以
+native checkpoint 的 `next/tasks/interrupts` 为事实源；新 checkpoint 不再经过通用
+`time_travel_anchor -> prepare_invocation` 手写循环。`prepare_invocation` 只承担新 turn 的初始 identity
+gate，并为旧 v4 `next=("prepare_invocation",)` checkpoint 保留一次性 `continuation` 路由兼容。
 生产 Agent-Service 与默认 HTTP Gateway 消费 `astream(v2)` 的 native async Runtime 路径；
 逻辑 `ProductEventProjector` 只把已发生的 Runtime 事实投影为现有 `AgentEvent`/
 `RealtimeAgentEvent`，不决定 graph 路由。`GraphStreamPart`、namespace、checkpoint、task 与完整
@@ -66,7 +70,9 @@ state 不进入产品协议。
 
 `AssistantTurnGraph` 的 checkpoint boundary 是版本化、严格 JSON 的 `AssistantTurnState`：只保存 request、
 run、Tool trajectory、prompt-safe observation、稳定 context/capability/artifact reference、profile、phase、
-counter、pending Tool call/interrupt 和 final response 等恢复事实。`AgentState`、Provider/Tool client、Registry、
+counter、pending Tool call 和 final response 等恢复事实。新 checkpoint 不再保存 `pending_interrupt` 或
+`invocation_kind`：前者来自 native `Interrupt.value`，后者来自 `GraphRuntimeContext`；旧 v4 payload 中这两个
+字段会在兼容验证入口剥离。`AgentState`、Provider/Tool client、Registry、
 Executor、service/store、callback、cancel token、媒体正文、任意 metadata/data 都不进入 checkpoint；节点仅在
 一次调用期间从 `GraphRuntimeContext` hydrate 运行对象，返回前重新投影 strict state。同一 conversation 的新
 turn 会显式覆盖所有 run-scoped channel，不能依靠 LangGraph merge 偶然清除上轮事实。
@@ -96,6 +102,8 @@ compiled app
 `aget_state_history` 读取 checkpoint 与 state history，并以 `interrupt()`/
 `Command(resume=...)` 在同一 thread 恢复。`GraphStreamResult` 的 completed/interrupted 分类取自执行后的
 native snapshot（pending tasks/next 与稳定 Interrupt id），不从 root `values` 或 stream namespace 猜测。
+resume preflight 同样从 native Interrupt payload 恢复严格 `AssistantInterruptRequest`，再注入本次
+`GraphRuntimeContext` 供重启的 `await_input` node 校验；state 中没有第二份 pending request。
 trusted interrupt request 只允许结构化 `approval|input`，并绑定当前 pending Provider Tool call 或当前
 assistant turn；普通 write/dangerous category、用户文本和任意 metadata 不自动触发 HITL。该能力当前只供
 内部 compiled graph / Runtime 与后续父图使用；Agent-Service、Gateway、HTTP 和媒体 wire 不接收 resume，
