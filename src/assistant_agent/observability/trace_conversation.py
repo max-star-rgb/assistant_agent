@@ -2,11 +2,19 @@
 
 from dataclasses import dataclass
 from threading import Lock
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
-from assistant_agent.runtime.assistant_run_service import ConversationStore
+
+class ConversationTurn(Protocol):
+    user_text: str
+    assistant_text: str
+    trace_id: str
+
+
+class ConversationStore(Protocol):
+    def get(self, user_id: str, session_id: str) -> list[ConversationTurn]: ...
 
 
 DEFAULT_TRACE_CONVERSATION_CHAR_LIMIT = 1000

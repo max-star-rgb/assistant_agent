@@ -53,8 +53,8 @@ factory lifespan 创建 `AgentServerExecutionOwner`，持有标准 `BaseChatMode
 checkpointer 的 `AssistantRootGraph`，以及对应 close targets。LangMem 可引用 Server 注入的 Store；主动投递
 Store 则作为原生 `delivery_dispatch` 节点的 closure 资源，不进入 Graph State 或 Runtime context。
 
-composition 不构造 `AgentGraphRuntime`、`AssistantTurnState`、`ToolExecutor`、`ProductEventProjector`、
-`AgentServerGraphWorker` 或 `WorkflowGraphHost`。
+composition 只构造标准模型、Tool、Memory backend、主动投递 Store 与 `AssistantRootGraph`，不构造平行 Graph
+Runtime、产品状态投影器或 Workflow host。
 
 ## Auth 与身份
 

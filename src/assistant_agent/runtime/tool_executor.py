@@ -1,8 +1,10 @@
 """Serial governed Tool execution used by workflows and assistant loops."""
 
 from collections.abc import Callable
+import re
 from time import monotonic, perf_counter, sleep
 from typing import Any
+from urllib.parse import urlparse
 
 from pydantic import BaseModel
 
@@ -1063,9 +1065,27 @@ def _safe_operation_result_summary(result: ToolResult) -> str:
 
 
 def _safe_operation_output_ref(value: str | None) -> str | None:
-    from assistant_agent.runtime.assistant_graph_state import checkpoint_safe_ref
-
-    return checkpoint_safe_ref(value)
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    lowered = text.lower()
+    if (
+        not text
+        or len(text) > 1_024
+        or lowered.startswith(("data:", "file:", "/home/", "/tmp/", "/var/"))
+        or "base64" in lowered
+        or "bearer " in lowered
+        or re.search(r"(?i)(?:api[_-]?key|token|secret|password)\s*[:=]", text)
+    ):
+        return None
+    parsed = urlparse(text)
+    if parsed.scheme in {"http", "https"}:
+        return text if parsed.netloc else None
+    if parsed.scheme:
+        if parsed.scheme not in {"artifact", "memory", "media", "output"}:
+            return None
+        return text if parsed.netloc or parsed.path else None
+    return text if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,1023}", text) else None
 
 
 def _execution_summary(

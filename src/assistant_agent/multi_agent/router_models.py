@@ -119,7 +119,7 @@ class AgentRouteRequest(UserRequest):
         return self.mode or self.collaboration_mode
 
     def to_user_request(self, *, metadata: dict[str, Any] | None = None) -> UserRequest:
-        """Drop router-only fields before entering an AgentGraphRuntime."""
+        """Drop router-only fields before entering an agent invocation endpoint."""
 
         return UserRequest(
             user_id=self.user_id,

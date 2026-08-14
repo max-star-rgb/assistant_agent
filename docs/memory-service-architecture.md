@@ -49,8 +49,8 @@ state 只保存有界 `tuple[str, ...]` 与 `ready|empty|degraded`。最多 32 �
 Memory 正文是不可信历史数据，由 dynamic prompt 放入明确的 untrusted/frozen 数据边界，不能覆盖当前请求、
 身份、权限或 Tool schema。
 
-旧 `MemoryNodeBundle`、commit ledger 与复杂 time-travel 语义仍供旧外围 runtime 使用；生产
-`assistant-native-v1` 不导入它们。新旧 checkpoint 不做 schema 迁移。
+旧 `MemoryNodeBundle`、commit ledger 与 time-travel Memory 兼容层已随旧 Runtime 删除。Mem0 HTTP client 与
+identity adapter 继续由当前最小 `MemoryBackend` 复用；旧 checkpoint 不迁移进 `assistant-native-v1`。
 
 ## 验证
 

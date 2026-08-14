@@ -1,4 +1,4 @@
-"""Offline MCP skeleton backed by the existing agent runtime and tool registry."""
+"""Offline MCP skeleton for direct local Tool development."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from assistant_agent.runtime.action_validator import ActionValidator
-from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.runtime.state import AgentState
 from assistant_agent.config import ProviderConfig
 from assistant_agent.runtime.decision_models import AssistantDecision
@@ -23,7 +22,7 @@ from assistant_agent.tools.plugins.registry_factory import create_default_regist
 from assistant_agent.tools.registry import ToolRegistry
 
 
-MCP_TOOL_NAMES = ("agent_run", "tool_list", "tool_run", "demo_flow_run")
+MCP_TOOL_NAMES = ("tool_list", "tool_run", "demo_flow_run")
 
 
 class MCPToolEnvelope(BaseModel):
@@ -41,47 +40,16 @@ class OfflineMCPServer:
 
     def __init__(
         self,
-        runtime: AgentGraphRuntime | None = None,
         registry: ToolRegistry | None = None,
         config: ProviderConfig | None = None,
     ) -> None:
         self.config = config or ProviderConfig()
         self.registry = registry or create_default_registry(self.config)
-        self.runtime = runtime or AgentGraphRuntime(config=self.config, registry=self.registry)
 
     def list_tools(self) -> list[dict[str, Any]]:
         """Return MCP-visible tool definitions."""
 
         return [
-            {
-                "name": "agent_run",
-                "description": (
-                    "使用 mock/local 配置运行一次完整 AgentGraphRuntime 请求；可携带文本和"
-                    "媒体引用，返回运行状态、回复、工具序列、标识及已清理错误。仅用于离线"
-                    "开发与验证，不调用真实 Provider。"
-                ),
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "user_id": {"type": "string", "description": "用于身份隔离的用户 ID。"},
-                        "session_id": {"type": "string", "description": "用于关联对话状态的会话 ID。"},
-                        "text": {"type": "string", "description": "用户请求文本。"},
-                        "image_ids": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "可选图片引用列表。",
-                        },
-                        "video_ids": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "可选视频引用列表。",
-                        },
-                        "metadata": {"type": "object", "description": "可选请求元数据。"},
-                    },
-                    "required": [],
-                },
-                "offline": True,
-            },
             {
                 "name": "tool_list",
                 "description": (
@@ -143,8 +111,6 @@ class OfflineMCPServer:
 
         args = arguments or {}
         try:
-            if tool_name == "agent_run":
-                return self._agent_run(args)
             if tool_name == "tool_list":
                 return self._tool_list()
             if tool_name == "tool_run":
@@ -154,38 +120,6 @@ class OfflineMCPServer:
             return self._failed(tool_name, "mcp_tool_not_found", f"Unknown MCP tool: {tool_name}")
         except Exception as exc:  # pragma: no cover - defensive envelope guard
             return self._failed(tool_name, "mcp_tool_failed", exc)
-
-    def _agent_run(self, args: dict[str, Any]) -> MCPToolEnvelope:
-        request = UserRequest(
-            user_id=str(args.get("user_id") or "mcp_user"),
-            session_id=str(args.get("session_id") or "mcp_session"),
-            text=args.get("text"),
-            image_ids=list(args.get("image_ids") or []),
-            video_ids=list(args.get("video_ids") or []),
-            audio_id=args.get("audio_id"),
-            metadata=dict(args.get("metadata") or {}),
-        )
-        state = self.runtime.run_state(request)
-        response = state.response
-        return self._succeeded(
-            "agent_run",
-            {
-                "status": state.status,
-                "response_text": response.message if response else "",
-                "tool_sequence": [call.tool_name for call in state.tool_calls],
-                "run_id": state.run_id,
-                "trace_id": state.trace_id,
-                "output_refs": response.output_refs if response else [],
-                "errors": [
-                    {
-                        "source": error.source,
-                        "message": sanitize_error_message(error.message),
-                        "details": sanitize_error_detail(error.details),
-                    }
-                    for error in state.errors
-                ],
-            },
-        )
 
     def _tool_list(self) -> MCPToolEnvelope:
         return self._succeeded(

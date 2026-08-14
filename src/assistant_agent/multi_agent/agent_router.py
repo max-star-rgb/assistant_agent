@@ -6,9 +6,7 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
-from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.runtime.state import new_run_id
-from assistant_agent.config import ProviderConfig
 from assistant_agent.multi_agent.models import (
     DEFAULT_AGENT_ID,
     AgentCommunicationError,
@@ -34,9 +32,8 @@ from assistant_agent.multi_agent.agent_control_plane import (
     audit_events_from_agent_router_record,
     build_agent_router_run_record,
 )
-from assistant_agent.multi_agent.agent_directory import AgentDirectory, default_agent_instance
+from assistant_agent.multi_agent.agent_directory import AgentDirectory
 from assistant_agent.multi_agent.agent_routing_policy import AgentRoutingPolicy
-from assistant_agent.runtime.assistant_run_service import resolve_runtime_config, run_assistant_request
 from assistant_agent.observability.trace_store import new_trace_id
 
 
@@ -128,12 +125,13 @@ class AgentRouter:
         runtime_request = route_request.to_user_request(
             metadata=_request_metadata(route_request, agent_id=agent_id, mode=mode)
         )
-        response = run_assistant_request(
+        response = runtime.invoke(
             runtime_request,
-            runtime=runtime,
             event_sink=event_sink,
             cancel_token=cancel_token,
-        ).api_response()
+        )
+        if not isinstance(response, AgentRunResponse):
+            raise TypeError("local agent invoker must return AgentRunResponse")
         response = _augment_response(
             response,
             request=route_request,
@@ -162,52 +160,6 @@ class AgentRouter:
         self.control_plane_store.record(record)
         for event in audit_events_from_agent_router_record(record):
             self.control_plane_store.append_audit_event(event)
-
-
-def create_default_agent_router(
-    *,
-    config: ProviderConfig | None = None,
-    load_env: bool = True,
-    worker_agent_id: str = WORKER_AGENT_ID,
-) -> AgentRouter:
-    """Create the default offline/local router with one controller and one worker."""
-
-    resolved_config = resolve_runtime_config(config=config, load_env=load_env)
-    default_runtime = AgentGraphRuntime(
-        config=resolved_config,
-        agent_id=DEFAULT_AGENT_ID,
-    )
-    worker_runtime = AgentGraphRuntime(
-        config=resolved_config,
-        agent_id=worker_agent_id,
-    )
-    instances = [
-        default_agent_instance(can_delegate=False, allowed_targets=[]),
-        AgentInstance(
-            agent_id=worker_agent_id,
-            display_name="Worker Agent",
-            description="Local same-process worker runtime for explicit agent routing.",
-            role="worker",
-            capabilities=["chat", "tool_calling"],
-            transports=["local"],
-            can_delegate=False,
-            allowed_targets=[],
-            metadata={"worker": True, "offline": True, "local": True},
-        ),
-    ]
-    communication_service = create_local_agent_communication_service(
-        {worker_agent_id: worker_runtime},
-        instances=instances,
-    )
-    return AgentRouter(
-        {
-            DEFAULT_AGENT_ID: default_runtime,
-            worker_agent_id: worker_runtime,
-        },
-        directory=communication_service.directory,
-        communication_service=communication_service,
-        controller_runtime=default_runtime,
-    )
 
 
 def _coerce_route_request(request: AgentRouteRequest | UserRequest) -> AgentRouteRequest:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import Any, Protocol
 
 from assistant_agent.runtime.state import AgentState
 from assistant_agent.automation.durable_tasks.models import (
@@ -15,10 +15,6 @@ from assistant_agent.automation.durable_tasks.models import (
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.automation.durable_tasks.service import DurableTaskService, TaskConflict
 from assistant_agent.automation.durable_tasks.store import TaskLeaseConflict
-
-if TYPE_CHECKING:
-    from assistant_agent.runtime.runtime import AgentGraphRuntime
-
 
 class DurableTaskRuntime(Protocol):
     def run_task_quantum(
@@ -44,7 +40,7 @@ class DurableTaskWorker:
         self,
         *,
         service: DurableTaskService,
-        runtime: AgentGraphRuntime | DurableTaskRuntime,
+        runtime: DurableTaskRuntime,
         worker_id: str,
         poll_seconds: float = 1.0,
     ) -> None:
