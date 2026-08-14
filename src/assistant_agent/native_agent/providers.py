@@ -159,13 +159,15 @@ def create_chat_model(config: ProviderConfig | None = None) -> BaseChatModel:
     from langchain_openai import ChatOpenAI
 
     extra_body = _provider_extra_body(resolved, settings.provider)
+    streaming = resolved.native_provider_streaming or resolved.chat_stream
     with without_unsupported_socks_proxy_env():
         return ChatOpenAI(
             api_key=settings.api_key or "not-required",
             base_url=settings.base_url,
             model=settings.model or "",
             timeout=resolved.chat_timeout_seconds,
-            streaming=resolved.native_provider_streaming or resolved.chat_stream,
+            streaming=streaming,
+            stream_usage=streaming,
             max_tokens=resolved.chat_max_tokens,
             extra_body=extra_body,
             metadata={"provider": settings.provider},
@@ -186,9 +188,6 @@ def _provider_extra_body(
             "search_strategy": "turbo",
             "forced_search": False,
             "enable_search_extension": True,
-            "enable_source": True,
-            "enable_citation": True,
-            "citation_format": "[<number>]",
             "freshness": 7,
         },
     }

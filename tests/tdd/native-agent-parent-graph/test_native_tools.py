@@ -20,7 +20,6 @@ from assistant_agent.native_agent.tools import (
     create_mcp_tools,
     create_native_tools,
     mcp_connections,
-    to_langchain_tool,
 )
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.input_binding import RuntimeInputBinding
@@ -48,7 +47,7 @@ class IdentityProbeTool(ToolBase):
         ),
     )
 
-    def _run(self, input: IdentityProbeInput, context: ToolContext) -> ToolResult:
+    def _execute(self, input: IdentityProbeInput, context: ToolContext) -> ToolResult:
         data = {
             "query": input.query,
             "user_id": input.user_id,
@@ -65,7 +64,7 @@ class IdentityProbeTool(ToolBase):
 def test_native_tool_hides_and_injects_runtime_identity() -> None:
     """Catches exposing trusted identity as an LLM-owned argument."""
 
-    native_tool = to_langchain_tool(IdentityProbeTool())
+    native_tool = IdentityProbeTool()
     assert set(native_tool.tool_call_schema.model_fields) == {"query"}
     assert set(native_tool.args_schema.model_fields) == {"query", "runtime"}
 
@@ -119,6 +118,21 @@ def test_mock_native_tool_assembly_is_static_and_unique() -> None:
     assert all(isinstance(tool, BaseTool) for tool in tools)
     names = [tool.name for tool in tools]
     assert len(names) == len(set(names))
+
+
+def test_builtin_inventory_returns_concrete_native_tools_without_adapter() -> None:
+    """Catches retaining the legacy Tool -> StructuredTool production bridge."""
+
+    tools = create_native_tools(
+        ProviderConfig(provider_mode="mock"),
+        resources=NativeToolResources(),
+    )
+
+    assert tools
+    assert all(
+        type(tool).__module__.startswith("assistant_agent.tools.plugins.builtin.")
+        for tool in tools
+    )
 
 
 def test_mcp_connections_preserve_explicit_stdio_configuration() -> None:
@@ -176,8 +190,6 @@ def test_mcp_tools_use_official_client_boundary_and_allowlist() -> None:
         namespace_prefix="geo",
     )
 
-    tools = asyncio.run(
-        create_mcp_tools([config], client_factory=FakeMCPClient)
-    )
+    tools = asyncio.run(create_mcp_tools([config], client_factory=FakeMCPClient))
 
     assert [tool.name for tool in tools] == ["geo_maps_search"]

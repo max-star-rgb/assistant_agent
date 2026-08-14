@@ -44,12 +44,23 @@ class VisualReminderManageInput(BaseModel):
     @model_validator(mode="after")
     def validate_action_fields(self) -> "VisualReminderManageInput":
         if self.action == "create":
-            if self.target is None or self.message is None or self.reminder_id is not None:
+            if (
+                self.target is None
+                or self.message is None
+                or self.reminder_id is not None
+            ):
                 raise ValueError("create requires target and message only")
         elif self.action == "list":
-            if any(value is not None for value in (self.target, self.message, self.reminder_id)):
+            if any(
+                value is not None
+                for value in (self.target, self.message, self.reminder_id)
+            ):
                 raise ValueError("list does not accept target, message, or reminder_id")
-        elif self.reminder_id is None or self.target is not None or self.message is not None:
+        elif (
+            self.reminder_id is None
+            or self.target is not None
+            or self.message is not None
+        ):
             raise ValueError("cancel requires reminder_id only")
         return self
 
@@ -90,10 +101,11 @@ class VisualReminderManageTool(ToolBase):
         coordinator_store: SessionEmbeddingCoordinatorStore,
         reminder_registry: VisualReminderRegistry,
     ) -> None:
+        super().__init__()
         self.coordinator_store = coordinator_store
         self.reminder_registry = reminder_registry
 
-    def _run(
+    def _execute(
         self,
         input: VisualReminderManageInput,
         context: ToolContext,
@@ -107,7 +119,9 @@ class VisualReminderManageTool(ToolBase):
                 error="visual reminder connection is unavailable",
             )
         if input.action == "list":
-            reminders = [record.model_dump(mode="json") for record in manager.list_records()]
+            reminders = [
+                record.model_dump(mode="json") for record in manager.list_records()
+            ]
             return self._result(
                 {
                     "status": "available",
@@ -141,9 +155,7 @@ class VisualReminderManageTool(ToolBase):
                     success=False,
                     error="visual reminder joint embedding space is unavailable",
                 )
-            observation_id = (
-                f"visual-reminder:{context.run_id or 'run'}:{uuid4().hex}"
-            )
+            observation_id = f"visual-reminder:{context.run_id or 'run'}:{uuid4().hex}"
             outcome = lease.coordinator.embed_text(
                 TextObservation(
                     session_id=input.session_id,

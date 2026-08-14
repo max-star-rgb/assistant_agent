@@ -69,11 +69,15 @@ class MediaInspectTool(ToolBase):
         RuntimeInputBinding(field="context_id", source="runtime_input"),
         RuntimeInputBinding(field="user_query", source="request", key="text"),
         RuntimeInputBinding(field="user_id", source="runtime_identity", key="user_id"),
-        RuntimeInputBinding(field="session_id", source="runtime_identity", key="session_id"),
+        RuntimeInputBinding(
+            field="session_id", source="runtime_identity", key="session_id"
+        ),
         RuntimeInputBinding(field="max_frames", source="runtime_input"),
         RuntimeInputBinding(field="sample_strategy", source="runtime_input"),
         RuntimeInputBinding(field="metadata", source="runtime_input"),
-        RuntimeInputBinding(field="memory_context", source="memory_context", key="text"),
+        RuntimeInputBinding(
+            field="memory_context", source="memory_context", key="text"
+        ),
     )
 
     def __init__(
@@ -87,6 +91,7 @@ class MediaInspectTool(ToolBase):
         semantic_store_pool: SessionVisualSemanticStorePool | None = None,
         context_window_size: int = DEFAULT_VIDEO_CONTEXT_WINDOW_SIZE,
     ) -> None:
+        super().__init__()
         self.adapter = (
             adapter
             or getattr(client, "image_adapter", None)
@@ -128,7 +133,9 @@ class MediaInspectTool(ToolBase):
     ) -> None:
         self._video_branch.semantic_store_pool = value
 
-    def _run(self, input: VisionUnderstandingRequest, context: ToolContext) -> ToolResult:
+    def _execute(
+        self, input: VisionUnderstandingRequest, context: ToolContext
+    ) -> ToolResult:
         if vision_request_has_video(input):
             result = self._video_branch.run(
                 video_request_from_vision_request(input), context
@@ -255,7 +262,7 @@ class LiveViewInspectTool(MediaInspectTool):
             return input
         return super()._validate_input(input)
 
-    def _run(
+    def _execute(
         self,
         input: VisionUnderstandingRequest | LiveViewInspectRequest,
         context: ToolContext,
@@ -268,7 +275,7 @@ class LiveViewInspectTool(MediaInspectTool):
                     "user_query": input.query,
                 }
             )
-        return super()._run(request, context)
+        return super()._execute(request, context)
 
 
 class RealtimeVideoObserveTool(MediaInspectTool):

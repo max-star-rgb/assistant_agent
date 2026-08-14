@@ -1,9 +1,24 @@
-"""Base contracts for tools."""
+"""Base contracts for governed LangChain-native tools."""
 
-from typing import Any, Literal, Protocol
+from __future__ import annotations
 
-from pydantic import BaseModel, Field, ValidationError
+import asyncio
+from collections.abc import Mapping
+import json
+from typing import Any, ClassVar, Literal, Protocol
 
+from langchain_core.messages import HumanMessage
+from langchain_core.tools import BaseTool, ToolException
+from langgraph.prebuilt import ToolRuntime
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
+
+from assistant_agent.native_agent.context import AssistantRunContext
+from assistant_agent.providers.provider_errors import sanitize_error_message
+from assistant_agent.tools.input_binding import (
+    RuntimeInputBinding,
+    llm_forbidden_input_fields,
+    validate_tool_input_contract,
+)
 from assistant_agent.tools.models import (
     ToolCategory,
     ToolMediaRequirement,
@@ -11,7 +26,6 @@ from assistant_agent.tools.models import (
     ToolRepeatPolicy,
     ToolResult,
 )
-from assistant_agent.providers.provider_errors import sanitize_error_message
 
 
 class ToolInputValidationError(ValueError):
@@ -67,27 +81,101 @@ class Tool(Protocol):
     runtime_input_bindings: tuple[Any, ...]
     trace_content_policy: Literal["default", "metadata_only"]
 
-    def run(self, input: BaseModel | dict[str, Any], context: ToolContext | None = None) -> ToolResult:
+    def run(
+        self,
+        input: BaseModel | dict[str, Any],
+        context: ToolContext | None = None,
+    ) -> ToolResult:
         """Execute the tool and return a structured result."""
 
 
-class ToolBase:
-    name: str
-    description: str
-    input_schema: type[BaseModel]
-    output_schema: type[BaseModel]
-    category: ToolCategory = "dangerous"
-    requires_media: list[ToolMediaRequirement] = []
-    media_scope: ToolMediaScope = "any"
-    repeat_policy: ToolRepeatPolicy = "once_per_run"
-    llm_hidden_input_fields: tuple[str, ...] = ()
-    runtime_input_bindings: tuple[Any, ...] = ()
-    trace_content_policy: Literal["default", "metadata_only"] = "default"
+_DIRECT_CALL = object()
 
-    def run(self, input: BaseModel | dict[str, Any], context: ToolContext | None = None) -> ToolResult:
+
+class ToolBase(BaseTool):
+    """Direct LangChain Tool base with the project's governed result contract.
+
+    Production built-ins implement the small synchronous ``_execute(input,
+    context)`` business hook directly. ``__init_subclass__`` only keeps older
+    peripheral subclasses operational while they migrate; composition never
+    wraps concrete tools in a second ``StructuredTool``.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="allow")
+
+    name: ClassVar[str]
+    description: ClassVar[str]
+    input_schema: ClassVar[type[BaseModel]]
+    output_schema: ClassVar[type[BaseModel]]
+    category: ClassVar[ToolCategory] = "dangerous"
+    requires_media: ClassVar[list[ToolMediaRequirement]] = []
+    media_scope: ClassVar[ToolMediaScope] = "any"
+    repeat_policy: ClassVar[ToolRepeatPolicy] = "once_per_run"
+    llm_hidden_input_fields: ClassVar[tuple[str, ...]] = ()
+    runtime_input_bindings: ClassVar[tuple[Any, ...]] = ()
+    trace_content_policy: ClassVar[Literal["default", "metadata_only"]] = "default"
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        # A few test/peripheral tools choose their stable name at construction
+        # time. BaseTool models class-level names, so preserve that narrow
+        # compatibility without making arbitrary contract fields mutable.
+        if name == "name":
+            object.__setattr__(self, name, value)
+            return
+        super().__setattr__(name, value)
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Bridge existing business hooks while making the object itself native."""
+
+        super().__init_subclass__(**kwargs)
+        legacy_execute = cls.__dict__.get("_run")
+        if legacy_execute is not None and legacy_execute is not ToolBase._run:
+            cls._execute = legacy_execute
+
+            def native_or_legacy_run(
+                self: ToolBase,
+                *args: Any,
+                **run_kwargs: Any,
+            ) -> Any:
+                # BaseTool supplies ToolRuntime by keyword. A positional call
+                # here comes from an existing business hook's ``super()._run``.
+                if "runtime" in run_kwargs:
+                    return ToolBase._run(self, **run_kwargs)
+                return legacy_execute(self, *args, **run_kwargs)
+
+            cls._run = native_or_legacy_run
+
+        legacy_init = cls.__dict__.get("__init__")
+        if (
+            legacy_execute is not None
+            and legacy_init is not None
+            and legacy_init is not ToolBase.__init__
+        ):
+
+            def native_init(self: ToolBase, *args: Any, **init_kwargs: Any) -> None:
+                ToolBase.__init__(self)
+                legacy_init(self, *args, **init_kwargs)
+
+            cls.__init__ = native_init
+
+    def __init__(self) -> None:
+        validate_tool_input_contract(self)
+        super().__init__(
+            args_schema=_native_input_model(self),
+            response_format="content_and_artifact",
+            metadata={"effect": self.category, "source": "builtin"},
+        )
+
+    def run_legacy(
+        self,
+        input: BaseModel | dict[str, Any],
+        context: ToolContext | None = None,
+    ) -> ToolResult:
+        """Serve the shrinking registry-based compatibility surface."""
+
         try:
             payload = self._validate_input(input)
-            return self._run(payload, context or ToolContext())
+            return self._execute(payload, context or ToolContext())
         except ValidationError as exc:
             return ToolResult(
                 tool_name=self.name,
@@ -106,10 +194,170 @@ class ToolBase:
                 ),
             )
 
+    def run(
+        self,
+        tool_input: str | dict[str, Any],
+        verbose: Any = _DIRECT_CALL,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        """Keep direct legacy calls while ``invoke`` remains fully native."""
+
+        direct_call = (
+            isinstance(verbose, ToolContext)
+            or (verbose is _DIRECT_CALL and not args and not kwargs)
+            or (verbose is None and not args and not kwargs)
+        )
+        if direct_call:
+            context = verbose if isinstance(verbose, ToolContext) else None
+            return self.run_legacy(tool_input, context)
+        if verbose is _DIRECT_CALL:
+            return super().run(tool_input, *args, **kwargs)
+        return super().run(tool_input, verbose, *args, **kwargs)
+
+    def _run(
+        self,
+        runtime: ToolRuntime[AssistantRunContext],
+        **payload: Any,
+    ) -> tuple[str, dict[str, Any]]:
+        return self._invoke_native(payload, runtime)
+
+    async def _arun(
+        self,
+        runtime: ToolRuntime[AssistantRunContext],
+        **payload: Any,
+    ) -> tuple[str, dict[str, Any]]:
+        return await asyncio.to_thread(self._invoke_native, payload, runtime)
+
+    def _invoke_native(
+        self,
+        payload: Mapping[str, Any],
+        runtime: ToolRuntime[AssistantRunContext],
+    ) -> tuple[str, dict[str, Any]]:
+        result = self.run_legacy(
+            _bind_native_input(self, payload, runtime),
+            _tool_context(runtime),
+        )
+        if not result.success:
+            raise ToolException(result.error or f"{self.name} failed")
+        observation = result.model_observation
+        if observation is None:
+            observation = result.data or {"status": "succeeded"}
+        return (
+            json.dumps(observation, ensure_ascii=False, sort_keys=True),
+            dict(result.data or {}),
+        )
+
     def _validate_input(self, input: BaseModel | dict[str, Any]) -> BaseModel:
         if isinstance(input, self.input_schema):
             return input
         return self.input_schema.model_validate(input)
 
-    def _run(self, input: BaseModel, context: ToolContext) -> ToolResult:
+    def _execute(self, input: BaseModel, context: ToolContext) -> ToolResult:
         raise NotImplementedError
+
+
+def _native_input_model(tool: ToolBase) -> type[BaseModel]:
+    forbidden = set(llm_forbidden_input_fields(tool))
+    fields = {
+        name: (field.annotation, field)
+        for name, field in tool.input_schema.model_fields.items()
+        if name not in forbidden
+    }
+    fields["runtime"] = (ToolRuntime[AssistantRunContext], ...)
+    return create_model(
+        f"{type(tool).__name__}NativeInput",
+        __config__=ConfigDict(
+            arbitrary_types_allowed=True,
+            extra="forbid",
+            strict=True,
+        ),
+        **fields,
+    )
+
+
+def _bind_native_input(
+    tool: ToolBase,
+    payload: Mapping[str, Any],
+    runtime: ToolRuntime[AssistantRunContext],
+) -> dict[str, Any]:
+    bound = dict(payload)
+    for raw in tool.runtime_input_bindings:
+        binding = (
+            raw
+            if isinstance(raw, RuntimeInputBinding)
+            else RuntimeInputBinding.model_validate(raw)
+        )
+        value = _binding_value(binding, runtime)
+        if value is not _MISSING:
+            bound[binding.field] = value
+    return bound
+
+
+def _binding_value(
+    binding: RuntimeInputBinding,
+    runtime: ToolRuntime[AssistantRunContext],
+) -> Any:
+    context = runtime.context
+    execution = runtime.execution_info
+    state = runtime.state if isinstance(runtime.state, Mapping) else {}
+    if binding.source == "runtime_identity":
+        identity = {
+            "user_id": context.user_id,
+            "tenant_id": context.tenant_id,
+            "session_id": getattr(execution, "thread_id", None),
+            "run_id": getattr(execution, "run_id", None),
+        }
+        return identity.get(binding.key or "", _MISSING)
+    if binding.source == "memory_context":
+        memories = tuple(state.get("memory_context", ()))
+        if binding.key == "summaries":
+            return list(memories)
+        if binding.key == "text":
+            return "\n".join(memories)
+    if binding.source == "request":
+        return _latest_human_request(state).get(binding.key or "", _MISSING)
+    if binding.source == "durable_idempotency":
+        thread_id = getattr(execution, "thread_id", "") or "thread"
+        return f"native:{thread_id}:{runtime.tool_call_id or 'tool-call'}"
+    return _MISSING
+
+
+def _latest_human_request(state: Mapping[str, Any]) -> dict[str, Any]:
+    for message in reversed(state.get("messages", ())):
+        if not isinstance(message, HumanMessage):
+            continue
+        result: dict[str, Any] = {"image_ids": [], "video_ids": []}
+        if isinstance(message.content, str):
+            result["text"] = message.content
+            return result
+        texts: list[str] = []
+        for block in message.content:
+            if not isinstance(block, Mapping):
+                continue
+            block_type = block.get("type")
+            if block_type == "text" and isinstance(block.get("text"), str):
+                texts.append(block["text"])
+            elif block_type in {"image", "image_url"} and block.get("id"):
+                result["image_ids"].append(str(block["id"]))
+            elif block_type in {"video", "file"} and block.get("id"):
+                result["video_ids"].append(str(block["id"]))
+        result["text"] = "\n".join(texts)
+        return result
+    return {}
+
+
+def _tool_context(runtime: ToolRuntime[AssistantRunContext]) -> ToolContext:
+    execution = runtime.execution_info
+    return ToolContext(
+        user_id=runtime.context.user_id,
+        session_id=getattr(execution, "thread_id", None),
+        run_id=getattr(execution, "run_id", None),
+        metadata={
+            "tenant_id": runtime.context.tenant_id,
+            "entry_profile": runtime.context.entry_profile,
+        },
+    )
+
+
+_MISSING = object()

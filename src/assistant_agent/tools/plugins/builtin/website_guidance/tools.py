@@ -35,9 +35,10 @@ class WebPageInspectTool(ToolBase):
     repeat_policy = "distinct_inputs"
 
     def __init__(self, backend: WebsiteGuidanceBackend) -> None:
+        super().__init__()
         self.backend = backend
 
-    def _run(
+    def _execute(
         self,
         input: WebPageInspectRequest,
         context: ToolContext,
@@ -66,9 +67,10 @@ class WebPageExploreTool(ToolBase):
     repeat_policy = "distinct_inputs"
 
     def __init__(self, backend: WebsiteGuidanceBackend) -> None:
+        super().__init__()
         self.backend = backend
 
-    def _run(
+    def _execute(
         self,
         input: WebPageExploreRequest,
         context: ToolContext,

@@ -39,6 +39,7 @@ class PythonInterpreterTool(ToolBase):
         *,
         require_enable_env: bool = True,
     ) -> None:
+        super().__init__()
         self.sandbox = sandbox or PythonSandbox()
         self.require_enable_env = require_enable_env
 
@@ -49,7 +50,9 @@ class PythonInterpreterTool(ToolBase):
         if error is not None:
             raise ToolInputValidationError(error.code, error.message)
 
-    def _run(self, input: PythonInterpreterInput, context: ToolContext) -> ToolResult:
+    def _execute(
+        self, input: PythonInterpreterInput, context: ToolContext
+    ) -> ToolResult:
         if self.require_enable_env and not is_python_interpreter_enabled():
             result = PythonInterpreterResult(
                 status="rejected",

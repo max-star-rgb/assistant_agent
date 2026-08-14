@@ -87,7 +87,9 @@ class ToolRegistry:
             if tool.name in names:
                 raise ValueError(f"Tool already registered: {tool.name}")
             if contribution.registration.tool_name != tool.name:
-                raise ValueError("Tool registration record name does not match Tool name.")
+                raise ValueError(
+                    "Tool registration record name does not match Tool name."
+                )
             self._tool_spec(tool)
             names.add(tool.name)
         for contribution in pending:
@@ -100,13 +102,17 @@ class ToolRegistry:
             return
         payload = [
             {
-                "registration": self._registration_records[name].model_dump(mode="json"),
+                "registration": self._registration_records[name].model_dump(
+                    mode="json"
+                ),
                 "spec": self.get_spec(name).model_dump(mode="json"),
             }
             for name in sorted(self._tools)
         ]
         digest = hashlib.sha256(
-            json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()
+            json.dumps(
+                payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+            ).encode()
         ).hexdigest()
         self._generation = f"sha256:{digest}"
         self._assembly_report = (
@@ -163,7 +169,11 @@ class ToolRegistry:
         input: BaseModel | dict[str, Any],
         context: ToolContext | None = None,
     ) -> ToolResult:
-        return self.get(name).run(input, context)
+        tool = self.get(name)
+        legacy_runner = getattr(tool, "run_legacy", None)
+        if callable(legacy_runner):
+            return legacy_runner(input, context)
+        return tool.run(input, context)
 
     def get_spec(self, name: str) -> ToolSpec:
         """Return the provider-neutral contract for one registered tool."""
@@ -228,7 +238,10 @@ def _inline_local_schema_refs(value: Any, definitions: dict[str, Any]) -> Any:
     if isinstance(reference, str) and reference.startswith("#/$defs/"):
         name = reference.removeprefix("#/$defs/")
         target = definitions.get(name, {})
-        merged = {**target, **{key: item for key, item in value.items() if key != "$ref"}}
+        merged = {
+            **target,
+            **{key: item for key, item in value.items() if key != "$ref"},
+        }
         return _inline_local_schema_refs(merged, definitions)
     return {
         key: _inline_local_schema_refs(item, definitions)

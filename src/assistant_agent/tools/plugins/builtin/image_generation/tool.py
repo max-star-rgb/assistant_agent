@@ -20,7 +20,10 @@ from assistant_agent.runtime.generated_artifacts import (
     generated_artifact_payload,
     materialize_image_generation_result,
 )
-from assistant_agent.tools.ids import IMAGE_GENERATION_CAPABILITY, IMAGE_GENERATION_TOOL_NAME
+from assistant_agent.tools.ids import (
+    IMAGE_GENERATION_CAPABILITY,
+    IMAGE_GENERATION_TOOL_NAME,
+)
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.input_binding import RuntimeInputBinding
 
@@ -52,14 +55,21 @@ class ImageGenerationTool(ToolBase):
     )
     runtime_input_bindings = (
         RuntimeInputBinding(field="user_id", source="runtime_identity", key="user_id"),
-        RuntimeInputBinding(field="session_id", source="runtime_identity", key="session_id"),
-        RuntimeInputBinding(field="memory_context", source="memory_context", key="summaries"),
+        RuntimeInputBinding(
+            field="session_id", source="runtime_identity", key="session_id"
+        ),
+        RuntimeInputBinding(
+            field="memory_context", source="memory_context", key="summaries"
+        ),
     )
 
     def __init__(self, adapter: ImageGenerationAdapter | None = None) -> None:
+        super().__init__()
         self.adapter = adapter or MockImageGenerationAdapter()
 
-    def _run(self, input: ImageGenerationRequest, context: ToolContext) -> ToolResult:
+    def _execute(
+        self, input: ImageGenerationRequest, context: ToolContext
+    ) -> ToolResult:
         try:
             result = self.adapter.generate(input)
             if result.status == "succeeded":

@@ -4,7 +4,10 @@ from typing import Any
 
 from assistant_agent.tools.capability_output import build_capability_output_contract
 from assistant_agent.tools.models import ToolResult
-from assistant_agent.tools.plugins.builtin.web_access.search_models import WebSearchRequest, WebSearchResult
+from assistant_agent.tools.plugins.builtin.web_access.search_models import (
+    WebSearchRequest,
+    WebSearchResult,
+)
 from assistant_agent.tools.plugins.builtin.web_access.search_backend import (
     WebSearchAdapter,
     create_web_search_adapter,
@@ -26,9 +29,10 @@ class WebSearchTool(ToolBase):
     llm_hidden_input_fields = ("limit",)
 
     def __init__(self, adapter: WebSearchAdapter | None = None) -> None:
+        super().__init__()
         self.adapter = adapter or create_web_search_adapter()
 
-    def _run(self, input: WebSearchRequest, context: ToolContext) -> ToolResult:
+    def _execute(self, input: WebSearchRequest, context: ToolContext) -> ToolResult:
         result = self.adapter.search(input)
         data = result.model_dump(mode="json")
         model_observation = _web_search_model_observation(data)
