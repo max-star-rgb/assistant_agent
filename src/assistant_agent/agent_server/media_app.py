@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from dataclasses import dataclass
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
@@ -21,14 +22,25 @@ from assistant_agent.agent_server.media_protocol import (
     artifact_completed_response,
 )
 from assistant_agent.agent_server.media_session import MediaConnectionSession
+from assistant_agent.agent_server.proactive_delivery import (
+    MediaProactiveDeliveryPump,
+)
 from assistant_agent.api.rendering_3d_callback import router as rendering_3d_callback_router
+from assistant_agent.config import ProviderConfig
 from assistant_agent.media.video.h264_video_ingestion import H264VideoIngestionService
 from assistant_agent.media.video.video_context import SQLiteVideoContextStore
 from assistant_agent.media.artifact_delivery import get_media_artifact_delivery_hub
+from assistant_agent.runtime.proactive_delivery import SQLiteProactiveDeliveryStore
 
 
 app = FastAPI(title="Assistant Agent Server Media Adapter")
 app.include_router(rendering_3d_callback_router)
+
+
+@dataclass
+class _ProactiveDeliveryConnection:
+    pump: Any | None = None
+    task: asyncio.Task[None] | None = None
 
 
 @app.get("/health/agent-server-adapter")
@@ -43,6 +55,7 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
     send_lock = asyncio.Lock()
     chat_tasks: dict[str, asyncio.Task[None]] = {}
     interrupted_chats: set[str] = set()
+    proactive_delivery = _ProactiveDeliveryConnection()
     ingestion_factory = getattr(app.state, "video_ingestion_factory", None)
     video_ingestion = (
         ingestion_factory()
@@ -79,6 +92,7 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
                     interrupted_chats=interrupted_chats,
                     video_ingestion=video_ingestion,
                     artifact_hub=artifact_hub,
+                    proactive_delivery=proactive_delivery,
                 )
             except (MediaProtocolError, ValueError) as exc:
                 await _send_json(websocket, send_lock,
@@ -91,6 +105,8 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
     except WebSocketDisconnect:
         pass
     finally:
+        if proactive_delivery.task is not None:
+            proactive_delivery.task.cancel()
         await _cancel_active_runs(session=session, client=client)
         for task in chat_tasks.values():
             task.cancel()
@@ -103,6 +119,10 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
                 session_id=session.thread_id,
                 subscriber_id=session.connection_id,
             )
+        if proactive_delivery.task is not None:
+            await asyncio.gather(proactive_delivery.task, return_exceptions=True)
+        if proactive_delivery.pump is not None:
+            await proactive_delivery.pump.aclose()
 
 
 async def _handle_frame(
@@ -116,6 +136,7 @@ async def _handle_frame(
     interrupted_chats,
     video_ingestion,
     artifact_hub,
+    proactive_delivery,
 ) -> None:
     if frame.message in {"assistantControl", "assistantControlStart"}:
         user_id = _control_user_id(frame.message, frame.body)
@@ -148,6 +169,12 @@ async def _handle_frame(
                     event=event,
                 ),
             ),
+        )
+        await _bind_proactive_delivery(
+            websocket,
+            session=session,
+            send_lock=send_lock,
+            proactive_delivery=proactive_delivery,
         )
         message = (
             "assistantControlStartAck"
@@ -213,7 +240,15 @@ async def _handle_frame(
     if frame.message == "chatResponseAck":
         delivery_id = _required_text(frame.body, "deliveryId")
         chat_index = _required_text(frame.body, "chatIndex")
-        session.acknowledge(delivery_id=delivery_id, chat_index=chat_index)
+        if chat_index.startswith("proactive:"):
+            if proactive_delivery.pump is None:
+                raise MediaProtocolError("proactive delivery channel is unavailable")
+            await proactive_delivery.pump.acknowledge(
+                delivery_id=delivery_id,
+                chat_index=chat_index,
+            )
+        else:
+            session.acknowledge(delivery_id=delivery_id, chat_index=chat_index)
         await _send_json(websocket, send_lock,
             envelope(
                 message="chatResponseAck",
@@ -352,6 +387,45 @@ async def _cancel_active_runs(*, session: MediaConnectionSession, client: Any) -
             await client.cancel_run(thread_id=thread_id, run_id=run_id)
         except Exception:  # noqa: BLE001 - best-effort transport cleanup.
             continue
+
+
+async def _bind_proactive_delivery(
+    websocket: WebSocket,
+    *,
+    session: MediaConnectionSession,
+    send_lock: asyncio.Lock,
+    proactive_delivery: _ProactiveDeliveryConnection,
+) -> None:
+    if session.thread_id is None or session.user_id is None:
+        raise MediaProtocolError("proactive delivery requires a bound native thread")
+    config = ProviderConfig.from_env()
+    store_factory = getattr(app.state, "proactive_delivery_store_factory", None)
+    store = (
+        store_factory()
+        if callable(store_factory)
+        else SQLiteProactiveDeliveryStore(config.proactive_delivery_store_path)
+    )
+    pump_factory = getattr(app.state, "proactive_delivery_pump_factory", None)
+    factory = pump_factory if callable(pump_factory) else MediaProactiveDeliveryPump
+    pump = factory(
+        store=store,
+        user_id=session.user_id,
+        thread_id=session.thread_id,
+        connection_id=session.connection_id,
+        protocol_session_id=session.protocol_session_id,
+        ack_capable=session.client_capabilities.get("chatResponseAck") is True,
+        sender=lambda value: _send_json(websocket, send_lock, value),
+        ack_timeout_seconds=config.proactive_delivery_ack_timeout_seconds,
+        lease_seconds=config.proactive_delivery_lease_seconds,
+        presence_ttl_seconds=config.proactive_delivery_presence_ttl_seconds,
+        poll_interval_seconds=config.proactive_delivery_poll_interval_seconds,
+    )
+    await pump.aopen()
+    proactive_delivery.pump = pump
+    proactive_delivery.task = asyncio.create_task(
+        pump.run(),
+        name=f"media-proactive-delivery:{session.connection_id}",
+    )
 
 
 async def _send_json(websocket: WebSocket, lock: asyncio.Lock, value: dict[str, Any]) -> None:
