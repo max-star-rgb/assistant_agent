@@ -13,6 +13,7 @@ from assistant_agent.runtime.assistant_loop_nodes import (
     assistant_node,
     await_input_node,
     compose_response_node,
+    delivery_dispatch_node,
     execute_requested_tool_node,
     prepare_invocation_node,
     publish_response_node,
@@ -56,6 +57,20 @@ _AWAIT_INPUT_TARGETS = {
     "execute_tool": "execute_tool",
     "assistant": "assistant",
 }
+
+_POST_PUBLISH_TARGETS = {
+    "delivery_dispatch": "delivery_dispatch",
+    "memory_commit": "memory_commit",
+}
+
+
+def route_after_publish_response(state: Mapping[str, object]) -> str:
+    """Route checkpointed delivery data without restoring a control-state gate."""
+
+    validated = validate_assistant_turn_state(state)
+    if validated["pending_deliveries"]:
+        return "delivery_dispatch"
+    return "memory_commit"
 
 
 def _route_prepared_v4(state: Mapping[str, object]) -> AssistantGraphContinuation:
@@ -187,6 +202,10 @@ def build_assistant_loop_graph(
         resolved_node(_validated_node(publish_response_node)),
     )
     graph.add_node(
+        "delivery_dispatch",
+        resolved_node(_validated_node(delivery_dispatch_node)),
+    )
+    graph.add_node(
         "memory_commit",
         resolved_node(_validated_node(bundle.commit_node)),
     )
@@ -204,7 +223,10 @@ def build_assistant_loop_graph(
     )
     graph.add_edge("execute_tool", "assistant")
     graph.add_edge("compose_response", "publish_response")
-    graph.add_edge("publish_response", "memory_commit")
+    graph.add_conditional_edges(
+        "publish_response", route_after_publish_response, _POST_PUBLISH_TARGETS
+    )
+    graph.add_edge("delivery_dispatch", "memory_commit")
     graph.add_edge("memory_commit", END)
     return graph.compile(
         checkpointer=checkpointer,
@@ -290,6 +312,12 @@ def build_namespaced_assistant_loop_graph(
             raise ValueError(f"{child_state_key} must contain AssistantTurnState")
         return _route_prepared_v4(child)
 
+    def route_child_after_publish(state: Mapping[str, object]) -> str:
+        child = state.get(child_state_key)
+        if not isinstance(child, Mapping):
+            raise ValueError(f"{child_state_key} must contain AssistantTurnState")
+        return route_after_publish_response(child)
+
     graph = StateGraph(state_schema, context_schema=context_schema)
     graph.add_node("prepare_invocation", nested_gate)
     graph.add_node(
@@ -317,6 +345,10 @@ def build_namespaced_assistant_loop_graph(
         nested_semantic("publish_response", publish_response_node, bind=False),
     )
     graph.add_node(
+        "delivery_dispatch",
+        nested_semantic("delivery_dispatch", delivery_dispatch_node, bind=False),
+    )
+    graph.add_node(
         "memory_commit",
         nested_semantic("memory_commit", bundle.commit_node, bind=False),
     )
@@ -333,7 +365,10 @@ def build_namespaced_assistant_loop_graph(
     )
     graph.add_edge("execute_tool", "assistant")
     graph.add_edge("compose_response", "publish_response")
-    graph.add_edge("publish_response", "memory_commit")
+    graph.add_conditional_edges(
+        "publish_response", route_child_after_publish, _POST_PUBLISH_TARGETS
+    )
+    graph.add_edge("delivery_dispatch", "memory_commit")
     graph.add_edge("memory_commit", END)
     return graph.compile(
         checkpointer=None,

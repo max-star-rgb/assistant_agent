@@ -50,6 +50,7 @@ from assistant_agent.runtime.graph_invocation_claims import (
     GraphInvocationClaimStore,
     GraphInvocationKind,
 )
+from assistant_agent.runtime.proactive_delivery import ProactiveDeliveryStore
 
 
 GraphState = dict[str, Any]
@@ -171,6 +172,7 @@ class GraphExecutionServices:
     tool_result_handler: Callable[[Any, Any], None] | None = None
     trace_store: TraceStore | None = None
     product_fact_writer: Callable[[Any], None] | None = None
+    proactive_delivery_store: ProactiveDeliveryStore | None = None
     cancel_token: Any | None = None
     agent_state: AgentState | None = None
     state_ref_resolver: "AssistantRuntimeStateRefResolver | None" = None
@@ -208,6 +210,7 @@ class GraphRuntimeContext:
         tool_result_handler: Callable[[Any, Any], None] | None = None,
         trace_store: TraceStore | None = None,
         product_fact_writer: Callable[[Any], None] | None = None,
+        proactive_delivery_store: ProactiveDeliveryStore | None = None,
         cancel_token: Any | None = None,
         agent_state: AgentState | None = None,
         state_ref_resolver: "AssistantRuntimeStateRefResolver | None" = None,
@@ -234,6 +237,7 @@ class GraphRuntimeContext:
                 tool_result_handler=tool_result_handler,
                 trace_store=trace_store,
                 product_fact_writer=product_fact_writer,
+                proactive_delivery_store=proactive_delivery_store,
                 cancel_token=cancel_token,
                 agent_state=agent_state,
                 state_ref_resolver=state_ref_resolver,
@@ -252,6 +256,7 @@ class GraphRuntimeContext:
                     ("tool_result_handler", tool_result_handler),
                     ("trace_store", trace_store),
                     ("product_fact_writer", product_fact_writer),
+                    ("proactive_delivery_store", proactive_delivery_store),
                     ("cancel_token", cancel_token),
                     ("agent_state", agent_state),
                     ("state_ref_resolver", state_ref_resolver),
@@ -565,6 +570,7 @@ def _scoped_runtime_context(
         tool_result_handler=runtime_context.tool_result_handler,
         trace_store=runtime_context.trace_store,
         product_fact_writer=runtime_context.product_fact_writer,
+        proactive_delivery_store=runtime_context.proactive_delivery_store,
         cancel_token=runtime_context.cancel_token,
         agent_state=runtime_context.agent_state,
         state_ref_resolver=runtime_context.state_ref_resolver,

@@ -10,7 +10,7 @@ from typing import Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-ProactiveMessageKind = Literal["visual_reminder"]
+ProactiveMessageKind = str
 ProactiveDeliveryMode = Literal["connection_ephemeral", "durable"]
 ProactiveDeliveryStatus = Literal["queued", "sent", "failed"]
 ProactiveDeliveryScope = Literal["server_transport", "client_acknowledged"]
@@ -24,7 +24,7 @@ class ProactiveMessage(BaseModel):
     message_id: str = Field(min_length=1, max_length=160)
     user_id: str = Field(min_length=1, max_length=200)
     session_id: str = Field(min_length=1, max_length=200)
-    kind: ProactiveMessageKind
+    kind: ProactiveMessageKind = Field(pattern=r"^[a-z][a-z0-9_.-]{0,79}$")
     content: str = Field(min_length=1, max_length=500)
     delivery_mode: ProactiveDeliveryMode
     source_run_id: str | None = Field(default=None, max_length=200)

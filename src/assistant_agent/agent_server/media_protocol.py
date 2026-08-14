@@ -12,6 +12,7 @@ from assistant_agent.runtime.generated_artifacts import (
     generated_artifact_payload,
 )
 from assistant_agent.media.artifact_delivery import ArtifactCompleted
+from assistant_agent.runtime.proactive_messages import ProactiveMessage
 
 
 class MediaProtocolError(ValueError):
@@ -161,6 +162,37 @@ def success_chat_response(
     )
 
 
+def proactive_chat_response(
+    *,
+    session_id: str | None,
+    message: ProactiveMessage,
+) -> dict[str, Any]:
+    """Project one precomposed proactive message onto the existing ACK wire."""
+
+    return envelope(
+        message="chatResponse",
+        session_id=session_id,
+        body={
+            "number": message.user_id,
+            "message": {
+                "type": "BRIEF",
+                "chatIndex": f"proactive:{message.message_id}",
+                "content": {
+                    "intentResult": {
+                        "description": message.content,
+                        "status": "SUCCESS",
+                    }
+                },
+            },
+            "displayOnly": False,
+            "display_only": False,
+            "sequence": 1,
+            "final": True,
+            "deliveryId": message.message_id,
+        },
+    )
+
+
 def failure_response(
     *, message: str, session_id: str | None, detail: str
 ) -> dict[str, Any]:
@@ -238,5 +270,6 @@ __all__ = [
     "parse_chat",
     "parse_envelope",
     "progress_response",
+    "proactive_chat_response",
     "success_chat_response",
 ]

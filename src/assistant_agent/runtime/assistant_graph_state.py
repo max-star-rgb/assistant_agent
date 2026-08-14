@@ -48,6 +48,10 @@ from assistant_agent.tools.capability_output import (
     CapabilityOutputContract,
     CapabilityOutputError,
 )
+from assistant_agent.runtime.proactive_delivery import (
+    ProactiveDeliveryIntent,
+    ProactiveDispatchState,
+)
 
 
 ASSISTANT_GRAPH_NAME = "AssistantTurnGraph"
@@ -380,6 +384,12 @@ class _AssistantTurnStateModel(_CheckpointModel):
     memory_context: MemoryContext | None = None
     memory_commit: MemoryCommitState = Field(default_factory=MemoryCommitState)
     response_publish: ResponsePublishState = Field(default_factory=ResponsePublishState)
+    pending_deliveries: tuple[ProactiveDeliveryIntent, ...] = Field(
+        default=(), max_length=32
+    )
+    delivery_dispatch: ProactiveDispatchState = Field(
+        default_factory=ProactiveDispatchState
+    )
     context_refs: tuple[PersistedContextRef, ...] = Field(default=(), max_length=256)
     capability_refs: tuple[str, ...] = Field(default=(), max_length=64)
     catalog: PersistedRunToolCatalog = Field(default_factory=PersistedRunToolCatalog)
@@ -420,6 +430,8 @@ class AssistantTurnState(TypedDict):
     memory_context: MemoryContext | None
     memory_commit: MemoryCommitState
     response_publish: ResponsePublishState
+    pending_deliveries: tuple[ProactiveDeliveryIntent, ...]
+    delivery_dispatch: ProactiveDispatchState
     context_refs: tuple[PersistedContextRef, ...]
     capability_refs: tuple[str, ...]
     catalog: PersistedRunToolCatalog
@@ -549,6 +561,8 @@ def assistant_turn_state_from_agent_state(
         memory_context=None,
         memory_commit=MemoryCommitState(),
         response_publish=ResponsePublishState(),
+        pending_deliveries=(),
+        delivery_dispatch=ProactiveDispatchState(),
         context_refs=context_refs,
         capability_refs=capability_refs,
         catalog=catalog,
@@ -628,6 +642,10 @@ def assistant_turn_state_from_loop_state(
             ),
             "response_publish": graph_state.get(
                 "response_publish", ResponsePublishState().model_dump(mode="json")
+            ),
+            "pending_deliveries": graph_state.get("pending_deliveries", ()),
+            "delivery_dispatch": graph_state.get(
+                "delivery_dispatch", ProactiveDispatchState().model_dump(mode="json")
             ),
             "catalog": _project_catalog(
                 state.run_tool_catalog,
@@ -821,6 +839,8 @@ def assistant_loop_state_from_turn_state(
         "memory_context": persisted["memory_context"],
         "memory_commit": persisted["memory_commit"],
         "response_publish": persisted["response_publish"],
+        "pending_deliveries": persisted["pending_deliveries"],
+        "delivery_dispatch": persisted["delivery_dispatch"],
         "graph_profile": str(persisted["profile"]),
         "outputs_by_step": outputs_by_step,
         "current_step_index": int(persisted["current_step_index"]),

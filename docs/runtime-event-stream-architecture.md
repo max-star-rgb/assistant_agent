@@ -68,9 +68,17 @@ gate，并为旧 v4 `next=("prepare_invocation",)` checkpoint 保留一次性 `c
 `RealtimeAgentEvent`，不决定 graph 路由。`GraphStreamPart`、namespace、checkpoint、task 与完整
 state 不进入产品协议。
 
+主动投递沿用同一 native topology：`delivery_dispatch` 在 compile-time 固定注册，
+`publish_response` 后的 conditional edge 仅在严格 State 的 `pending_deliveries` 非空时经过该节点，否则直接
+进入 `memory_commit`；dispatch 完成后也固定进入 `memory_commit`。因此任意前序业务 node 可以追加纯数据
+intent，但 Graph 不恢复通用 gate 或 continuation 返回地址。dispatch 是 Graph 内唯一主动投递写 authority，
+只将可信 `user_id + native thread_id + run/trace` 绑定的 envelope 幂等写入 composition-owned Store，
+不等待 WebSocket 或 ACK；`replay/fork` 清除继承 pending 并跳过外部写入。
+
 `AssistantTurnGraph` 的 checkpoint boundary 是版本化、严格 JSON 的 `AssistantTurnState`：只保存 request、
 run、Tool trajectory、prompt-safe observation、稳定 context/capability/artifact reference、profile、phase、
-counter、pending Tool call、`policy_digest` 和 final response 等恢复事实。模型/action Tool/control Tool
+counter、pending Tool call、prompt-invisible proactive delivery intent/outcome、`policy_digest` 和 final
+response 等恢复事实。主动投递字段不进入 LLM prompt、Tool observation 或 Memory context。模型/action Tool/control Tool
 的最大调用数属于不可变 `GraphExecutionPolicy`，只通过 `GraphRuntimeContext` 注入；checkpoint 只保存
 已使用计数与 digest，用于 resume/replay/fork 时拒绝配置漂移。`profile` 暂保留为可离线读取的 graph child
 身份，不再承载预算本身。新 checkpoint 不再保存 `pending_interrupt`、`invocation_kind` 或四个 max-limit
