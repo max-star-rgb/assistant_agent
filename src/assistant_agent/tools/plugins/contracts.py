@@ -14,14 +14,19 @@ if TYPE_CHECKING:
     from assistant_agent.mcp.config import MCPServerConfig
     from assistant_agent.mcp.registration import MCPToolDiscoveryRunner
     from assistant_agent.automation.durable_tasks.service import DurableTaskService
-    from assistant_agent.media.video.realtime_video_memory import RealtimeVideoMemoryStore
+    from assistant_agent.media.video.realtime_video_memory import (
+        RealtimeVideoMemoryStore,
+    )
     from assistant_agent.media.video.video_context import VideoContextStore
-    from assistant_agent.media.embedding.coordinator_store import SessionEmbeddingCoordinatorStore
+    from assistant_agent.media.embedding.coordinator_store import (
+        SessionEmbeddingCoordinatorStore,
+    )
     from assistant_agent.media.video.semantic_store_pool import (
         SessionVisualSemanticStorePool,
     )
     from assistant_agent.media.video.visual_reminder import VisualReminderRegistry
     from assistant_agent.media.video.visual_memory_index import VisualMemoryTextIndex
+    from assistant_agent.media.vision.vision_client import VisionUnderstandingClient
     from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.adapters import (
         CalendarAdapter,
     )
@@ -35,6 +40,7 @@ class ToolPluginContext:
     mcp_server_configs: list[MCPServerConfig]
     mcp_runner: MCPToolDiscoveryRunner | None = None
     video_context_store: VideoContextStore | None = None
+    vision_client: VisionUnderstandingClient | None = None
     realtime_video_memory_store: RealtimeVideoMemoryStore | None = None
     durable_task_service: DurableTaskService | None = None
     calendar_adapter: CalendarAdapter | None = None
@@ -68,7 +74,9 @@ class ToolPluginDescriptor(BaseModel):
 class ToolPluginSourceRecord(BaseModel):
     """Host-owned provenance for a Tool source."""
 
-    source_type: Literal["builtin", "configured_module", "mcp", "manual", "realtime_observer"]
+    source_type: Literal[
+        "builtin", "configured_module", "mcp", "manual", "realtime_observer"
+    ]
     source_ref: str = Field(min_length=1)
     trusted: bool
 
@@ -89,7 +97,9 @@ class ToolRegistrationRecord(BaseModel):
     tool_name: str = Field(min_length=1)
     plugin_id: str = Field(min_length=1)
     plugin_version: str = Field(min_length=1)
-    source_type: Literal["builtin", "configured_module", "mcp", "manual", "realtime_observer"]
+    source_type: Literal[
+        "builtin", "configured_module", "mcp", "manual", "realtime_observer"
+    ]
     source_ref: str = Field(min_length=1)
 
 

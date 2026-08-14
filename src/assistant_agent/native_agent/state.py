@@ -46,6 +46,7 @@ class WorkerState(FastAgentState):
 
     work_item_id: Required[str]
     objective: Required[str]
+    dependency_results: NotRequired[tuple[WorkerResult, ...]]
 
 
 class PlanningState(AgentState):

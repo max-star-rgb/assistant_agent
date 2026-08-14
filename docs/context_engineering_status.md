@@ -24,8 +24,10 @@ Memory 或用户文本生成。
 全部使用官方 middleware；fast 模式自动放行。summarization 采用输入窗口 70% 触发、保留 40% 的 token 阈值；它更新标准 message history，
 不维护项目自建 conversation/summary state。
 
-planning worker 只获得自己的 objective、父图 Memory 快照和同一个 fast agent。worker transcript 不并入父图
-对话；父图只接收结构化 `WorkerResult`，finalize 最后追加一个标准 `AIMessage`。
+planning worker 只获得自己的 objective、父图 Memory 快照、调度器按 `depends_on` 派生的直接上游
+`dependency_results` 和同一个 fast agent。依赖结果放入明确的只读数据边界，不能覆盖当前任务、身份、权限或
+Tool 约束。worker transcript 不并入父图对话；父图只接收结构化 `WorkerResult`。finalize 使用同一个模型根据
+原始请求和按 plan 排序的 worker results 综合标准 `AIMessage`，不把中间结果机械拼接成最终答案。
 
 Tool observation 由标准 `ToolMessage` 表达，结构化 artifact 保留在其 artifact 字段。模型可见 Tool schema
 由 LangChain 生成；runtime-owned 身份字段不会进入 schema。Provider 的最终 token 准入由模型窗口配置和官方

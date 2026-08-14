@@ -34,9 +34,12 @@ fast 分支是 `create_agent` 编译出的 `AssistantFastAgent`，使用标准 `
 messages channel 和官方 middleware，不维护项目自建 assistant/tool loop。
 
 planning 分支是显式 `AssistantPlanningGraph`：planner 输出严格 `NativePlanProposal`，本地 admission 只校验节点
-ID、依赖引用和 DAG 无环，`Send` 按依赖分 wave 并行派发 worker，join 后直接 finalize 为标准 `AIMessage`。
-每个 worker 复用同一个 fast graph，不创建第二套 Runtime，也不重复父图 Memory 节点。当前不维护 verifier、
-repair、revision、acceptance contract、deliverable binding 或 artifact provenance；只有真实产品需求出现后才增加。
+ID、依赖引用和 DAG 无环，`Send` 按依赖分 wave 并行派发 worker。调度器根据 `depends_on` 自动把直接上游
+`WorkerResult` 组装为运行时 `dependency_results`，worker 将其作为明确的只读数据输入交给同一个 fast graph；
+该字段不是 planner 输出 schema。全部节点完成后，finalize 用同一个模型根据原始请求和按 plan 排序的结果生成
+标准 `AIMessage`，不机械拼接输出。planning 不创建第二套 Runtime，也不重复父图 Memory 节点。当前不维护
+verifier、repair、revision、acceptance contract、deliverable binding 或 artifact provenance；只有真实产品需求
+出现后才增加。
 
 ## State 与恢复
 
@@ -46,7 +49,8 @@ repair、revision、acceptance contract、deliverable binding 或 artifact prove
 
 - `execution_mode`；
 - 冻结的 `memory_context` 与 `memory_status`；
-- planning 子图内部的 plan 与 worker result。
+- planning 子图内部的 plan 与 worker result；
+- `Send` 派发时从直接依赖结果派生的窄 `dependency_results` worker 输入。
 
 已完成节点直接从 worker result 推导，不保存平行 completed-ID channel，也没有项目自定义 result/artifact
 reducer。Provider/Tool client、Memory backend、投递 Store、身份对象和 callback 不写入 checkpoint。旧

@@ -21,6 +21,7 @@ class NativeToolResources:
     """Optional process resources consumed by explicitly installed built-ins."""
 
     video_context_store: Any | None = None
+    vision_client: Any | None = None
     realtime_video_memory_store: Any | None = None
     durable_task_service: Any | None = None
     calendar_adapter: Any | None = None
@@ -41,6 +42,7 @@ def create_native_tools(
         config=config,
         mcp_server_configs=[],
         video_context_store=resources.video_context_store,
+        vision_client=resources.vision_client,
         realtime_video_memory_store=resources.realtime_video_memory_store,
         durable_task_service=resources.durable_task_service,
         calendar_adapter=resources.calendar_adapter,

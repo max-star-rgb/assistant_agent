@@ -92,15 +92,15 @@ class MediaInspectTool(ToolBase):
         context_window_size: int = DEFAULT_VIDEO_CONTEXT_WINDOW_SIZE,
     ) -> None:
         super().__init__()
-        self.adapter = (
-            adapter
-            or getattr(client, "image_adapter", None)
-            or MockVisionUnderstandingAdapter()
-        )
-        self.client = client or AdapterVisionUnderstandingClient(
-            image_adapter=self.adapter,
-            video_adapter=video_adapter,
-        )
+        if client is None:
+            self.adapter = adapter or MockVisionUnderstandingAdapter()
+            self.client = AdapterVisionUnderstandingClient(
+                image_adapter=self.adapter,
+                video_adapter=video_adapter,
+            )
+        else:
+            self.adapter = adapter or getattr(client, "image_adapter", None)
+            self.client = client
         self._video_branch = VideoUnderstandingBranch(
             client=self.client,
             adapter=video_adapter,
@@ -111,7 +111,7 @@ class MediaInspectTool(ToolBase):
         )
 
     @property
-    def video_adapter(self) -> VideoUnderstandingAdapter:
+    def video_adapter(self) -> VideoUnderstandingAdapter | None:
         return self._video_branch.adapter
 
     @property

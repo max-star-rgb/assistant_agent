@@ -292,6 +292,13 @@ def _latest_human_request(state: Mapping[str, Any]) -> dict[str, Any]:
                 result["image_ids"].append(str(block["id"]))
             elif block_type in {"video", "file"} and block.get("id"):
                 result["video_ids"].append(str(block["id"]))
+                target_sequence = block.get("target_sequence")
+                if (
+                    not isinstance(target_sequence, bool)
+                    and isinstance(target_sequence, int)
+                    and target_sequence >= 0
+                ):
+                    result["visual_target_sequence"] = target_sequence
         result["text"] = "\n".join(texts)
         return result
     return {}
@@ -299,6 +306,9 @@ def _latest_human_request(state: Mapping[str, Any]) -> dict[str, Any]:
 
 def _tool_context(runtime: ToolRuntime[AssistantRunContext]) -> ToolContext:
     execution = runtime.execution_info
+    request = _latest_human_request(
+        runtime.state if isinstance(runtime.state, Mapping) else {}
+    )
     return ToolContext(
         user_id=runtime.context.user_id,
         session_id=getattr(execution, "thread_id", None),
@@ -306,6 +316,7 @@ def _tool_context(runtime: ToolRuntime[AssistantRunContext]) -> ToolContext:
         metadata={
             "tenant_id": runtime.context.tenant_id,
             "entry_profile": runtime.context.entry_profile,
+            "visual_target_sequence": request.get("visual_target_sequence"),
         },
     )
 

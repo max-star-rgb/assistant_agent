@@ -168,6 +168,7 @@ read_when = [
 ]
 source_globs = [
   "src/assistant_agent/media/embedding/**",
+  "src/assistant_agent/media/visual_perception/**",
   "src/assistant_agent/media/video/**",
   "src/assistant_agent/tools/plugins/builtin/media_inspection/**",
   "scripts/run_system_multimodal_embedding_eval.py",

@@ -82,14 +82,12 @@ class VideoUnderstandingBranch(ToolBase):
         wall_clock_ms: Callable[[], int] | None = None,
     ) -> None:
         super().__init__()
-        self.adapter = (
-            adapter
-            or getattr(client, "video_adapter", None)
-            or create_video_understanding_adapter()
-        )
-        self.client = client or AdapterVisionUnderstandingClient(
-            video_adapter=self.adapter
-        )
+        if client is None:
+            self.adapter = adapter or create_video_understanding_adapter()
+            self.client = AdapterVisionUnderstandingClient(video_adapter=self.adapter)
+        else:
+            self.adapter = adapter or getattr(client, "video_adapter", None)
+            self.client = client
         self.context_store = context_store
         self.memory_store = memory_store
         self.semantic_store_pool = semantic_store_pool
@@ -125,21 +123,21 @@ class VideoUnderstandingBranch(ToolBase):
             status_snapshot = snapshot
             if snapshot is None and visual_target_sequence is not None:
                 status_snapshot = self.memory_store.snapshot(video_ref)
-            if snapshot is not None and (
-                snapshot.healthy
-                or (
-                    agent_service_text_only
-                    and snapshot.last_success_sequence is not None
+            exact_target_ready = visual_target_sequence is None or (
+                snapshot is not None
+                and snapshot.last_success_sequence == visual_target_sequence
+            )
+            if (
+                snapshot is not None
+                and exact_target_ready
+                and (
+                    snapshot.healthy
+                    or (
+                        agent_service_text_only
+                        and snapshot.last_success_sequence is not None
+                    )
                 )
             ):
-                if input.user_query and snapshot.keyframes:
-                    return self._live_query_result(
-                        input,
-                        context=context,
-                        snapshot=snapshot,
-                        target_sequence=visual_target_sequence,
-                        observations=text_observations,
-                    )
                 return self._memory_result(
                     snapshot,
                     target_sequence=visual_target_sequence,
@@ -351,6 +349,13 @@ class VideoUnderstandingBranch(ToolBase):
 
     @staticmethod
     def _live_target_sequence(context: ToolContext) -> int | None:
+        direct_target = context.metadata.get("visual_target_sequence")
+        if (
+            not isinstance(direct_target, bool)
+            and isinstance(direct_target, int)
+            and direct_target >= 0
+        ):
+            return direct_target
         request_metadata = context.metadata.get("request_metadata")
         agent_service = (
             request_metadata.get("agent_service")
@@ -372,128 +377,11 @@ class VideoUnderstandingBranch(ToolBase):
 
     def _sync_client_video_adapter(self) -> None:
         if (
-            isinstance(self.client, AdapterVisionUnderstandingClient)
+            self.adapter is not None
+            and isinstance(self.client, AdapterVisionUnderstandingClient)
             and self.client.video_adapter is not self.adapter
         ):
             self.client.video_adapter = self.adapter
-
-    def _live_query_result(
-        self,
-        input: VideoUnderstandingRequest,
-        *,
-        context: ToolContext,
-        snapshot: RealtimeVideoSnapshot,
-        target_sequence: int | None,
-        observations: list[dict[str, object]],
-    ) -> ToolResult:
-        latest_frame = snapshot.keyframes[-1]
-        request = input.model_copy(
-            update={
-                "video_ref": snapshot.video_id,
-                "video_ids": [snapshot.video_id],
-                "frame_refs": [latest_frame.uri],
-                "max_frames": 1,
-                "metadata": {
-                    **input.metadata,
-                    "frame_sequence": latest_frame.sequence,
-                },
-                "memory_context": None,
-            }
-        )
-        self._sync_client_video_adapter()
-        try:
-            result = video_result_from_vision_result(
-                observe_vision_inference(
-                    lambda: self.client.understand(
-                        vision_request_from_video_request(request)
-                    ),
-                    context=context,
-                    capability=VIDEO_UNDERSTANDING_CAPABILITY,
-                    source="live_view_query",
-                    media_kind="live_view",
-                    media_count=1,
-                    frame_sequence=latest_frame.sequence,
-                    query_provided=True,
-                    prompt_version="live-view-query-v1",
-                    local_input_content=self._local_vlm_input_content(
-                        request,
-                        mode="live_view_query",
-                        media_kind="live_view",
-                        prompt_version="live-view-query-v1",
-                        frame_sequence=latest_frame.sequence,
-                    ),
-                )
-            )
-        except ValueError as exc:
-            contract = build_capability_output_contract(
-                capability=VIDEO_UNDERSTANDING_CAPABILITY,
-                status="failed",
-                errors=[
-                    {
-                        "code": _error_code(str(exc)),
-                        "message": str(exc),
-                        "recoverable": True,
-                    }
-                ],
-            )
-            return ToolResult(
-                tool_name=self.name,
-                success=False,
-                error=str(exc),
-                contract=contract,
-            )
-
-        sequence_gap = _sequence_gap(snapshot, target_sequence=target_sequence)
-        payload = {
-            **result.model_dump(mode="json"),
-            "status": "failed" if result.errors else "ready",
-            "source": "live_view_query",
-            "media_kind": "live_view",
-            "media_refs": [snapshot.video_id],
-            "snapshot_sequence": latest_frame.sequence,
-            "target_sequence": target_sequence,
-            "sequence_gap": sequence_gap,
-            "fallback_used": sequence_gap > 0,
-            "observed_timestamp_ms": snapshot.last_success_timestamp_ms,
-            "pending_count": snapshot.pending_count,
-            "in_flight": snapshot.in_flight,
-            "observations": observations,
-            "usable_visual_text": not result.errors,
-        }
-        output_ref = result.output_ref
-        contract = build_capability_output_contract(
-            capability=VIDEO_UNDERSTANDING_CAPABILITY,
-            status="failed" if result.errors else "succeeded",
-            output_ref=output_ref,
-            data=payload,
-            errors=result.errors,
-            metadata={
-                "provider": result.provider,
-                "model": result.model,
-                "latency_ms": result.latency_ms,
-                "source": "live_view_query",
-                "snapshot_sequence": latest_frame.sequence,
-                "target_sequence": target_sequence,
-                "sequence_gap": sequence_gap,
-            },
-        )
-        return ToolResult(
-            tool_name=self.name,
-            success=not result.errors,
-            data=payload,
-            model_observation=_live_view_model_observation(payload),
-            error=result.errors[0]["message"] if result.errors else None,
-            output_ref=output_ref,
-            latency_ms=result.latency_ms,
-            contract=contract,
-            trace_summary=self._trace_summary(
-                source="live_view_query",
-                snapshot=snapshot,
-                provider=result.provider,
-                model=result.model,
-                target_sequence=target_sequence,
-            ),
-        )
 
     def _local_vlm_input_content(
         self,
@@ -860,6 +748,8 @@ def _error_code(message: str) -> str:
 
 
 def _is_agent_service_realtime_video_tool_call(context: ToolContext) -> bool:
+    if context.metadata.get("entry_profile") == "agent_service":
+        return True
     request_metadata = context.metadata.get("request_metadata")
     if not isinstance(request_metadata, dict):
         return False

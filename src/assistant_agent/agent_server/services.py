@@ -15,7 +15,7 @@ from langgraph_sdk.auth.types import BaseUser
 from assistant_agent.agent_server.context import AgentServerRunContext
 from assistant_agent.config import ProviderConfig
 from assistant_agent.mcp.config import load_mcp_server_configs_from_env
-from assistant_agent.media.video.video_context import SQLiteVideoContextStore
+from assistant_agent.media.visual_perception import get_visual_perception_module
 from assistant_agent.native_agent.fast_agent import build_fast_agent
 from assistant_agent.native_agent.memory import MemoryBackend, create_memory_backend
 from assistant_agent.native_agent.planning_graph import build_planning_graph
@@ -103,10 +103,16 @@ def _compose_sync(
     store: BaseStore | None,
 ) -> tuple[BaseChatModel, list[BaseTool], MemoryBackend]:
     model = create_chat_model(config)
+    visual_perception = get_visual_perception_module(config)
+    visual_resources = visual_perception.tool_resources()
     tools = create_native_tools(
         config,
         resources=NativeToolResources(
-            video_context_store=SQLiteVideoContextStore(),
+            video_context_store=visual_resources.video_context_store,
+            vision_client=visual_resources.vision_client,
+            realtime_video_memory_store=(visual_resources.realtime_video_memory_store),
+            visual_semantic_store_pool=(visual_resources.visual_semantic_store_pool),
+            visual_memory_text_index=visual_resources.visual_memory_text_index,
         ),
     )
     memory_backend = create_memory_backend(

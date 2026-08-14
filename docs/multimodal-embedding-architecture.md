@@ -9,13 +9,26 @@ Last updated: 2026-08-06
 | 定位 | 统一 image/text embedding 与短期视觉语义能力的当前权威 |
 | Owns | SigLIP2、semantic keyframe、视觉时间线、Qdrant 检索、历史找物与连接级视觉提醒 |
 | Does not own | Media-Agent wire、通用 Tool 执行链、长期记忆、VLM Provider 私有协议 |
-| 源码与 schema 入口 | `src/assistant_agent/media/embedding/`、`media/video/`、`tools/plugins/builtin/media_inspection/` |
+| 源码与 schema 入口 | `src/assistant_agent/media/visual_perception/`、`media/embedding/`、`media/video/`、`tools/plugins/builtin/media_inspection/` |
 | 验证入口 | `docs/authority.toml` 中 `multimodal-embedding.verification` |
 | 相邻 authority | 媒体协议见 [`media-agent-service-websocket.md`](media-agent-service-websocket.md)；Tool 见 [`tool-calling-architecture.md`](tool-calling-architecture.md) |
 
 本文档是 `assistant_agent` 当前 image/text embedding 平台、session 短期视觉时间线、历史找物和连接级视觉提醒能力的
 事实权威。媒体接入与关键帧生命周期见 `media-agent-service-websocket.md`，显式 Tool 治理见
 `tool-calling-architecture.md`；源码和测试与本文冲突时，以源码和测试为准并回补本文。
+
+## Visual Perception Module 边界
+
+`VisualPerceptionModule` 是 Agent Server 内部的进程级视觉能力 owner，不是平级网络服务，也不是第二套
+Agent Runtime。它统一拥有 `VisionUnderstandingClient`/Provider adapter、`RealtimeVideoObserver`、
+embedding coordinator、`SessionVisualSemanticStorePool`、视觉检索派生索引和连接级 session handle。
+`RealtimeVideoObserver` 是模块内部的实时分析流水线，不与 Tool 或模块平级。
+
+`media_inspect` 仍可为本次显式图片/视频附件执行受治理的同步 VLM 推理；`live_view_inspect` 是实时视觉文本的
+薄消费入口，不再为用户 query 二次调用 VLM。主 Agent LLM 根据模块已经发布的结构化文本回答 query。
+实时读取分为两种语义：没有冻结目标序号时读取 latest 已完成结果；Agent-Service chat 的 video block 携带
+可信 `target_sequence` 时等待 exact sequence，等待上限仍由 Tool 的有界 deadline 控制。strict 未命中 exact
+sequence 时旧记录只能用于状态诊断，Tool 返回 `usable_visual_text=false`，主模型不得把旧文本当作当前画面。
 
 ## 产品与工具边界
 
@@ -50,6 +63,7 @@ ImageObservation / TextObservation
         -> 独立有界 consumer queues（alignment / attention 等可选消费者）
 
 Realtime frame
+        -> VisualPerceptionModule / connection session
         -> 5 FPS fixed admission
         -> one image embedding per admitted frame
         -> SemanticKeyframeSelector

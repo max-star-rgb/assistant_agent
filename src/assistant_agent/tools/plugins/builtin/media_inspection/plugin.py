@@ -33,6 +33,7 @@ class MediaInspectionPlugin:
     def build_tools(self, context: ToolPluginContext) -> list[Tool]:
         tools: list[Tool] = []
         vision_ready = context.mock_mode or vision_provider_ready(context.config)
+        vision_client = context.vision_client
         if (
             context.embedding_coordinator_store is not None
             and context.visual_reminder_registry is not None
@@ -47,12 +48,18 @@ class MediaInspectionPlugin:
             tools.extend(
                 [
                     MediaInspectTool(
-                        client=create_vision_understanding_client(context.config),
+                        client=(
+                            vision_client
+                            or create_vision_understanding_client(context.config)
+                        ),
                         context_store=context.video_context_store,
                         memory_store=context.realtime_video_memory_store,
                     ),
                     LiveViewInspectTool(
-                        client=create_vision_understanding_client(context.config),
+                        client=(
+                            vision_client
+                            or create_vision_understanding_client(context.config)
+                        ),
                         context_store=context.video_context_store,
                         memory_store=context.realtime_video_memory_store,
                         semantic_store_pool=context.visual_semantic_store_pool,

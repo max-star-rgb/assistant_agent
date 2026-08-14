@@ -128,6 +128,13 @@ frame，在 media edge 的工作线程中解码为有界 JPEG window，Graph 输
 的受治理 `media_inspect/live_view_inspect` Tool 通过共享 SQLite frame index 解析该引用；H.264 hex、JPEG
 正文和本地路径均不进入 Graph State、prompt 或 Agent Server Store。
 
+解码帧由连接级句柄提交给 Agent Server 内部 `VisualPerceptionModule`；模块内的 `RealtimeVideoObserver`
+负责选帧、后台 VLM 调用和视觉语义发布。chat 到达时，媒体入口冻结当时最后一帧并触发 promotion，把
+`target_sequence` 绑定到受信入口生成的标准 video content block。`live_view_inspect` 只消费模块已发布的文本：
+没有 target 时立即读取 latest；有 target 时有界等待 exact sequence。strict 等待超时或失败时只返回
+`pending|failed|stale` 与 `usable_visual_text=false`，不得把旧帧文本当作最后一帧结果；VLM 变慢只延迟该次
+严格查询的 run。
+
 保留 callback：
 
 ```text

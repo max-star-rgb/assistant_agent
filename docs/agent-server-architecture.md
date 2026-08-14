@@ -36,6 +36,7 @@ manager、cancel token、checkpoint facade 或产品状态机。
 
 `execution_mode` 只允许 `fast|planning`。可信 `user_id`、`tenant_id`、`entry_profile` 与
 `media_capabilities` 位于 `AgentServerRunContext`，由认证 principal 校验；执行模式不放入 context。
+chat 到达时冻结的 `target_sequence` 绑定在媒体入口生成的标准 video content block，模型不能提交。
 
 ## 资源模型与 composition
 
@@ -47,10 +48,12 @@ manager、cancel token、checkpoint facade 或产品状态机。
 | media connection | custom route | 一次 WebSocket 传输连接，不是 thread |
 | delivery ID | custom route/outbox | 媒体 ACK 关联，不是 run 或 checkpoint |
 | proactive delivery Store | custom route 与显式产品 publisher | 媒体连接 presence/claim/ACK；不是 LangGraph Store |
+| Visual Perception Module | Agent Server 进程资源 | VLM client、Realtime Observer、视觉语义 Store 与连接级观察句柄；不是 Graph Runtime |
 
 factory lifespan 创建 `AgentServerExecutionOwner`，持有标准 `BaseChatModel` Provider adapter、静态本地
 `BaseTool` 与官方 MCP tools、一个 `MemoryBackend`、已编译但不绑定 checkpointer 的 `AssistantRootGraph`，
-以及对应 close targets。LangMem 可引用 Server 注入的 Store。
+以及对应 close targets。LangMem 可引用 Server 注入的 Store。进程级 `VisualPerceptionModule` 独立拥有视觉
+Provider、Observer 和语义 Store 生命周期；run-local Tool 只注入它的只读资源，不重复创建实时观察流水线。
 
 composition 只构造标准模型、Tool、Memory backend 与 `AssistantRootGraph`，不构造平行 Graph
 Runtime、产品状态投影器或 Workflow host。
@@ -70,6 +73,7 @@ custom route 只负责：
 - 关联 connection、vendor session、native thread/run、chat 与 delivery；
 - 使用公开 `langgraph_sdk` 创建 run、消费 resumable stream、join 与 cancel；
 - 从 terminal values 选择最新标准 `AIMessage` 并机械投影媒体响应；
+- 把解码帧提交给连接级视觉观察句柄，并在 chat 到达时冻结、promote 最后一帧；
 - 按 native thread 从主动投递 Store 串行 claim，处理 ACK、lease 与重连补投；
 - 承载不执行 Graph 的 callback route。
 
@@ -83,7 +87,9 @@ durable 行只有匹配 ACK 才完成，断线或超时释放为
 queued，ephemeral 离线时直接 skipped。当前 SQLite 实现面向单实例或共享受控卷，不宣称多主机一致性。
 
 H.264 解码与 3D callback 属于媒体边缘资源。解码后的有界 JPEG 引用保存在 SQLite frame index，Graph State
-只携带稳定引用；3D callback 只向当前在线连接发布中性 artifact，不启动第二次 Graph。
+只携带稳定引用。解码帧同时提交给 `VisualPerceptionModule` 内部的 `RealtimeVideoObserver`；后台 VLM 文本写入
+视觉语义 Store。需要严格当前画面的 run 通过 video block 的可信 `target_sequence` 等待该 exact frame 的有界结果，
+其他 Agent Server run 不依赖该等待。3D callback 只向当前在线连接发布中性 artifact，不启动第二次 Graph。
 
 ## 验证
 

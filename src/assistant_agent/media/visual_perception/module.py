@@ -1,0 +1,294 @@
+"""Own realtime visual analysis resources behind one module boundary."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from threading import Lock
+from typing import Any, Protocol
+
+from assistant_agent.config import ProviderConfig
+from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
+from assistant_agent.media.embedding.coordinator_store import (
+    SessionEmbeddingCoordinatorStore,
+)
+from assistant_agent.media.embedding.observability import LoggingEmbeddingObserver
+from assistant_agent.media.embedding.provider import (
+    create_multimodal_embedding_provider,
+)
+from assistant_agent.media.video.h264_video_ingestion import H264VideoIngestionService
+from assistant_agent.media.video.qdrant_visual_memory_index import (
+    create_visual_memory_text_index,
+)
+from assistant_agent.media.video.realtime_video_memory import RealtimeVideoMemoryStore
+from assistant_agent.media.video.realtime_video_observer import RealtimeVideoObserver
+from assistant_agent.media.video.semantic_store_pool import (
+    SessionVisualSemanticStorePool,
+)
+from assistant_agent.media.video.video_context import (
+    SQLiteVideoContextStore,
+    VideoFrame,
+)
+from assistant_agent.media.video.visual_memory_index import VisualMemoryTextIndex
+from assistant_agent.media.vision.models import (
+    VisionUnderstandingRequest,
+    VisionUnderstandingResult,
+)
+from assistant_agent.media.vision.vision_client import (
+    VisionUnderstandingClient,
+    create_vision_understanding_client,
+)
+from assistant_agent.tools.plugins.registry_factory import (
+    create_realtime_video_observation_registry,
+)
+
+
+DEFAULT_VISUAL_PERCEPTION_ROOT = Path(".data") / "visual_perception"
+
+
+class RealtimeVisualObserver(Protocol):
+    async def submit(self, frame: VideoFrame) -> Any: ...
+
+    async def promote(self, frame: VideoFrame) -> Any: ...
+
+    async def close(self) -> None: ...
+
+
+ObserverFactory = Callable[[str, str], RealtimeVisualObserver]
+
+
+@dataclass(frozen=True)
+class VisualTarget:
+    """One immutable frame boundary frozen when a chat starts."""
+
+    video_id: str
+    sequence: int
+
+
+@dataclass(frozen=True)
+class VisualPerceptionToolResources:
+    """Read-side resources injected into governed Agent tools."""
+
+    video_context_store: Any
+    vision_client: VisionUnderstandingClient
+    realtime_video_memory_store: RealtimeVideoMemoryStore
+    visual_semantic_store_pool: SessionVisualSemanticStorePool
+    visual_memory_text_index: VisualMemoryTextIndex
+
+
+class VisualPerceptionSession:
+    """Connection-owned realtime analysis handle inside the visual module."""
+
+    def __init__(
+        self,
+        *,
+        observer: RealtimeVisualObserver,
+        release: Callable[["VisualPerceptionSession"], None],
+    ) -> None:
+        self._observer = observer
+        self._release = release
+        self._latest_frames: dict[str, VideoFrame] = {}
+        self._closed = False
+
+    async def submit(self, frame: VideoFrame) -> Any:
+        """Submit a decoded frame without waiting for its VLM result."""
+
+        self._ensure_open()
+        self._latest_frames[frame.video_id] = frame
+        return await self._observer.submit(frame)
+
+    async def prepare_strict_target(
+        self,
+        video_ids: Sequence[str],
+    ) -> VisualTarget | None:
+        """Freeze and promote the newest requested frame for strict inspection."""
+
+        self._ensure_open()
+        frame = next(
+            (
+                self._latest_frames[video_id]
+                for video_id in reversed(tuple(video_ids))
+                if video_id in self._latest_frames
+            ),
+            None,
+        )
+        if frame is None:
+            return None
+        await self._observer.promote(frame)
+        return VisualTarget(video_id=frame.video_id, sequence=frame.sequence)
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            await self._observer.close()
+        finally:
+            self._latest_frames.clear()
+            self._release(self)
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("visual_perception_session_closed")
+
+
+class VisualPerceptionModule:
+    """Process-level owner for VLM, realtime observers, and visual semantics."""
+
+    def __init__(
+        self,
+        config: ProviderConfig | None = None,
+        *,
+        data_root: Path | str = DEFAULT_VISUAL_PERCEPTION_ROOT,
+        video_context_store: Any | None = None,
+        realtime_video_memory_store: RealtimeVideoMemoryStore | None = None,
+        visual_semantic_store_pool: SessionVisualSemanticStorePool | None = None,
+        visual_memory_text_index: VisualMemoryTextIndex | None = None,
+        observer_factory: ObserverFactory | None = None,
+    ) -> None:
+        self.config = config or ProviderConfig.from_env()
+        self.data_root = Path(data_root)
+        self.video_context_store = video_context_store or SQLiteVideoContextStore()
+        self.realtime_video_memory_store = (
+            realtime_video_memory_store or RealtimeVideoMemoryStore()
+        )
+        self.embedding_observer = LoggingEmbeddingObserver()
+        self.embedding_provider = create_multimodal_embedding_provider(self.config)
+        self.embedding_coordinator_store = SessionEmbeddingCoordinatorStore(
+            factory=lambda _user_id, session_id: SessionEmbeddingCoordinator(
+                session_id,
+                self.embedding_provider,
+                observer=self.embedding_observer,
+            )
+        )
+        self.visual_semantic_store_pool = visual_semantic_store_pool or (
+            SessionVisualSemanticStorePool(
+                root=self.data_root / "semantic",
+                observer=self.embedding_observer,
+            )
+        )
+        self.visual_memory_text_index = visual_memory_text_index or (
+            create_visual_memory_text_index(self.config)
+        )
+        self._observer_factory = observer_factory or self._create_observer
+        self._sessions: set[VisualPerceptionSession] = set()
+        self._closed = False
+
+    def open_session(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+    ) -> VisualPerceptionSession:
+        if self._closed:
+            raise RuntimeError("visual_perception_module_closed")
+        if not user_id or not session_id:
+            raise ValueError("visual perception identity must be non-empty")
+        handle = VisualPerceptionSession(
+            observer=self._observer_factory(user_id, session_id),
+            release=self._sessions.discard,
+        )
+        self._sessions.add(handle)
+        return handle
+
+    def create_video_ingestion(self) -> H264VideoIngestionService:
+        if self._closed:
+            raise RuntimeError("visual_perception_module_closed")
+        return H264VideoIngestionService(store=self.video_context_store)
+
+    def understand(
+        self,
+        request: VisionUnderstandingRequest,
+    ) -> VisionUnderstandingResult:
+        """Run one explicit-media inference behind the module boundary."""
+
+        if self._closed:
+            raise RuntimeError("visual_perception_module_closed")
+        client = create_vision_understanding_client(self.config)
+        try:
+            return client.understand(request)
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
+
+    def tool_resources(self) -> VisualPerceptionToolResources:
+        return VisualPerceptionToolResources(
+            video_context_store=self.video_context_store,
+            vision_client=self,
+            realtime_video_memory_store=self.realtime_video_memory_store,
+            visual_semantic_store_pool=self.visual_semantic_store_pool,
+            visual_memory_text_index=self.visual_memory_text_index,
+        )
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        sessions = tuple(self._sessions)
+        if sessions:
+            await asyncio.gather(
+                *(session.aclose() for session in sessions),
+                return_exceptions=True,
+            )
+        self.embedding_coordinator_store.close()
+        self.visual_semantic_store_pool.close()
+        close_index = getattr(self.visual_memory_text_index, "close", None)
+        if callable(close_index):
+            close_index()
+
+    def _create_observer(self, user_id: str, session_id: str) -> RealtimeVideoObserver:
+        semantic_lease = self.visual_semantic_store_pool.acquire(user_id, session_id)
+        try:
+            embedding_lease = self.embedding_coordinator_store.acquire(
+                user_id,
+                session_id,
+            )
+        except Exception:
+            semantic_lease.release()
+            raise
+
+        def release_resources() -> None:
+            embedding_lease.release()
+            semantic_lease.release()
+
+        try:
+            return RealtimeVideoObserver(
+                user_id=user_id,
+                session_id=session_id,
+                registry=None,
+                observation_registry_factory=lambda: (
+                    create_realtime_video_observation_registry(
+                        self.config,
+                        realtime_video_memory_store=(self.realtime_video_memory_store),
+                    )
+                ),
+                memory_store=self.realtime_video_memory_store,
+                semantic_store=semantic_lease.store,
+                embedding_coordinator=embedding_lease.coordinator,
+                visual_memory_text_index=self.visual_memory_text_index,
+                provider_config=self.config,
+                keyframe_root=self.data_root / "keyframes",
+                resource_release=release_resources,
+            )
+        except Exception:
+            release_resources()
+            raise
+
+
+_default_module: VisualPerceptionModule | None = None
+_default_module_lock = Lock()
+
+
+def get_visual_perception_module(
+    config: ProviderConfig | None = None,
+) -> VisualPerceptionModule:
+    """Return the process-owned visual capability module."""
+
+    global _default_module
+    with _default_module_lock:
+        if _default_module is None:
+            _default_module = VisualPerceptionModule(config=config)
+        return _default_module

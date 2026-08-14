@@ -27,10 +27,14 @@ from assistant_agent.agent_server.media_session import MediaConnectionSession
 from assistant_agent.agent_server.proactive_delivery import (
     MediaProactiveDeliveryPump,
 )
-from assistant_agent.api.rendering_3d_callback import router as rendering_3d_callback_router
+from assistant_agent.api.rendering_3d_callback import (
+    router as rendering_3d_callback_router,
+)
 from assistant_agent.config import ProviderConfig
 from assistant_agent.media.video.h264_video_ingestion import H264VideoIngestionService
 from assistant_agent.media.video.video_context import SQLiteVideoContextStore
+from assistant_agent.media.video.video_context import VideoFrame
+from assistant_agent.media.visual_perception import get_visual_perception_module
 from assistant_agent.media.artifact_delivery import get_media_artifact_delivery_hub
 from assistant_agent.proactive_delivery import SQLiteProactiveDeliveryStore
 
@@ -43,6 +47,11 @@ app.include_router(rendering_3d_callback_router)
 class _ProactiveDeliveryConnection:
     pump: Any | None = None
     task: asyncio.Task[None] | None = None
+
+
+@dataclass
+class _VisualPerceptionConnection:
+    session: Any | None = None
 
 
 @app.get("/health/agent-server-adapter")
@@ -58,11 +67,15 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
     chat_tasks: dict[str, asyncio.Task[None]] = {}
     interrupted_chats: set[str] = set()
     proactive_delivery = _ProactiveDeliveryConnection()
+    visual_perception = _VisualPerceptionConnection()
+    visual_module = getattr(app.state, "visual_perception_module", None)
+    if visual_module is None:
+        visual_module = get_visual_perception_module()
     ingestion_factory = getattr(app.state, "video_ingestion_factory", None)
     video_ingestion = (
         ingestion_factory()
         if callable(ingestion_factory)
-        else await asyncio.to_thread(_create_video_ingestion)
+        else await asyncio.to_thread(visual_module.create_video_ingestion)
     )
     factory = getattr(app.state, "agent_server_client_factory", None)
     client = factory() if callable(factory) else _default_agent_server_client(websocket)
@@ -95,14 +108,18 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
                     video_ingestion=video_ingestion,
                     artifact_hub=artifact_hub,
                     proactive_delivery=proactive_delivery,
+                    visual_module=visual_module,
+                    visual_perception=visual_perception,
                 )
             except (MediaProtocolError, ValueError) as exc:
-                await _send_json(websocket, send_lock,
+                await _send_json(
+                    websocket,
+                    send_lock,
                     failure_response(
                         message=str(raw.get("message") or "error"),
                         session_id=session.protocol_session_id,
                         detail=str(exc),
-                    )
+                    ),
                 )
     except WebSocketDisconnect:
         pass
@@ -114,6 +131,8 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
             task.cancel()
         if chat_tasks:
             await asyncio.gather(*chat_tasks.values(), return_exceptions=True)
+        if visual_perception.session is not None:
+            await visual_perception.session.aclose()
         for video_id in session.video_ids:
             await asyncio.to_thread(video_ingestion.cleanup, video_id)
         if session.thread_id is not None:
@@ -139,6 +158,8 @@ async def _handle_frame(
     video_ingestion,
     artifact_hub,
     proactive_delivery,
+    visual_module,
+    visual_perception,
 ) -> None:
     if frame.message in {"assistantControl", "assistantControlStart"}:
         user_id = _control_user_id(frame.message, frame.body)
@@ -157,8 +178,15 @@ async def _handle_frame(
             user_id=user_id,
             thread_id=thread_id,
             client_capabilities=_client_capabilities(frame.body),
-            media_capabilities=("audio", "video") if call_type == "VIDEO" else ("audio",),
+            media_capabilities=("audio", "video")
+            if call_type == "VIDEO"
+            else ("audio",),
         )
+        if call_type == "VIDEO":
+            visual_perception.session = visual_module.open_session(
+                user_id=user_id,
+                session_id=thread_id,
+            )
         await artifact_hub.register(
             session_id=thread_id,
             subscriber_id=session.connection_id,
@@ -188,8 +216,10 @@ async def _handle_frame(
             if frame.message == "assistantControlStart"
             else {"code": 0, "message": "success", "phoneNumber": user_id}
         )
-        await _send_json(websocket, send_lock,
-            envelope(message=message, session_id=frame.session_id, body=body)
+        await _send_json(
+            websocket,
+            send_lock,
+            envelope(message=message, session_id=frame.session_id, body=body),
         )
         return
     if frame.message == "chat":
@@ -201,13 +231,20 @@ async def _handle_frame(
         session.begin_chat(chat.chat_index)
         delivery_id = f"delivery-{uuid4()}"
         session.bind_delivery(delivery_id=delivery_id, chat_index=chat.chat_index)
-        await _send_json(websocket, send_lock,
+        await _send_json(
+            websocket,
+            send_lock,
             progress_response(
                 session_id=frame.session_id,
                 chat=chat,
                 delivery_id=delivery_id,
-            )
+            ),
         )
+        visual_target = None
+        if visual_perception.session is not None:
+            visual_target = await visual_perception.session.prepare_strict_target(
+                session.video_ids
+            )
         task = asyncio.create_task(
             _run_chat(
                 websocket,
@@ -218,6 +255,12 @@ async def _handle_frame(
                 delivery_id=delivery_id,
                 send_lock=send_lock,
                 interrupted_chats=interrupted_chats,
+                visual_target_sequence=(
+                    visual_target.sequence if visual_target is not None else None
+                ),
+                visual_target_video_id=(
+                    visual_target.video_id if visual_target is not None else None
+                ),
             ),
             name=f"media-chat:{chat.chat_index}",
         )
@@ -231,12 +274,14 @@ async def _handle_frame(
         await _cancel_active_runs(session=session, client=client)
         for task in tuple(chat_tasks.values()):
             task.cancel()
-        await _send_json(websocket, send_lock,
+        await _send_json(
+            websocket,
+            send_lock,
             envelope(
                 message="interrupt",
                 session_id=frame.session_id,
                 body={"code": 0, "message": "interrupted"},
-            )
+            ),
         )
         return
     if frame.message == "chatResponseAck":
@@ -251,7 +296,9 @@ async def _handle_frame(
             )
         else:
             session.acknowledge(delivery_id=delivery_id, chat_index=chat_index)
-        await _send_json(websocket, send_lock,
+        await _send_json(
+            websocket,
+            send_lock,
             envelope(
                 message="chatResponseAck",
                 session_id=frame.session_id,
@@ -260,7 +307,7 @@ async def _handle_frame(
                     "message": "acknowledged",
                     "deliveryId": delivery_id,
                 },
-            )
+            ),
         )
         return
     if frame.message == "video":
@@ -287,6 +334,10 @@ async def _handle_frame(
                 _required_text(item, "time"),
             )
             session.bind_video(frame_result.video_id)
+            if visual_perception.session is not None and isinstance(
+                frame_result, VideoFrame
+            ):
+                await visual_perception.session.submit(frame_result)
         await _send_json(
             websocket,
             send_lock,
@@ -298,12 +349,14 @@ async def _handle_frame(
         )
         return
     if frame.message == "audio":
-        await _send_json(websocket, send_lock,
+        await _send_json(
+            websocket,
+            send_lock,
             envelope(
                 message=f"{frame.message}Response",
                 session_id=frame.session_id,
                 body={"code": 0, "message": f"{frame.message} received"},
-            )
+            ),
         )
         return
     raise MediaProtocolError(f"unsupported message: {frame.message}")
@@ -319,22 +372,30 @@ async def _run_chat(
     delivery_id: str,
     send_lock: asyncio.Lock,
     interrupted_chats: set[str],
+    visual_target_sequence: int | None = None,
+    visual_target_video_id: str | None = None,
 ) -> None:
     def bind_run(run_id: str) -> None:
         session.bind_run(chat_index=chat.chat_index, run_id=run_id)
 
     try:
         final_state: dict[str, Any] | None = None
+        run_context = {
+            "user_id": session.user_id,
+            "tenant_id": "media-service",
+            "entry_profile": "agent_service",
+            "media_capabilities": list(session.media_capabilities),
+        }
         async for part in client.stream_run(
             thread_id=session.thread_id,
             assistant_id="assistant-native-v1",
-            input=media_graph_input(chat, video_ids=session.video_ids),
-            context={
-                "user_id": session.user_id,
-                "tenant_id": "media-service",
-                "entry_profile": "agent_service",
-                "media_capabilities": list(session.media_capabilities),
-            },
+            input=media_graph_input(
+                chat,
+                video_ids=session.video_ids,
+                visual_target_sequence=visual_target_sequence,
+                visual_target_video_id=visual_target_video_id,
+            ),
+            context=run_context,
             multitask_strategy="enqueue",
             on_run_created=bind_run,
         ):
@@ -423,7 +484,9 @@ async def _bind_proactive_delivery(
     )
 
 
-async def _send_json(websocket: WebSocket, lock: asyncio.Lock, value: dict[str, Any]) -> None:
+async def _send_json(
+    websocket: WebSocket, lock: asyncio.Lock, value: dict[str, Any]
+) -> None:
     async with lock:
         await websocket.send_json(value)
 
@@ -448,11 +511,21 @@ def _native_thread_id(*, protocol_session_id: str | None, user_id: str) -> str |
     )
 
 
-def media_graph_input(chat: Any, *, video_ids: list[str]) -> dict[str, Any]:
+def media_graph_input(
+    chat: Any,
+    *,
+    video_ids: list[str],
+    visual_target_sequence: int | None = None,
+    visual_target_video_id: str | None = None,
+) -> dict[str, Any]:
     """Mechanically project one vendor chat to the native public graph input."""
 
-    content: list[dict[str, str]] = [{"type": "text", "text": chat.text}]
-    content.extend({"type": "video", "id": video_id} for video_id in video_ids)
+    content: list[dict[str, Any]] = [{"type": "text", "text": chat.text}]
+    for video_id in video_ids:
+        block: dict[str, Any] = {"type": "video", "id": video_id}
+        if video_id == visual_target_video_id and visual_target_sequence is not None:
+            block["target_sequence"] = visual_target_sequence
+        content.append(block)
     return {
         "messages": [{"role": "user", "content": content}],
         "execution_mode": chat.execution_mode,

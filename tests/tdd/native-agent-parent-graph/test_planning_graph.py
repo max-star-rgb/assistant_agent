@@ -41,9 +41,12 @@ def _proposal() -> NativePlanProposal:
 
 
 class PlanningModel:
-    def __init__(self, proposal) -> None:
+    def __init__(self, proposal, *, final_response: str = "综合完成") -> None:
         self.proposal = proposal
+        self.final_response = final_response
         self.planner_calls = 0
+        self.finalizer_calls = 0
+        self.finalizer_messages = []
 
     def with_structured_output(self, schema):
         if schema is NativePlanProposal:
@@ -54,6 +57,11 @@ class PlanningModel:
 
             return RunnableLambda(plan)
         raise AssertionError(schema)
+
+    async def ainvoke(self, messages):
+        self.finalizer_calls += 1
+        self.finalizer_messages = messages
+        return AIMessage(content=self.final_response)
 
 
 def _fast_agent(calls: list[tuple[str, str | None]]):
@@ -81,7 +89,9 @@ def _invoke(graph):
     )
 
 
-def test_planning_graph_admits_dag_and_reuses_fast_agent_by_wave() -> None:
+def test_planning_graph_passes_dependency_results_to_the_next_worker_wave() -> None:
+    """Catches dependencies acting only as barriers without carrying their output."""
+
     calls: list[tuple[str, str | None]] = []
     fast_agent = _fast_agent(calls)
     model = PlanningModel(_proposal())
@@ -91,15 +101,16 @@ def test_planning_graph_admits_dag_and_reuses_fast_agent_by_wave() -> None:
 
     assert graph.name == "AssistantPlanningGraph"
     assert model.planner_calls == 1
-    assert calls == [
-        ("完成 research", "planning"),
-        ("完成 write", "planning"),
-    ]
+    assert calls[0] == ("完成 research", "planning")
+    write_prompt, write_mode = calls[1]
+    assert write_mode == "planning"
+    assert write_prompt.startswith("完成 write")
+    assert "result:完成 research" in write_prompt
     assert [item.work_item_id for item in result["worker_results"]] == [
         "research",
         "write",
     ]
-    assert result["messages"][-1].content.startswith("规划任务已完成")
+    assert isinstance(result["messages"][-1], AIMessage)
 
 
 def test_planning_graph_uses_send_for_parallel_root_workers() -> None:
@@ -123,9 +134,23 @@ def test_planning_graph_uses_send_for_parallel_root_workers() -> None:
         "one",
         "two",
     }
-    assert result["messages"][-1].content.index("[one]") < result["messages"][
-        -1
-    ].content.index("[two]")
+
+
+def test_planning_graph_uses_the_model_to_synthesize_ordered_results() -> None:
+    """Catches finalize reverting to mechanical concatenation of worker output."""
+
+    model = PlanningModel(_proposal(), final_response="最终综合结果")
+    graph = build_planning_graph(model, _fast_agent([]))
+
+    result = _invoke(graph)
+
+    assert model.finalizer_calls == 1
+    assert result["messages"][-1].content == "最终综合结果"
+    final_input = str(model.finalizer_messages[-1].content)
+    assert "请完成报告" in final_input
+    assert final_input.index('"work_item_id": "research"') < final_input.index(
+        '"work_item_id": "write"'
+    )
 
 
 def test_mock_provider_emits_the_minimal_native_plan_contract() -> None:
@@ -139,7 +164,8 @@ def test_mock_provider_emits_the_minimal_native_plan_contract() -> None:
     result = _invoke(graph)
 
     assert [item.work_item_id for item in result["worker_results"]] == ["answer"]
-    assert result["messages"][-1].content.startswith("规划任务已完成")
+    assert isinstance(result["messages"][-1], AIMessage)
+    assert str(result["messages"][-1].content).strip()
 
 
 def test_native_plan_admission_rejects_cycles() -> None:
