@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 import os
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from langchain_core.messages import AIMessage
 
 from assistant_agent.agent_server.client import SdkAgentServerClient
 from assistant_agent.agent_server.media_protocol import (
@@ -290,18 +292,11 @@ async def _run_chat(
         final_state: dict[str, Any] | None = None
         async for part in client.stream_run(
             thread_id=session.thread_id,
-            assistant_id="assistant",
-            input={
-                "request_input": {
-                    "turn_origin_id": f"media:{session.connection_id}:{chat.chat_index}",
-                    "text": chat.text,
-                    "video_ids": list(session.video_ids),
-                }
-            },
+            assistant_id="assistant-native-v1",
+            input=media_graph_input(chat, video_ids=session.video_ids),
             context={
                 "user_id": session.user_id,
                 "tenant_id": "media-service",
-                "assistant_mode": chat.assistant_mode,
                 "entry_profile": "agent_service",
                 "media_capabilities": list(session.media_capabilities),
             },
@@ -324,7 +319,7 @@ async def _run_chat(
             success_chat_response(
                 session_id=response_session_id,
                 chat=chat,
-                response=_response(final_state),
+                response=native_response_from_state(final_state),
                 delivery_id=delivery_id,
                 capabilities=session.client_capabilities,
             ),
@@ -379,17 +374,49 @@ def _native_thread_id(*, protocol_session_id: str | None, user_id: str) -> str |
     )
 
 
-def _response(state: dict[str, Any] | None) -> dict[str, Any]:
-    assistant_state = state.get("assistant_state") if isinstance(state, dict) else None
-    response = (
-        assistant_state.get("final_response")
-        if isinstance(assistant_state, dict)
-        else None
+def media_graph_input(chat: Any, *, video_ids: list[str]) -> dict[str, Any]:
+    """Mechanically project one vendor chat to the native public graph input."""
+
+    content: list[dict[str, str]] = [{"type": "text", "text": chat.text}]
+    content.extend({"type": "video", "id": video_id} for video_id in video_ids)
+    return {
+        "messages": [{"role": "user", "content": content}],
+        "execution_mode": chat.execution_mode,
+    }
+
+
+def native_response_from_state(state: dict[str, Any] | None) -> dict[str, Any]:
+    """Select the latest standard AI message from a terminal values event."""
+
+    messages = state.get("messages") if isinstance(state, Mapping) else None
+    if not isinstance(messages, (list, tuple)):
+        raise MediaProtocolError("Agent Server run returned no standard messages")
+    for message in reversed(messages):
+        if isinstance(message, AIMessage):
+            text = _message_content_text(message.content)
+        elif isinstance(message, Mapping) and (
+            message.get("role") == "assistant" or message.get("type") == "ai"
+        ):
+            text = _message_content_text(message.get("content"))
+        else:
+            continue
+        if text:
+            return {"message": text}
+    raise MediaProtocolError("Agent Server run returned no final AIMessage")
+
+
+def _message_content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, (list, tuple)):
+        return ""
+    return "\n".join(
+        str(block.get("text", "")).strip()
+        for block in content
+        if isinstance(block, Mapping)
+        and block.get("type") in {"text", "output_text"}
+        and str(block.get("text", "")).strip()
     )
-    text = response.get("message") if isinstance(response, dict) else None
-    if not isinstance(text, str) or not text.strip():
-        raise MediaProtocolError("Agent Server run returned no final response")
-    return dict(response)
 
 
 def _client_capabilities(body: dict[str, Any]) -> dict[str, bool]:
@@ -439,4 +466,4 @@ def _create_video_ingestion() -> H264VideoIngestionService:
     return H264VideoIngestionService(store=SQLiteVideoContextStore())
 
 
-__all__ = ["app"]
+__all__ = ["app", "media_graph_input", "native_response_from_state"]
