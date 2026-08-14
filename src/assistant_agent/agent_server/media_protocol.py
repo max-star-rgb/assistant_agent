@@ -7,12 +7,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from assistant_agent.runtime.generated_artifacts import (
+from assistant_agent.media.generated_artifacts import (
     MAX_DELIVERED_IMAGE_COUNT,
     generated_artifact_payload,
 )
 from assistant_agent.media.artifact_delivery import ArtifactCompleted
-from assistant_agent.runtime.proactive_messages import ProactiveMessage
+from assistant_agent.proactive_delivery import ProactiveMessage
 
 
 class MediaProtocolError(ValueError):
@@ -32,7 +32,7 @@ class MediaChat:
     user_id: str
     text: str
     stream: bool
-    assistant_mode: str
+    execution_mode: str
 
 
 def parse_envelope(value: Mapping[str, Any]) -> MediaEnvelope:
@@ -79,7 +79,7 @@ def parse_chat(envelope: MediaEnvelope) -> MediaChat:
         user_id=user_id,
         text=latest_speech,
         stream=body.get("stream") is True,
-        assistant_mode=_assistant_mode(body.get("assistantMode")),
+        execution_mode=_execution_mode(body.get("assistantMode")),
     )
 
 
@@ -253,10 +253,10 @@ def _optional_text(value: Any) -> str | None:
     return text or None
 
 
-def _assistant_mode(value: Any) -> str:
-    mode = "standard" if value is None else str(value)
-    if mode not in {"standard", "deep_research"}:
-        raise MediaProtocolError("assistantMode must be standard or deep_research")
+def _execution_mode(value: Any) -> str:
+    mode = "fast" if value is None else str(value)
+    if mode not in {"fast", "planning"}:
+        raise MediaProtocolError("assistantMode must be fast or planning")
     return mode
 
 

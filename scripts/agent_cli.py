@@ -10,21 +10,29 @@ from typing import Any
 from langgraph_sdk import get_sync_client
 
 
-def _context(*, user_id: str, assistant_mode: str) -> dict[str, object]:
+def _context(*, user_id: str) -> dict[str, object]:
     return {
         "user_id": user_id,
         "tenant_id": "local-cli",
-        "assistant_mode": assistant_mode,
         "entry_profile": "cli",
         "media_capabilities": [],
     }
 
 
 def _response_text(state: Mapping[str, Any]) -> str:
-    assistant_state = state.get("assistant_state")
-    response = assistant_state.get("final_response") if isinstance(assistant_state, Mapping) else None
-    text = response.get("message") if isinstance(response, Mapping) else None
-    return text if isinstance(text, str) else ""
+    messages = state.get("messages")
+    if not isinstance(messages, (list, tuple)):
+        return ""
+    for message in reversed(messages):
+        if isinstance(message, Mapping):
+            if message.get("role") != "assistant" and message.get("type") != "ai":
+                continue
+            content = message.get("content")
+        else:
+            content = getattr(message, "content", None)
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+    return ""
 
 
 def _ensure_thread(client: Any, thread_id: str | None, user_id: str) -> str:
@@ -39,9 +47,12 @@ def _ensure_thread(client: Any, thread_id: str | None, user_id: str) -> str:
 def _run_once(client: Any, *, text: str, user_id: str, thread_id: str, mode: str) -> int:
     result = client.runs.wait(
         thread_id,
-        "assistant",
-        input={"request_input": {"turn_origin_id": f"cli:{thread_id}", "text": text}},
-        context=_context(user_id=user_id, assistant_mode=mode),
+        "assistant-native-v1",
+        input={
+            "messages": [{"role": "user", "content": text}],
+            "execution_mode": mode,
+        },
+        context=_context(user_id=user_id),
         multitask_strategy="enqueue",
     )
     print(_response_text(result))
@@ -60,7 +71,7 @@ def main() -> int:
         return _run_once(client, text=text, user_id=args.user_id, thread_id=thread_id, mode=args.assistant_mode)
     mode = args.assistant_mode
     print(f"Agent Server thread: {thread_id}")
-    print("Commands: /standard, /deep research, /new, /exit")
+    print("Commands: /fast, /planning, /new, /exit")
     while True:
         try:
             text = input("you> ").strip()
@@ -71,11 +82,11 @@ def main() -> int:
             continue
         if text in {"/exit", "/quit"}:
             return 0
-        if text == "/standard":
-            mode = "standard"
+        if text == "/fast":
+            mode = "fast"
             continue
-        if text == "/deep research":
-            mode = "deep_research"
+        if text == "/planning":
+            mode = "planning"
             continue
         if text == "/new":
             thread_id = _ensure_thread(client, None, args.user_id)
@@ -90,7 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--server", default="http://127.0.0.1:8000")
     parser.add_argument("--user-id", default="local-cli")
     parser.add_argument("--thread-id")
-    parser.add_argument("--assistant-mode", choices=("standard", "deep_research"), default="standard")
+    parser.add_argument("--assistant-mode", choices=("fast", "planning"), default="fast")
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--token")
     parser.add_argument("--interactive", action="store_true")

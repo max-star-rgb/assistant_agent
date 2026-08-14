@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 
 from assistant_agent.agent_server.media_protocol import proactive_chat_response
-from assistant_agent.runtime.proactive_delivery import (
+from assistant_agent.proactive_delivery import (
     ProactiveDeliveryOwnershipError,
     ProactiveDeliveryStore,
 )

@@ -1,7 +1,7 @@
 {
   "dependencies": ["."],
   "graphs": {
-    "assistant": "assistant_agent.agent_server.graph:assistant_graph"
+    "assistant-native-v1": "assistant_agent.agent_server.graph:native_assistant_graph"
   },
   "auth": {
     "path": "assistant_agent.agent_server.auth:auth"

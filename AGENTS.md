@@ -30,17 +30,18 @@ manifest 只用于 coding agent 选择工程文档，不进入产品 Runtime，�
 
 硬边界：
 
-- 入口层只负责接入和归一化请求；主运行时仍是 `AgentGraphRuntime` / assistant loop。
+- 入口层只负责接入和归一化请求；生产主运行时是 `native_agent.AssistantRootGraph`，fast 分支使用
+  `create_agent`，planning 分支使用显式 StateGraph 并复用同一个 fast Agent。
 - Gateway 负责 session/run/cancel/interrupt/reconnect/stream frame 生命周期，不承担主大脑职责。
-- 所有本地显式工具调用和外部副作用必须经过
-  `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`。配置为 `qwen` provider 的百炼兼容
+- 生产主链的本地显式工具调用使用标准 `BaseTool -> ToolNode` 与 `ToolRuntime` 注入；read Tool 使用官方
+  retry middleware，write/dangerous Tool 使用原生 HITL，副作用幂等归具体 Tool 或业务 API。旧
+  `ActionValidator -> ToolExecutor -> ToolRegistry -> tool` 只保留给尚未迁移的外围入口。配置为 `qwen` provider 的百炼兼容
   Chat Completions 固定启用的
   Provider-native 只读联网属于模型生成能力，不投影为本地 Tool，也不进入该执行链。
 - Provider 运行只分 `mock` 和 `real`。mock 模式下主 LLM 与 Provider-backed tools 强制使用 mock；real 模式下主 LLM 必须完整配置，Provider-backed tools 只注册已完整配置的真实实现，禁止静默回退到 mock。
-- Tool catalog、tool exposure、工具预选和入口路由不得用关键词、正则、高信号话术或手写请求规则推断用户意图；只能基于 `ToolSpec` policy/category、代码配置、结构化显式 opt-in、entry profile、media/env 等结构化事实定义候选工具空间。是否调用候选工具、调用哪个工具和如何构造参数由 LLM 判断；执行阶段仍必须做安全、授权、幂等和 schema 校验。
-- 长期 Memory 读写只发生在固定的 LangGraph `memory_recall` / `memory_commit` 节点；`memory_context` 是 checkpoint 冻结快照，后端通过纯 `MemoryNodeBundle` 装配，adapter 保持薄适配。
-- MCP、durable task、A2A、API、CLI、demo、eval 都是入口或调度形态，不能绕过 runtime、tool、provider、memory 治理链路。
-- API、demo、eval、CLI 应复用同一套 runtime 行为，避免各自实现 Agent 逻辑。
+- Tool exposure 和入口路由不得用关键词、正则、高信号话术或手写请求规则推断用户意图；候选 Tool 由受信静态装配、MCP allowlist、entry/media/env 等结构化事实决定，具体调用与参数由 LLM 判断。
+- 长期 Memory 读写只发生在父图固定的 `memory_recall` / `memory_commit` 节点；`memory_context` 是 checkpoint 冻结快照，后端只实现最小 `MemoryBackend` 协议，可接 LangMem、Mem0 或第三方服务。
+- MCP、durable task、A2A、API、CLI、demo、eval 都是入口或调度形态；新入口应复用 Agent Server/native graph。尚未迁移的旧入口不得被描述为生产主链。
 - 非 Python 的 Web UI、BFF、vendor adapter 或边缘入口只能做薄适配器；不要把旧 `runTime` agent loop 引入本项目。
 
 ## 3. 运行与安全

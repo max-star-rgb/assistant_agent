@@ -1,229 +1,133 @@
-"""Invocation-local composition for Agent Server graph execution.
-
-This module owns Python service objects only. Agent Server remains the owner of
-threads, runs, queueing, checkpoints, cancellation, and the injected Store.
-"""
+"""Run-local resources for the LangGraph-native production composition."""
 
 from __future__ import annotations
 
 import asyncio
-import inspect
 from dataclasses import dataclass
+import inspect
 from typing import Any
 
-from langgraph.runtime import Runtime
+from langchain_core.language_models import BaseChatModel
+from langchain_core.tools import BaseTool
 from langgraph.store.base import BaseStore
 from langgraph_sdk.auth.types import BaseUser
 
 from assistant_agent.agent_server.context import AgentServerRunContext
 from assistant_agent.config import ProviderConfig
-from assistant_agent.context.service import ContextService
-from assistant_agent.context.token_budget import ContextWindowPolicy
-from assistant_agent.context.tool_catalog import select_prompt_tool_specs
-from assistant_agent.memory.factory import create_memory_node_bundle
-from assistant_agent.memory.node_bundle import MemoryNodeBundle
+from assistant_agent.mcp.config import load_mcp_server_configs_from_env
 from assistant_agent.media.video.video_context import SQLiteVideoContextStore
-from assistant_agent.multi_agent.models import DEFAULT_AGENT_ID
-from assistant_agent.observability.trace_store import InMemoryTraceStore
-from assistant_agent.runtime.assistant_graph_state import (
-    AssistantTurnState,
-    assistant_turn_state_from_agent_state,
-    validate_assistant_turn_state,
+from assistant_agent.native_agent.fast_agent import build_fast_agent
+from assistant_agent.native_agent.memory import MemoryBackend, create_memory_backend
+from assistant_agent.native_agent.planning_graph import build_planning_graph
+from assistant_agent.native_agent.providers import create_chat_model
+from assistant_agent.native_agent.root_graph import build_assistant_root_graph
+from assistant_agent.native_agent.tools import (
+    NativeToolResources,
+    create_mcp_tools,
+    create_native_tools,
 )
-from assistant_agent.runtime.assistant_graph_profiles import graph_execution_policy
-from assistant_agent.runtime.chat_adapter import create_chat_adapter
-from assistant_agent.runtime.graph_invocation_claims import (
-    InMemoryGraphInvocationClaimStore,
-)
-from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
-from assistant_agent.runtime.proactive_delivery import (
+from assistant_agent.proactive_delivery import (
     ProactiveDeliveryStore,
     SQLiteProactiveDeliveryStore,
 )
-from assistant_agent.runtime.requests import UserRequest
-from assistant_agent.runtime.run_phase import RunPhase
-from assistant_agent.runtime.state import AgentState
-from assistant_agent.runtime.tool_executor import ToolExecutor
-from assistant_agent.runtime.tool_operation_barrier import default_tool_operation_store
-from assistant_agent.tools.plugins.registry_factory import create_default_registry
-
-
-class AgentServerExecutionError(RuntimeError):
-    """Trusted Agent Server execution context is missing or inconsistent."""
-
-
-@dataclass
-class AgentServerGraphWorker:
-    """Hydrate one native run without owning execution lifecycle."""
-
-    context: AgentServerRunContext
-    config: ProviderConfig
-    tool_executor: ToolExecutor
-    chat_adapter: Any
-    trace_store: InMemoryTraceStore
-    invocation_claim_store: InMemoryGraphInvocationClaimStore
-    proactive_delivery_store: ProactiveDeliveryStore | None = None
-
-    def __post_init__(self) -> None:
-        self._runtime_context: GraphRuntimeContext | None = None
-
-    def bootstrap(
-        self,
-        value: Any,
-        runtime: Runtime[AgentServerRunContext],
-    ) -> AssistantTurnState:
-        execution = runtime.execution_info
-        if execution is None or not execution.thread_id or not execution.run_id:
-            raise AgentServerExecutionError(
-                "Agent Server execution_info must provide native thread_id and run_id."
-            )
-        if runtime.context != self.context:
-            raise AgentServerExecutionError("Graph run context changed after composition.")
-        request = UserRequest(
-            user_id=self.context.user_id,
-            session_id=execution.thread_id,
-            text=value.text,
-            image_ids=list(value.image_ids),
-            video_ids=list(value.video_ids),
-            audio_id=value.audio_id,
-            assistant_mode=self.context.assistant_mode,
-            metadata={
-                "entry_profile": self.context.entry_profile,
-                "media_capabilities": list(self.context.media_capabilities),
-            },
-        )
-        state = AgentState.from_request(
-            request,
-            run_id=execution.run_id,
-            trace_id=execution.run_id,
-            agent_id=DEFAULT_AGENT_ID,
-        )
-        selection = select_prompt_tool_specs(
-            request,
-            self.tool_executor.registry.list_specs(),
-            registry_generation=self.tool_executor.registry.generation,
-        )
-        state.run_tool_catalog = selection.run_tool_catalog
-        context_service = ContextService(
-            window_policy=ContextWindowPolicy(
-                input_token_limit=self.config.context_input_token_limit,
-                trigger_ratio=self.config.context_compaction_trigger_ratio,
-                target_ratio=self.config.context_compaction_target_ratio,
-                hard_ratio=self.config.context_compaction_hard_ratio,
-                safety_margin_tokens=self.config.context_compaction_safety_margin_tokens,
-                summary_max_tokens=self.config.context_summary_max_tokens,
-            ),
-            current_location=self.config.current_location,
-            supports_developer_role=bool(
-                getattr(
-                    getattr(self.chat_adapter, "capabilities", None),
-                    "supports_developer_role",
-                    False,
-                )
-            ),
-            chat_max_tokens=self.config.chat_max_tokens,
-            deep_research_chat_max_tokens=self.config.deep_research_chat_max_tokens,
-        )
-        execution_policy = graph_execution_policy(
-            profile="standard",
-            model_call_limit=self.config.max_tool_iterations,
-            action_tool_call_limit=self.config.max_tool_iterations,
-            control_tool_call_limit=self.config.max_control_tool_iterations,
-        )
-        self._runtime_context = GraphRuntimeContext(
-            tool_executor=self.tool_executor,
-            chat_adapter=self.chat_adapter,
-            context_service=context_service,
-            trace_store=self.trace_store,
-            agent_state=state,
-            invocation_claim_store=self.invocation_claim_store,
-            proactive_delivery_store=self.proactive_delivery_store,
-            invocation_token=execution.run_id,
-            execution_policy=execution_policy,
-        )
-        graph_state = assistant_turn_state_from_agent_state(
-            state,
-            execution_policy=execution_policy,
-        )
-        graph_state["turn_origin_id"] = value.turn_origin_id
-        graph_state["memory_origin_run_id"] = value.turn_origin_id
-        graph_state["run_phase"] = RunPhase.ACT.value
-        return validate_assistant_turn_state(graph_state)
-
-    def resolve(
-        self,
-        _parent: dict[str, object],
-        child: AssistantTurnState,
-        runtime: Runtime[AgentServerRunContext],
-    ) -> GraphRuntimeContext:
-        context = self._runtime_context
-        if context is None or context.agent_state is None:
-            raise AgentServerExecutionError("Graph worker was not bootstrapped.")
-        if child["request"]["user_id"] != self.context.user_id:
-            raise AgentServerExecutionError("Checkpoint owner does not match run context.")
-        if child["run"]["run_id"] != context.agent_state.run_id:
-            raise AgentServerExecutionError("Checkpoint run does not match bootstrap identity.")
-        return context
 
 
 @dataclass
 class AgentServerExecutionOwner:
-    """Own resources opened for exactly one native Agent Server run."""
+    """Own only SDK resources used by one native graph composition."""
 
-    worker: AgentServerGraphWorker
-    memory_bundle: MemoryNodeBundle
+    model: BaseChatModel
+    tools: list[BaseTool]
+    memory_backend: MemoryBackend
+    proactive_delivery_store: ProactiveDeliveryStore
+    graph: Any
+    _close_targets: tuple[Any, ...] = ()
 
     @classmethod
     async def open(
         cls,
         *,
         context: AgentServerRunContext,
-        store: BaseStore,
+        store: BaseStore | None,
         user: BaseUser,
     ) -> "AgentServerExecutionOwner":
         _authorize_context(user, context)
-        return await asyncio.to_thread(
-            cls._open_sync,
-            context=context,
-            store=store,
-        )
+        return await cls.compose(store=store)
 
     @classmethod
-    def _open_sync(
+    async def compose(
         cls,
         *,
-        context: AgentServerRunContext,
-        store: BaseStore,
+        store: BaseStore | None,
     ) -> "AgentServerExecutionOwner":
-        """Build synchronous SDKs away from Agent Server's event loop."""
+        """Build configured clients without blocking the Agent Server loop."""
 
         config = ProviderConfig.from_env()
-        registry = create_default_registry(
+        model, local_tools, memory_backend, proactive_delivery_store = await asyncio.to_thread(
+            _compose_sync,
             config,
-            video_context_store=SQLiteVideoContextStore(),
+            store,
         )
-        chat_adapter = create_chat_adapter(config)
-        worker = AgentServerGraphWorker(
-            context=context,
-            config=config,
-            tool_executor=ToolExecutor(
-                registry=registry,
-                operation_store=default_tool_operation_store(),
-            ),
-            chat_adapter=chat_adapter,
-            trace_store=InMemoryTraceStore(),
-            invocation_claim_store=InMemoryGraphInvocationClaimStore(max_entries=32),
-            proactive_delivery_store=SQLiteProactiveDeliveryStore(
-                config.proactive_delivery_store_path
-            ),
+        mcp_tools = await create_mcp_tools(load_mcp_server_configs_from_env())
+        tools = [*local_tools, *mcp_tools]
+        names = [tool.name for tool in tools]
+        if len(names) != len(set(names)):
+            raise ValueError("native and MCP tool names must be unique")
+        fast_agent = build_fast_agent(
+            model,
+            tools,
+            model_call_limit=config.max_tool_iterations,
+            tool_call_limit=config.max_tool_iterations,
+            context_window_tokens=config.context_input_token_limit,
         )
-        memory_bundle = create_memory_node_bundle(config, langmem_store=store)
-        return cls(worker=worker, memory_bundle=memory_bundle)
+        planning_graph = build_planning_graph(
+            model,
+            fast_agent,
+            max_repairs=2,
+        )
+        graph = build_assistant_root_graph(
+            memory_backend=memory_backend,
+            fast_agent=fast_agent,
+            planning_graph=planning_graph,
+            proactive_delivery_store=proactive_delivery_store,
+        )
+        return cls(
+            model=model,
+            tools=tools,
+            memory_backend=memory_backend,
+            proactive_delivery_store=proactive_delivery_store,
+            graph=graph,
+            _close_targets=(memory_backend, model, *tools),
+        )
 
     async def aclose(self) -> None:
-        if self.memory_bundle.aclose is not None:
-            await self.memory_bundle.aclose()
-        await _close_if_supported(self.worker.chat_adapter)
+        seen: set[int] = set()
+        for target in self._close_targets:
+            if id(target) in seen:
+                continue
+            seen.add(id(target))
+            await _close_if_supported(target)
+
+
+def _compose_sync(
+    config: ProviderConfig,
+    store: BaseStore | None,
+) -> tuple[BaseChatModel, list[BaseTool], MemoryBackend, ProactiveDeliveryStore]:
+    model = create_chat_model(config)
+    tools = create_native_tools(
+        config,
+        resources=NativeToolResources(
+            video_context_store=SQLiteVideoContextStore(),
+        ),
+    )
+    memory_backend = create_memory_backend(
+        config,
+        langmem_store=store,
+    )
+    proactive_delivery_store = SQLiteProactiveDeliveryStore(
+        config.proactive_delivery_store_path
+    )
+    return model, tools, memory_backend, proactive_delivery_store
 
 
 def _authorize_context(user: BaseUser, context: AgentServerRunContext) -> None:
@@ -239,7 +143,6 @@ def _authorize_context(user: BaseUser, context: AgentServerRunContext) -> None:
         tenant_id = str(getattr(user, "tenant_id", ""))
     if not tenant_id or tenant_id != context.tenant_id:
         raise PermissionError("Authenticated principal tenant does not match run context.")
-    return
 
 
 async def _close_if_supported(value: Any) -> None:
@@ -251,8 +154,4 @@ async def _close_if_supported(value: Any) -> None:
         await result
 
 
-__all__ = [
-    "AgentServerExecutionError",
-    "AgentServerExecutionOwner",
-    "AgentServerGraphWorker",
-]
+__all__ = ["AgentServerExecutionOwner"]

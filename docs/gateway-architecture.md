@@ -1,6 +1,6 @@
 # Agent Server 部署架构
 
-Last updated: 2026-08-14
+最后更新：2026-08-14
 
 ## Authority contract
 
@@ -8,101 +8,92 @@ Last updated: 2026-08-14
 | --- | --- |
 | 定位 | 生产 Assistant Graph 的 Agent Server 部署、身份和资源生命周期权威 |
 | Owns | auth、assistant、thread、run、queue、checkpoint、Store、cancel、stream 与 custom route 装配 |
-| Does not own | Assistant 节点内部推理、Tool 治理、Memory backend 语义、Media-Agent wire 字段 |
-| 源码与 schema 入口 | `langgraph.json`、`src/assistant_agent/agent_server/`、`scripts/run_server.py` |
+| Does not own | Assistant 节点推理、Tool schema、Memory 后端语义、Media-Agent wire 字段 |
+| 源码与 schema 入口 | `langgraph.json`、`src/assistant_agent/agent_server/` |
 | 验证入口 | `docs/authority.toml` 中 `agent-server.verification` |
-| 相邻 authority | 媒体 wire 见 `media-agent-service-websocket.md`；节点流见 `runtime-event-stream-architecture.md` |
+| 相邻 authority | 媒体 wire 见 [`media-agent-service-websocket.md`](media-agent-service-websocket.md)；运行图见 [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md) |
 
-## 唯一生产执行边界
+## 唯一生产入口
 
-生产环境只有一套 Graph server：LangGraph Agent Server。仓库不再维护 FastAPI 包裹 Gateway、Gateway
-包裹 Runtime 的平行执行链，也不在入口进程中自行拥有 session、run queue 或 checkpointer。
+`langgraph.json` 只注册：
 
 ```text
-LangGraph public API / SDK clients
-              |
-              +-- auth -> assistant / thread / run / stream / cancel / checkpoint / Store
-              |
-Media service +-- /agent-service/v1 custom route
-                           |
-                           +-- wire parse/project
-                           +-- public SDK -> native thread/run/cancel
-                                      |
-                                      v
-                            deployed Assistant StateGraph
+assistant-native-v1 -> assistant_agent.agent_server.graph:native_assistant_graph
 ```
 
-`langgraph.json` 是唯一生产 serving manifest。`scripts/run_server.py` 只是 `langgraph dev` 的本地启动
-包装；`scripts/agent_cli.py` 只通过公开 `langgraph_sdk` 访问部署。
+不注册旧 graph alias，因此新图不解释旧 thread/checkpoint。Agent Server 原生拥有 assistant、thread、run、
+queue、checkpoint、interrupt/resume、cancel、stream 和 LangGraph Store。项目不再在生产入口维护第二份 run
+manager、cancel token、checkpoint facade 或产品状态机。
 
-## 资源心智模型
+公开 Graph 输入为严格 `AssistantRootInput`：
+
+```json
+{
+  "messages": [{"role": "user", "content": "hello"}],
+  "execution_mode": "fast"
+}
+```
+
+`execution_mode` 只允许 `fast|planning`。可信 `user_id`、`tenant_id`、`entry_profile` 与
+`media_capabilities` 位于 `AgentServerRunContext`，由认证 principal 校验；执行模式不放入 context。
+
+## 资源模型与 composition
 
 | 资源 | 权威 owner | 含义 |
 | --- | --- | --- |
 | auth principal | Agent Server auth middleware | 调用方身份与 delegation 权限 |
-| assistant | Agent Server | 指向部署的 Graph 定义 |
-| thread | Agent Server | 多轮会话与 checkpoint 轴 |
-| run | Agent Server | thread 上的一次执行，可排队、流式读取和取消 |
-| checkpoint | Agent Server/checkpointer | Graph State 的持久执行快照 |
-| Store | Agent Server | 可选跨 thread namespace 数据资源，供 LangMem 等后端使用 |
+| assistant/thread/run/checkpoint | Agent Server | Graph 定义、多轮状态与一次执行 |
+| LangGraph Store | Agent Server | 可选跨 thread 数据资源，供 LangMem 等后端使用 |
 | media connection | custom route | 一次 WebSocket 传输连接，不是 thread |
-| delivery ID | custom route | 媒体响应 ACK 关联，不是 run 或 checkpoint |
-| proactive delivery Store | Graph composition + custom route | Graph 幂等入队，媒体连接 presence/claim/ACK；不是 LangGraph BaseStore |
+| delivery ID | custom route/outbox | 媒体 ACK 关联，不是 run 或 checkpoint |
+| proactive delivery Store | Graph composition + custom route | 原生节点幂等入队，媒体连接 presence/claim/ACK；不是 LangGraph Store |
 
-同一 conversation 复用 `thread_id`；每次输入创建新 run。连接断开不应被解释成删除 thread 或 Store。
-并发策略由 run API 的 `multitask_strategy` 指定；当前媒体入口使用 `enqueue`。取消通过原生 run cancel，
-不再维护第二份 cancellation token/session manager。
+factory lifespan 创建 `AgentServerExecutionOwner`，持有标准 `BaseChatModel` Provider adapter、静态本地
+`BaseTool` 与官方 MCP tools、一个 `MemoryBackend`、独立 `ProactiveDeliveryStore`、已编译但不绑定
+checkpointer 的 `AssistantRootGraph`，以及对应 close targets。LangMem 可引用 Server 注入的 Store；主动投递
+Store 则作为原生 `delivery_dispatch` 节点的 closure 资源，不进入 Graph State 或 Runtime context。
 
-## Graph 装配
+composition 不构造 `AgentGraphRuntime`、`AssistantTurnState`、`ToolExecutor`、`ProductEventProjector`、
+`AgentServerGraphWorker` 或 `WorkflowGraphHost`。
 
-Agent Server 调用 `assistant_agent.agent_server.graph:assistant_graph` factory，并提供受认证
-`ServerRuntime`、checkpointer 和可选 Store。factory 创建本次 worker service，编译不绑定本地 saver/store
-的 graph，并在 factory lifespan 结束时关闭 Provider/Memory 资源。
+## Auth 与身份
 
-Graph 输入只含 `request_input`；可信身份、tenant、mode、entry profile 和 media capability 位于严格
-`AgentServerRunContext`。factory 必须用认证 principal 校验 context delegation。custom route 内部若要发起
-run，必须经公开同源 API 并转发 Authorization；不得用 `/noauth` 后再相信客户端可伪造的 context。
-worker composition 根据受信配置构造不可变 `GraphExecutionPolicy` 并放入 LangGraph Runtime context；
-Assistant checkpoint 只保存对应 digest 与已用计数，不复制模型或 Tool 最大调用数。
+mock/local 模式可用 `X-Assistant-User`、`X-Assistant-Tenant` 构造开发 principal。real mode 要求
+`ASSISTANT_AGENT_SERVER_SERVICE_TOKEN`，媒体服务还需对 `<user>\n<tenant>` 做 HMAC-SHA256 签名。
+thread metadata 按 auth owner 限制；run 与 Store 沿用同一 principal。connection、vendor session、thread、run
+与 delivery ID 始终是不同身份轴。
 
-mock/local 模式可用 `X-Assistant-User`、`X-Assistant-Tenant` 构造多个开发 principal。real mode 先验证
-`ASSISTANT_AGENT_SERVER_SERVICE_TOKEN`，再要求媒体服务提供 `X-Assistant-User`、
-`X-Assistant-Tenant` 与 `X-Assistant-Signature`；签名是服务 secret 对
-`<user>\n<tenant>` 的 HMAC-SHA256。认证结果的 identity 是终端 user，不是固定媒体服务账号；thread、run
-和 Store 均按该 identity 授权。裸 `userNumber` 或未签名 header 不能形成生产 principal。
+## `/agent-service/v1`
 
-## custom route 边界
+custom route 只负责：
 
-`/agent-service/v1` 保留媒体侧 envelope。适配器只允许：
-
-- 解析/校验 vendor frame；
-- 关联 connection、vendor session、thread、run、chat 和 delivery；
-- 调用公开 SDK 创建 thread/run、消费 stream、取消 run；
-- 将原生终态机械投影为媒体响应并处理 ACK；
-- 按 native thread 从主动投递 Store 串行 claim，机械投影 `chatResponse` 并处理 ACK/重连补投；
+- 解析、校验 vendor frame；
+- 关联 connection、vendor session、native thread/run、chat 与 delivery；
+- 使用公开 `langgraph_sdk` 创建 run、消费 resumable stream、join 与 cancel；
+- 从 terminal values 选择最新标准 `AIMessage` 并机械投影媒体响应；
+- 按 native thread 从主动投递 Store 串行 claim，处理 ACK、lease 与重连补投；
 - 承载不执行 Graph 的 callback route。
 
-它不得构造 `AgentGraphRuntime`，不得实现排队、checkpoint、长期记忆策略或 Tool 执行。Graph State 也不放
-WebSocket、SDK client、Provider client 或回调对象。
+它不读取 checkpoint，不执行 Tool/Memory，不构造旧 Runtime，也不翻译项目 run/error 状态机。SDK stream 使用
+messages/updates/values；短暂订阅断开后按 last event ID 调用 `threads.join_stream`。WebSocket 断开时
+best-effort cancel 当前连接仍活动的 reactive runs；delivery ACK 不改变 run 或 checkpoint。
 
-主动投递不引入全局 dispatcher 或第二套 Runtime。Graph 在固定 `delivery_dispatch` node 只写 SQLite
-`ProactiveDeliveryStore`；每个成功握手的媒体连接启动 thread-specific pull pump，以短 presence/claim lease
-隔离连接。durable 行只有匹配 `chatResponseAck` 才进入 acknowledged，断线或 ACK timeout 释放为 queued，
-相同 `user + vendor sessionId` 重连到同一 native thread 后继续；ephemeral 离线时直接 skipped。当前实现完整
-支持单实例或共享持久卷，不宣称本地 SQLite 可覆盖多主机部署；未来多副本只替换薄 Store 实现，不把
-LangGraph `BaseStore` 当消息队列。
+主动投递不引入全局 dispatcher 或第二套 Runtime。父 `AssistantRootGraph` 在 fast/planning 汇流后检查严格
+`pending_deliveries` channel；非空时进入固定 `delivery_dispatch` 节点，用 `Runtime.execution_info` 的 native
+thread/run 和认证 context 的 user 形成 envelope，并按稳定 message ID 幂等写入 Store，随后进入
+`memory_commit`。媒体连接启动 thread-specific pull pump；durable 行只有匹配 ACK 才完成，断线或超时释放为
+queued，ephemeral 离线时直接 skipped。当前 SQLite 实现面向单实例或共享受控卷，不宣称多主机一致性。
 
-H.264 解码与 3D callback 属于媒体边缘资源。解码后的有界 JPEG 引用保存在 SQLite frame index，Graph
-State 只携带 `video_id`；视觉 Tool 在 worker 中按引用读取。该本地实现要求 API/worker 共享受控数据卷，
-多主机部署应把同一协议替换为对象存储 URI + 共享索引。3D callback 只向当前在线连接发布中性 artifact
-事件，不启动第二次 Graph，也不宣称跨进程或离线可靠投递。
+H.264 解码与 3D callback 属于媒体边缘资源。解码后的有界 JPEG 引用保存在 SQLite frame index，Graph State
+只携带稳定引用；3D callback 只向当前在线连接发布中性 artifact，不启动第二次 Graph。
 
-## 本地运行与生产边界
+## 验证
 
 ```bash
-MULTIMODAL_AGENT_PROVIDER_MODE=mock \
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_server.py --port 8000
+MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
+  tests/core/contract/test_gateway_contract.py \
+  tests/tdd/native-agent-parent-graph/test_agent_server_factory.py \
+  tests/tdd/native-agent-parent-graph/test_media_native_adapter.py \
+  tests/tdd/native-proactive-delivery/test_native_dispatch.py \
+  tests/tdd/native-proactive-delivery/test_media_delivery_pump.py
 ```
-
-`langgraph dev` 的 in-memory runtime 只用于开发验证。生产部署使用 LangSmith Deployment/Agent Server
-支持的持久资源和认证配置；不能把本地 in-memory 的重启行为当作生产 durability 证明。

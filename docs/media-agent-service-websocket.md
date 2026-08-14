@@ -86,8 +86,10 @@ Graph 完成后发唯一成功终包：
 }
 ```
 
-最终正文来自 native state 的 `assistant_state.final_response.message`，适配器不得从 delta 拼接或自行生成
-业务回答。Graph 的 `publish_response` 已先发生，随后 `memory_commit` 完成，run 才到达终态。
+`assistantMode` 省略时为 `fast`，也可显式选择 `planning`；旧 `standard|deep_research` 不再接受。媒体适配器
+把请求机械转换为标准 HumanMessage content blocks 和根输入 `execution_mode`。最终正文来自 terminal values
+中的最新标准 `AIMessage`，适配器不得从 delta 拼接或自行生成业务回答；父图完成 `memory_commit` 后 run 才
+到达终态。
 
 ## 4. interrupt 与 delivery ACK
 

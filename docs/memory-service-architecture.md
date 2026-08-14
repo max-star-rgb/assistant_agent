@@ -1,4 +1,4 @@
-# LangGraph 原生长期记忆架构
+# LangGraph-native 长期记忆架构
 
 最后更新：2026-08-14
 
@@ -6,158 +6,56 @@
 
 | 字段 | 内容 |
 | --- | --- |
-| 定位 | 长期记忆 Graph 节点、冻结快照、后端装配和外部写入幂等的当前权威 |
-| Owns | `MemoryNodeBundle`、`memory_recall` / `memory_commit`、`memory_context`、commit ledger、Mem0/LangMem/disabled 装配与 time-travel 语义 |
-| Does not own | Mem0 私有 HTTP wire、conversation 编译、媒体 delivery ACK、通用 `BaseStore` 协议、模型可调用 Memory Tool |
-| 源码与 schema 入口 | `src/assistant_agent/memory/`、`runtime/assistant_graph_state.py`、`runtime/assistant_loop_graph.py` |
+| 定位 | 父图固定 Memory 节点、冻结快照与后端协议的当前权威 |
+| Owns | `MemoryBackend`、`memory_recall`、`memory_commit`、`memory_context`、Mem0/LangMem/第三方装配 |
+| Does not own | Mem0 HTTP wire、prompt 渲染、Agent Server Store 实现、旧 Memory bundle/ledger |
+| 源码与 schema 入口 | `src/assistant_agent/native_agent/memory.py`、`src/assistant_agent/memory/mem0/` |
 | 验证入口 | `docs/authority.toml` 中 `graph-memory.verification`；核心不变量 `MEMORY-001` |
-| 相邻 authority | Mem0 wire 见 [`memory_server_api_spec.md`](memory_server_api_spec.md)；Context 见 [`context_engineering_status.md`](context_engineering_status.md)；运行流见 [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md) |
+| 相邻 authority | Mem0 wire 见 [`memory_server_api_spec.md`](memory_server_api_spec.md)；Context 见 [`context_engineering_status.md`](context_engineering_status.md) |
 
-## 1. 总体边界
+## 固定父图节点
 
-长期记忆在运行流程中的统一抽象是 LangGraph `Node + State + Runtime`，不是项目自建 Memory SDK：
-
-```text
-Agent Server graph factory
-  ├── Checkpointer
-  ├── MemoryNodeBundle
-  │    ├── recall_node
-  │    ├── commit_node
-  │    ├── optional BaseStore
-  │    └── optional aclose
-  └── Assistant StateGraph
-       START
-         ↓
-       memory_recall
-         ↓
-       assistant / tool loop
-         ↓
-       publish_response
-         ↓
-       memory_commit
-         ↓
-        END
-```
-
-`MemoryNodeBundle` 是 frozen composition value，只允许
-`backend_id / recall_node / commit_node / store / aclose`。它不提供 `search()`、`save()`、session、
-policy、retry、health、queue 或 worker；新增能力应由明确 Graph node 表达，不能把 bundle 扩展成新的
-Memory Service/Host。
-
-一个 compiled Assistant graph 只装配一个 active backend。当前支持：
-
-- `disabled`：完全离线，召回为空，写入跳过；
-- `mem0`：节点直接调用同步 `Mem0Client`，不伪装成 `BaseStore`；
-- `langmem`：manager 保留 extraction/update/merge 语义，Store 由
-  `graph.compile(store=...)` 原生注入，节点从 `runtime.store` 读取。
-
-assistant、tool 和 context compiler 不持有 backend/client/store 写引用。长期记忆写 authority 只在
-`memory_commit`；未来若提供显式用户记忆命令，必须新增受治理的 `memory_command` 节点。
-
-## 2. State 契约与冻结快照
-
-`memory_recall` 将后端结果规范化为严格、版本化、checkpoint-safe 的 `MemoryContext`：
+长期记忆只在父图执行：
 
 ```text
-backend_id / status / snapshot_id / items / issue_codes
-item = memory_id / text / source / relevance? / updated_at?
+memory_recall -> fast | planning -> memory_commit
 ```
 
-`memory_context` 是一次 logical turn 看见的长期记忆“照片”。冻结后，同一 turn 的 assistant/tool
-iteration 与 resume 都只消费 checkpoint 中的快照，不重新查询随时间变化的 backend。模型推理的稳定契约
-只有有序 `text`；其余 item 字段仅用于 recall observability，业务逻辑不得依赖某个后端的 ID、score 或
-时间字段。
+planning worker 只读取父图冻结的 `memory_context`，不持有 backend，也不重复 recall/commit。recall 使用
+LangGraph `RetryPolicy(max_attempts=3)`；最终失败由原生 error handler 写入
+`memory_context=()`、`memory_status=degraded`，随后继续回答。commit 异常 fail-open，不删除、不替换最终
+`AIMessage`，第三方原始错误不进入 state。
 
-正文限制为每项最多 4,000 字、总计最多 12,000 字、最多 32 项。后端返回文本始终是不可信历史数据，
-不能覆盖 system/developer policy、当前用户请求、ToolSpec、身份或授权。Context compiler 仍负责最终
-token budget 和 prompt-safe 数据边界。
+## 最小 backend 协议
 
-## 3. 回答发布与写入
+`MemoryBackend` 只有异步 `recall` 与 `commit`。两者接收受信 `AssistantRunContext`、Agent Server
+`thread_id/run_id`、标准 messages 和 `runtime.store`。第三方记忆服务只需实现该协议，不需要继承项目 SDK、
+创建 session host 或提供通用 CRUD。
 
-规范化最终回答形成后，Graph 先通过 `publish_response` 把稳定的 `RunFinalProductFact` 写入产品事件流，
-再进入 `memory_commit`。Graph 等待 publish 调用成功，但不等待媒体/客户端 ACK：
+当前装配：
 
-```text
-response.ready -> response.published -> memory_commit -> graph terminal
-                                      ↘ response.delivered 可独立观测
+- `disabled`：离线默认，召回为空、提交跳过；
+- `mem0`：复用薄 `Mem0Client`；身份通过 opaque binding，提交的 `source_turn` 优先使用 Agent Server
+  `run_id`，本地 Graph 无 run ID 时使用 thread ID；不构造旧 SQLite commit ledger；
+- `langmem`：使用官方 manager，召回只访问 compiled graph 注入的同一个 `runtime.store`；
+- custom：composition 可注入任何满足 `MemoryBackend` 的第三方 adapter。
+
+mock mode 只能使用 disabled；远端 backend 要求 real mode 和完整显式配置，不能探测 key 后启用，也不能静默
+回退。
+
+## 冻结快照与安全
+
+state 只保存有界 `tuple[str, ...]` 与 `ready|empty|degraded`。最多 32 项、每项 4,000 字、总计 12,000 字。
+Memory 正文是不可信历史数据，由 dynamic prompt 放入明确的 untrusted/frozen 数据边界，不能覆盖当前请求、
+身份、权限或 Tool schema。
+
+旧 `MemoryNodeBundle`、commit ledger 与复杂 time-travel 语义仍供旧外围 runtime 使用；生产
+`assistant-native-v1` 不导入它们。新旧 checkpoint 不做 schema 迁移。
+
+## 验证
+
+```bash
+MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
+  tests/core/integration/test_memory_lifecycle.py \
+  tests/tdd/native-agent-parent-graph/test_native_memory.py
 ```
-
-`memory_commit` 只接收受信 runtime identity、规范化 user/assistant 文本和稳定 logical turn origin；
-第三方原始异常与响应不得进入 State。commit 失败或超时只更新精简的 `MemoryCommitState`，不能改写已经
-发布的回答，也不能令产品 run 失败。所有入口收到 final event 后仍须消费 Graph 至终态，不能提前停止。
-
-## 4. 最小 commit ledger
-
-LangGraph checkpoint 不能为外部 Memory API 提供 exactly-once，因此外部写入前必须经过独立
-`MemoryCommitLedger`。稳定 `memory_event_id` 绑定：
-
-```text
-backend_id + logical turn origin + commit schema version + normalized input digest
-```
-
-SQLite 表 `memory_commit_events` 只记录 single-owner reserve、输入摘要和
-`invoking / succeeded / failed / outcome_unknown`。`succeeded` 去重；无法证明结果的中断或 timeout 标记为
-`outcome_unknown` 并 fail closed。ledger 不拥有 scheduler、retry、queue、worker、dead-letter 或 session
-lifecycle，也不复用 Tool operation 的业务模型。
-
-## 5. Time-travel 语义
-
-| invocation | recall | memory snapshot | commit |
-| --- | --- | --- | --- |
-| new invoke | 查询一次 | 新建并冻结 | 允许一次 |
-| resume | 不查询 | 复用中断 checkpoint | 原 product turn 以同一 event 去重 |
-| replay | 不查询 | 继承所选历史快照 | 禁止 |
-| default fork | 不查询 | 继承所选历史快照 | 禁止 |
-| `refresh_memory=true` fork | 重新查询 | 新建非精确历史快照 | 默认仍禁止 |
-
-精确 resume/replay/fork 缺少 `memory_context` 时 fail closed，不回退当前 backend。refresh fork 是受信请求的
-显式 opt-in：它从 `memory_recall` 重新开始，因此不再是严格历史重现；其 `turn_provenance` 仍为
-`time_travel`，所以 commit 被节点拒绝。
-
-`invoke|resume|replay|fork` 属于单次执行事实，只从 LangGraph `Runtime.context` 读取，不进入
-`AssistantTurnState`。`turn_origin_id`、`memory_origin_run_id`、`turn_provenance` 和冻结的
-`memory_context` 仍是跨 invocation 的业务恢复事实，继续保存在 checkpoint。
-
-## 6. 配置与资源生命周期
-
-受信配置 `MEMORY_BACKEND` 只能是 `disabled`、`mem0` 或 `langmem`，默认 `disabled`。mock mode 只能使用
-disabled；远端 backend 必须同时满足 `MULTIMODAL_AGENT_PROVIDER_MODE=real` 和完整显式配置，不能因发现
-key 自动启用，也不能在配置失败时静默 fallback。
-
-Mem0 使用 `MEM0_BASE_URL / MEM0_API_KEY / MEM0_TIMEOUT_SECONDS /
-MEM0_IDENTITY_NAMESPACE`。LangMem 使用 `LANGMEM_MODEL` 选择记忆抽取模型，并复用当前受信
-OpenAI-compatible Chat Provider 的 API key、base URL 与 timeout；不支持该协议的主 Provider 会在装配时
-fail closed。它还要求显式 composition-owned `BaseStore` 和 optional dependency group
-`memory-langmem`；缺包时启动失败并给出可解释配置错误。该 optional group 包含 HTTPX SOCKS transport，
-graph factory 会把标准 proxy 中的 `socks://` alias 规范化为 HTTPX 接受的 `socks5://`，且通过 bundle
-`aclose` 关闭显式创建的同步/异步 client。
-
-ledger 默认路径为 `.local/langgraph/memory_commits.sqlite3`，可通过 `MEMORY_COMMIT_LEDGER_PATH` 修改。
-Store 由 Agent Server 注入，setup/migration 归部署资源所有；client/manager 的可选异步关闭通过 bundle
-`aclose` 归还 graph factory。Runtime 不维护 Memory session、后台 ingestion 或第二条生命周期。
-
-## 7. Mem0 与 LangMem 特有语义
-
-Mem0 recall 使用可信身份绑定后的 opaque `user_id + agent_id`；commit 额外携带 opaque `run_id` 和稳定
-`source_turn=memory_event_id`。节点负责排序、裁剪、状态规范化和错误脱敏；事实提取、合并、更新、向量化
-由 Mem0 完成。私有 HTTP 子集见 [`memory_server_api_spec.md`](memory_server_api_spec.md)。
-
-LangMem manager 使用 `create_memory_store_manager`，namespace 为
-`("assistant_agent", opaque_subject_id)`。recall 必须读取 compile 注入的同一 `runtime.store`；资源不一致
-属于配置错误。项目不把 LangMem 或 Mem0 的专有 schema 暴露给其他 Graph 节点。
-
-## 8. 可观测性
-
-`memory_recall` 和 `memory_commit` 分别产生 `memory.recall.finished` 与
-`memory.commit.finished` canonical event，并投影为同名 SPAN。只记录 backend ID、节点状态、召回项数、
-裁剪后字符数、latency、memory event ID 与 issue code；不记录 Memory 正文、commit 对话、secret 或第三方
-原始响应。观测写入 fail-open，不得改变 Graph 结果。
-
-迁移前的 `memory.session_recall.finished`、`memory.ingestion.finished` 和 `memory.turn_ingestion` 只在
-trace reader/exporter/evaluator 中保留历史数据兼容，不再由当前 Graph memory 主线产生。
-
-## 9. 非目标
-
-当前不提供多 backend 融合/双写、模型可调用 Memory Tool、自研通用 Memory SDK、Memory session、后台
-reflection worker、重试调度、通用 CRUD/control-plane API，或把 Mem0 包装为 `BaseStore`。这些能力若
-未来需要，必须分别明确产品权限、Graph 位置、数据协议和副作用治理。

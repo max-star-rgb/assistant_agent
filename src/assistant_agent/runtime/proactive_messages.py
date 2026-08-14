@@ -7,36 +7,17 @@ from threading import Lock
 from time import time
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
+
+from assistant_agent.proactive_delivery import (
+    ProactiveDeliveryMode as ProactiveDeliveryMode,
+    ProactiveMessage,
+)
 
 
 ProactiveMessageKind = str
-ProactiveDeliveryMode = Literal["connection_ephemeral", "durable"]
 ProactiveDeliveryStatus = Literal["queued", "sent", "failed"]
 ProactiveDeliveryScope = Literal["server_transport", "client_acknowledged"]
-
-
-class ProactiveMessage(BaseModel):
-    """One precomposed message published independently of a reactive LLM turn."""
-
-    model_config = ConfigDict(frozen=True)
-
-    message_id: str = Field(min_length=1, max_length=160)
-    user_id: str = Field(min_length=1, max_length=200)
-    session_id: str = Field(min_length=1, max_length=200)
-    kind: ProactiveMessageKind = Field(pattern=r"^[a-z][a-z0-9_.-]{0,79}$")
-    content: str = Field(min_length=1, max_length=500)
-    delivery_mode: ProactiveDeliveryMode
-    source_run_id: str | None = Field(default=None, max_length=200)
-    source_trace_id: str | None = Field(default=None, max_length=200)
-
-    @field_validator("message_id", "user_id", "session_id", "content")
-    @classmethod
-    def normalize_required_text(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError("proactive message text fields must be non-empty")
-        return normalized
 
 
 class ProactiveDeliveryAttempt(BaseModel):

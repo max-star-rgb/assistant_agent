@@ -15,7 +15,9 @@ def test_agent_server_owns_the_production_graph_and_authenticated_media_route() 
     root = Path(__file__).resolve().parents[3]
     manifest = json.loads((root / "langgraph.json").read_text(encoding="utf-8"))
     assert manifest["graphs"] == {
-        "assistant": "assistant_agent.agent_server.graph:assistant_graph"
+        "assistant-native-v1": (
+            "assistant_agent.agent_server.graph:native_assistant_graph"
+        )
     }
     assert manifest["http"] == {
         "app": "assistant_agent.agent_server.media_app:app",
@@ -71,7 +73,6 @@ def test_native_run_context_separates_user_tenant_and_media_capabilities() -> No
         {
             "user_id": "user-1",
             "tenant_id": "tenant-1",
-            "assistant_mode": "standard",
             "entry_profile": "agent_service",
             "media_capabilities": ["audio"],
         }
