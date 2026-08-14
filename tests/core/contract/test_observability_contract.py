@@ -32,10 +32,7 @@ def test_native_callbacks_observe_actual_compiled_graph() -> None:
     asyncio.run(
         graph.ainvoke(
             {"messages": [HumanMessage(content="trace-sentinel")]},
-            context=AssistantRunContext(
-                user_id="user-sentinel",
-                tenant_id="tenant-sentinel",
-            ),
+            context=AssistantRunContext(),
             config={"callbacks": [events]},
         )
     )

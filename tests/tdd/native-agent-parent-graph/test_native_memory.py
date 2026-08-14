@@ -11,7 +11,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.errors import NodeError
 from langgraph.graph import END, START, StateGraph
-from langgraph.runtime import Runtime
+from langgraph.runtime import Runtime, ServerInfo
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
 
@@ -50,6 +50,19 @@ class ProbeBackend:
             raise RuntimeError("third-party unavailable")
 
 
+class _User(dict):
+    identity = "user-1"
+    permissions = ()
+
+
+def _server_info() -> ServerInfo:
+    return ServerInfo(
+        assistant_id="assistant-native-v1",
+        graph_id="assistant-native-v1",
+        user=_User(),
+    )
+
+
 def _run_memory_graph(backend: ProbeBackend) -> dict[str, Any]:
     async def answer(_state: AssistantRootState) -> dict[str, Any]:
         return {"messages": [AIMessage(content="最终回答")]}
@@ -73,8 +86,15 @@ def _run_memory_graph(backend: ProbeBackend) -> dict[str, Any]:
                 "messages": [HumanMessage(content="你好")],
                 "execution_mode": "fast",
             },
-            config={"configurable": {"thread_id": "thread-1"}},
-            context=AssistantRunContext(user_id="user-1", tenant_id="tenant-1"),
+            config={
+                "configurable": {
+                    "thread_id": "thread-1",
+                    "assistant_id": "assistant-native-v1",
+                    "graph_id": "assistant-native-v1",
+                    "langgraph_auth_user": _User(),
+                }
+            },
+            context=AssistantRunContext(),
         )
     )
 
@@ -88,7 +108,7 @@ def test_custom_backend_runs_once_at_parent_graph_boundaries() -> None:
     assert result["memory_status"] == "ready"
     assert len(backend.recall_calls) == 1
     assert len(backend.commit_calls) == 1
-    assert backend.recall_calls[0]["context"].user_id == "user-1"
+    assert backend.recall_calls[0]["identity"] == "user-1"
     assert backend.recall_calls[0]["thread_id"] == "thread-1"
     assert backend.commit_calls[0]["thread_id"] == "thread-1"
 
@@ -107,8 +127,9 @@ def test_commit_node_leaves_failure_to_langgraph_node_policy() -> None:
 
     backend = ProbeBackend(fail_commit=True)
     runtime = Runtime(
-        context=AssistantRunContext(user_id="user-1", tenant_id="tenant-1"),
+        context=AssistantRunContext(),
         store=InMemoryStore(),
+        server_info=_server_info(),
     )
 
     with pytest.raises(RuntimeError, match="third-party unavailable"):
@@ -127,8 +148,9 @@ def test_commit_node_leaves_failure_to_langgraph_node_policy() -> None:
 def test_disabled_and_degraded_recall_are_checkpoint_safe() -> None:
     disabled = create_memory_backend(ProviderConfig(provider_mode="mock"))
     runtime = Runtime(
-        context=AssistantRunContext(user_id="user-1", tenant_id="tenant-1"),
+        context=AssistantRunContext(),
         store=InMemoryStore(),
+        server_info=_server_info(),
     )
 
     empty = asyncio.run(
@@ -202,7 +224,7 @@ class FakeLangMemManager:
 def test_langmem_uses_runtime_store_and_third_party_is_protocol_only() -> None:
     store = InMemoryStore()
     identity = hashlib.sha256(
-        "assistant_agent:native_memory\0tenant-1\0user-1".encode()
+        "assistant_agent:native_memory\0user-1".encode()
     ).hexdigest()[:40]
     namespace = ("assistant_agent", f"memory_subject_{identity}")
     store.put(namespace, "m-1", {"content": "来自 LangMem"})
@@ -220,8 +242,9 @@ def test_langmem_uses_runtime_store_and_third_party_is_protocol_only() -> None:
         langmem_manager=manager,
     )
     runtime = Runtime(
-        context=AssistantRunContext(user_id="user-1", tenant_id="tenant-1"),
+        context=AssistantRunContext(),
         store=store,
+        server_info=_server_info(),
     )
 
     recalled = asyncio.run(

@@ -4,28 +4,27 @@ import asyncio
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.store.memory import InMemoryStore
+from langgraph_sdk.auth.types import StudioUser
 from pydantic import ValidationError
 import pytest
 
-from assistant_agent.agent_server.context import AgentServerRunContext
 from assistant_agent.agent_server.services import AgentServerExecutionOwner
+from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.state import AssistantRootInput
 
 
-class _User(dict):
-    identity = "user-sentinel"
-    permissions = ("assistant:developer",)
+def _server_config() -> dict[str, object]:
+    return {
+        "configurable": {
+            "assistant_id": "assistant-sentinel",
+            "graph_id": "graph-sentinel",
+            "langgraph_auth_user": StudioUser("langgraph-studio-user"),
+        }
+    }
 
 
 async def _open_owner() -> AgentServerExecutionOwner:
-    return await AgentServerExecutionOwner.open(
-        context=AgentServerRunContext(
-            user_id="user-sentinel",
-            tenant_id="tenant-sentinel",
-        ),
-        store=InMemoryStore(),
-        user=_User(tenant_id="tenant-sentinel"),
-    )
+    return await AgentServerExecutionOwner.compose(store=InMemoryStore())
 
 
 @pytest.mark.core_invariant("BOOT-001")
@@ -57,10 +56,7 @@ def test_parent_graph_has_fast_and_planning_native_branches(monkeypatch) -> None
 def test_both_modes_finish_with_standard_ai_messages(monkeypatch) -> None:
     monkeypatch.setenv("MULTIMODAL_AGENT_PROVIDER_MODE", "mock")
     owner = asyncio.run(_open_owner())
-    context = AgentServerRunContext(
-        user_id="user-sentinel",
-        tenant_id="tenant-sentinel",
-    )
+    context = AssistantRunContext()
 
     async def run_modes():
         return [
@@ -70,6 +66,7 @@ def test_both_modes_finish_with_standard_ai_messages(monkeypatch) -> None:
                     "execution_mode": mode,
                 },
                 context=context,
+                config=_server_config(),
             )
             for mode in ("fast", "planning")
         ]
@@ -84,19 +81,14 @@ def test_both_modes_finish_with_standard_ai_messages(monkeypatch) -> None:
 
 @pytest.mark.core_invariant("RUN-001")
 @pytest.mark.core_invariant("IDENT-001")
-def test_public_input_separates_mode_from_authenticated_context() -> None:
+def test_public_input_separates_mode_from_non_identity_runtime_context() -> None:
     value = AssistantRootInput.model_validate(
         {"messages": [HumanMessage(content="request-sentinel")], "execution_mode": "fast"}
     )
-    context = AgentServerRunContext(
-        user_id="user-sentinel",
-        tenant_id="tenant-sentinel",
-    )
+    context = AssistantRunContext.model_validate({})
 
     assert value.execution_mode == "fast"
     assert set(type(context).model_fields) == {
-        "user_id",
-        "tenant_id",
         "entry_profile",
         "media_capabilities",
     }

@@ -33,6 +33,14 @@ class NativeGraphEvaluationResult:
         return self.response_message.text
 
 
+class _EvaluationUser(dict):
+    permissions = ()
+
+    def __init__(self, identity: str) -> None:
+        super().__init__(identity=identity, permissions=[])
+        self.identity = identity
+
+
 class NativeGraphEvaluationTarget:
     """Own one native composition for evaluation, never product lifecycle state."""
 
@@ -50,8 +58,7 @@ class NativeGraphEvaluationTarget:
     async def ainvoke(
         self,
         *,
-        user_id: str,
-        tenant_id: str,
+        identity: str,
         thread_id: str,
         run_id: str,
         text: str,
@@ -59,8 +66,6 @@ class NativeGraphEvaluationTarget:
         metadata: dict[str, Any] | None = None,
     ) -> NativeGraphEvaluationResult:
         context = AssistantRunContext(
-            user_id=user_id,
-            tenant_id=tenant_id,
             entry_profile="evaluation",
         )
         result = await self._owner.graph.ainvoke(
@@ -74,6 +79,9 @@ class NativeGraphEvaluationTarget:
                 "configurable": {
                     "thread_id": thread_id,
                     "run_id": run_id,
+                    "assistant_id": "assistant-native-v1",
+                    "graph_id": "assistant-native-v1",
+                    "langgraph_auth_user": _EvaluationUser(identity),
                 }
             },
             context=context,

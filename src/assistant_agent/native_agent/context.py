@@ -1,17 +1,20 @@
-"""Trusted, serializable facts supplied to one native assistant run."""
+"""Non-identity runtime configuration for the native assistant graph."""
 
 from __future__ import annotations
 
+from langgraph.runtime import Runtime
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+class AuthenticatedUserRequired(PermissionError):
+    """A production operation requires Agent Server authenticated identity."""
+
+
 class AssistantRunContext(BaseModel):
-    """Identity and entry facts that are safe to expose through Runtime.context."""
+    """Static run configuration supplied through LangGraph Runtime.context."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    user_id: str = Field(min_length=1, max_length=512)
-    tenant_id: str = Field(min_length=1, max_length=512)
     entry_profile: str = Field(default="agent_server", min_length=1, max_length=160)
     media_capabilities: tuple[str, ...] = Field(default=(), max_length=32)
 
@@ -23,4 +26,21 @@ class AssistantRunContext(BaseModel):
         return value
 
 
-__all__ = ["AssistantRunContext"]
+def authenticated_user_identity(runtime: Runtime[object]) -> str:
+    """Read the sole user identity from LangGraph ServerInfo."""
+
+    server_info = runtime.server_info
+    user = server_info.user if server_info is not None else None
+    identity = str(getattr(user, "identity", "")).strip()
+    if not identity:
+        raise AuthenticatedUserRequired(
+            "Agent Server authenticated user identity is required."
+        )
+    return identity
+
+
+__all__ = [
+    "AssistantRunContext",
+    "AuthenticatedUserRequired",
+    "authenticated_user_identity",
+]

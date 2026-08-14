@@ -9,11 +9,11 @@ from typing import Any
 
 from langgraph_sdk import get_sync_client
 
+from assistant_agent.agent_server.auth import delegated_identity_signature
 
-def _context(*, user_id: str) -> dict[str, object]:
+
+def _context() -> dict[str, object]:
     return {
-        "user_id": user_id,
-        "tenant_id": "local-cli",
         "entry_profile": "cli",
         "media_capabilities": [],
     }
@@ -35,16 +35,16 @@ def _response_text(state: Mapping[str, Any]) -> str:
     return ""
 
 
-def _ensure_thread(client: Any, thread_id: str | None, user_id: str) -> str:
+def _ensure_thread(client: Any, thread_id: str | None) -> str:
     thread = client.threads.create(
         thread_id=thread_id,
         if_exists="do_nothing",
-        metadata={"user_id": user_id, "client": "agent_cli"},
+        metadata={"client": "agent_cli"},
     )
     return str(thread["thread_id"])
 
 
-def _run_once(client: Any, *, text: str, user_id: str, thread_id: str, mode: str) -> int:
+def _run_once(client: Any, *, text: str, thread_id: str, mode: str) -> int:
     result = client.runs.wait(
         thread_id,
         "assistant-native-v1",
@@ -52,7 +52,7 @@ def _run_once(client: Any, *, text: str, user_id: str, thread_id: str, mode: str
             "messages": [{"role": "user", "content": text}],
             "execution_mode": mode,
         },
-        context=_context(user_id=user_id),
+        context=_context(),
         multitask_strategy="enqueue",
     )
     print(_response_text(result))
@@ -61,14 +61,24 @@ def _run_once(client: Any, *, text: str, user_id: str, thread_id: str, mode: str
 
 def main() -> int:
     args = build_parser().parse_args()
-    headers = {"authorization": f"Bearer {args.token}"} if args.token else None
+    headers = {"x-assistant-user": args.identity}
+    if args.token:
+        headers.update(
+            {
+                "authorization": f"Bearer {args.token}",
+                "x-assistant-signature": delegated_identity_signature(
+                    secret=args.token,
+                    identity=args.identity,
+                ),
+            }
+        )
     client = get_sync_client(url=args.server, headers=headers, timeout=args.timeout)
-    thread_id = _ensure_thread(client, args.thread_id, args.user_id)
+    thread_id = _ensure_thread(client, args.thread_id)
     if not args.interactive:
         text = " ".join(args.text).strip()
         if not text:
             raise SystemExit("text is required unless --interactive is used")
-        return _run_once(client, text=text, user_id=args.user_id, thread_id=thread_id, mode=args.assistant_mode)
+        return _run_once(client, text=text, thread_id=thread_id, mode=args.assistant_mode)
     mode = args.assistant_mode
     print(f"Agent Server thread: {thread_id}")
     print("Commands: /fast, /planning, /new, /exit")
@@ -89,17 +99,17 @@ def main() -> int:
             mode = "planning"
             continue
         if text == "/new":
-            thread_id = _ensure_thread(client, None, args.user_id)
+            thread_id = _ensure_thread(client, None)
             print(f"Agent Server thread: {thread_id}")
             continue
-        _run_once(client, text=text, user_id=args.user_id, thread_id=thread_id, mode=mode)
+        _run_once(client, text=text, thread_id=thread_id, mode=mode)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Client for assistant_agent Agent Server.")
     parser.add_argument("text", nargs="*")
     parser.add_argument("--server", default="http://127.0.0.1:8000")
-    parser.add_argument("--user-id", default="local-cli")
+    parser.add_argument("--identity", default="local-cli")
     parser.add_argument("--thread-id")
     parser.add_argument("--assistant-mode", choices=("fast", "planning"), default="fast")
     parser.add_argument("--timeout", type=float, default=120.0)

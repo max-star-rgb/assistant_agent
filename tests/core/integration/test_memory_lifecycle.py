@@ -12,6 +12,11 @@ from assistant_agent.native_agent.root_graph import build_assistant_root_graph
 from assistant_agent.native_agent.state import FastAgentState, PlanningState
 
 
+class _User(dict):
+    identity = "user-sentinel"
+    permissions = ()
+
+
 class _Memory:
     backend_id = "probe"
 
@@ -51,10 +56,14 @@ def test_parent_graph_owns_one_recall_and_commit_for_each_mode() -> None:
                 "messages": [HumanMessage(content="request-sentinel")],
                 "execution_mode": mode,
             },
-            context=AssistantRunContext(
-                user_id="user-sentinel",
-                tenant_id="tenant-sentinel",
-            ),
+            context=AssistantRunContext(),
+            config={
+                "configurable": {
+                    "assistant_id": "assistant-sentinel",
+                    "graph_id": "graph-sentinel",
+                    "langgraph_auth_user": _User(),
+                }
+            },
         )
         return backend.events, result
 

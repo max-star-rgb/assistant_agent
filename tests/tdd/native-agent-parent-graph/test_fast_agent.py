@@ -97,7 +97,7 @@ class WriteCallingModel(RecordingModel):
 
 
 def _context() -> AssistantRunContext:
-    return AssistantRunContext(user_id="user-1", tenant_id="tenant-1")
+    return AssistantRunContext()
 
 
 def test_fast_agent_uses_dynamic_memory_prompt_and_standard_messages() -> None:

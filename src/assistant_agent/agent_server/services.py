@@ -10,9 +10,6 @@ from typing import Any
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from langgraph.store.base import BaseStore
-from langgraph_sdk.auth.types import BaseUser
-
-from assistant_agent.agent_server.context import AgentServerRunContext
 from assistant_agent.config import ProviderConfig
 from assistant_agent.mcp.config import load_mcp_server_configs_from_env
 from assistant_agent.media.visual_perception import get_visual_perception_module
@@ -37,17 +34,6 @@ class AgentServerExecutionOwner:
     memory_backend: MemoryBackend
     graph: Any
     _close_targets: tuple[Any, ...] = ()
-
-    @classmethod
-    async def open(
-        cls,
-        *,
-        context: AgentServerRunContext,
-        store: BaseStore | None,
-        user: BaseUser,
-    ) -> "AgentServerExecutionOwner":
-        _authorize_context(user, context)
-        return await cls.compose(store=store)
 
     @classmethod
     async def compose(
@@ -120,25 +106,6 @@ def _compose_sync(
         langmem_store=store,
     )
     return model, tools, memory_backend
-
-
-def _authorize_context(user: BaseUser, context: AgentServerRunContext) -> None:
-    identity = str(user.identity)
-    permissions = set(getattr(user, "permissions", ()) or ())
-    if "assistant:developer" in permissions:
-        return
-    if identity != context.user_id:
-        raise PermissionError(
-            "Authenticated principal cannot delegate this user context."
-        )
-    try:
-        tenant_id = str(user["tenant_id"])
-    except (KeyError, TypeError):
-        tenant_id = str(getattr(user, "tenant_id", ""))
-    if not tenant_id or tenant_id != context.tenant_id:
-        raise PermissionError(
-            "Authenticated principal tenant does not match run context."
-        )
 
 
 async def _close_if_supported(value: Any) -> None:

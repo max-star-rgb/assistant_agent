@@ -21,7 +21,10 @@ from assistant_agent.identity import RequestIdentity
 from assistant_agent.memory.mem0.client import Mem0Client
 from assistant_agent.memory.mem0.identity import bind_mem0_identity
 from assistant_agent.memory.mem0.models import Mem0CompletedTurn
-from assistant_agent.native_agent.context import AssistantRunContext
+from assistant_agent.native_agent.context import (
+    AssistantRunContext,
+    authenticated_user_identity,
+)
 from assistant_agent.native_agent.providers import create_chat_model
 from assistant_agent.native_agent.state import AssistantRootState
 
@@ -39,7 +42,7 @@ class MemoryBackend(Protocol):
     async def recall(
         self,
         *,
-        context: AssistantRunContext,
+        identity: str,
         thread_id: str | None,
         run_id: str | None,
         messages: Sequence[AnyMessage],
@@ -49,7 +52,7 @@ class MemoryBackend(Protocol):
     async def commit(
         self,
         *,
-        context: AssistantRunContext,
+        identity: str,
         thread_id: str | None,
         run_id: str | None,
         messages: Sequence[AnyMessage],
@@ -77,24 +80,24 @@ class Mem0MemoryBackend:
     async def recall(
         self,
         *,
-        context: AssistantRunContext,
+        identity: str,
         thread_id: str | None,
         run_id: str | None,
         messages: Sequence[AnyMessage],
         store: BaseStore | None,
     ) -> tuple[str, ...]:
         del messages, store
-        identity = self._identity(context, thread_id=thread_id, run_id=run_id)
+        bound_identity = self._identity(identity, thread_id=thread_id, run_id=run_id)
         values = await asyncio.to_thread(
             self._client.recall_long_term_memory,
-            identity,
+            bound_identity,
         )
         return _bounded_texts(getattr(value, "text", "") for value in values)
 
     async def commit(
         self,
         *,
-        context: AssistantRunContext,
+        identity: str,
         thread_id: str | None,
         run_id: str | None,
         messages: Sequence[AnyMessage],
@@ -115,7 +118,7 @@ class Mem0MemoryBackend:
             self._client.ingest_completed_turn,
             Mem0CompletedTurn(
                 identity=self._identity(
-                    context,
+                    identity,
                     thread_id=thread_id,
                     run_id=run_id,
                 ),
@@ -130,7 +133,7 @@ class Mem0MemoryBackend:
 
     def _identity(
         self,
-        context: AssistantRunContext,
+        identity: str,
         *,
         thread_id: str | None,
         run_id: str | None,
@@ -142,7 +145,7 @@ class Mem0MemoryBackend:
             )
         return bind_mem0_identity(
             RequestIdentity.for_user(
-                user_id=context.user_id,
+                user_id=identity,
                 session_id=session_id,
             ),
             namespace=self._identity_namespace,
@@ -158,7 +161,7 @@ class LangMemMemoryBackend:
     async def recall(
         self,
         *,
-        context: AssistantRunContext,
+        identity: str,
         thread_id: str | None,
         run_id: str | None,
         messages: Sequence[AnyMessage],
@@ -170,7 +173,7 @@ class LangMemMemoryBackend:
                 "LangMem requires the BaseStore compiled into the graph."
             )
         values = await store.asearch(
-            _langmem_namespace(context),
+            _langmem_namespace(identity),
             query=_last_human_text(messages) or None,
             limit=32,
         )
@@ -179,7 +182,7 @@ class LangMemMemoryBackend:
     async def commit(
         self,
         *,
-        context: AssistantRunContext,
+        identity: str,
         thread_id: str | None,
         run_id: str | None,
         messages: Sequence[AnyMessage],
@@ -201,7 +204,7 @@ class LangMemMemoryBackend:
         }
         config = {
             "configurable": {
-                "langgraph_user_id": _langmem_namespace(context)[-1],
+                "langgraph_user_id": _langmem_namespace(identity)[-1],
             }
         }
         if hasattr(self._manager, "ainvoke"):
@@ -264,7 +267,7 @@ async def memory_recall_node(
     """Recall exactly once for a parent-graph attempt and freeze the result."""
 
     memories = await backend.recall(
-        context=runtime.context,
+        identity=authenticated_user_identity(runtime),
         thread_id=_execution_value(runtime, "thread_id"),
         run_id=_execution_value(runtime, "run_id"),
         messages=tuple(state.get("messages", ())),
@@ -299,7 +302,7 @@ async def memory_commit_node(
     """Commit after branch convergence without changing the produced answer."""
 
     await backend.commit(
-        context=runtime.context,
+        identity=authenticated_user_identity(runtime),
         thread_id=_execution_value(runtime, "thread_id"),
         run_id=_execution_value(runtime, "run_id"),
         messages=tuple(state.get("messages", ())),
@@ -383,9 +386,9 @@ def _bounded_texts(values) -> tuple[str, ...]:
     return tuple(result)
 
 
-def _langmem_namespace(context: AssistantRunContext) -> tuple[str, str]:
+def _langmem_namespace(identity: str) -> tuple[str, str]:
     identity = hashlib.sha256(
-        f"assistant_agent:native_memory\0{context.tenant_id}\0{context.user_id}".encode()
+        f"assistant_agent:native_memory\0{identity}".encode()
     ).hexdigest()[:40]
     return ("assistant_agent", f"memory_subject_{identity}")
 

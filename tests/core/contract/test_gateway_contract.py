@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from assistant_agent.agent_server.context import AgentServerRunContext
 from assistant_agent.agent_server.media_protocol import MediaProtocolError, parse_chat, parse_envelope
 from assistant_agent.agent_server.media_session import MediaConnectionSession
+from assistant_agent.native_agent.context import AssistantRunContext
 
 
 @pytest.mark.core_invariant("GATE-001")
@@ -68,15 +68,15 @@ def test_media_wire_parser_is_strict_and_does_not_define_graph_lifecycle() -> No
 
 
 @pytest.mark.core_invariant("IDENT-001")
-def test_native_run_context_separates_user_tenant_and_media_capabilities() -> None:
-    context = AgentServerRunContext.model_validate(
+def test_native_run_context_contains_capabilities_not_identity() -> None:
+    context = AssistantRunContext.model_validate(
         {
-            "user_id": "user-1",
-            "tenant_id": "tenant-1",
             "entry_profile": "agent_service",
             "media_capabilities": ["audio"],
         }
     )
-    assert context.user_id == "user-1"
-    assert context.tenant_id == "tenant-1"
+    assert set(type(context).model_fields) == {
+        "entry_profile",
+        "media_capabilities",
+    }
     assert context.media_capabilities == ("audio",)

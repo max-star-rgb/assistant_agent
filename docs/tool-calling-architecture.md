@@ -23,8 +23,8 @@
 每个内建 Tool：
 
 - 模型只看到去除 runtime-owned 字段的 `tool_call_schema`；
-- 完整执行 schema 包含 `ToolRuntime[AssistantRunContext]`，由 `ToolNode` 注入身份、thread/run、Store 和
-  当前 state；
+- 完整执行 schema 包含 `ToolRuntime[AssistantRunContext]`，由 `ToolNode` 注入当前 state、thread/run、Store
+  和 `server_info`；受信用户身份只读取 `server_info.user.identity`，不从 Runtime Context 复制；
 - 成功返回标准 `ToolMessage(content, artifact)`；失败抛出 `ToolException`；
 - metadata 至少声明 `effect=read|generate|write|dangerous` 与 `source=builtin|mcp`。
 

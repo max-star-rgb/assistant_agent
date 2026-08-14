@@ -150,11 +150,11 @@ run/checkpoint，也不宣称跨进程、离线或 exactly-once 投递；没有 
 
 - 非 `v1` 连接返回失败并以 1008 关闭。
 - 非法 JSON body、缺字段、identity mismatch、重复关联或未知消息返回结构化失败 envelope。
-- custom route 启用 Agent Server auth。内部 thread/run 调用走同源公开 API 并转发认证与 delegation header，
-  使 Graph factory 能从 `ServerRuntime.user` 校验 context delegation；不得使用 `/noauth` 后信任客户端 context。
-- mock mode 默认使用本地 developer principal，也可用 `X-Assistant-User/Tenant` 模拟用户隔离。
-- real mode 要求显式 `ASSISTANT_AGENT_SERVER_SERVICE_TOKEN`，并要求媒体服务提供 user、tenant 与
-  HMAC-SHA256 签名；资源 owner 是验签后的 user，裸 `userNumber` 不能授权。
+- custom route 启用 Agent Server auth。内部 thread/run 调用走同源公开 API 并转发认证与 delegation header；
+  Graph、Memory 与 Tool 只读取 Agent Server 注入的 authenticated `user.identity`，不得使用 `/noauth` 或信任客户端 Context 身份。
+- mock mode 默认使用本地 developer principal，也可用 `X-Assistant-User` 模拟用户隔离。
+- real mode 要求显式 `ASSISTANT_AGENT_SERVER_SERVICE_TOKEN`，并要求媒体服务提供 identity 与对应
+  HMAC-SHA256 签名；资源 owner 是验签后的 identity，裸 `userNumber` 不能授权。
 
 ## 7. 重连与当前限制
 

@@ -15,10 +15,7 @@ from assistant_agent.native_agent.providers import MockAssistantChatModel
 def test_frozen_memory_is_rendered_as_untrusted_prompt_data() -> None:
     prompt = render_minimal_system_prompt(
         ("memory-sentinel",),
-        AssistantRunContext(
-            user_id="user-sentinel",
-            tenant_id="tenant-sentinel",
-        ),
+        AssistantRunContext(),
     )
 
     assert "memory_context_untrusted_v1" in prompt

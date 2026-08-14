@@ -56,11 +56,8 @@ def _wait_ready(url: str, process: subprocess.Popen[str]) -> None:
     raise TimeoutError("Agent Server did not become ready within 30 seconds")
 
 
-def _context(user_id: str) -> dict[str, object]:
+def _context() -> dict[str, object]:
     return {
-        "user_id": user_id,
-        "tenant_id": "probe-tenant",
-        "assistant_mode": "standard",
         "entry_profile": "system_probe",
         "media_capabilities": [],
     }
@@ -106,7 +103,7 @@ async def _probe(url: str) -> str:
                 "text": "你好",
             }
         },
-        context=_context("probe-user-a"),
+        context=_context(),
     )
     state = result["assistant_state"]
     _emit(
@@ -140,7 +137,7 @@ async def _probe(url: str) -> str:
                 "text": "cancel me",
             }
         },
-        context=_context("probe-user-b"),
+        context=_context(),
         after_seconds=10,
     )
     delayed_id = str(delayed["run_id"])
@@ -163,14 +160,14 @@ async def _probe_enqueue(client: Any) -> None:
             thread_id,
             "assistant",
             input={"request_input": {"turn_origin_id": "enqueue-1", "text": "one"}},
-            context=_context("probe-enqueue"),
+            context=_context(),
             multitask_strategy="enqueue",
         ),
         client.runs.create(
             thread_id,
             "assistant",
             input={"request_input": {"turn_origin_id": "enqueue-2", "text": "two"}},
-            context=_context("probe-enqueue"),
+            context=_context(),
             multitask_strategy="enqueue",
         ),
     )
@@ -202,7 +199,7 @@ async def _probe_resumable_thread_stream(client: Any) -> None:
                 "text": "resume me",
             }
         },
-        context=_context("probe-stream"),
+        context=_context(),
         stream_mode=["values"],
         stream_resumable=True,
         on_disconnect="continue",
@@ -291,7 +288,6 @@ def _media_frame(message: str, body: Mapping[str, object]) -> str:
 def _headers(user_id: str) -> dict[str, str]:
     return {
         "x-assistant-user": user_id,
-        "x-assistant-tenant": "probe-tenant",
     }
 
 

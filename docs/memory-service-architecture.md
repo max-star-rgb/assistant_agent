@@ -30,8 +30,8 @@ LangGraph `RetryPolicy(max_attempts=3)`；最终失败由 LangGraph 原生 node 
 
 ## 最小 backend 协议
 
-`MemoryBackend` 只有异步 `recall` 与 `commit`。两者接收受信 `AssistantRunContext`、Agent Server
-`thread_id/run_id`、标准 messages 和 `runtime.store`。第三方记忆服务只需实现该协议，不需要继承项目 SDK、
+`MemoryBackend` 只有异步 `recall` 与 `commit`。两者接收 Agent Server 原生 authenticated
+`user.identity`、`thread_id/run_id`、标准 messages 和 `runtime.store`。第三方记忆服务只需实现该协议，不需要继承项目 SDK、
 创建 session host 或提供通用 CRUD。
 
 当前装配：

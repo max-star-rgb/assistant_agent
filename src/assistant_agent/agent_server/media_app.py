@@ -163,11 +163,24 @@ async def _handle_frame(
 ) -> None:
     if frame.message in {"assistantControl", "assistantControlStart"}:
         user_id = _control_user_id(frame.message, frame.body)
+        authenticated_user = websocket.scope.get("user")
+        if authenticated_user is not None:
+            authenticated_identity = str(authenticated_user.identity)
+            permissions = set(
+                getattr(authenticated_user, "permissions", ()) or ()
+            )
+            if (
+                "assistant:developer" not in permissions
+                and user_id != authenticated_identity
+            ):
+                raise MediaProtocolError(
+                    "assistantControl user does not match authenticated identity"
+                )
         call_type = str(frame.body.get("callType") or "AUDIO").upper()
         if call_type not in {"AUDIO", "VIDEO"}:
             raise MediaProtocolError("callType must be AUDIO or VIDEO")
         thread_id = await client.create_thread(
-            metadata={"user_id": user_id, "protocol": "agent-service-v1"},
+            metadata={"protocol": "agent-service-v1"},
             thread_id=_native_thread_id(
                 protocol_session_id=frame.session_id,
                 user_id=user_id,
@@ -381,8 +394,6 @@ async def _run_chat(
     try:
         final_state: dict[str, Any] | None = None
         run_context = {
-            "user_id": session.user_id,
-            "tenant_id": "media-service",
             "entry_profile": "agent_service",
             "media_capabilities": list(session.media_capabilities),
         }
@@ -601,7 +612,6 @@ def _default_agent_server_client(websocket: WebSocket) -> SdkAgentServerClient:
         for name in (
             "authorization",
             "x-assistant-user",
-            "x-assistant-tenant",
             "x-assistant-signature",
         )
         if (value := websocket.headers.get(name)) is not None

@@ -34,8 +34,9 @@ manager、cancel token、checkpoint facade 或产品状态机。
 }
 ```
 
-`execution_mode` 只允许 `fast|planning`。可信 `user_id`、`tenant_id`、`entry_profile` 与
-`media_capabilities` 位于 `AgentServerRunContext`，由认证 principal 校验；执行模式不放入 context。
+`execution_mode` 只允许 `fast|planning`。认证用户唯一来自 Agent Server 原生
+`Runtime.server_info.user.identity`；`AssistantRunContext` 不复制用户或租户身份，只保存有默认值的
+`entry_profile` 与 `media_capabilities`。执行模式不放入 context。
 chat 到达时冻结的 `target_sequence` 绑定在媒体入口生成的标准 video content block，模型不能提交。
 
 ## 资源模型与 composition
@@ -60,8 +61,8 @@ Runtime、产品状态投影器或 Workflow host。
 
 ## Auth 与身份
 
-mock/local 模式可用 `X-Assistant-User`、`X-Assistant-Tenant` 构造开发 principal。real mode 要求
-`ASSISTANT_AGENT_SERVER_SERVICE_TOKEN`，媒体服务还需对 `<user>\n<tenant>` 做 HMAC-SHA256 签名。
+mock/local 模式可用 `X-Assistant-User` 构造开发 principal。real mode 要求
+`ASSISTANT_AGENT_SERVER_SERVICE_TOKEN`，媒体服务还需对 authenticated identity 做 HMAC-SHA256 签名。
 thread metadata 按 auth owner 限制；run 与 Store 沿用同一 principal。connection、vendor session、thread、run
 与 delivery ID 始终是不同身份轴。
 

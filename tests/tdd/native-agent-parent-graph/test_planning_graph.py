@@ -84,7 +84,7 @@ def _invoke(graph):
                 "messages": [HumanMessage(content="请完成报告")],
                 "memory_context": ("偏好中文",),
             },
-            context=AssistantRunContext(user_id="user-1", tenant_id="tenant-1"),
+            context=AssistantRunContext(),
         )
     )
 

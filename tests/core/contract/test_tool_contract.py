@@ -41,6 +41,11 @@ class _ProbeTool(ToolBase):
         )
 
 
+class _User(dict):
+    identity = "user-sentinel"
+    permissions = ()
+
+
 @pytest.mark.core_invariant("TOOL-001")
 def test_native_tool_schema_hides_runtime_owned_arguments() -> None:
     tool = _ProbeTool()
@@ -75,10 +80,14 @@ def test_toolnode_injects_identity_and_returns_standard_tool_message() -> None:
                     )
                 ]
             },
-            context=AssistantRunContext(
-                user_id="user-sentinel",
-                tenant_id="tenant-sentinel",
-            ),
+            context=AssistantRunContext(),
+            config={
+                "configurable": {
+                    "assistant_id": "assistant-sentinel",
+                    "graph_id": "graph-sentinel",
+                    "langgraph_auth_user": _User(),
+                }
+            },
         )
     )
 

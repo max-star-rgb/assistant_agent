@@ -12,7 +12,10 @@ from langchain_core.tools import BaseTool, ToolException
 from langgraph.prebuilt import ToolRuntime
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
 
-from assistant_agent.native_agent.context import AssistantRunContext
+from assistant_agent.native_agent.context import (
+    AssistantRunContext,
+    authenticated_user_identity,
+)
 from assistant_agent.providers.provider_errors import sanitize_error_message
 from assistant_agent.tools.input_binding import (
     RuntimeInputBinding,
@@ -248,13 +251,11 @@ def _binding_value(
     binding: RuntimeInputBinding,
     runtime: ToolRuntime[AssistantRunContext],
 ) -> Any:
-    context = runtime.context
     execution = runtime.execution_info
     state = runtime.state if isinstance(runtime.state, Mapping) else {}
     if binding.source == "runtime_identity":
         identity = {
-            "user_id": context.user_id,
-            "tenant_id": context.tenant_id,
+            "user_id": authenticated_user_identity(runtime),
             "session_id": getattr(execution, "thread_id", None),
             "run_id": getattr(execution, "run_id", None),
         }
@@ -310,11 +311,10 @@ def _tool_context(runtime: ToolRuntime[AssistantRunContext]) -> ToolContext:
         runtime.state if isinstance(runtime.state, Mapping) else {}
     )
     return ToolContext(
-        user_id=runtime.context.user_id,
+        user_id=authenticated_user_identity(runtime),
         session_id=getattr(execution, "thread_id", None),
         run_id=getattr(execution, "run_id", None),
         metadata={
-            "tenant_id": runtime.context.tenant_id,
             "entry_profile": runtime.context.entry_profile,
             "visual_target_sequence": request.get("visual_target_sequence"),
         },

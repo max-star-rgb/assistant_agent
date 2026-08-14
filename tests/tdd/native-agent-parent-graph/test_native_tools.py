@@ -65,6 +65,11 @@ class IdentityProbeTool(ToolBase):
         )
 
 
+class _User(dict):
+    identity = "user-1"
+    permissions = ()
+
+
 def test_native_tool_hides_and_injects_runtime_identity() -> None:
     """Catches exposing trusted identity as an LLM-owned argument."""
 
@@ -95,10 +100,14 @@ def test_native_tool_hides_and_injects_runtime_identity() -> None:
                     )
                 ]
             },
-            context=AssistantRunContext(
-                user_id="user-1",
-                tenant_id="tenant-1",
-            ),
+            context=AssistantRunContext(),
+            config={
+                "configurable": {
+                    "assistant_id": "assistant-native-v1",
+                    "graph_id": "assistant-native-v1",
+                    "langgraph_auth_user": _User(),
+                }
+            },
         )
     )
 

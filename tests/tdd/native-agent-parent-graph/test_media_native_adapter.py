@@ -143,8 +143,6 @@ def test_run_chat_uses_versioned_assistant_and_native_run_protocol() -> None:
         _chat(mode="planning"), video_ids=["video-1"]
     )
     assert client.stream_kwargs["context"] == {
-        "user_id": "user-1",
-        "tenant_id": "media-service",
         "entry_profile": "agent_service",
         "media_capabilities": ["video"],
     }

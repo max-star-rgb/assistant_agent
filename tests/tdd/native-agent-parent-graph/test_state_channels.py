@@ -87,7 +87,5 @@ def test_run_context_rejects_unknown_runtime_objects() -> None:
 
     with pytest.raises(ValidationError):
         AssistantRunContext(
-            user_id="user-1",
-            tenant_id="tenant-1",
             provider_client=object(),
         )

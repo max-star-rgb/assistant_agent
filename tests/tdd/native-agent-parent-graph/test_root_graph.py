@@ -20,6 +20,11 @@ from assistant_agent.native_agent.state import (
 )
 
 
+class _User(dict):
+    identity = "user-1"
+    permissions = ()
+
+
 class MemoryProbe:
     backend_id = "probe"
 
@@ -76,8 +81,15 @@ def _invoke(graph, *, mode: str, text: str = "你好"):
                 "messages": [HumanMessage(content=text)],
                 "execution_mode": mode,
             },
-            config={"configurable": {"thread_id": "thread-1"}},
-            context=AssistantRunContext(user_id="user-1", tenant_id="tenant-1"),
+            config={
+                "configurable": {
+                    "thread_id": "thread-1",
+                    "assistant_id": "assistant-native-v1",
+                    "graph_id": "assistant-native-v1",
+                    "langgraph_auth_user": _User(),
+                }
+            },
+            context=AssistantRunContext(),
         )
     )
 

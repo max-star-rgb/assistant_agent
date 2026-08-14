@@ -6,23 +6,14 @@ from contextlib import asynccontextmanager
 
 from langgraph_sdk.runtime import ServerRuntime
 
-from assistant_agent.agent_server.context import AgentServerRunContext
 from assistant_agent.agent_server.services import AgentServerExecutionOwner
 
 
 @asynccontextmanager
-async def native_assistant_graph(runtime: ServerRuntime[AgentServerRunContext]):
+async def native_assistant_graph(runtime: ServerRuntime):
     """Yield one unbound parent graph and close composition-owned resources."""
 
-    execution = runtime.execution_runtime
-    if execution is None:
-        owner = await AgentServerExecutionOwner.compose(store=runtime.store)
-    else:
-        owner = await AgentServerExecutionOwner.open(
-            context=AgentServerRunContext.model_validate(execution.context),
-            store=runtime.store,
-            user=runtime.ensure_user(),
-        )
+    owner = await AgentServerExecutionOwner.compose(store=runtime.store)
     try:
         yield owner.graph
     finally:
