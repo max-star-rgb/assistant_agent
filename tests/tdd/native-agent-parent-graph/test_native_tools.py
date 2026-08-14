@@ -14,6 +14,8 @@ from langgraph.prebuilt import ToolNode
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from assistant_agent.config import ProviderConfig
+from assistant_agent.media.video.video_adapter import MockVideoUnderstandingAdapter
+from assistant_agent.media.vision.models import VisionUnderstandingRequest
 from assistant_agent.mcp.config import MCPServerConfig
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.tools import (
@@ -25,6 +27,7 @@ from assistant_agent.native_agent.tools import (
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.input_binding import RuntimeInputBinding
 from assistant_agent.tools.models import ToolResult
+from assistant_agent.tools.plugins.builtin.media_inspection.tool import MediaInspectTool
 
 
 class IdentityProbeInput(BaseModel):
@@ -119,6 +122,19 @@ def test_native_tool_cannot_be_called_through_legacy_direct_run() -> None:
                 "user_id": "forged-user",
             }
         )
+
+
+def test_media_inspect_explicit_video_uses_internal_legacy_boundary() -> None:
+    """Catches routing an internal ToolBase branch through native BaseTool.run."""
+
+    result = MediaInspectTool(video_adapter=MockVideoUnderstandingAdapter()).run_legacy(
+        VisionUnderstandingRequest(video_ids=["video-sentinel"]),
+        ToolContext(),
+    )
+
+    assert result.success is True
+    assert result.data is not None
+    assert result.data["summary"]
 
 
 def test_mock_native_tool_assembly_is_static_and_unique() -> None:

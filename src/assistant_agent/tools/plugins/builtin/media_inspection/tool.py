@@ -137,7 +137,7 @@ class MediaInspectTool(ToolBase):
         self, input: VisionUnderstandingRequest, context: ToolContext
     ) -> ToolResult:
         if vision_request_has_video(input):
-            result = self._video_branch.run(
+            result = self._video_branch.run_legacy(
                 video_request_from_vision_request(input), context
             )
             return result.model_copy(update={"tool_name": self.name})
