@@ -16,7 +16,7 @@ from assistant_agent.tools.plugins.contracts import (
     ToolPluginContext,
     ToolPluginDescriptor,
 )
-from assistant_agent.tools.base import Tool
+from langchain_core.tools import BaseTool
 
 
 class EmailAccessPlugin:
@@ -25,7 +25,7 @@ class EmailAccessPlugin:
         plugin_version="1",
     )
 
-    def build_tools(self, context: ToolPluginContext) -> list[Tool]:
+    def build_tools(self, context: ToolPluginContext) -> list[BaseTool]:
         if context.mock_mode:
             backend = MockEmailBackend()
             return [
@@ -46,7 +46,7 @@ class EmailAccessPlugin:
             search_binding=bindings.get(EMAIL_SEARCH_TOOL_NAME),
             read_binding=bindings.get(EMAIL_READ_TOOL_NAME),
         )
-        tools: list[Tool] = []
+        tools: list[BaseTool] = []
         if EMAIL_SEARCH_TOOL_NAME in bindings:
             tools.append(EmailSearchTool(backend))
         if EMAIL_READ_TOOL_NAME in bindings:

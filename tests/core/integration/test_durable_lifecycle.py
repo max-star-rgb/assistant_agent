@@ -25,7 +25,7 @@ from assistant_agent.automation.durable_tasks.worker import (
 from assistant_agent.identity import RequestIdentity
 from assistant_agent.runtime.planning_models import TaskPlan, TaskStep
 from assistant_agent.runtime.state import AgentState
-from tests.core.support import ProbeTool, sealed_registry
+from tests.core.support import ProbeTool
 
 
 def _identity(user_id: str = "user-sentinel") -> RequestIdentity:
@@ -56,7 +56,8 @@ def _service(
 ) -> DurableTaskService:
     return DurableTaskService(
         store=store,
-        registry=sealed_registry(),
+        allowed_tool_names={ProbeTool.name},
+        tool_side_effect_levels={ProbeTool.name: "external_read"},
         max_task_seconds=3_600,
         notification_outbox=outbox,
     )

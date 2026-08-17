@@ -44,7 +44,7 @@ class VisualImageSearchRequest(BaseModel):
     """视觉图片搜索 Provider 的输入。
 
     v1 只接受公开 HTTP(S) 图片引用。本地路径、base64 和私有媒体 ID
-    会在工具执行前被 ActionValidator 拒绝。
+    会在 Tool 的严格输入校验阶段被拒绝。
     """
 
     image_url: str | None = Field(

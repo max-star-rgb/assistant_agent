@@ -35,13 +35,13 @@ manifest 只用于 coding agent 选择工程文档，不进入产品 Runtime，�
   custom route 只做协议归一化与连接关联，不承担主大脑职责。
 - 生产主链的本地显式工具调用使用标准 `BaseTool -> ToolNode` 与 `ToolRuntime` 注入；read Tool 使用官方
   retry middleware；fast 模式不触发 HITL，planning 模式对非 read Tool 使用原生 HITL；副作用幂等归具体 Tool 或业务 API。旧
-  `ActionValidator -> ToolExecutor -> ToolRegistry -> tool` 只保留给尚未迁移的外围入口。配置为 `qwen` provider 的百炼兼容
+  Registry/Executor 兼容链已经删除；durable task 等外围能力使用显式 allowlist 与窄业务 adapter。配置为 `qwen` provider 的百炼兼容
   Chat Completions 通过显式配置启用的
   Provider-native 只读联网属于模型生成能力，不投影为本地 Tool，也不进入该执行链。
 - Provider 运行只分 `mock` 和 `real`。mock 模式下主 LLM 与 Provider-backed tools 强制使用 mock；real 模式下主 LLM 必须完整配置，Provider-backed tools 只注册已完整配置的真实实现，禁止静默回退到 mock。
 - Tool exposure 和入口路由不得用关键词、正则、高信号话术或手写请求规则推断用户意图；候选 Tool 由受信静态装配、MCP allowlist、entry/media/env 等结构化事实决定，具体调用与参数由 LLM 判断。
-- 长期 Memory 读写只发生在父图固定的 `memory_recall` / `memory_commit` 节点；`memory_context` 是 checkpoint 冻结快照，后端只实现最小 `MemoryBackend` 协议，可接 LangMem、Mem0 或第三方服务。
-- MCP、durable task、A2A、API、CLI、demo、eval 都是入口或调度形态；新入口应复用 Agent Server/native graph。尚未迁移的旧入口不得被描述为生产主链。
+- 长期 Memory recall 发生在父图固定节点并冻结为 `memory_context`；父图通过官方 Agent Server SDK 清理旧 pending Memory run、回答后 enqueue 独立 `assistant-memory-v1`，extract 只在该后台图执行。后端只实现最小 `MemoryBackend` 协议，可接 LangMem、Mem0 或第三方服务。
+- MCP、A2A、API、CLI、demo、eval 等交互入口应复用 Agent Server/native graph；不属于对话 run 的 durable task 与后台感知只使用窄业务 service/adapter，不得重建第二套 Agent Runtime。
 - 非 Python 的 Web UI、BFF、vendor adapter 或边缘入口只能做薄适配器；不要把旧 `runTime` agent loop 引入本项目。
 
 ## 3. 运行与安全

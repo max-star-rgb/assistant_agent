@@ -15,13 +15,11 @@ source_globs = [
   "scripts/run_server.py",
   "scripts/agent_cli.py",
   "tests/core/contract/test_gateway_contract.py",
-  "tests/tdd/native-agent-parent-graph/test_agent_server_factory.py",
-  "tests/tdd/native-agent-parent-graph/test_media_native_adapter.py",
-  "tests/tdd/native-proactive-delivery/test_media_delivery_pump.py",
+  "tests/core/integration/test_runtime_lifecycle.py",
 ]
 thin_references = ["README.md", "scripts/README.md"]
 verification = [
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_gateway_contract.py tests/tdd/native-agent-parent-graph/test_agent_server_factory.py tests/tdd/native-agent-parent-graph/test_media_native_adapter.py tests/tdd/native-proactive-delivery/test_media_delivery_pump.py",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_gateway_contract.py tests/core/integration/test_runtime_lifecycle.py",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python scripts/agent_cli.py --help",
 ]
 exclusive_literals = []
@@ -77,8 +75,8 @@ exclusive_allowlist = []
 id = "tool-calling"
 authority = "docs/tool-calling-architecture.md"
 read_when = [
-  "Tool、ToolSpec、catalog、exposure、ActionValidator、ToolExecutor 或 ToolRegistry",
-  "Plugin、MCP、durable workflow、Provider-native 能力或副作用治理",
+  "Tool、Tool schema、catalog、exposure、ToolNode 或 ToolRuntime",
+  "Plugin、MCP、durable task、Provider-native 能力或副作用治理",
 ]
 source_globs = [
   ".env.example",
@@ -88,9 +86,6 @@ source_globs = [
   "src/assistant_agent/tools/**",
   "src/assistant_agent/mcp/**",
   "src/assistant_agent/automation/durable_tasks/**",
-  "src/assistant_agent/runtime/action_validator.py",
-  "src/assistant_agent/runtime/tool_execution_backend.py",
-  "src/assistant_agent/runtime/tool_executor.py",
 ]
 thin_references = ["README.md", "scripts/README.md"]
 verification = [
@@ -109,6 +104,7 @@ read_when = [
 ]
 source_globs = [
   "src/assistant_agent/native_agent/memory.py",
+  "src/assistant_agent/native_agent/memory_graph.py",
   "src/assistant_agent/native_agent/root_graph.py",
   "src/assistant_agent/native_agent/state.py",
   "src/assistant_agent/memory/**",

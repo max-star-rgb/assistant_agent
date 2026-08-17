@@ -37,7 +37,6 @@ from assistant_agent.tools.ids import (
     IMAGE_UNDERSTANDING_CAPABILITY,
     LIVE_VIEW_INSPECT_TOOL_NAME,
     MEDIA_INSPECT_TOOL_NAME,
-    REALTIME_VIDEO_OBSERVE_TOOL_NAME,
 )
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.input_binding import RuntimeInputBinding
@@ -137,7 +136,7 @@ class MediaInspectTool(ToolBase):
         self, input: VisionUnderstandingRequest, context: ToolContext
     ) -> ToolResult:
         if vision_request_has_video(input):
-            result = self._video_branch.run_legacy(
+            result = self._video_branch.execute(
                 video_request_from_vision_request(input), context
             )
             return result.model_copy(update={"tool_name": self.name})
@@ -254,7 +253,7 @@ class LiveViewInspectTool(MediaInspectTool):
         input: Any,
     ) -> VisionUnderstandingRequest | LiveViewInspectRequest:
         # Keep direct internal/test callers compatible; governed LLM calls use
-        # the query-required schema exposed by ToolRegistry.
+        # the query-required schema exposed by the native Tool.
         if isinstance(input, VisionUnderstandingRequest) and not isinstance(
             input,
             LiveViewInspectRequest,
@@ -276,19 +275,6 @@ class LiveViewInspectTool(MediaInspectTool):
                 }
             )
         return super()._execute(request, context)
-
-
-class RealtimeVideoObserveTool(MediaInspectTool):
-    """Internal governed tool used only by the background frame observer."""
-
-    name = REALTIME_VIDEO_OBSERVE_TOOL_NAME
-    description = (
-        "供后台实时视频观察器分析受信任的视频帧并生成结构化视觉观察；结果用于运行时"
-        "视频上下文与记忆处理。仅供内部观察流程使用，不面向普通用户请求。"
-    )
-    repeat_policy = "distinct_inputs"
-    requires_media = ["video"]
-    media_scope = "any"
 
 
 def _vision_model_observation(data: dict[str, Any]) -> dict[str, Any]:

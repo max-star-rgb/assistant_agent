@@ -6,7 +6,7 @@ from assistant_agent.tools.plugins.builtin.image_generation.backend import (
     LocalFixtureImageGenerationAdapter,
     create_image_generation_adapter,
 )
-from assistant_agent.tools.base import Tool
+from langchain_core.tools import BaseTool
 from assistant_agent.tools.plugins.contracts import ToolPluginContext, ToolPluginDescriptor
 from assistant_agent.tools.plugins.builtin.image_generation.tool import ImageGenerationTool
 
@@ -18,7 +18,7 @@ DEVELOPMENT_IMAGE_FIXTURE_ID: str | None = "349cc6c272f4ec7a88800f0f.png"
 class ImageGenerationToolPlugin:
     descriptor = ToolPluginDescriptor(plugin_id="image_generation", plugin_version="1")
 
-    def build_tools(self, context: ToolPluginContext) -> list[Tool]:
+    def build_tools(self, context: ToolPluginContext) -> list[BaseTool]:
         if DEVELOPMENT_IMAGE_FIXTURE_ID:
             return [
                 ImageGenerationTool(

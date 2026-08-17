@@ -15,6 +15,7 @@ from assistant_agent.mcp.config import load_mcp_server_configs_from_env
 from assistant_agent.media.visual_perception import get_visual_perception_module
 from assistant_agent.native_agent.fast_agent import build_fast_agent
 from assistant_agent.native_agent.memory import MemoryBackend, create_memory_backend
+from assistant_agent.native_agent.memory_graph import build_memory_extraction_graph
 from assistant_agent.native_agent.planning_graph import build_planning_graph
 from assistant_agent.native_agent.providers import create_chat_model
 from assistant_agent.native_agent.root_graph import build_assistant_root_graph
@@ -33,7 +34,7 @@ class AgentServerExecutionOwner:
     tools: list[BaseTool]
     memory_backend: MemoryBackend
     graph: Any
-    _close_targets: tuple[Any, ...] = ()
+    memory_graph: Any
 
     @classmethod
     async def compose(
@@ -66,18 +67,24 @@ class AgentServerExecutionOwner:
             memory_backend=memory_backend,
             fast_agent=fast_agent,
             planning_graph=planning_graph,
+            extraction_delay_seconds=config.memory_extraction_delay_seconds,
         )
+        memory_graph = build_memory_extraction_graph(backend=memory_backend)
         return cls(
             model=model,
             tools=tools,
             memory_backend=memory_backend,
             graph=graph,
-            _close_targets=(memory_backend, model, *tools),
+            memory_graph=memory_graph,
         )
 
     async def aclose(self) -> None:
         seen: set[int] = set()
-        for target in self._close_targets:
+        for target in (
+            self.memory_backend,
+            self.model,
+            *self.tools,
+        ):
             if id(target) in seen:
                 continue
             seen.add(id(target))

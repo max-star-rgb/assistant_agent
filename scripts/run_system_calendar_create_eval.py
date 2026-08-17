@@ -29,7 +29,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = ArgumentParser(
         description=(
             "Execute calendar_create against an isolated real SQLite calendar "
-            "through ActionValidator and ToolExecutor, then verify idempotency."
+            "through LangGraph ToolNode, then verify idempotency."
         )
     )
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
@@ -86,12 +86,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         **eval_input.model_dump(mode="json"),
                         "title": f"{eval_input.title} <run_id>",
                     },
-                    "governance_chain": [
-                        "ActionValidator",
-                        "ToolExecutor",
-                        "ToolRegistry",
-                        "CalendarCreateTool",
-                    ],
+                    "governance_chain": ["ToolNode", "CalendarCreateTool"],
                 },
                 ensure_ascii=False,
                 indent=2,

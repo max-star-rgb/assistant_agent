@@ -7,7 +7,7 @@ from assistant_agent.tools.plugins.contracts import (
     ToolPluginContext,
     ToolPluginDescriptor,
 )
-from assistant_agent.tools.base import Tool
+from langchain_core.tools import BaseTool
 
 
 class LocalFileAccessPlugin:
@@ -16,5 +16,5 @@ class LocalFileAccessPlugin:
         plugin_version="1",
     )
 
-    def build_tools(self, context: ToolPluginContext) -> list[Tool]:
+    def build_tools(self, context: ToolPluginContext) -> list[BaseTool]:
         return [LocalFileReadTool(root=context.config.local_file_access_root)]

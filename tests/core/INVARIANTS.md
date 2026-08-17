@@ -8,10 +8,10 @@
 | POLICY-001 | 默认 pytest 收集范围仅为 `tests/core`；核心测试文件已登记，且不以完整人类文案或 feature implementation import 绑定行为。 | `tests/core/unit/test_test_policy.py` |
 | BOOT-001 | mock/real provider mode 显式分离；离线启动不读取真实 Provider 配置且不会发起网络调用。 | `tests/core/integration/test_runtime_lifecycle.py` |
 | RUN-001 | 生产 run 直接返回标准 messages；thread/run/checkpoint/interrupt/resume/cancel 与终态由 LangGraph Agent Server 所有，Graph state 不保存平行产品终态。 | `tests/core/integration/test_runtime_lifecycle.py` |
-| LOOP-001 | 唯一父 `AssistantRootGraph` 在一次 Memory recall 后按结构化 fast/planning 路由；fast 是 `create_agent`，planning 是显式 StateGraph 且所有 worker 复用同一个 fast graph，汇流后只 commit 一次。 | `tests/core/integration/test_runtime_lifecycle.py` |
+| LOOP-001 | 进程内复用唯一静态父 `AssistantRootGraph`；父图直接执行 pending Memory run 清理、每 run recall、结构化 fast/planning 路由与后台 Memory run enqueue；fast 是 `create_agent`，planning 是显式 StateGraph 且所有 worker 复用同一个 fast graph。 | `tests/core/integration/test_runtime_lifecycle.py` |
 | TOOL-001 | 生产本地 Tool 使用标准 `BaseTool`/`ToolNode`；模型可见 schema 隐藏 runtime-owned 参数，`ToolRuntime.server_info.user.identity` 注入受信身份，结果为标准 `ToolMessage(content, artifact)`。 | `tests/core/contract/test_tool_contract.py` |
 | EXT-001 | 生产本地 Tool 由受信静态清单装配；MCP 使用官方 adapter、显式 allowlist 与确定性 namespace，二者都输出标准 `BaseTool`。 | `tests/core/contract/test_extension_contract.py` |
-| MEMORY-001 | 长期记忆只在父图固定 `memory_recall` / `memory_commit` 节点读写；两种执行模式每 run 各一次，worker 只读冻结 `memory_context`。 | `tests/core/integration/test_memory_lifecycle.py` |
+| MEMORY-001 | 每个顶层 chat run 先通过官方 Agent Server SDK rollback 同 thread 旧的 pending Memory run，再 recall 一次并冻结 `memory_context`；回答后 enqueue 新的 delayed Memory run，pending chat run 不受影响，extract 不在 chat run 内执行。 | `tests/core/integration/test_memory_lifecycle.py` |
 | CTX-001 | 生产上下文使用标准 messages、带明确 untrusted/frozen 标记的 Memory dynamic prompt，以及官方 limit/summarization/HITL middleware；fast 自动放行，planning 对非 read Tool 触发 HITL。 | `tests/core/integration/test_context_lifecycle.py` |
 | GATE-001 | Agent Server 原生拥有生产 thread、run、queue、checkpoint、cancel 与 stream 生命周期；`/agent-service/v1` 只做媒体 wire 解析、原生资源关联和响应投影，不拥有平行 Graph Runtime。 | `tests/core/contract/test_gateway_contract.py` |
 | IDENT-001 | Agent Server 原生 authenticated `user.identity` 是生产运行的唯一用户身份；Assistant Runtime Context 不复制用户或租户字段；assistant、graph、thread、run、媒体 connection 与 delivery ID 相互分离，同一 conversation 的 `thread_id` 在后续 run 间稳定。 | `tests/core/contract/test_gateway_contract.py`；`tests/core/integration/test_runtime_lifecycle.py`；`tests/core/integration/test_durable_lifecycle.py` |

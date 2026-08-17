@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+from contextlib import asynccontextmanager
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -13,6 +14,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from langchain_core.messages import AIMessage
 
 from assistant_agent.agent_server.client import SdkAgentServerClient
+from assistant_agent.agent_server.graph import close_native_assistant_graph
 from assistant_agent.agent_server.media_protocol import (
     MediaProtocolError,
     envelope,
@@ -39,7 +41,28 @@ from assistant_agent.media.artifact_delivery import get_media_artifact_delivery_
 from assistant_agent.proactive_delivery import SQLiteProactiveDeliveryStore
 
 
-app = FastAPI(title="Assistant Agent Server Media Adapter")
+@asynccontextmanager
+async def agent_server_lifespan(application: FastAPI):
+    """Own the process-wide visual module for this Agent Server process."""
+
+    visual_module = get_visual_perception_module()
+    application.state.visual_perception_module = visual_module
+    try:
+        yield
+    finally:
+        await close_native_assistant_graph()
+        await visual_module.aclose()
+        if (
+            getattr(application.state, "visual_perception_module", None)
+            is visual_module
+        ):
+            del application.state.visual_perception_module
+
+
+app = FastAPI(
+    title="Assistant Agent Server Media Adapter",
+    lifespan=agent_server_lifespan,
+)
 app.include_router(rendering_3d_callback_router)
 
 
@@ -68,7 +91,7 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
     interrupted_chats: set[str] = set()
     proactive_delivery = _ProactiveDeliveryConnection()
     visual_perception = _VisualPerceptionConnection()
-    visual_module = getattr(app.state, "visual_perception_module", None)
+    visual_module = getattr(websocket.app.state, "visual_perception_module", None)
     if visual_module is None:
         visual_module = get_visual_perception_module()
     ingestion_factory = getattr(app.state, "video_ingestion_factory", None)
@@ -166,9 +189,7 @@ async def _handle_frame(
         authenticated_user = websocket.scope.get("user")
         if authenticated_user is not None:
             authenticated_identity = str(authenticated_user.identity)
-            permissions = set(
-                getattr(authenticated_user, "permissions", ()) or ()
-            )
+            permissions = set(getattr(authenticated_user, "permissions", ()) or ())
             if (
                 "assistant:developer" not in permissions
                 and user_id != authenticated_identity

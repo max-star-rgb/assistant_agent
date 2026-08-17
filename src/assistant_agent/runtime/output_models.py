@@ -101,16 +101,12 @@ class NativeToolCall(BaseModel):
         )
 
 
-def native_tool_call_to_assistant_output(call: NativeToolCall) -> AssistantToolCall:
-    """Convert a normalized native tool call to a strict assistant output."""
-
-    return call.to_assistant_tool_call()
-
-
 def openai_tool_call_to_native_tool_call(payload: dict[str, Any]) -> NativeToolCall:
     """Parse an OpenAI-compatible tool call payload."""
 
-    function = payload.get("function") if isinstance(payload.get("function"), dict) else {}
+    function = (
+        payload.get("function") if isinstance(payload.get("function"), dict) else {}
+    )
     name = function.get("name") or payload.get("name")
     if not isinstance(name, str) or not name.strip():
         raise ValueError("native tool call missing function name")

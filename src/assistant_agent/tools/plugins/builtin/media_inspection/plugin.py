@@ -1,16 +1,13 @@
 """Attached and live media inspection plugin."""
 
 from assistant_agent.config import ProviderConfig
-from assistant_agent.media.video.realtime_video_memory import RealtimeVideoMemoryStore
 from assistant_agent.media.vision.vision_client import (
-    create_realtime_vision_understanding_client,
     create_vision_understanding_client,
 )
-from assistant_agent.tools.base import Tool
+from langchain_core.tools import BaseTool
 from assistant_agent.tools.plugins.builtin.media_inspection.tool import (
     LiveViewInspectTool,
     MediaInspectTool,
-    RealtimeVideoObserveTool,
 )
 from assistant_agent.tools.plugins.builtin.media_inspection.visual_memory_tool import (
     VisualMemorySearchTool,
@@ -30,8 +27,8 @@ class MediaInspectionPlugin:
         plugin_version="1",
     )
 
-    def build_tools(self, context: ToolPluginContext) -> list[Tool]:
-        tools: list[Tool] = []
+    def build_tools(self, context: ToolPluginContext) -> list[BaseTool]:
+        tools: list[BaseTool] = []
         vision_ready = context.mock_mode or vision_provider_ready(context.config)
         vision_client = context.vision_client
         if (
@@ -79,21 +76,6 @@ class MediaInspectionPlugin:
                 )
             )
         return tools
-
-
-def build_realtime_video_observation_tool(
-    config: ProviderConfig,
-    *,
-    realtime_video_memory_store: RealtimeVideoMemoryStore | None = None,
-) -> Tool:
-    """Build the governed media tool used by the realtime observer."""
-
-    if config.provider_mode == "real" and not vision_provider_ready(config):
-        raise ValueError("real provider mode requires a configured vision provider")
-    return RealtimeVideoObserveTool(
-        client=create_realtime_vision_understanding_client(config),
-        memory_store=realtime_video_memory_store,
-    )
 
 
 def vision_provider_ready(config: ProviderConfig) -> bool:

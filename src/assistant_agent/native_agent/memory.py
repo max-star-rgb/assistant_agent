@@ -196,12 +196,7 @@ class LangMemMemoryBackend:
         user_text, assistant_text = _completed_turn(messages)
         if not user_text or not assistant_text:
             return
-        value = {
-            "messages": [
-                {"role": "user", "content": user_text},
-                {"role": "assistant", "content": assistant_text},
-            ]
-        }
+        value = {"messages": list(messages)}
         config = {
             "configurable": {
                 "langgraph_user_id": _langmem_namespace(identity)[-1],
@@ -293,13 +288,13 @@ def memory_recall_degraded(
     )
 
 
-async def memory_commit_node(
+async def memory_extract_node(
     state: AssistantRootState,
     runtime: Runtime[AssistantRunContext],
     *,
     backend: MemoryBackend,
 ) -> dict[str, Any]:
-    """Commit after branch convergence without changing the produced answer."""
+    """Extract memories only during an explicit background Memory run."""
 
     await backend.commit(
         identity=authenticated_user_identity(runtime),
@@ -311,11 +306,11 @@ async def memory_commit_node(
     return {}
 
 
-def memory_commit_degraded(
+def memory_extract_degraded(
     _state: AssistantRootState,
     error: NodeError,
 ) -> Command[str]:
-    """Use LangGraph recovery to keep the answer when optional commit fails."""
+    """Keep Memory extraction failure isolated from completed chat runs."""
 
     del error
     return Command(goto=END)
@@ -446,8 +441,8 @@ __all__ = [
     "MemoryBackend",
     "MemoryBackendConfigurationError",
     "create_memory_backend",
-    "memory_commit_degraded",
-    "memory_commit_node",
+    "memory_extract_degraded",
+    "memory_extract_node",
     "memory_recall_degraded",
     "memory_recall_node",
 ]

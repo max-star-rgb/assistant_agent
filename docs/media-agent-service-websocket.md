@@ -88,8 +88,10 @@ Graph 完成后发唯一成功终包：
 
 `assistantMode` 省略时为 `fast`，也可显式选择 `planning`；旧 `standard|deep_research` 不再接受。媒体适配器
 把请求机械转换为标准 HumanMessage content blocks 和根输入 `execution_mode`。最终正文来自 terminal values
-中的最新标准 `AIMessage`，适配器不得从 delta 拼接或自行生成业务回答；父图完成 `memory_commit` 后 run 才
-到达终态。
+中的最新标准 `AIMessage`，适配器不得从 delta 拼接或自行生成业务回答。Memory debounce 是所有入口共享的
+主图规则：新 chat run 先通过官方 Agent Server SDK rollback 同 thread 的旧 pending Memory run，回答后再
+enqueue 一个 30 分钟 delayed Memory run；pending chat run 不受影响。该 orchestration 不扩展媒体 wire，
+WebSocket 挂断也不承担 Memory 语义。
 
 ## 4. interrupt 与 delivery ACK
 
@@ -167,8 +169,14 @@ event ID 调用 `threads.join_stream`，而不是重建项目自有 session/runt
 相同 `user + vendor sessionId` 重连到同一 native thread 后重发未 ACK 行；reactive chat 的既有终包仍只由
 当前连接关联，不纳入主动 Outbox。Agent Server stream resume 解决执行事件订阅恢复，与媒体 delivery
 outbox 保持两套不同语义。当前主动 Store 是单实例/共享持久卷 SQLite；多主机共享事务实现、周期 progress、
-durable task/workflow 生产者和后台视觉 observer 生产者仍未迁移。citation、生成图片 detail、H.264 显式
+durable task 生产者尚未接入该主动 Outbox；后台视觉 observer 只发布视觉语义记录，不伪装 proactive
+producer。citation、生成图片 detail、H.264 显式
 视觉引用和在线 3D artifact 投影已支持。
+
+视觉资源按进程与连接分层：Agent Server custom FastAPI lifespan 拥有进程级
+`VisualPerceptionModule`，仅在进程 shutdown 时关闭；每个媒体 WebSocket 只拥有并关闭自己的
+`VisualPerceptionSession`、observer 与 lease，不得关闭或替换进程模块。临时 graph factory 与
+schema/history/state 请求同样不拥有该进程资源。
 
 ## 8. 验证
 

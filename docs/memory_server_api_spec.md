@@ -13,7 +13,7 @@
 | 验证入口 | `docs/authority.toml` 中 `memory-server-api.verification` |
 | 相邻 authority | Graph memory 架构见 [`memory-service-architecture.md`](memory-service-architecture.md) |
 
-项目不定义通用 Memory Server 协议。本文件只记录 Mem0 `memory_recall` / `memory_commit` 节点私有
+项目不定义通用 Memory Server 协议。本文件只记录 Mem0 `memory_recall` / `memory_extract` 节点私有
 `Mem0Client` 实际使用的 Mem0 OSS REST 子集；完整行为以 Mem0 官方 API 为准。其他 backend 不依赖本协议。
 
 ## 身份
@@ -28,8 +28,8 @@ GET /memories?user_id=<opaque>&agent_id=<opaque>
 ```
 
 响应返回该身份下的长期记忆；只消费 `results` 数组中每条记录的 `id`、`memory`、`created_at` 和可选
-`score`。新 logical turn 的 `memory_recall` 调用一次并将规范化结果冻结为 checkpoint
-`memory_context`；resume/replay/default fork 不重新请求。ContextBuilder 仍执行最终预算裁剪。
+`score`。每个 chat run 的 `memory_recall` 调用一次并将规范化结果冻结为当前 run 的
+`memory_context`；Memory 失败恢复或同一 run resume 不重复请求。ContextBuilder 仍执行最终预算裁剪。
 
 ## Turn capture
 
@@ -54,7 +54,7 @@ Content-Type: application/json
 ```
 
 项目不设置 `infer=false`，不发送自定义 extraction prompt，不创建 core/daily 双记录。
-该调用由 `memory_commit` 在回答发布后同步执行，并先经过最小 durable ledger。Mem0 adapter 为原生 HTTP
+该调用只由 Agent Server 延迟调度的 `assistant-memory-v1` 后台 run 执行，不位于 chat 回答关键路径。Mem0 adapter 为原生 HTTP
 `add` 使用至少 30 秒的 I/O timeout，不自动 retry。
 
 响应只消费原生 `results` 中每条合法记录的 `id`、`memory` 和 `event`。支持的 event 为
@@ -64,5 +64,5 @@ Content-Type: application/json
 ## 错误语义
 
 - recall 失败：节点写入 degraded 空 `memory_context` 和 `mem0_recall_failed`，当前 turn 继续。
-- commit 失败或 timeout：节点只写脱敏的 `MemoryCommitState`；已发布的 Assistant 回复不受影响。
+- extract 失败或 timeout：后台 run 失败或降级结束；已完成的 Assistant 回复不受影响。
 - 响应原文、URL、凭据和异常细节不进入模型上下文。

@@ -8,10 +8,7 @@ import math
 from collections.abc import Callable
 from datetime import datetime, timedelta
 
-from assistant_agent.runtime.action_validator import ActionValidator
 from assistant_agent.runtime.state import AgentState
-from assistant_agent.runtime.tool_executor import ToolExecutor
-from assistant_agent.runtime.decision_models import AssistantDecision
 from assistant_agent.automation.durable_tasks.models import (
     DurableTaskSnapshot,
     TaskCheckpoint,
@@ -24,13 +21,15 @@ from assistant_agent.identity import RequestIdentity
 from assistant_agent.tools.plugins.builtin.lodging.models import (
     HotelPriceWatchGoal,
     LodgingOffer,
-    LodgingSearchResult,
+)
+from assistant_agent.tools.plugins.builtin.lodging.backend import (
+    LodgingSearchAdapter,
+    MockLodgingSearchAdapter,
 )
 from assistant_agent.runtime.planning_models import TaskPlan, TaskStep
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.automation.durable_tasks.service import DurableTaskService
 from assistant_agent.automation.durable_tasks.worker import TaskQuantumResult
-from assistant_agent.tools.registry import ToolRegistry
 
 HOTEL_PRICE_WATCH_PROFILE = "hotel_price_watch_v1"
 LODGING_SEARCH_TOOL_NAME = "lodging_search"
@@ -89,11 +88,11 @@ class HotelPriceWatchRuntime:
         self,
         *,
         task_service: DurableTaskService,
-        registry: ToolRegistry,
+        adapter: LodgingSearchAdapter | None = None,
         now_fn: Callable[[], datetime] = utc_now,
     ) -> None:
         self.task_service = task_service
-        self.registry = registry
+        self.adapter = adapter or MockLodgingSearchAdapter()
         self.now_fn = now_fn
 
     def run_task_quantum(
@@ -162,31 +161,6 @@ class HotelPriceWatchRuntime:
                 binding=binding,
             )
         tool_input = goal.search.model_dump(mode="json", exclude={"limit"})
-        decision = AssistantDecision(
-            type="tool_call",
-            tool_name=LODGING_SEARCH_TOOL_NAME,
-            tool_input=tool_input,
-            step_id=step_id,
-            reason="Run the next bounded hotel price observation.",
-        )
-        validation = ActionValidator().validate(
-            decision=decision,
-            registry=self.registry,
-            request=request,
-            state=state,
-        )
-        if not validation.accepted:
-            return TaskQuantumResult(
-                checkpoint=TaskCheckpoint(
-                    kind="failed",
-                    step_id=step_id,
-                    error_code=validation.code,
-                    error_message=validation.message,
-                ),
-                state=state,
-                binding=binding,
-            )
-
         active_binding = self.task_service.begin_attempt(
             binding=binding,
             step_id=step_id,
@@ -196,21 +170,7 @@ class HotelPriceWatchRuntime:
         request.metadata["durable_task_binding"] = active_binding.model_dump(
             mode="json"
         )
-        result = ToolExecutor(
-            registry=self.registry,
-            context_metadata={
-                "durable_task_service": self.task_service,
-                "durable_task_binding": active_binding,
-            },
-            cancel_token=cancel_token,
-        ).run_tool(
-            state,
-            step_id,
-            LODGING_SEARCH_TOOL_NAME,
-            tool_input,
-            validated_input=validation.validated_input,
-            node_name="hotel_price_watch_probe",
-        )
+        result = self.adapter.search(goal.search)
         next_check_at = min(
             now + timedelta(seconds=goal.check_interval_s),
             goal.ends_at,
@@ -239,7 +199,9 @@ class HotelPriceWatchRuntime:
                     wait=wait,
                     workflow_state_patch={
                         "last_status": "provider_failed",
-                        "last_error": result.error or "lodging_search_failed",
+                        "last_error": (
+                            result.error_message or "lodging_search_failed"
+                        ),
                         "last_checked_at": now.isoformat(),
                     },
                 ),
@@ -247,9 +209,8 @@ class HotelPriceWatchRuntime:
                 binding=active_binding,
             )
 
-        search_result = LodgingSearchResult.model_validate(result.data)
-        best = _best_offer(search_result.offers)
-        fingerprint = _offer_fingerprint(search_result.offers)
+        best = _best_offer(result.offers)
+        fingerprint = _offer_fingerprint(result.offers)
         state_patch = {
             "last_status": "observed",
             "last_checked_at": now.isoformat(),

@@ -4,9 +4,8 @@ from pydantic import BaseModel, Field
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.runtime.chat_adapter import ChatRequest, ChatResult
-from assistant_agent.tools.base import Tool, ToolBase, ToolContext
+from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.models import ToolResult
-from assistant_agent.tools.registry import ToolRegistry
 
 
 class ProbeInput(BaseModel):
@@ -48,11 +47,3 @@ class CancelledToken:
 
 def offline_config() -> ProviderConfig:
     return ProviderConfig(langgraph_checkpointer_backend="none")
-
-
-def sealed_registry(*tools: Tool) -> ToolRegistry:
-    registry = ToolRegistry()
-    for tool in tools or (ProbeTool(),):
-        registry.register(tool)
-    registry.seal()
-    return registry

@@ -6,9 +6,9 @@ import hashlib
 import secrets
 from datetime import datetime, timezone
 from threading import Event, RLock
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, Mapping
 
-from assistant_agent.runtime.plan_validator import PlanValidator
+from assistant_agent.automation.durable_tasks.plan_validation import PlanValidator
 from assistant_agent.automation.durable_tasks.models import (
     TERMINAL_TASK_STATUSES,
     DurableTaskBundle,
@@ -31,7 +31,6 @@ from assistant_agent.automation.notification_models import (
 )
 from assistant_agent.runtime.planning_models import TaskPlan, TaskStep
 from assistant_agent.automation.durable_tasks.store import TaskStore
-from assistant_agent.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
     from assistant_agent.automation.notifications import NotificationOutbox
@@ -67,7 +66,12 @@ class DurableTaskService:
         self,
         *,
         store: TaskStore,
-        registry: ToolRegistry,
+        allowed_tool_names: set[str] | frozenset[str],
+        tool_side_effect_levels: Mapping[
+            str,
+            Literal["local_read", "external_read", "possible_write"],
+        ]
+        | None = None,
         max_plan_steps: int = 8,
         max_tool_calls: int = 32,
         max_model_calls: int = 40,
@@ -78,7 +82,14 @@ class DurableTaskService:
         notification_outbox: "NotificationOutbox | None" = None,
     ) -> None:
         self.store = store
-        self.registry = registry
+        self.allowed_tool_names = frozenset(allowed_tool_names)
+        self.tool_side_effect_levels = dict(tool_side_effect_levels or {})
+        unknown_effects = self.tool_side_effect_levels.keys() - self.allowed_tool_names
+        if unknown_effects:
+            raise ValueError(
+                "tool side-effect metadata references unknown tools: "
+                + ", ".join(sorted(unknown_effects))
+            )
         self.plan_validator = PlanValidator(max_steps=max_plan_steps)
         self.max_tool_calls = max_tool_calls
         self.max_model_calls = max_model_calls
@@ -475,7 +486,7 @@ class DurableTaskService:
         tool_name: str,
         tool_input_digest: str,
     ) -> TrustedTaskBinding:
-        """Persist the external-call boundary before ToolExecutor can run."""
+        """Persist the external-call boundary before a durable adapter can run."""
 
         bundle = self._bound_bundle(binding)
         if bundle.task.status != "running":
@@ -876,7 +887,7 @@ class DurableTaskService:
         )
 
     def _validate_plan(self, plan: TaskPlan) -> None:
-        result = self.plan_validator.validate(plan, self.registry)
+        result = self.plan_validator.validate(plan, self.allowed_tool_names)
         if not result.accepted:
             raise TaskTransitionRejected(result.message)
 
@@ -949,7 +960,7 @@ class DurableTaskService:
                 ),
                 tool_name=step.tool_name,
                 side_effect_level=_durable_side_effect_level(
-                    self.registry,
+                    self.tool_side_effect_levels,
                     step.tool_name,
                 ),
             )
@@ -994,16 +1005,13 @@ def _idempotency_key(
 
 
 def _durable_side_effect_level(
-    registry: ToolRegistry,
+    tool_side_effect_levels: Mapping[str, str],
     tool_name: str | None,
 ) -> str:
     if tool_name is None:
         return "none"
-    return (
-        "external_read"
-        if registry.get_spec(tool_name).category == "read"
-        else "possible_write"
-    )
+    # Missing metadata must remain fail-closed for retry/recovery decisions.
+    return tool_side_effect_levels.get(tool_name, "possible_write")
 
 
 def _notification_event_payload(

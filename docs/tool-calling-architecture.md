@@ -1,6 +1,6 @@
 # LangChain-native Tool 与扩展架构
 
-最后更新：2026-08-14
+最后更新：2026-08-17
 
 ## Authority contract
 
@@ -8,7 +8,7 @@
 | --- | --- |
 | 定位 | 生产主链 Tool schema、执行、HITL、MCP 与 Provider-native 能力权威 |
 | Owns | `BaseTool`、`ToolRuntime` 注入、ToolNode、effect metadata、官方 MCP 装配、Tool middleware |
-| Does not own | 父图路由、Memory、Provider HTTP wire、媒体 WebSocket、外围旧 ToolExecutor |
+| Does not own | 父图路由、Memory、Provider HTTP wire、媒体 WebSocket、后台感知和 durable 状态机 |
 | 源码与 schema 入口 | `src/assistant_agent/native_agent/tools.py`、`src/assistant_agent/tools/`、`src/assistant_agent/mcp/` |
 | 验证入口 | `docs/authority.toml` 中 `tool-calling.verification` |
 | 相邻 authority | Runtime 见 [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md)；Memory 见 [`memory-service-architecture.md`](memory-service-architecture.md) |
@@ -36,11 +36,13 @@
 
 外部 MCP 只通过官方 `MultiServerMCPClient` 装配。受信 `MCPServerConfig` 机械转换为 stdio connection；发现后
 应用显式 allowlist、read-only effect 和 `<namespace>_<server>_<tool>` 命名。主链不建立 MCP proxy、ToolSpec
-镜像或 Registry。
+镜像或 Registry。MCP tool discovery 属于 worker 进程 composition，只执行一次；schema、history、state 与
+run 复用同一个 compiled graph 和 Tool 集合，实际 MCP Tool 调用仍遵循官方按调用创建 session 的行为。
 
-本地 Plugin 仍可复用其纯构造逻辑和 Provider adapter，但生产装配清单是代码中的显式列表。Tool CLI、离线
-MCP Tool 开发入口与 durable task 等外围能力仍可保留旧治理模块，但旧 Agent Runtime/Workflow host 已删除，
-这些外围模块不得被描述为生产 Assistant 主链。
+本地 Plugin 只复用纯构造逻辑和 Provider adapter，生产装配清单是代码中的显式列表。旧 Tool CLI、动态
+loader、Registry/Executor、离线 MCP server 与 Skill runtime 已删除。两个本地日历 system eval 也通过最小
+StateGraph 的标准 `ToolNode` 执行真实 Tool。durable task 不伪造 Agent run：它使用显式工具名/effect allowlist
+和窄业务 adapter，缺失 effect metadata 时按可能写入 fail closed。
 
 ## Provider-native 能力
 

@@ -11,8 +11,6 @@ from time import perf_counter_ns, time
 from typing import Any
 from uuid import uuid4
 
-from pydantic import ValidationError
-
 from assistant_agent.config import ProviderConfig
 from assistant_agent.observability.trace_store import (
     TraceStore,
@@ -23,21 +21,18 @@ from assistant_agent.media.embedding.models import EmbeddingEvent
 from assistant_agent.media.embedding.observability import (
     emit_visual_semantic_observation,
 )
-from assistant_agent.runtime.action_validator import ActionValidator
-from assistant_agent.runtime.state import AgentState
-from assistant_agent.runtime.tool_executor import ToolExecutor
-from assistant_agent.runtime.decision_models import AssistantDecision
 from assistant_agent.media.vision.models import VideoUnderstandingResult
 from assistant_agent.media.vision.observability import VisionInferenceTraceLink
-from assistant_agent.runtime.requests import UserRequest
-from assistant_agent.tools.models import ToolResult
+from assistant_agent.media.visual_perception.observation_service import (
+    RealtimeVisualObservationRequest,
+    RealtimeVisualObservationService,
+)
 from assistant_agent.providers.provider_errors import sanitize_error_message
 from assistant_agent.media.video.realtime_video_memory import (
     RealtimeVideoMemoryStore,
     RealtimeVideoObservationDiagnostics,
     SemanticKeyframeRecord,
 )
-from assistant_agent.tools.ids import REALTIME_VIDEO_OBSERVE_TOOL_NAME
 from assistant_agent.media.video.video_context import VideoFrame
 from assistant_agent.media.video.semantic_pipeline import (
     FixedIntervalSemanticSampler,
@@ -47,7 +42,6 @@ from assistant_agent.media.video.semantic_store import (
     SessionVisualSemanticStore,
     VisualSemanticRecord,
 )
-from assistant_agent.tools.registry import ToolRegistry
 from assistant_agent.media.video.keyframe.selector import (
     SemanticKeyframeConfig,
     SemanticKeyframeSelector,
@@ -89,7 +83,14 @@ class _VisualSemanticPublishOutcome:
     semantic_store_write_latency_ms: int
 
 
-ObservationRegistryFactory = Callable[[], ToolRegistry]
+@dataclass(frozen=True)
+class _BackgroundVisionTraceContext:
+    trace_store: TraceStore
+    trace_id: str
+    run_id: str
+    user_id: str
+    session_id: str
+    parent_span_id: str | None = None
 
 
 class RealtimeVideoObserver:
@@ -100,17 +101,15 @@ class RealtimeVideoObserver:
         *,
         user_id: str,
         session_id: str,
-        registry: ToolRegistry | None,
+        observation_service: RealtimeVisualObservationService,
         memory_store: RealtimeVideoMemoryStore,
         semantic_store: SessionVisualSemanticStore | None = None,
         embedding_coordinator: SessionEmbeddingCoordinator,
-        observation_registry_factory: ObservationRegistryFactory | None = None,
         visual_reminder_registry: VisualReminderRegistry | None = None,
         visual_memory_text_index: VisualMemoryTextIndex | None = None,
         trace_store: TraceStore | None = None,
         provider_config: ProviderConfig | None = None,
         keyframe_root: Path | str = DEFAULT_KEYFRAME_ROOT,
-        validator: ActionValidator | None = None,
         close_wait_seconds: float = DEFAULT_CLOSE_WAIT_SECONDS,
         resource_release: Callable[[], None] | None = None,
         clock_ns: Callable[[], int] = perf_counter_ns,
@@ -118,12 +117,9 @@ class RealtimeVideoObserver:
     ) -> None:
         if close_wait_seconds <= 0:
             raise ValueError("close_wait_seconds must be positive")
-        if registry is None and observation_registry_factory is None:
-            raise ValueError("realtime video observer requires a registry or factory")
         self.user_id = user_id
         self.session_id = session_id
-        self.registry = registry
-        self.observation_registry_factory = observation_registry_factory
+        self.observation_service = observation_service
         self.memory_store = memory_store
         self.embedding_coordinator = embedding_coordinator
         self.visual_reminder_registry = visual_reminder_registry
@@ -145,7 +141,6 @@ class RealtimeVideoObserver:
         self._resource_release = resource_release
         self._resources_released = False
         resolved_provider_config = provider_config or ProviderConfig()
-        self.validator = validator or ActionValidator()
         self.close_wait_seconds = close_wait_seconds
         self.clock_ns = clock_ns
         self.wall_clock_ms = wall_clock_ms or (lambda: int(time() * 1000))
@@ -480,8 +475,7 @@ class RealtimeVideoObserver:
                     active_tasks,
                     timeout=self.close_wait_seconds,
                 )
-            if self.observation_registry_factory is None and self.registry is not None:
-                await asyncio.to_thread(self._close_registry_adapter, self.registry)
+            await asyncio.to_thread(self.observation_service.close)
             if self.video_id is not None:
                 self.memory_store.remove_video(self.video_id)
             if self._owns_semantic_store:
@@ -506,31 +500,37 @@ class RealtimeVideoObserver:
             self._resource_release()
 
     async def _run_observation(self, item: _ObservationItem) -> None:
-        registry: ToolRegistry | None = None
         started_ns = self.clock_ns()
         observation_started_ns = started_ns
         self._update_pending_state()
         try:
-            registry = (
-                self.observation_registry_factory()
-                if self.observation_registry_factory is not None
-                else self.registry
-            )
-            if registry is None:
-                raise RuntimeError("realtime observation registry is unavailable")
-            result = await asyncio.to_thread(
-                self._execute_observation,
-                item.record,
-                registry,
+            video_id = item_video_id(item.record, self.video_id)
+            trace_context = self._trace_context(item.record)
+            outcome = await asyncio.to_thread(
+                self.observation_service.observe,
+                RealtimeVisualObservationRequest(
+                    user_id=self.user_id,
+                    session_id=self.session_id,
+                    video_id=video_id,
+                    frame_ref=item.record.uri,
+                    frame_sequence=item.record.sequence,
+                    frame_timestamp_ms=item.record.timestamp_ms,
+                ),
+                trace_context=trace_context,
             )
             observation_finished_ns = self.clock_ns()
+            self._record_observation_summary(
+                item.record,
+                trace_context=trace_context,
+                succeeded=outcome.succeeded,
+                error=outcome.error,
+            )
             if self.closed:
                 self._delete_record(item)
                 return
-            observation = _snapshot_publishable_observation(result)
+            observation = outcome.result if outcome.succeeded else None
             if observation is not None:
-                video_id = item_video_id(item.record, self.video_id)
-                trace_link = _vision_trace_link(result)
+                trace_link = outcome.trace_link
                 publish_outcome = await asyncio.to_thread(
                     self._publish_visual_semantic_record,
                     video_id,
@@ -540,7 +540,7 @@ class RealtimeVideoObserver:
                 )
                 semantic_published_ns = self.clock_ns()
                 diagnostics = self._observation_diagnostics(
-                    registry=registry,
+                    provider=outcome.diagnostics,
                     item=item,
                     dequeued_ns=started_ns,
                     observation_started_ns=observation_started_ns,
@@ -580,8 +580,14 @@ class RealtimeVideoObserver:
                 for record in evicted:
                     self._delete_record(record)
             else:
-                video_id = item_video_id(item.record, self.video_id)
-                error = _result_error(result)
+                error = outcome.error or {
+                    "code": "realtime_video_snapshot_not_publishable",
+                    "message": (
+                        "Video observation result is not publishable as a "
+                        "realtime video semantic snapshot."
+                    ),
+                    "recoverable": True,
+                }
                 self.semantic_store.record_failure(
                     video_id,
                     sequence=item.record.sequence,
@@ -592,7 +598,7 @@ class RealtimeVideoObserver:
                     item.record,
                     error,
                     diagnostics=self._observation_diagnostics(
-                        registry=registry,
+                        provider=outcome.diagnostics,
                         item=item,
                         dequeued_ns=started_ns,
                         observation_started_ns=observation_started_ns,
@@ -623,8 +629,6 @@ class RealtimeVideoObserver:
                 )
             self._delete_record(item)
         finally:
-            if self.observation_registry_factory is not None and registry is not None:
-                await asyncio.to_thread(self._close_registry_adapter, registry)
             self._first_terminal_snapshot.set()
             self._snapshot_updated.set()
 
@@ -731,80 +735,41 @@ class RealtimeVideoObserver:
             ),
         )
 
-    def _execute_observation(
+    def _trace_context(
         self,
         item: SemanticKeyframeRecord,
-        registry: ToolRegistry,
-    ) -> ToolResult:
-        video_id = item_video_id(item, self.video_id)
-        user_query = "简短描述当前单帧中直接可见的内容。"
-        request = UserRequest(
+    ) -> _BackgroundVisionTraceContext | None:
+        if self.trace_store is None:
+            return None
+        observation_id = uuid4().hex
+        return _BackgroundVisionTraceContext(
+            trace_store=self.trace_store,
+            trace_id=f"visual-trace-{observation_id}",
+            run_id=f"visual-observation-{item.sequence}-{observation_id}",
             user_id=self.user_id,
             session_id=self.session_id,
-            text="Describe one selected realtime video frame.",
-            video_ids=[video_id],
-            metadata={"source": "realtime_video_observer"},
         )
-        state = AgentState.from_request(request)
-        memory_context = None
-        tool_input: dict[str, Any] = {
-            "video_ref": video_id,
-            "frame_refs": [item.uri],
-            "user_query": user_query,
-            "metadata": {
-                "frame_id": item.frame_id,
-                "frame_sequence": item.sequence,
-                "frame_timestamp_ms": item.timestamp_ms,
-                "visual_context_compaction": {
-                    "status": "disabled_single_frame_text",
-                    "compacted": False,
-                },
-            },
-            "memory_context": memory_context,
-        }
-        decision = AssistantDecision(
-            type="tool_call",
-            tool_name=REALTIME_VIDEO_OBSERVE_TOOL_NAME,
-            tool_input={},
-            reason="Observe a selected realtime video keyframe.",
-        )
-        validation = self.validator.validate(
-            decision=decision,
-            registry=registry,
-            request=request,
-            state=state,
-        )
-        if not validation.accepted:
-            return ToolResult(
-                tool_name=REALTIME_VIDEO_OBSERVE_TOOL_NAME,
-                success=False,
-                error=f"{validation.code}: {validation.message}",
-            )
-        executor = ToolExecutor(
-            registry=registry,
-            context_metadata={"realtime_video_observation": True},
-        )
-        result = executor.run_tool(
-            state,
-            f"video-observation-{item.sequence}",
-            REALTIME_VIDEO_OBSERVE_TOOL_NAME,
-            {},
-            trace_store=self.trace_store,
-            trace_id=state.trace_id,
-            node_name="realtime_video_observer",
-            runtime_input=tool_input,
-        )
-        result_error = _result_error(result) if not result.success else None
+
+    def _record_observation_summary(
+        self,
+        item: SemanticKeyframeRecord,
+        *,
+        trace_context: _BackgroundVisionTraceContext | None,
+        succeeded: bool,
+        error: dict[str, Any] | None,
+    ) -> None:
+        if trace_context is None:
+            return
         try:
             append_observability_event(
-                self.trace_store,
-                trace_id=state.trace_id,
-                run_id=state.run_id,
+                trace_context.trace_store,
+                trace_id=trace_context.trace_id,
+                run_id=trace_context.run_id,
                 user_id=self.user_id,
                 session_id=self.session_id,
                 canonical_event="vision.observation.summary",
                 node_name="realtime_video_observer",
-                status="completed" if result.success else "failed",
+                status="completed" if succeeded else "failed",
                 attributes={
                     "trace_kind": "vision_observation",
                     "source": "realtime_video_observer",
@@ -812,13 +777,13 @@ class RealtimeVideoObserver:
                     "frame_sequence": item.sequence,
                 },
                 output_summary={
-                    "status": "succeeded" if result.success else "failed",
+                    "status": "succeeded" if succeeded else "failed",
                 },
                 error=(
                     None
-                    if result_error is None
+                    if error is None
                     else {
-                        "code": result_error.get(
+                        "code": error.get(
                             "code", "video_observation_failed"
                         ),
                         "message": "VLM observation failed.",
@@ -827,23 +792,11 @@ class RealtimeVideoObserver:
             )
         except Exception:
             pass
-        return result
-
-    @staticmethod
-    def _close_registry_adapter(registry: ToolRegistry) -> None:
-        try:
-            tool = registry.get(REALTIME_VIDEO_OBSERVE_TOOL_NAME)
-        except KeyError:
-            return
-        adapter = getattr(tool, "video_adapter", None)
-        close = getattr(adapter, "close", None)
-        if callable(close):
-            close()
 
     def _observation_diagnostics(
         self,
         *,
-        registry: ToolRegistry,
+        provider: dict[str, Any],
         item: _ObservationItem,
         dequeued_ns: int,
         observation_started_ns: int,
@@ -851,7 +804,6 @@ class RealtimeVideoObserver:
         succeeded: bool,
         semantic_published_ns: int | None = None,
     ) -> RealtimeVideoObservationDiagnostics:
-        provider = self._provider_diagnostics(registry)
         return RealtimeVideoObservationDiagnostics(
             h264_decode_latency_ms=item.h264_decode_latency_ms,
             keyframe_selection_latency_ms=item.keyframe_selection_latency_ms,
@@ -888,16 +840,6 @@ class RealtimeVideoObserver:
             response_latency_ms=provider.get("response_latency_ms"),
             result_parse_latency_ms=provider.get("result_parse_latency_ms"),
         )
-
-    @staticmethod
-    def _provider_diagnostics(registry: ToolRegistry) -> dict[str, Any]:
-        try:
-            tool = registry.get(REALTIME_VIDEO_OBSERVE_TOOL_NAME)
-        except KeyError:
-            return {}
-        adapter = getattr(tool, "video_adapter", None)
-        diagnostics = getattr(adapter, "last_observation_diagnostics", None)
-        return dict(diagnostics) if isinstance(diagnostics, dict) else {}
 
     def _retain_keyframe(self, frame: VideoFrame) -> SemanticKeyframeRecord:
         suffix = _safe_name(frame.video_id.removeprefix("agent-service-video-"))
@@ -1033,69 +975,6 @@ def item_video_id(item: SemanticKeyframeRecord, video_id: str | None) -> str:
     if video_id is None:
         raise RuntimeError("video id is not initialized")
     return video_id
-
-
-def _vision_trace_link(result: ToolResult) -> VisionInferenceTraceLink | None:
-    summary = result.trace_summary
-    if not isinstance(summary, dict):
-        return None
-    values = {
-        "trace_id": summary.get("source_vision_trace_id"),
-        "run_id": summary.get("source_vision_run_id"),
-        "span_id": summary.get("source_vlm_span_id"),
-    }
-    if not all(isinstance(value, str) and value for value in values.values()):
-        return None
-    return VisionInferenceTraceLink.model_validate(values)
-
-
-def _result_error(result: ToolResult) -> dict[str, Any]:
-    contract_errors = result.contract.errors if result.contract is not None else []
-    first = contract_errors[0].model_dump(mode="json") if contract_errors else None
-    if isinstance(first, dict):
-        return {
-            "code": str(first.get("code") or "video_observation_failed"),
-            "message": sanitize_error_message(first.get("message") or result.error or "Video observation failed."),
-            "recoverable": bool(first.get("recoverable", True)),
-        }
-    data_errors = result.data.get("errors") if isinstance(result.data, dict) else None
-    if isinstance(data_errors, list) and data_errors:
-        first_data_error = data_errors[0]
-        if isinstance(first_data_error, dict):
-            return {
-                "code": str(first_data_error.get("code") or "video_observation_failed"),
-                "message": sanitize_error_message(
-                    first_data_error.get("message") or result.error or "Video observation failed."
-                ),
-                "recoverable": bool(first_data_error.get("recoverable", True)),
-            }
-    if result.success:
-        return {
-            "code": "realtime_video_snapshot_not_publishable",
-            "message": "Video observation result is not publishable as a realtime video semantic snapshot.",
-            "recoverable": True,
-        }
-    return {
-        "code": "video_observation_failed",
-        "message": sanitize_error_message(result.error or "Video observation failed."),
-        "recoverable": True,
-    }
-
-
-def _snapshot_publishable_observation(result: ToolResult) -> VideoUnderstandingResult | None:
-    """Return a VLM result only when it may publish a rolling semantic snapshot."""
-
-    if not result.success or not isinstance(result.data, dict):
-        return None
-    try:
-        observation = VideoUnderstandingResult.model_validate(result.data)
-    except ValidationError:
-        return None
-    if observation.errors:
-        return None
-    if result.data.get("source") != "background_keyframe_observation":
-        return None
-    return observation
 
 
 def _build_visual_search_text(result: VideoUnderstandingResult) -> str:

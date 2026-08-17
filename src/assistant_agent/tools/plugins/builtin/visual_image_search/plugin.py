@@ -4,7 +4,7 @@ from assistant_agent.config import ProviderConfig
 from assistant_agent.tools.plugins.builtin.visual_image_search.backend import (
     create_visual_image_search_adapter,
 )
-from assistant_agent.tools.base import Tool
+from langchain_core.tools import BaseTool
 from assistant_agent.tools.plugins.builtin.visual_image_search.tool import (
     VisualImageSearchTool,
 )
@@ -20,7 +20,7 @@ class VisualImageSearchPlugin:
         plugin_version="1",
     )
 
-    def build_tools(self, context: ToolPluginContext) -> list[Tool]:
+    def build_tools(self, context: ToolPluginContext) -> list[BaseTool]:
         if not context.mock_mode and not visual_search_provider_ready(context.config):
             return []
         return [

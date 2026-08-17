@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 
-from assistant_agent.tools.base import Tool
+from langchain_core.tools import BaseTool
 from assistant_agent.tools.plugins.builtin.website_guidance.backend import (
     MockWebsiteGuidanceBackend,
     WebsiteGuidanceBackend,
@@ -48,7 +48,7 @@ class WebsiteGuidancePlugin:
             else real_backend_factory
         )
 
-    def build_tools(self, context: ToolPluginContext) -> list[Tool]:
+    def build_tools(self, context: ToolPluginContext) -> list[BaseTool]:
         config = context.config
         if not _website_guidance_enabled(
             config.website_guidance_enabled,
@@ -74,7 +74,7 @@ class WebsiteGuidancePlugin:
             return []
 
 
-def _tools_for(backend: WebsiteGuidanceBackend) -> list[Tool]:
+def _tools_for(backend: WebsiteGuidanceBackend) -> list[BaseTool]:
     """Construct both public projections over one shared backend and store."""
 
     return [WebPageInspectTool(backend=backend), WebPageExploreTool(backend=backend)]

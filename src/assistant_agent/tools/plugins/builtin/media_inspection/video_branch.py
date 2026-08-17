@@ -7,7 +7,6 @@ from typing import Any
 from assistant_agent.tools.capability_output import build_capability_output_contract
 from assistant_agent.media.vision.models import (
     VideoUnderstandingRequest,
-    VideoUnderstandingResult,
 )
 from assistant_agent.tools.models import ToolResult
 from assistant_agent.media.agent_service_entry import (
@@ -45,30 +44,17 @@ from assistant_agent.media.video.semantic_store_pool import (
     SessionVisualSemanticStorePool,
 )
 from assistant_agent.tools.ids import (
-    MEDIA_INSPECT_TOOL_NAME,
     VIDEO_UNDERSTANDING_CAPABILITY,
 )
-from assistant_agent.tools.base import ToolBase, ToolContext
+from assistant_agent.tools.base import ToolContext
 
 
 LIVE_VIEW_SNAPSHOT_WAIT_SECONDS = 10.0
 LIVE_VIEW_TEXT_TIMELINE_LIMIT = 8
 
 
-class VideoUnderstandingBranch(ToolBase):
+class VideoUnderstandingBranch:
     """Shared explicit-video and governed live-view execution branch."""
-
-    name = MEDIA_INSPECT_TOOL_NAME
-    description = (
-        "分析运行时绑定的当前实时视频或显式视频引用；返回场景、物体、动作、事件、"
-        "媒体文字和证据状态等结构化视觉结果。只接受受治理的视频引用，不接受内部帧"
-        "路径、原始媒体字节、本地文件路径或 Provider 参数。"
-    )
-    input_schema = VideoUnderstandingRequest
-    output_schema = VideoUnderstandingResult
-    category = "read"
-    repeat_policy = "distinct_inputs"
-    requires_media = ["video"]
 
     def __init__(
         self,
@@ -81,7 +67,6 @@ class VideoUnderstandingBranch(ToolBase):
         context_window_size: int = DEFAULT_VIDEO_CONTEXT_WINDOW_SIZE,
         wall_clock_ms: Callable[[], int] | None = None,
     ) -> None:
-        super().__init__()
         if client is None:
             self.adapter = adapter or create_video_understanding_adapter()
             self.client = AdapterVisionUnderstandingClient(video_adapter=self.adapter)
@@ -94,7 +79,7 @@ class VideoUnderstandingBranch(ToolBase):
         self.context_window_size = context_window_size
         self.wall_clock_ms = wall_clock_ms or (lambda: int(time() * 1000))
 
-    def _execute(
+    def execute(
         self, input: VideoUnderstandingRequest, context: ToolContext
     ) -> ToolResult:
         video_ref = input.video_ref or (input.video_ids[0] if input.video_ids else None)

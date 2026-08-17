@@ -7,7 +7,7 @@ from assistant_agent.tools.plugins.builtin.web_access.fetch_backend import (
 from assistant_agent.tools.plugins.builtin.web_access.search_backend import (
     create_web_search_adapter,
 )
-from assistant_agent.tools.base import Tool
+from langchain_core.tools import BaseTool
 from assistant_agent.tools.plugins.contracts import ToolPluginContext, ToolPluginDescriptor
 from assistant_agent.tools.plugins.builtin.web_access.fetch_tool import WebFetchTool
 from assistant_agent.tools.plugins.builtin.web_access.search_tool import WebSearchTool
@@ -16,7 +16,7 @@ from assistant_agent.tools.plugins.builtin.web_access.search_tool import WebSear
 class WebAccessToolPlugin:
     descriptor = ToolPluginDescriptor(plugin_id="web_access", plugin_version="1")
 
-    def build_tools(self, context: ToolPluginContext) -> list[Tool]:
+    def build_tools(self, context: ToolPluginContext) -> list[BaseTool]:
         if not context.mock_mode:
             return []
         return [

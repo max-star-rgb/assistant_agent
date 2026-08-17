@@ -1,6 +1,6 @@
 # LangGraph-native Assistant 运行与流式架构
 
-最后更新：2026-08-14
+最后更新：2026-08-17
 
 ## Authority contract
 
@@ -18,19 +18,21 @@
 生产 Assistant 只有一个 `AssistantRootGraph`：
 
 ```text
-START
+AssistantRootGraph
+  -> cancel_pending_memory_extractions
   -> memory_recall
   -> execution_router
-  -> fast_agent | planning_graph
-  -> memory_commit
+       fast     -> AssistantFastAgent --------+
+       planning -> AssistantPlanningGraph     |
+  -> enqueue_memory_extraction <--------------+
   -> END
 ```
 
-`execution_mode` 是严格输入字段，只允许 `fast|planning`。路由函数只读取结构化字段，不从用户文本、关键词、
-Tool 或 Memory 推断模式。父图不绑定 saver，由 LangGraph Agent Server 注入 checkpoint、thread、run、cancel、
-resume 与 Store 资源。
+`execution_mode` 是结构化输入字段，只允许 `fast|planning`；省略时按公开 input schema 默认使用 `fast`，以兼容
+Studio 的标准 messages-only run。路由函数不从用户文本、关键词、Tool 或 Memory 推断模式。父图不绑定 saver，
+由 LangGraph Agent Server 注入 checkpoint、thread、run、cancel、resume 与 Store 资源。
 
-fast 分支是 `create_agent` 编译出的 `AssistantFastAgent`，使用标准 `BaseChatModel`、`BaseTool`、`ToolRuntime`、
+fast 与 planning 直接作为父图节点装配。fast 分支是 `create_agent` 编译出的 `AssistantFastAgent`，使用标准 `BaseChatModel`、`BaseTool`、`ToolRuntime`、
 messages channel 和官方 middleware，不维护项目自建 assistant/tool loop。
 
 planning 分支是显式 `AssistantPlanningGraph`：planner 输出严格 `NativePlanProposal`，本地 admission 只校验节点
@@ -57,10 +59,12 @@ reducer。Provider/Tool client、Memory backend、投递 Store、身份对象和
 `AssistantTurnState` checkpoint 不迁移进新图；旧 assistant/thread 仅作只读历史或外围兼容，新图使用版本化
 assistant ID `assistant-native-v1`。
 
-Memory 重试、error handler 和失败后的 `Command(update=..., goto=...)` 均是 LangGraph 原生 node 扩展能力，
-不是项目自研降级层。正常 recall 通过静态 edge 进入 `execution_router`；重试耗尽后 handler 写入显式
-`memory_status=degraded` 并用 `Command` 回到同一 router。commit 失败也由 node error handler 用 `Command`
-结束当前图，不覆盖已生成的答案。项目只声明“Memory 是辅助能力，因此失败仍继续”这一产品结果。
+主图首先通过官方 Agent Server SDK 查询同 thread 的 pending runs，只对带
+`assistant_agent_run_kind=memory_extraction` metadata 的旧 Memory run 执行 `cancel(..., action="rollback")`；
+pending chat run 不受影响。Memory 重试、error handler 和失败后的 `Command(update=..., goto=...)` 均是 LangGraph 原生 node 扩展能力，
+不是项目自研降级层。chat run 的 recall 重试耗尽后 handler 写入显式 `memory_status=degraded` 并跳到
+`execution_router`；SDK 清理失败降级进入 recall，enqueue 失败只结束当前主图，均不阻塞回答。独立 Memory Graph 失败只影响后台 run。
+项目只声明“Memory 是辅助能力，因此失败仍继续”这一产品结果。
 
 ## 原生流与生命周期
 
@@ -75,8 +79,9 @@ Tool 触发原生 interrupt；恢复使用 Agent Server/LangGraph `Command(resum
 ## 已退役兼容边界
 
 旧 assistant loop、Graph app、通用 Runtime facade、Workflow host 与旧 checkpoint/Memory node bundle 已删除。
-`src/assistant_agent/runtime/` 只保留仍被 Tool、Provider、媒体、Context 或 durable task 使用的中立 DTO 与外围
-治理模块；它不拥有 Graph 生命周期。主动投递的中立 DTO/Store 位于 `assistant_agent.proactive_delivery`。
+`src/assistant_agent/runtime/` 只保留仍被 Tool、Provider、媒体、Context 或 durable task 使用的中立 DTO；
+Registry/Executor、产品事件投影与零消费者 Runtime DTO 已删除，它不拥有 Graph 生命周期。主动投递的中立
+DTO/Store 位于 `assistant_agent.proactive_delivery`。
 
 评测侧只保留直接调用本生产父图的 `NativeGraphEvaluationTarget` 基元。旧 Runtime/Workflow/Release Review
 runner 因绑定旧 state/evidence 合同而删除，后续行为评测必须基于标准 messages 与 native trace 重新建立。

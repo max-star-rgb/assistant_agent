@@ -35,7 +35,7 @@ class MCPToolRunner(Protocol):
 
 
 class MCPProxyTool:
-    """ToolRegistry-compatible proxy for one allowlisted MCP tool."""
+    """Provider-neutral proxy for one allowlisted MCP tool."""
 
     def __init__(
         self,

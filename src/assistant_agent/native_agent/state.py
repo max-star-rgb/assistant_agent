@@ -24,7 +24,15 @@ class AssistantRootInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     messages: list[AnyMessage]
-    execution_mode: ExecutionMode
+    execution_mode: ExecutionMode = "fast"
+
+
+class MemoryExtractionInput(BaseModel):
+    """Strict public input for an independent background Memory run."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    messages: list[AnyMessage]
 
 
 class FastAgentState(AgentState):
@@ -36,9 +44,9 @@ class FastAgentState(AgentState):
 
 
 class AssistantRootState(FastAgentState):
-    """Minimal state shared across the parent graph's two branches."""
+    """Minimal state shared across the parent graph's execution branches."""
 
-    execution_mode: Required[ExecutionMode]
+    execution_mode: NotRequired[ExecutionMode]
 
 
 class WorkerState(FastAgentState):
@@ -53,6 +61,7 @@ class PlanningState(AgentState):
     """Planning-only channels kept out of the fast branch."""
 
     memory_context: Required[tuple[str, ...]]
+    memory_status: Required[MemoryStatus]
     plan: NotRequired[NativePlanProposal]
     worker_results: NotRequired[Annotated[list[WorkerResult], operator.add]]
 
@@ -62,6 +71,7 @@ __all__ = [
     "AssistantRootState",
     "ExecutionMode",
     "FastAgentState",
+    "MemoryExtractionInput",
     "MemoryStatus",
     "PlanningState",
     "WorkerState",

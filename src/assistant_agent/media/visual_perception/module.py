@@ -38,10 +38,11 @@ from assistant_agent.media.vision.models import (
 )
 from assistant_agent.media.vision.vision_client import (
     VisionUnderstandingClient,
+    create_realtime_vision_understanding_client,
     create_vision_understanding_client,
 )
-from assistant_agent.tools.plugins.registry_factory import (
-    create_realtime_video_observation_registry,
+from assistant_agent.media.visual_perception.observation_service import (
+    RealtimeVisualObservationService,
 )
 
 
@@ -176,6 +177,10 @@ class VisualPerceptionModule:
         self._sessions: set[VisualPerceptionSession] = set()
         self._closed = False
 
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
     def open_session(
         self,
         *,
@@ -254,17 +259,14 @@ class VisualPerceptionModule:
             embedding_lease.release()
             semantic_lease.release()
 
+        observation_service = RealtimeVisualObservationService(
+            client=create_realtime_vision_understanding_client(self.config)
+        )
         try:
             return RealtimeVideoObserver(
                 user_id=user_id,
                 session_id=session_id,
-                registry=None,
-                observation_registry_factory=lambda: (
-                    create_realtime_video_observation_registry(
-                        self.config,
-                        realtime_video_memory_store=(self.realtime_video_memory_store),
-                    )
-                ),
+                observation_service=observation_service,
                 memory_store=self.realtime_video_memory_store,
                 semantic_store=semantic_lease.store,
                 embedding_coordinator=embedding_lease.coordinator,
@@ -274,6 +276,7 @@ class VisualPerceptionModule:
                 resource_release=release_resources,
             )
         except Exception:
+            observation_service.close()
             release_resources()
             raise
 
@@ -289,6 +292,6 @@ def get_visual_perception_module(
 
     global _default_module
     with _default_module_lock:
-        if _default_module is None:
+        if _default_module is None or _default_module.closed:
             _default_module = VisualPerceptionModule(config=config)
         return _default_module

@@ -2,7 +2,7 @@
 
 from assistant_agent.media.image_to_3d import ImageTo3DAdapter, ImageTo3DSettings
 from assistant_agent.runtime.generated_artifacts import GENERATED_ARTIFACT_DIR
-from assistant_agent.tools.base import Tool
+from langchain_core.tools import BaseTool
 from assistant_agent.tools.plugins.builtin.image_to_3d.tool import (
     ImageTo3DTool,
     MockImageTo3DAdapter,
@@ -13,7 +13,7 @@ from assistant_agent.tools.plugins.contracts import ToolPluginContext, ToolPlugi
 class ImageTo3DToolPlugin:
     descriptor = ToolPluginDescriptor(plugin_id="image_to_3d", plugin_version="1")
 
-    def build_tools(self, context: ToolPluginContext) -> list[Tool]:
+    def build_tools(self, context: ToolPluginContext) -> list[BaseTool]:
         if context.mock_mode:
             return [ImageTo3DTool(adapter=MockImageTo3DAdapter())]
         config = context.config

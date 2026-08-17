@@ -125,6 +125,7 @@ class ProviderConfig:
     mem0_identity_namespace: str = "assistant-agent"
     memory_backend: MemoryBackendName = "disabled"
     memory_commit_ledger_path: str = ".local/langgraph/memory_commits.sqlite3"
+    memory_extraction_delay_seconds: int = 1_800
     langmem_model: str | None = None
     conversation_history_backend: ConversationHistoryBackend = "memory"
     conversation_history_path: str = ".local/memory/conversation_history.jsonl"
@@ -241,20 +242,7 @@ class ProviderConfig:
     langgraph_checkpointer_backend: LangGraphCheckpointerBackend = "memory"
     langgraph_checkpoint_path: str | None = None
     max_tool_iterations: int = 8
-    max_control_tool_iterations: int = 3
-    max_plan_steps: int = 8
     durable_tasks_enabled: bool = False
-    durable_task_path: str = ".local/tasks/durable_tasks.sqlite3"
-    durable_notification_path: str = ".local/tasks/notifications.sqlite3"
-    durable_task_worker_enabled: bool = False
-    durable_notification_worker_enabled: bool = False
-    durable_task_lease_seconds: int = 30
-    durable_task_poll_seconds: float = 1.0
-    durable_task_max_seconds: int = 2_592_000
-    durable_workflow_max_quanta: int = 1_000
-    durable_workflows_enabled: bool = False
-    durable_workflow_path: str = ".local/workflows/workflows.sqlite3"
-    durable_workflow_artifact_path: str = ".local/workflows/artifacts"
 
     def __post_init__(self) -> None:
         self.validate_provider_mode()
@@ -266,6 +254,8 @@ class ProviderConfig:
             raise ValueError("Mem0 identity namespace must be non-empty")
         if not self.memory_commit_ledger_path.strip():
             raise ValueError("memory commit ledger path must be non-empty")
+        if self.memory_extraction_delay_seconds <= 0:
+            raise ValueError("memory extraction delay must be positive")
         if self.siglip2_cuda_device_id < 0:
             raise ValueError("siglip2 CUDA device id must be non-negative")
         if self.embedding_cuda_device_id < 0:
@@ -587,6 +577,10 @@ class ProviderConfig:
                 "MEMORY_COMMIT_LEDGER_PATH",
                 ".local/langgraph/memory_commits.sqlite3",
             ),
+            memory_extraction_delay_seconds=_int_env(
+                source.get("MEMORY_EXTRACTION_DELAY_SECONDS"),
+                1_800,
+            ),
             langmem_model=source.get("LANGMEM_MODEL"),
             conversation_history_backend=conversation_history_backend,
             conversation_history_path=conversation_history_path,
@@ -762,58 +756,6 @@ class ProviderConfig:
                 source.get("MULTIMODAL_AGENT_DURABLE_TASKS_ENABLED"),
                 False,
             ),
-            durable_task_path=(
-                source.get("MULTIMODAL_AGENT_DURABLE_TASK_PATH")
-                or ".local/tasks/durable_tasks.sqlite3"
-            ),
-            durable_notification_path=(
-                source.get("MULTIMODAL_AGENT_DURABLE_NOTIFICATION_PATH")
-                or ".local/tasks/notifications.sqlite3"
-            ),
-            durable_task_worker_enabled=_bool_env(
-                source.get("MULTIMODAL_AGENT_DURABLE_TASK_WORKER_ENABLED"),
-                False,
-            ),
-            durable_notification_worker_enabled=_bool_env(
-                source.get("MULTIMODAL_AGENT_DURABLE_NOTIFICATION_WORKER_ENABLED"),
-                False,
-            ),
-            durable_task_lease_seconds=max(
-                5,
-                _int_env(source.get("MULTIMODAL_AGENT_DURABLE_TASK_LEASE_SECONDS"), 30),
-            ),
-            durable_task_poll_seconds=max(
-                0.1,
-                _float_env(
-                    source.get("MULTIMODAL_AGENT_DURABLE_TASK_POLL_SECONDS"), 1.0
-                ),
-            ),
-            durable_task_max_seconds=max(
-                3_600,
-                _int_env(
-                    source.get("MULTIMODAL_AGENT_DURABLE_TASK_MAX_SECONDS"),
-                    2_592_000,
-                ),
-            ),
-            durable_workflow_max_quanta=max(
-                1,
-                _int_env(
-                    source.get("MULTIMODAL_AGENT_DURABLE_WORKFLOW_MAX_QUANTA"),
-                    1_000,
-                ),
-            ),
-            durable_workflows_enabled=_bool_env(
-                source.get("MULTIMODAL_AGENT_DURABLE_WORKFLOWS_ENABLED"),
-                False,
-            ),
-            durable_workflow_path=(
-                source.get("MULTIMODAL_AGENT_DURABLE_WORKFLOW_PATH")
-                or ".local/workflows/workflows.sqlite3"
-            ),
-            durable_workflow_artifact_path=(
-                source.get("MULTIMODAL_AGENT_DURABLE_WORKFLOW_ARTIFACT_PATH")
-                or ".local/workflows/artifacts"
-            ),
             openai_chat_base_url=source.get(
                 "OPENAI_CHAT_BASE_URL", "https://api.openai.com/v1"
             ),
@@ -966,11 +908,6 @@ class ProviderConfig:
             ),
             langgraph_checkpoint_path=source.get("LANGGRAPH_CHECKPOINT_PATH"),
             max_tool_iterations=_int_env(source.get("MAX_TOOL_ITERATIONS"), 8),
-            max_control_tool_iterations=_int_env(
-                source.get("MAX_CONTROL_TOOL_ITERATIONS"),
-                3,
-            ),
-            max_plan_steps=_int_env(source.get("MAX_PLAN_STEPS"), 8),
         )
         return config
 

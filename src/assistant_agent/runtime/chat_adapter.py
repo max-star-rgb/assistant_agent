@@ -20,14 +20,21 @@ from openai import (
 )
 from pydantic import BaseModel, Field
 
-from assistant_agent.config import ProviderConfig
 from assistant_agent.runtime.output_models import (
     NativeToolCall,
     openai_tool_call_to_native_tool_call,
 )
-from assistant_agent.providers.llm_events import LLMEvent, LLMEventAccumulator, LLMProviderError, LLMToolCallDelta
+from assistant_agent.providers.llm_events import (
+    LLMEvent,
+    LLMEventAccumulator,
+    LLMProviderError,
+    LLMToolCallDelta,
+)
 from assistant_agent.providers.specs import CHAT_PROVIDER_SPECS, ProviderCapabilities
-from assistant_agent.providers.provider_errors import ProviderAdapterError, build_provider_error
+from assistant_agent.providers.provider_errors import (
+    ProviderAdapterError,
+    build_provider_error,
+)
 from assistant_agent.providers.provider_http import without_unsupported_socks_proxy_env
 from assistant_agent.runtime.requests import AssistantMode
 
@@ -74,7 +81,9 @@ class ChatRequest(BaseModel):
     temperature: float = Field(default=0.2, ge=0.0, le=2.0)
     max_tokens: int = Field(default=512, ge=1)
     stream_callback: ChatStreamCallback | None = Field(default=None, exclude=True)
-    provider_request_callback: ProviderRequestCallback | None = Field(default=None, exclude=True)
+    provider_request_callback: ProviderRequestCallback | None = Field(
+        default=None, exclude=True
+    )
 
 
 class ChatProviderError(BaseModel):
@@ -108,7 +117,9 @@ class ProviderProtocolResponse(BaseModel):
     This deliberately excludes SDK envelopes, HTTP headers and hidden reasoning.
     """
 
-    schema_version: Literal["provider_protocol_response_v1"] = "provider_protocol_response_v1"
+    schema_version: Literal["provider_protocol_response_v1"] = (
+        "provider_protocol_response_v1"
+    )
     transport_mode: ProviderTransportMode
     content: str = ""
     tool_calls: list[ProviderProtocolToolCall] = Field(default_factory=list)
@@ -138,30 +149,13 @@ class ChatResult(BaseModel):
     latency_ms: int | None = Field(default=None, ge=0)
     errors: list[ChatProviderError] = Field(default_factory=list)
     output_ref: str | None = None
-    protocol_response: ProviderProtocolResponse | None = Field(default=None, exclude=True)
+    protocol_response: ProviderProtocolResponse | None = Field(
+        default=None, exclude=True
+    )
 
     @property
     def success(self) -> bool:
         return not self.errors
-
-
-ChatResultKind = Literal["error", "tool_call", "refusal", "truncated", "text", "empty"]
-
-
-def chat_result_kind(result: ChatResult) -> ChatResultKind:
-    """Derive a read-only diagnostic kind from the normalized Provider result."""
-
-    if result.errors:
-        return "error"
-    if result.tool_calls:
-        return "tool_call"
-    if result.refusal:
-        return "refusal"
-    if result.finish_reason == "length":
-        return "truncated"
-    if result.response_text.strip():
-        return "text"
-    return "empty"
 
 
 class ChatAdapter(Protocol):
@@ -169,75 +163,6 @@ class ChatAdapter(Protocol):
 
     def chat(self, request: ChatRequest) -> ChatResult:
         """Return a direct text response."""
-
-
-class AsyncStreamingChatAdapter(Protocol):
-    """Optional provider boundary for async LLM event streams."""
-
-    def stream_chat(self, request: ChatRequest) -> AsyncIterator[LLMEvent]:
-        """Return provider-neutral streaming events without replacing chat()."""
-
-
-def _mock_chat_response_text(request: ChatRequest) -> str:
-    context_note = ""
-    if request.memory_context:
-        context_note = f" 已参考 {len(request.memory_context)} 条记忆。"
-    return f"已收到你的请求：{request.user_query}。这是一个离线 mock direct_chat 回复。{context_note}".strip()
-
-
-def _mock_chat_usage(request: ChatRequest) -> dict[str, int]:
-    return {
-        "input_chars": len(request.user_query),
-        "output_chars": 35 + len(request.user_query),
-    }
-
-
-class MockChatAdapter:
-    """Deterministic local chat adapter used by default tests and runtime."""
-
-    provider = "mock"
-    model = "mock-direct-chat"
-
-    def chat(self, request: ChatRequest) -> ChatResult:
-        response_text = _mock_chat_response_text(request)
-        usage = _mock_chat_usage(request)
-        _emit_stream_delta(
-            request.stream_callback,
-            response_text,
-            provider=self.provider,
-            model=self.model,
-            token_streaming=False,
-            chunking_strategy="mock_full_text",
-        )
-        return ChatResult(
-            response_text=response_text,
-            provider=self.provider,
-            model=self.model,
-            usage=usage,
-            latency_ms=1,
-            output_ref="mock://chat/direct",
-        )
-
-    async def stream_chat(self, request: ChatRequest) -> AsyncIterator[LLMEvent]:
-        response_text = _mock_chat_response_text(request)
-        usage = _mock_chat_usage(request)
-        yield LLMEvent(
-            event_type="token_delta",
-            provider=self.provider,
-            model=self.model,
-            text=response_text,
-            metadata={
-                "token_streaming": False,
-                "chunking_strategy": "mock_full_text",
-            },
-        )
-        yield LLMEvent(
-            event_type="completed",
-            provider=self.provider,
-            model=self.model,
-            finish_reason="stop",
-            usage=usage,
-        )
 
 
 class UnconfiguredChatAdapter:
@@ -293,14 +218,14 @@ class OpenAICompatibleChatAdapter:
         self.timeout_seconds = timeout_seconds
         self.native_web_search = provider == "qwen" and native_web_search
         self.stream = True if self.native_web_search else stream
-        self.enable_thinking = (
-            False if self.native_web_search else enable_thinking
-        )
+        self.enable_thinking = False if self.native_web_search else enable_thinking
         self.capabilities = chat_capabilities_for_provider(provider)
         self._client = client
         if self._client is None and async_client is None:
             with without_unsupported_socks_proxy_env():
-                self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout_seconds)
+                self._client = OpenAI(
+                    api_key=api_key, base_url=base_url, timeout=timeout_seconds
+                )
         self._async_client = async_client
 
     def chat(self, request: ChatRequest) -> ChatResult:
@@ -380,7 +305,11 @@ class OpenAICompatibleChatAdapter:
         stream: Any | None = None
         try:
             stream_result = self._async_sdk_client().chat.completions.create(**payload)
-            stream = await stream_result if inspect.isawaitable(stream_result) else stream_result
+            stream = (
+                await stream_result
+                if inspect.isawaitable(stream_result)
+                else stream_result
+            )
             async for event in _openai_async_chat_stream_events(
                 stream,
                 provider=self.provider,
@@ -409,7 +338,10 @@ class OpenAICompatibleChatAdapter:
     def _extra_body(self, request: ChatRequest) -> dict[str, Any] | None:
         if self.provider != "qwen":
             return None
-        if self.native_web_search and request.provider_search_profile == "deep_research":
+        if (
+            self.native_web_search
+            and request.provider_search_profile == "deep_research"
+        ):
             return {
                 "enable_thinking": True,
                 "enable_search": True,
@@ -435,40 +367,6 @@ class OpenAICompatibleChatAdapter:
                 }
             )
         return extra_body or None
-
-
-def create_chat_adapter(config: ProviderConfig | None = None) -> ChatAdapter:
-    """Create the default chat adapter without initializing real provider clients."""
-
-    resolved = config or ProviderConfig.from_env()
-    settings = resolved.resolved_chat_provider()
-    missing = settings.missing_required_env()
-    if missing:
-        return UnconfiguredChatAdapter(resolved.chat_provider, ", ".join(missing))
-    if settings.provider == "qwen" and resolved.qwen_chat_api_protocol == "dashscope":
-        from assistant_agent.providers.dashscope_chat import DashScopeChatAdapter
-
-        return DashScopeChatAdapter(
-            provider=settings.provider,
-            api_key=settings.api_key or "",
-            base_url=settings.base_url or "",
-            model=settings.model or "",
-            timeout_seconds=resolved.chat_timeout_seconds,
-        )
-    if settings.adapter_kind == "openai_compatible":
-        return OpenAICompatibleChatAdapter(
-            provider=settings.provider,
-            api_key=settings.api_key or "",
-            base_url=settings.base_url or "",
-            model=settings.model or "",
-            timeout_seconds=resolved.chat_timeout_seconds,
-            stream=resolved.chat_stream,
-            enable_thinking=(
-                resolved.qwen_chat_enable_thinking if settings.provider == "qwen" else None
-            ),
-            native_web_search=settings.provider == "qwen",
-        )
-    return MockChatAdapter()
 
 
 def _build_chat_completions_payload(
@@ -548,31 +446,51 @@ def _parse_openai_chat_response(
 ) -> ChatResult:
     data = _to_plain_data(data)
     if not isinstance(data, dict):
-        raise ProviderAdapterError("provider_bad_response", "chat provider returned a non-object response")
+        raise ProviderAdapterError(
+            "provider_bad_response", "chat provider returned a non-object response"
+        )
     choices = data.get("choices")
     if not isinstance(choices, list) or not choices:
-        raise ProviderAdapterError("provider_bad_response", "chat provider returned no choices")
+        raise ProviderAdapterError(
+            "provider_bad_response", "chat provider returned no choices"
+        )
     choice = choices[0]
     if not isinstance(choice, dict):
-        raise ProviderAdapterError("provider_bad_response", "chat provider returned an invalid choice")
+        raise ProviderAdapterError(
+            "provider_bad_response", "chat provider returned an invalid choice"
+        )
     message = choice.get("message")
     if not isinstance(message, dict):
-        raise ProviderAdapterError("provider_bad_response", "chat provider returned an invalid message")
+        raise ProviderAdapterError(
+            "provider_bad_response", "chat provider returned an invalid message"
+        )
     content = message.get("content") or ""
     if isinstance(content, list):
-        content = "\n".join(part.get("text", "") for part in content if isinstance(part, dict))
+        content = "\n".join(
+            part.get("text", "") for part in content if isinstance(part, dict)
+        )
     protocol_tool_calls = _provider_protocol_tool_calls(message.get("tool_calls"))
     tool_calls = _parse_openai_tool_calls(message.get("tool_calls"))
     reasoning_content = message.get("reasoning_content")
-    refusal = message.get("refusal") if isinstance(message.get("refusal"), str) else None
-    if (not isinstance(content, str) or not content.strip()) and not tool_calls and not refusal:
-        raise ProviderAdapterError("provider_empty_response", "chat provider returned empty content")
+    refusal = (
+        message.get("refusal") if isinstance(message.get("refusal"), str) else None
+    )
+    if (
+        (not isinstance(content, str) or not content.strip())
+        and not tool_calls
+        and not refusal
+    ):
+        raise ProviderAdapterError(
+            "provider_empty_response", "chat provider returned empty content"
+        )
     usage = data.get("usage")
     finish_reason = choice.get("finish_reason")
     return ChatResult(
         response_text=content.strip() if isinstance(content, str) else "",
         tool_calls=tool_calls,
-        reasoning_content=reasoning_content if isinstance(reasoning_content, str) and reasoning_content else None,
+        reasoning_content=reasoning_content
+        if isinstance(reasoning_content, str) and reasoning_content
+        else None,
         finish_reason=str(finish_reason) if finish_reason is not None else None,
         refusal=refusal,
         provider=provider,
@@ -634,7 +552,9 @@ def _parse_openai_chat_stream(
     tool_calls = accumulator.finalize_tool_calls(provider_format="openai_compatible")
     reasoning_content = "".join(state.reasoning_content_parts)
     if not content.strip() and not tool_calls and not refusal:
-        raise ProviderAdapterError("provider_empty_response", "chat provider returned empty content")
+        raise ProviderAdapterError(
+            "provider_empty_response", "chat provider returned empty content"
+        )
     return ChatResult(
         response_text=content.strip(),
         tool_calls=tool_calls,
@@ -702,17 +622,25 @@ def _openai_chat_chunk_events(
                 provider=provider,
                 model=state.response_model,
                 text=content,
-                metadata={"token_streaming": True, "chunking_strategy": "provider_token_delta"},
+                metadata={
+                    "token_streaming": True,
+                    "chunking_strategy": "provider_token_delta",
+                },
             )
         elif isinstance(content, list):
-            chunk_text = "\n".join(part.get("text", "") for part in content if isinstance(part, dict))
+            chunk_text = "\n".join(
+                part.get("text", "") for part in content if isinstance(part, dict)
+            )
             if chunk_text:
                 yield LLMEvent(
                     event_type="token_delta",
                     provider=provider,
                     model=state.response_model,
                     text=chunk_text,
-                    metadata={"token_streaming": True, "chunking_strategy": "provider_token_delta"},
+                    metadata={
+                        "token_streaming": True,
+                        "chunking_strategy": "provider_token_delta",
+                    },
                 )
         refusal = delta.get("refusal")
         if isinstance(refusal, str):
@@ -733,7 +661,9 @@ def _openai_chat_chunk_events(
         )
 
 
-def _openai_stream_completed_event(*, provider: str, state: _OpenAIStreamState) -> LLMEvent:
+def _openai_stream_completed_event(
+    *, provider: str, state: _OpenAIStreamState
+) -> LLMEvent:
     metadata: dict[str, Any] = {}
     refusal_text = "".join(state.refusal_parts)
     if refusal_text:
@@ -748,7 +678,9 @@ def _openai_stream_completed_event(*, provider: str, state: _OpenAIStreamState) 
     )
 
 
-def _openai_chat_stream_events(stream: Any, *, provider: str, model: str) -> Iterator[LLMEvent]:
+def _openai_chat_stream_events(
+    stream: Any, *, provider: str, model: str
+) -> Iterator[LLMEvent]:
     """Translate OpenAI-compatible stream chunks into provider-neutral events."""
 
     state = _OpenAIStreamState(response_model=model)
@@ -816,13 +748,17 @@ def _provider_protocol_tool_calls(value: Any) -> list[ProviderProtocolToolCall]:
     for item in value:
         if not isinstance(item, dict):
             continue
-        function = item.get("function") if isinstance(item.get("function"), dict) else {}
+        function = (
+            item.get("function") if isinstance(item.get("function"), dict) else {}
+        )
         name = function.get("name") or item.get("name")
         if not isinstance(name, str) or not name:
             continue
         raw_arguments = function.get("arguments", item.get("arguments", ""))
         if not isinstance(raw_arguments, str):
-            raw_arguments = json.dumps(raw_arguments, ensure_ascii=False, separators=(",", ":"))
+            raw_arguments = json.dumps(
+                raw_arguments, ensure_ascii=False, separators=(",", ":")
+            )
         calls.append(
             ProviderProtocolToolCall(
                 id=str(item["id"]) if item.get("id") is not None else None,
@@ -895,7 +831,9 @@ def _to_plain_data(value: Any) -> Any:
     return value
 
 
-def _chat_error(provider: str, code: str, message: object, *, recoverable: bool | None = None) -> ChatResult:
+def _chat_error(
+    provider: str, code: str, message: object, *, recoverable: bool | None = None
+) -> ChatResult:
     error = build_provider_error(
         code,
         message,
@@ -917,7 +855,9 @@ def _chat_error(provider: str, code: str, message: object, *, recoverable: bool 
     )
 
 
-def _llm_error_event_from_exception(provider: str, model: str | None, exc: Exception) -> LLMEvent:
+def _llm_error_event_from_exception(
+    provider: str, model: str | None, exc: Exception
+) -> LLMEvent:
     result = _chat_error_from_exception(provider, exc)
     error = (
         result.errors[0]
@@ -977,9 +917,13 @@ def _chat_error_from_exception(provider: str, exc: Exception) -> ChatResult:
     if isinstance(exc, (AuthenticationError, PermissionDeniedError)):
         return _chat_error(provider, "provider_auth_failed", str(exc))
     if isinstance(exc, RateLimitError):
-        return _chat_error(provider, "provider_rate_limited", str(exc), recoverable=True)
+        return _chat_error(
+            provider, "provider_rate_limited", str(exc), recoverable=True
+        )
     if isinstance(exc, APIConnectionError):
-        return _chat_error(provider, "provider_network_error", str(exc), recoverable=True)
+        return _chat_error(
+            provider, "provider_network_error", str(exc), recoverable=True
+        )
     if isinstance(exc, APIStatusError):
         return _chat_error(provider, _api_status_error_code(exc), str(exc))
     if isinstance(exc, OpenAIError):

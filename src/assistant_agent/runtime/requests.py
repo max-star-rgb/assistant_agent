@@ -46,17 +46,6 @@ def resolve_response_style(request: UserRequest) -> ResponseStyle:
     return "conversation"
 
 
-def normalize_task_execution_mode(
-    request: UserRequest,
-    *,
-    durable_tasks_enabled: bool,
-) -> UserRequest:
-    """Resolve the effective task mode without changing closed-flag behavior."""
-
-    _ = durable_tasks_enabled
-    return request
-
-
 class AgentResponse(BaseModel):
     """Structured response produced by the agent."""
 

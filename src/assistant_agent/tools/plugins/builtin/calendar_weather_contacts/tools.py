@@ -66,7 +66,7 @@ class CalendarSearchTool(ToolBase):
 
 
 class CalendarCreateTool(ToolBase):
-    """Create calendar events through the governed ToolExecutor path."""
+    """Create calendar events through the native ToolNode path."""
 
     name = CALENDAR_CREATE_TOOL_NAME
     description = (

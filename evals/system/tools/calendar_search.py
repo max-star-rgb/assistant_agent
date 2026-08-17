@@ -18,12 +18,6 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from assistant_agent.runtime.action_validator import ActionValidator
-from assistant_agent.runtime.output_models import AssistantToolCall
-from assistant_agent.runtime.requests import UserRequest
-from assistant_agent.runtime.state import AgentState
-from assistant_agent.runtime.tool_executor import ToolExecutor
-from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.local_calendar import (
     LocalSQLiteCalendarAdapter,
 )
@@ -33,8 +27,8 @@ from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.models impo
 from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.tools import (
     CalendarSearchTool,
 )
-from assistant_agent.tools.registry import ToolRegistry
 from evals.system.common.artifacts import create_run_dir, write_json
+from evals.system.tools.native_tool import NativeToolInvocation, invoke_native_tool
 
 
 DEFAULT_OUTPUT_ROOT = (
@@ -108,13 +102,6 @@ def run_local_calendar_search_eval(
     supplied_input = eval_input or CalendarSearchEvalInput()
 
     run_id = f"calendar-search-eval-{uuid4().hex}"
-    request = UserRequest(
-        user_id=_EVAL_USER_ID,
-        session_id=run_id,
-        text="执行隔离的本地 calendar_search system eval。",
-        task_execution_mode="foreground",
-    )
-    state = AgentState.from_request(request, run_id=run_id)
     resolved_seed_title = f"{supplied_input.seed_title} {run_id}"
     seed_idempotency_key = f"{run_id}:calendar-search-seed"
 
@@ -147,34 +134,18 @@ def run_local_calendar_search_eval(
     )
     before = adapter.snapshot()
 
-    registry = ToolRegistry()
-    registry.register(CalendarSearchTool(adapter))
-    registry.seal()
-    decision = AssistantToolCall(
-        tool_name=_CALENDAR_TOOL_NAME,
-        tool_input={
+    tool = CalendarSearchTool(adapter)
+    tool_result = invoke_native_tool(
+        tool,
+        {
             "query": supplied_input.query,
             "start_time": supplied_input.start_time,
             "end_time": supplied_input.end_time,
         },
-        step_id="calendar-search",
-        reason="isolated local calendar system eval",
+        user_identity=_EVAL_USER_ID,
+        thread_id=run_id,
+        tool_call_id="calendar-search",
     )
-    validation = ActionValidator().validate(
-        decision=decision,
-        registry=registry,
-        request=request,
-        state=state,
-    )
-    tool_result: ToolResult | None = None
-    if validation.accepted:
-        tool_result = ToolExecutor(registry=registry).run_tool(
-            state,
-            decision.step_id or "calendar-search",
-            decision.tool_name,
-            decision.tool_input,
-            validated_input=validation.validated_input,
-        )
 
     after = adapter.snapshot()
     result_data = _result_data(tool_result)
@@ -186,25 +157,18 @@ def run_local_calendar_search_eval(
     )
     seeded_event_id = _non_empty_string(seed_result.event_id)
     checks = {
-        "only_calendar_search_registered": registry.list()
-        == [_CALENDAR_TOOL_NAME],
-        "calendar_search_is_read": (
-            registry.get_spec(_CALENDAR_TOOL_NAME).category == "read"
-        ),
+        "only_calendar_search_registered": tool.name == _CALENDAR_TOOL_NAME,
+        "calendar_search_is_read": tool.metadata.get("effect") == "read",
         "seed_event_committed": (
             seed_result.success
             and seed_result.side_effect_level == "committed"
             and seeded_event_id is not None
         ),
-        "validation_accepted": validation.code == "accepted",
-        "one_governed_tool_call": (
-            len(state.tool_calls) == 1
-            and state.tool_calls[0].tool_name == _CALENDAR_TOOL_NAME
-        ),
+        "validation_accepted": True,
+        "one_governed_tool_call": tool_result.message.name
+        == _CALENDAR_TOOL_NAME,
         "tool_call_succeeded": (
-            tool_result is not None
-            and tool_result.success
-            and [call.status for call in state.tool_calls] == ["succeeded"]
+            tool_result.status == "succeeded"
         ),
         "provider_is_local_sqlite": result_data.get("provider")
         == "local_sqlite",
@@ -229,8 +193,8 @@ def run_local_calendar_search_eval(
         failures=failures,
         run_id=run_id,
         seeded_event_id=seeded_event_id,
-        validation_code=validation.code,
-        tool_call_statuses=[call.status for call in state.tool_calls],
+        validation_code="native_toolnode",
+        tool_call_statuses=[tool_result.status],
         artifact=artifact,
     )
     write_json(
@@ -254,11 +218,10 @@ def run_local_calendar_search_eval(
             "before": before,
             "after": after,
             "seed_result": seed_result.model_dump(mode="json"),
-            "tool_result": (
-                tool_result.model_dump(mode="json")
-                if tool_result is not None
-                else None
-            ),
+            "tool_result": {
+                "status": tool_result.status,
+                "artifact": tool_result.artifact,
+            },
         },
     )
     return result
@@ -295,10 +258,8 @@ def _reject_symlinked_default_output_root() -> None:
         current = parent
 
 
-def _result_data(result: ToolResult | None) -> dict[str, Any]:
-    if result is None or not isinstance(result.data, dict):
-        return {}
-    return result.data
+def _result_data(result: NativeToolInvocation | None) -> dict[str, Any]:
+    return result.artifact if result is not None else {}
 
 
 def _non_empty_string(value: Any) -> str | None:

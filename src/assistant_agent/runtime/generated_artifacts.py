@@ -11,9 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-from assistant_agent.tools.plugins.builtin.image_generation.models import ImageGenerationResult
+from assistant_agent.tools.plugins.builtin.image_generation.models import (
+    ImageGenerationResult,
+)
 from assistant_agent.providers.provider_errors import ProviderAdapterError
-from assistant_agent.runtime.requests import AgentResponse
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -147,75 +148,6 @@ def generated_artifact_payload(
     )
 
 
-def generated_artifact_public_url(
-    output_ref: str,
-    *,
-    base_url: str | None,
-) -> str | None:
-    """Project one managed artifact reference onto a trusted HTTP origin."""
-
-    if not base_url:
-        return None
-    parsed_ref = urlparse(output_ref)
-    prefix = GENERATED_ARTIFACT_PUBLIC_PREFIX.rstrip("/") + "/"
-    filename = parsed_ref.path.removeprefix(prefix)
-    if (
-        parsed_ref.scheme
-        or parsed_ref.netloc
-        or parsed_ref.query
-        or parsed_ref.fragment
-        or not parsed_ref.path.startswith(prefix)
-        or not filename
-        or Path(filename).name != filename
-    ):
-        return None
-
-    normalized_base = base_url.strip()
-    parsed_base = urlparse(normalized_base)
-    if (
-        parsed_base.scheme not in {"http", "https"}
-        or not parsed_base.netloc
-        or parsed_base.username is not None
-        or parsed_base.password is not None
-        or parsed_base.query
-        or parsed_base.fragment
-        or parsed_base.path not in {"", "/"}
-    ):
-        return None
-    return f"{normalized_base.rstrip('/')}{parsed_ref.path}"
-
-
-def with_generated_artifact_delivery(
-    response: AgentResponse,
-    *,
-    base_url: str | None,
-) -> AgentResponse:
-    """Attach deterministic public URLs without changing internal output refs."""
-
-    urls = list(
-        dict.fromkeys(
-            url
-            for output_ref in response.output_refs[:MAX_DELIVERED_IMAGE_COUNT]
-            if (
-                url := generated_artifact_public_url(
-                    output_ref,
-                    base_url=base_url,
-                )
-            )
-        )
-    )
-    if not urls:
-        return response
-
-    data = dict(response.data or {})
-    data["artifact_urls"] = urls
-    missing_urls = [url for url in urls if url not in response.message]
-    message = response.message
-    if missing_urls:
-        message = f"{message.rstrip()}\n\n图片链接：\n" + "\n".join(missing_urls)
-    return response.model_copy(update={"message": message, "data": data})
-
-
 def store_remote_artifact(
     url: str,
     *,
@@ -227,23 +159,32 @@ def store_remote_artifact(
     """Download one remote artifact into local storage and return its public URL."""
 
     artifact_dir.mkdir(parents=True, exist_ok=True)
-    request = urllib.request.Request(url, headers={"User-Agent": "multimodal-agent-artifact-fetcher/1.0"})
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "multimodal-agent-artifact-fetcher/1.0"}
+    )
     try:
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             content_type = response.headers.get("Content-Type", "")
             payload = response.read(MAX_ARTIFACT_BYTES + 1)
     except TimeoutError as exc:
-        raise ProviderAdapterError("provider_timeout", "generated image download timed out") from exc
+        raise ProviderAdapterError(
+            "provider_timeout", "generated image download timed out"
+        ) from exc
     except urllib.error.HTTPError as exc:
         raise ProviderAdapterError(
             "provider_bad_response",
             f"generated image download failed: HTTP {exc.code}",
         ) from exc
     except urllib.error.URLError as exc:
-        raise ProviderAdapterError("provider_unavailable", f"generated image download failed: {exc.reason}") from exc
+        raise ProviderAdapterError(
+            "provider_unavailable", f"generated image download failed: {exc.reason}"
+        ) from exc
 
     if len(payload) > MAX_ARTIFACT_BYTES:
-        raise ProviderAdapterError("provider_bad_response", "generated image exceeded local artifact size limit")
+        raise ProviderAdapterError(
+            "provider_bad_response",
+            "generated image exceeded local artifact size limit",
+        )
     extension = _extension_from_url_or_content_type(url, content_type)
     name = hashlib.sha256(f"{filename_seed}:{url}".encode("utf-8")).hexdigest()[:24]
     path = artifact_dir / f"{name}{extension}"

@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 
-from assistant_agent.tools.base import Tool
+from langchain_core.tools import BaseTool
 from assistant_agent.tools.plugins.builtin.lodging.tool import LodgingSearchTool
 from assistant_agent.tools.plugins.builtin.lodging.backend import (
     FlyAILodgingSearchAdapter,
@@ -20,9 +20,9 @@ from assistant_agent.tools.plugins.contracts import (
 class LodgingToolPlugin:
     descriptor = ToolPluginDescriptor(plugin_id="lodging", plugin_version="1")
 
-    def build_tools(self, context: ToolPluginContext) -> list[Tool]:
+    def build_tools(self, context: ToolPluginContext) -> list[BaseTool]:
         if context.mock_mode:
-            tools: list[Tool] = [LodgingSearchTool()]
+            tools: list[BaseTool] = [LodgingSearchTool()]
         elif context.config.lodging_provider == "flyai" and _is_executable_file(
             context.config.flyai_cli_path
         ) and context.config.flyai_api_key:

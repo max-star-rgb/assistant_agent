@@ -9,7 +9,7 @@ from assistant_agent.tools.ids import (
     CALENDAR_SEARCH_TOOL_NAME,
     CONTACTS_SEARCH_TOOL_NAME,
 )
-from assistant_agent.tools.base import Tool
+from langchain_core.tools import BaseTool
 from assistant_agent.tools.plugins.contracts import ToolPluginContext, ToolPluginDescriptor
 from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.tools import (
     CalendarCreateTool,
@@ -30,7 +30,7 @@ class CalendarContactsPlugin:
         plugin_version="1",
     )
 
-    def build_tools(self, context: ToolPluginContext) -> list[Tool]:
+    def build_tools(self, context: ToolPluginContext) -> list[BaseTool]:
         tool_names = configured_calendar_contacts_tools(context.mcp_server_configs)
         if context.calendar_adapter is not None or not context.mock_mode:
             tool_names.update(
@@ -43,7 +43,7 @@ class CalendarContactsPlugin:
             mcp_server_configs=context.mcp_server_configs,
             mcp_runner=context.mcp_runner,
         )
-        tools: list[Tool] = []
+        tools: list[BaseTool] = []
         calendar_adapter = (
             context.calendar_adapter
             or (

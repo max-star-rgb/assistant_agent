@@ -5,7 +5,7 @@ from assistant_agent.tools.plugins.builtin.shopping.backend import (
     create_shopping_compare_adapter,
     create_shopping_search_adapter,
 )
-from assistant_agent.tools.base import Tool
+from langchain_core.tools import BaseTool
 from assistant_agent.tools.plugins.contracts import ToolPluginContext, ToolPluginDescriptor
 from assistant_agent.tools.plugins.builtin.shopping.tool import ShoppingSearchTool
 
@@ -13,7 +13,7 @@ from assistant_agent.tools.plugins.builtin.shopping.tool import ShoppingSearchTo
 class ShoppingToolPlugin:
     descriptor = ToolPluginDescriptor(plugin_id="shopping", plugin_version="1")
 
-    def build_tools(self, context: ToolPluginContext) -> list[Tool]:
+    def build_tools(self, context: ToolPluginContext) -> list[BaseTool]:
         if context.mock_mode or not shopping_provider_ready(context.config):
             return []
         search_adapter = create_shopping_search_adapter(context.config)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 import json
-from typing import Any, ClassVar, Literal, Protocol
+from typing import Any, ClassVar, Literal
 
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool, ToolException
@@ -32,7 +32,7 @@ from assistant_agent.tools.models import (
 
 
 class ToolInputValidationError(ValueError):
-    """Stable tool-owned rejection raised before ToolExecutor runs the tool."""
+    """Stable tool-owned rejection raised before a Tool runs."""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -67,29 +67,6 @@ class ToolContext(BaseModel):
             return bool(is_set())
         cancelled = getattr(self.cancel_token, "cancelled", None)
         return bool(cancelled) if isinstance(cancelled, bool) else False
-
-
-class Tool(Protocol):
-    """Common tool interface."""
-
-    name: str
-    description: str
-    input_schema: type[BaseModel]
-    output_schema: type[BaseModel]
-    category: ToolCategory
-    requires_media: list[ToolMediaRequirement]
-    media_scope: ToolMediaScope
-    repeat_policy: ToolRepeatPolicy
-    llm_hidden_input_fields: tuple[str, ...]
-    runtime_input_bindings: tuple[Any, ...]
-    trace_content_policy: Literal["default", "metadata_only"]
-
-    def run(
-        self,
-        input: BaseModel | dict[str, Any],
-        context: ToolContext | None = None,
-    ) -> ToolResult:
-        """Execute the tool and return a structured result."""
 
 
 class ToolBase(BaseTool):
@@ -130,15 +107,6 @@ class ToolBase(BaseTool):
             response_format="content_and_artifact",
             metadata={"effect": self.category, "source": "builtin"},
         )
-
-    def run_legacy(
-        self,
-        input: BaseModel | dict[str, Any],
-        context: ToolContext | None = None,
-    ) -> ToolResult:
-        """Serve the shrinking registry-based compatibility surface."""
-
-        return self._execute_governed(input, context)
 
     def _execute_governed(
         self,

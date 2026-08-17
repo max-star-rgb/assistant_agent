@@ -4,7 +4,7 @@ from assistant_agent.skills.loading import (
     default_repo_root,
     load_repo_skill_descriptors,
 )
-from assistant_agent.tools.base import Tool
+from langchain_core.tools import BaseTool
 from assistant_agent.tools.plugins.builtin.skill_loading.tool import (
     LoadSkillReferenceTool,
     LoadSkillTool,
@@ -21,7 +21,7 @@ class SkillLoadingPlugin:
         plugin_version="1",
     )
 
-    def build_tools(self, context: ToolPluginContext) -> list[Tool]:
+    def build_tools(self, context: ToolPluginContext) -> list[BaseTool]:
         root = default_repo_root()
         if not load_repo_skill_descriptors(root).descriptors:
             return []

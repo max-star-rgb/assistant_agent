@@ -29,7 +29,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = ArgumentParser(
         description=(
             "Execute calendar_search against an isolated seeded real SQLite "
-            "calendar through ActionValidator and ToolExecutor."
+            "calendar through LangGraph ToolNode."
         )
     )
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
@@ -90,12 +90,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "seed_title": f"{eval_input.seed_title} <run_id>",
                     },
                     "setup": "seed one synthetic event through the local SQLite adapter",
-                    "governance_chain": [
-                        "ActionValidator",
-                        "ToolExecutor",
-                        "ToolRegistry",
-                        "CalendarSearchTool",
-                    ],
+                    "governance_chain": ["ToolNode", "CalendarSearchTool"],
                 },
                 ensure_ascii=False,
                 indent=2,

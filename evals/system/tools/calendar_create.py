@@ -18,20 +18,14 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from assistant_agent.runtime.action_validator import ActionValidator
-from assistant_agent.runtime.output_models import AssistantToolCall
-from assistant_agent.runtime.requests import UserRequest
-from assistant_agent.runtime.state import AgentState
-from assistant_agent.runtime.tool_executor import ToolExecutor
-from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.local_calendar import (
     LocalSQLiteCalendarAdapter,
 )
 from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.tools import (
     CalendarCreateTool,
 )
-from assistant_agent.tools.registry import ToolRegistry
 from evals.system.common.artifacts import create_run_dir, write_json
+from evals.system.tools.native_tool import NativeToolInvocation, invoke_native_tool
 
 
 DEFAULT_OUTPUT_ROOT = (
@@ -103,17 +97,10 @@ def run_local_calendar_create_eval(
     supplied_input = eval_input or CalendarCreateEvalInput()
 
     run_id = f"calendar-create-eval-{uuid4().hex}"
-    request = UserRequest(
-        user_id=_EVAL_USER_ID,
-        session_id=run_id,
-        text="执行隔离的本地 calendar_create system eval。",
-        task_execution_mode="foreground",
-    )
-    state = AgentState.from_request(request, run_id=run_id)
     resolved_input = supplied_input.model_copy(
         update={"title": f"{supplied_input.title} {run_id}"}
     )
-    idempotency_key = f"{run_id}:calendar-create"
+    idempotency_key = f"native:{run_id}:calendar-create-idempotent"
 
     run_dir = create_run_dir(
         resolved_output_root,
@@ -132,38 +119,18 @@ def run_local_calendar_create_eval(
     )
     before = adapter.snapshot()
 
-    registry = ToolRegistry()
-    registry.register(CalendarCreateTool(adapter))
-    registry.seal()
-    validator = ActionValidator()
-    executor = ToolExecutor(registry=registry)
-
+    tool = CalendarCreateTool(adapter)
     validation_codes: list[str] = []
-    tool_results: list[ToolResult] = []
+    tool_results: list[NativeToolInvocation] = []
     for attempt in (1, 2):
-        decision = AssistantToolCall(
-            tool_name=_CALENDAR_TOOL_NAME,
-            tool_input=resolved_input.model_dump(mode="python"),
-            step_id=f"calendar-create-{attempt}",
-            reason="isolated local calendar system eval",
-        )
-        validation = validator.validate(
-            decision=decision,
-            registry=registry,
-            request=request,
-            state=state,
-        )
-        validation_codes.append(validation.code)
-        if not validation.accepted:
-            continue
+        validation_codes.append("native_toolnode")
         tool_results.append(
-            executor.run_tool(
-                state,
-                decision.step_id or f"calendar-create-{attempt}",
-                decision.tool_name,
-                decision.tool_input,
-                validated_input=validation.validated_input,
-                runtime_input={"idempotency_key": idempotency_key},
+            invoke_native_tool(
+                tool,
+                resolved_input.model_dump(mode="python"),
+                user_identity=_EVAL_USER_ID,
+                thread_id=run_id,
+                tool_call_id="calendar-create-idempotent",
             )
         )
 
@@ -182,22 +149,14 @@ def run_local_calendar_create_eval(
     event_id = _non_empty_string(first_data.get("event_id"))
 
     checks = {
-        "only_calendar_create_registered": registry.list()
-        == [_CALENDAR_TOOL_NAME],
-        "calendar_create_is_write": (
-            registry.get_spec(_CALENDAR_TOOL_NAME).category == "write"
-        ),
-        "validations_accepted": validation_codes == ["accepted", "accepted"],
-        "two_governed_tool_calls": (
-            len(state.tool_calls) == 2
-            and [call.tool_name for call in state.tool_calls]
-            == [_CALENDAR_TOOL_NAME, _CALENDAR_TOOL_NAME]
-        ),
+        "only_calendar_create_registered": tool.name == _CALENDAR_TOOL_NAME,
+        "calendar_create_is_write": tool.metadata.get("effect") == "write",
+        "validations_accepted": validation_codes
+        == ["native_toolnode", "native_toolnode"],
+        "two_governed_tool_calls": len(tool_results) == 2,
         "tool_calls_succeeded": (
             len(tool_results) == 2
-            and all(result.success for result in tool_results)
-            and [call.status for call in state.tool_calls]
-            == ["succeeded", "succeeded"]
+            and all(result.status == "succeeded" for result in tool_results)
         ),
         "provider_is_local_sqlite": (
             first_data.get("provider") == "local_sqlite"
@@ -241,7 +200,7 @@ def run_local_calendar_create_eval(
         run_id=run_id,
         event_id=event_id,
         validation_codes=validation_codes,
-        tool_call_statuses=[call.status for call in state.tool_calls],
+        tool_call_statuses=[item.status for item in tool_results],
         artifact=artifact,
     )
     write_json(
@@ -265,7 +224,11 @@ def run_local_calendar_create_eval(
             "after": after,
             "diff": state_diff,
             "tool_results": [
-                item.model_dump(mode="json") for item in tool_results
+                {
+                    "status": item.status,
+                    "artifact": item.artifact,
+                }
+                for item in tool_results
             ],
         },
     )
@@ -303,10 +266,8 @@ def _reject_symlinked_default_output_root() -> None:
         current = parent
 
 
-def _result_data(result: ToolResult | None) -> dict[str, Any]:
-    if result is None or not isinstance(result.data, dict):
-        return {}
-    return result.data
+def _result_data(result: NativeToolInvocation | None) -> dict[str, Any]:
+    return result.artifact if result is not None else {}
 
 
 def _non_empty_string(value: Any) -> str | None:

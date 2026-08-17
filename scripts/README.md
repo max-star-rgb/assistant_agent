@@ -10,7 +10,9 @@ eval、Agent Server 主链路覆盖的 probe 不应继续沉积到本目录。
 
 - `scripts/run_server.py`：调用本环境的 `langgraph dev` 启动 `langgraph.json` 所声明的
   Agent Server、原生 Graph 与 media custom route；它只负责 host/port/reload/env-file 参数，不构造项目自有
-  Runtime，也不打印旧 runtime completeness 或 Gateway lifecycle 摘要。
+  Runtime，也不打印旧 runtime completeness 或 Gateway lifecycle 摘要。控制台 stdout/stderr 默认同时追加到
+  `.data/logs/agent_server.log`，可用 `--log-file` 指定其他部署自有路径。LangSmith Studio 使用框架内建
+  `StudioUser` 认证；real mode 的 CLI/media 等非 Studio 客户端才需要项目 service token 与签名。
 - `scripts/run_qdrant.py`：PyCharm-friendly 本地 Qdrant supervisor。它只启动
   `docker/mem0/compose.yaml` 的 `visual-memory` profile 和 `qdrant` service，等待
   `http://127.0.0.1:6333/healthz` 就绪，并作为一个 Run process 持续运行。仓库已提供共享配置
@@ -83,12 +85,12 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 
 - `scripts/run_demo_flows.py`: offline scenario matrix for regression demos.
 - `scripts/run_evals.py`: offline eval harness for lower-layer behavior checks.
-- `scripts/run_system_calendar_create_eval.py`: 不经过 LLM 或 Assistant Graph，通过完整本地 Tool
-  治理链执行 `calendar_create`，验证首次提交、幂等回放和真实 SQLite
+- `scripts/run_system_calendar_create_eval.py`: 不经过 LLM 或 Assistant Graph，通过最小 StateGraph 的原生
+  `ToolNode` 执行 `calendar_create`，验证首次提交、幂等回放和真实 SQLite
   终态。无参数默认执行，`--dry-run` 无副作用；产物写入
   `.data/evals/system/tools/calendar/create/<run>/`，不要求 real Provider mode。
 - `scripts/run_system_calendar_search_eval.py`: 在 run-scoped SQLite 中通过 adapter 预置合成事件，
-  再只通过完整本地 Tool 治理链执行一次 `calendar_search`，验证返回事件和只读终态。无参数默认
+  再通过最小 StateGraph 的原生 `ToolNode` 执行一次 `calendar_search`，验证返回事件和只读终态。无参数默认
   执行，产物写入
   `.data/evals/system/tools/calendar/search/<run>/`。
 - `scripts/run_system_multimodal_embedding_eval.py`: 验证本地 SigLIP2 联合 image/text ONNX

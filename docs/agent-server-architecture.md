@@ -1,6 +1,6 @@
 # LangGraph Agent Server 部署架构
 
-最后更新：2026-08-14
+最后更新：2026-08-17
 
 ## Authority contract
 
@@ -13,12 +13,13 @@
 | 验证入口 | `docs/authority.toml` 中 `agent-server.verification` |
 | 相邻 authority | 媒体 wire 见 [`media-agent-service-websocket.md`](media-agent-service-websocket.md)；运行图见 [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md) |
 
-## 唯一生产入口
+## 生产 Graph 入口
 
-`langgraph.json` 只注册：
+`langgraph.json` 只注册当前两张原生 Graph：
 
 ```text
 assistant-native-v1 -> assistant_agent.agent_server.graph:native_assistant_graph
+assistant-memory-v1 -> assistant_agent.agent_server.graph:native_memory_graph
 ```
 
 不注册旧 graph alias，因此新图不解释旧 thread/checkpoint。Agent Server 原生拥有 assistant、thread、run、
@@ -34,7 +35,9 @@ manager、cancel token、checkpoint facade 或产品状态机。
 }
 ```
 
-`execution_mode` 只允许 `fast|planning`。认证用户唯一来自 Agent Server 原生
+`execution_mode` 只允许 `fast|planning`，省略时默认为 `fast`。Memory Graph 的严格输入只有标准
+messages；它由 Assistant Graph 通过 Agent Server SDK 调度，不向普通用户入口暴露 run type。
+认证用户唯一来自 Agent Server 原生
 `Runtime.server_info.user.identity`；`AssistantRunContext` 不复制用户或租户身份，只保存有默认值的
 `entry_profile` 与 `media_capabilities`。执行模式不放入 context。
 chat 到达时冻结的 `target_sequence` 绑定在媒体入口生成的标准 video content block，模型不能提交。
@@ -51,20 +54,34 @@ chat 到达时冻结的 `target_sequence` 绑定在媒体入口生成的标准 v
 | proactive delivery Store | custom route 与显式产品 publisher | 媒体连接 presence/claim/ACK；不是 LangGraph Store |
 | Visual Perception Module | Agent Server 进程资源 | VLM client、Realtime Observer、视觉语义 Store 与连接级观察句柄；不是 Graph Runtime |
 
-factory lifespan 创建 `AgentServerExecutionOwner`，持有标准 `BaseChatModel` Provider adapter、静态本地
-`BaseTool` 与官方 MCP tools、一个 `MemoryBackend`、已编译但不绑定 checkpointer 的 `AssistantRootGraph`，
-以及对应 close targets。LangMem 可引用 Server 注入的 Store。进程级 `VisualPerceptionModule` 独立拥有视觉
+Agent Server async factory 在每个 worker 进程首次取图时创建唯一 `AgentServerExecutionOwner`，持有标准
+`BaseChatModel` Provider adapter、静态本地 `BaseTool`、一次发现得到的官方 MCP tools、一个
+`MemoryBackend`、已编译但不绑定 checkpointer 的 `AssistantRootGraph` 与
+`AssistantMemoryExtractionGraph`；后续两个 graph 的 schema、history、state 与 run 取图全部复用同一 owner，
+不重复装配。LangMem 引用首次 factory 注入的进程 Store；custom-app
+lifespan 在进程 shutdown 时统一关闭 owner。进程级 `VisualPerceptionModule` 独立拥有视觉
 Provider、Observer 和语义 Store 生命周期；run-local Tool 只注入它的只读资源，不重复创建实时观察流水线。
+`http.app` 的 FastAPI lifespan 是该模块的进程 owner：API Server、queue worker 或独立 custom app 各自在
+本进程 shutdown 时关闭一次。graph factory、schema/history/state 请求和单个 run 只借用该模块，不参与
+关闭；媒体 WebSocket 只关闭自己创建的 `VisualPerceptionSession`。
 
-composition 只构造标准模型、Tool、Memory backend 与 `AssistantRootGraph`，不构造平行 Graph
+composition 只构造标准模型、Tool、Memory backend 与两张静态原生 Graph，不构造平行 Graph
 Runtime、产品状态投影器或 Workflow host。
+
+所有 chat 入口最终调用同一个 `assistant-native-v1`，因此 Memory debounce 不散落在 Studio、CLI、HTTP 或
+WebSocket adapter：主图开头使用官方 SDK 查找并 rollback 同 thread、带专用 metadata 的旧 pending Memory
+run，回答后再 enqueue 一个新的 delayed `assistant-memory-v1` run。Agent Server 继续拥有真正的 delay 与
+queue；项目不创建 timer 或第二套队列。
 
 ## Auth 与身份
 
-mock/local 模式可用 `X-Assistant-User` 构造开发 principal。real mode 要求
-`ASSISTANT_AGENT_SERVER_SERVICE_TOKEN`，媒体服务还需对 authenticated identity 做 HMAC-SHA256 签名。
-thread metadata 按 auth owner 限制；run 与 Store 沿用同一 principal。connection、vendor session、thread、run
-与 delivery ID 始终是不同身份轴。
+LangSmith Studio 携带 Agent Server 内建的 `x-auth-scheme: langsmith` 认证，先由框架校验 LangSmith 会话并
+构造 `StudioUser`，不会进入项目的 service-token authenticate handler；后续 assistant/thread/run 授权仍按
+该 Studio identity 执行。mock/local 的非 Studio 客户端可用 `X-Assistant-User` 构造开发 principal。
+
+real mode 的非 Studio HTTP/media 客户端要求 `ASSISTANT_AGENT_SERVER_SERVICE_TOKEN`；除 Bearer token 外还需
+提供 authenticated identity 与对应 HMAC-SHA256 签名。thread metadata 按 auth owner 限制；run 与 Store
+沿用同一 principal。connection、vendor session、thread、run 与 delivery ID 始终是不同身份轴。
 
 ## `/agent-service/v1`
 

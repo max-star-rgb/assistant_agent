@@ -1,6 +1,6 @@
 # 统一多模态 Embedding 架构
 
-Last updated: 2026-08-06
+Last updated: 2026-08-17
 
 ## Authority contract
 
@@ -44,13 +44,13 @@ sequence 时旧记录只能用于状态诊断，Tool 返回 `usable_visual_text=
 
 给主 LLM 的视觉语义 Tool 包括 `visual_memory_search` 和 `visual_reminder_manage`。后者只管理当前
 可信 VIDEO 连接中的 `create/list/cancel`，不是 embedding Tool。`live_view_inspect` 继续回答当前实时画面，内部
-`realtime_video_observe` 继续生成 rolling VLM snapshot。`siglip2_embed*`、`find_object`、
+后台 observation service 继续生成 rolling VLM snapshot；它不是模型可见 Tool。`siglip2_embed*`、`find_object`、
 `visual_attention_manage` 都不是注册 Tool。Attention 仍只产生内部候选；连接级 reminder manager 是独立的
 一次性状态机，不复用 Attention consumer。
 
 VLM 推理层复用 Provider-neutral `VisionUnderstandingClient` 与 adapter：视觉 Tool 负责受信输入绑定、
 Tool 治理和结构化结果，client/adapter 负责具体模型协议。同步 `media_inspect` 或显式视频调用在当前
-Assistant trace 中形成 `tool.execute -> vlm.infer`；后台 `realtime_video_observe` 使用独立
+Assistant trace 中形成 `tool.execute -> vlm.infer`；后台 observation service 使用独立
 `vision.observation` trace。embedding、视觉提醒和已有 VLM 文本检索不属于 VLM 推理，不经过该调用边界。
 
 ## 分层与数据流
@@ -70,7 +70,7 @@ Realtime frame
         -> selected image EmbeddingEvent
              ├─ VisualReminderManager（只比较 pending target，命中后即时 chatResponse）
              └─ current JPEG（单帧、无视觉历史）
-                  -> parallel realtime_video_observe task per selected frame
+                  -> parallel observation service task per selected frame
                   -> VLM current-frame summary text
                   -> VisualSemanticRecord（带时间戳的单帧文本）
                   -> bounded timestamped text timeline + Qdrant derived index
@@ -145,13 +145,14 @@ latest-wins；因此不会积压，但高于处理能力的准入帧可以被更
 
 ## 单帧文本时间线
 
-后台 `realtime_video_observe` 只对选中关键帧调用 VLM。每次请求只有当前一张 JPEG，`memory_context`
+后台 observation service 只对选中关键帧调用 VLM。每次请求只有当前一张 JPEG，`memory_context`
 固定为空；提示词要求模型只描述当前图片并返回非空 `summary`。每次 observation 新建独立 Qwen
 WebSocket conversation；成功文本先发布到时间线，再在该帧独立清理阶段关闭连接，失败或不完整响应也会关闭，因此连续性不依赖 Provider 会话，也不由
 主 LLM 选择图片窗口。
 
-选帧后的每个关键帧立即建立独立 asyncio task，并在生产环境为该 task 新建 ToolRegistry、client、
-adapter 和 Provider WebSocket；不同 sequence 并行执行，不共享可变 Provider 状态，也没有 observer 级
+选帧后的每个关键帧立即建立独立 asyncio task，并为该 task 新建窄 `RealtimeVisualObservationService`、
+client、adapter 和 Provider WebSocket；它不构造 AgentState、ToolRegistry 或 ToolExecutor。不同 sequence
+并行执行，不共享可变 Provider 状态，也没有 observer 级
 one-inflight/one-pending 队列。较新的关键帧可以先完成并发布；较早任务后续成功时只补入时间线，不回退
 rolling latest snapshot。SigLIP2 选帧流水线仍保留一个执行中和一个 latest-wins pending，避免对所有输入帧
 都调用 embedding/VLM。
@@ -241,7 +242,7 @@ hard gate。
 `visual_memory_search` 是 `category=read`、`requires_media=[]`，视频断线后仍可查询已有历史。Runtime
 在 catalog 构建前删除调用方传入的 `_trusted_visual_memory_available`，再根据当前 session Store 的
 `SessionVisualSemanticStore.has_visual_history()` 覆盖；exposure 不检查请求关键词。执行仍经过
-`ActionValidator -> ToolExecutor -> ToolRegistry -> tool`。
+标准 `BaseTool -> ToolNode` 路径；模型不可提交 owner、session 或 as-of 边界。
 
 `visual_reminder_manage` 是 `category=write`、`requires_media=[]`。Runtime 在 catalog 构建前删除调用方
 传入的 `_trusted_visual_reminder_available`，只有请求来自可信 Agent-Service entry profile、结构化
