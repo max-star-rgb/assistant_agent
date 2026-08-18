@@ -4,7 +4,9 @@ from datetime import date
 
 from _smoke_runner import run_tool_smoke
 
-from assistant_agent.tools.plugins.builtin.lodging.tool import LodgingSearchTool
+from assistant_agent.tools.plugins.builtin.lodging.tool import (
+    create_lodging_search_tool,
+)
 
 
 FIXED_INPUT = {
@@ -17,4 +19,4 @@ FIXED_INPUT = {
 
 
 if __name__ == "__main__":
-    raise SystemExit(run_tool_smoke(LodgingSearchTool(), FIXED_INPUT))
+    raise SystemExit(run_tool_smoke(create_lodging_search_tool(), FIXED_INPUT))

@@ -39,6 +39,11 @@ def test_native_extensions_are_static_standard_tools() -> None:
     assert tools
     assert all(isinstance(tool, BaseTool) for tool in tools)
     assert len({tool.name for tool in tools}) == len(tools)
+    assert all(tool.metadata["source"] == "builtin" for tool in tools)
+    assert all(
+        tool.metadata["effect"] in {"read", "generate", "write", "dangerous"}
+        for tool in tools
+    )
 
 
 @pytest.mark.core_invariant("EXT-001")

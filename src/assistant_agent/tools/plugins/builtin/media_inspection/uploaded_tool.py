@@ -32,7 +32,7 @@ from assistant_agent.providers.provider_errors import (
     sanitize_error_message,
 )
 from assistant_agent.tools.availability import ToolAvailability
-from assistant_agent.tools.base import ToolContext
+from assistant_agent.tools.runtime import ToolContext
 from assistant_agent.tools.capability_output import build_capability_output_contract
 from assistant_agent.tools.ids import (
     IMAGE_UNDERSTANDING_CAPABILITY,

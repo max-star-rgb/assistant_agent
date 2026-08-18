@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import threading
 from typing import Protocol
 
-from assistant_agent.tools.base import ToolContext
+from assistant_agent.tools.runtime import ToolContext
 from assistant_agent.tools.plugins.builtin.website_guidance.models import (
     WebPageElement,
     WebPageExploreRequest,

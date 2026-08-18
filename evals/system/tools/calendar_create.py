@@ -2,7 +2,9 @@
 
 from _smoke_runner import run_tool_smoke
 
-from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.tools import CalendarCreateTool
+from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.tools import (
+    create_calendar_create_tool,
+)
 
 
 FIXED_INPUT = {
@@ -14,4 +16,4 @@ FIXED_INPUT = {
 
 
 if __name__ == "__main__":
-    raise SystemExit(run_tool_smoke(CalendarCreateTool(), FIXED_INPUT))
+    raise SystemExit(run_tool_smoke(create_calendar_create_tool(), FIXED_INPUT))

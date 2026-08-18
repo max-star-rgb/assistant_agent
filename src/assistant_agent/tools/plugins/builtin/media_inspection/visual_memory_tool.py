@@ -35,7 +35,7 @@ from assistant_agent.native_agent.context import (
 )
 from assistant_agent.providers.provider_errors import sanitize_error_message
 from assistant_agent.tools.availability import ToolAvailability
-from assistant_agent.tools.base import ToolContext
+from assistant_agent.tools.runtime import ToolContext
 from assistant_agent.tools.ids import VISUAL_MEMORY_SEARCH_TOOL_NAME
 from assistant_agent.tools.models import ToolResult
 
