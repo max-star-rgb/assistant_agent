@@ -9,7 +9,7 @@ from assistant_agent.tools.plugins.builtin.image_generation.backend import (
 from langchain_core.tools import BaseTool
 from assistant_agent.tools.plugins.contracts import ToolPluginContext
 from assistant_agent.tools.plugins.builtin.image_generation.tool import (
-    ImageGenerationTool,
+    create_image_generation_tool,
 )
 
 
@@ -21,7 +21,7 @@ class ImageGenerationToolPlugin:
     def build_tools(self, context: ToolPluginContext) -> list[BaseTool]:
         if DEVELOPMENT_IMAGE_FIXTURE_ID:
             return [
-                ImageGenerationTool(
+                create_image_generation_tool(
                     adapter=LocalFixtureImageGenerationAdapter(
                         DEVELOPMENT_IMAGE_FIXTURE_ID,
                         artifact_dir=GENERATED_ARTIFACT_DIR,
@@ -33,7 +33,9 @@ class ImageGenerationToolPlugin:
         ):
             return []
         return [
-            ImageGenerationTool(adapter=create_image_generation_adapter(context.config))
+            create_image_generation_tool(
+                adapter=create_image_generation_adapter(context.config)
+            )
         ]
 
 

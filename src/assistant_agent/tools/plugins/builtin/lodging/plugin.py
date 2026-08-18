@@ -11,7 +11,7 @@ from assistant_agent.tools.plugins.builtin.lodging.backend import (
     FlyAILodgingSearchAdapter,
 )
 from assistant_agent.tools.plugins.builtin.lodging.watch_tool import (
-    HotelPriceWatchCreateTool,
+    create_hotel_price_watch_create_tool,
 )
 from assistant_agent.tools.plugins.contracts import ToolPluginContext
 
@@ -40,7 +40,9 @@ class LodgingToolPlugin:
             context.config.durable_tasks_enabled
             and context.durable_task_service is not None
         ):
-            tools.append(HotelPriceWatchCreateTool(context.durable_task_service))
+            tools.append(
+                create_hotel_price_watch_create_tool(context.durable_task_service)
+            )
         return tools
 
 
