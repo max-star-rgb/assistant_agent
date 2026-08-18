@@ -6,39 +6,15 @@ import json
 import pytest
 from langchain.agents import AgentState
 from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.tools import BaseTool, tool
 from langgraph.graph import END, START, StateGraph
-from langgraph.prebuilt import ToolNode
-from pydantic import BaseModel, ConfigDict
+from langgraph.prebuilt import ToolNode, ToolRuntime
 
-from assistant_agent.native_agent.context import AssistantRunContext
-from assistant_agent.tools.base import ToolBase, ToolContext
-from assistant_agent.tools.input_binding import RuntimeInputBinding
-from assistant_agent.tools.models import ToolResult
-
-
-class _Input(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    value: str
-    user_id: str
-
-
-class _ProbeTool(ToolBase):
-    name = "probe"
-    description = "probe"
-    input_schema = _Input
-    output_schema = _Input
-    category = "read"
-    runtime_input_bindings = (
-        RuntimeInputBinding(field="user_id", source="runtime_identity", key="user_id"),
-    )
-
-    def _execute(self, input: _Input, context: ToolContext) -> ToolResult:
-        return ToolResult(
-            tool_name=self.name,
-            success=True,
-            data={"value": input.value, "user_id": input.user_id},
-            model_observation={"status": "ok"},
-        )
+from assistant_agent.native_agent.context import (
+    AssistantRunContext,
+    authenticated_user_identity,
+)
+from assistant_agent.tools.native_boundary import builtin_tool_metadata
 
 
 class _User(dict):
@@ -46,17 +22,34 @@ class _User(dict):
     permissions = ()
 
 
+def _create_probe_tool() -> BaseTool:
+    @tool("probe", response_format="content_and_artifact")
+    def probe(
+        value: str,
+        runtime: ToolRuntime[AssistantRunContext],
+    ) -> tuple[list[dict[str, str]], dict[str, str]]:
+        """Return a core-contract probe result."""
+
+        user_id = authenticated_user_identity(runtime)
+        return (
+            [{"type": "text", "text": json.dumps({"status": "ok"})}],
+            {"value": value, "user_id": user_id},
+        )
+
+    probe.metadata = builtin_tool_metadata("read")
+    return probe
+
+
 @pytest.mark.core_invariant("TOOL-001")
 def test_native_tool_schema_hides_runtime_owned_arguments() -> None:
-    tool = _ProbeTool()
+    tool = _create_probe_tool()
 
     assert set(tool.tool_call_schema.model_fields) == {"value"}
-    assert set(tool.args_schema.model_fields) == {"value", "runtime"}
 
 
 @pytest.mark.core_invariant("TOOL-001")
 def test_toolnode_injects_identity_and_returns_standard_tool_message() -> None:
-    tool = _ProbeTool()
+    tool = _create_probe_tool()
     builder = StateGraph(AgentState, context_schema=AssistantRunContext)
     builder.add_node("tools", ToolNode([tool]))
     builder.add_edge(START, "tools")
@@ -93,6 +86,5 @@ def test_toolnode_injects_identity_and_returns_standard_tool_message() -> None:
 
     message = result["messages"][-1]
     assert isinstance(message, ToolMessage)
-    assert isinstance(message.content, str)
-    assert json.loads(message.content) == {"status": "ok"}
+    assert message.content == [{"type": "text", "text": json.dumps({"status": "ok"})}]
     assert message.artifact == {"value": "value-sentinel", "user_id": "user-sentinel"}

@@ -6,10 +6,9 @@ import asyncio
 from collections.abc import Mapping
 from typing import Any, ClassVar, Literal
 
-from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool, ToolException
 from langgraph.prebuilt import ToolRuntime
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
+from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 
 from assistant_agent.native_agent.context import (
     AssistantRunContext,
@@ -28,6 +27,8 @@ from assistant_agent.tools.models import (
     ToolRepeatPolicy,
     ToolResult,
 )
+from assistant_agent.tools.native_boundary import native_idempotency_key
+from assistant_agent.tools.runtime import ToolContext, latest_human_request, tool_context
 
 
 class ToolInputValidationError(ValueError):
@@ -37,35 +38,6 @@ class ToolInputValidationError(ValueError):
         super().__init__(message)
         self.code = code
         self.message = message
-
-
-class ToolContext(BaseModel):
-    """Execution context passed to tools."""
-
-    run_id: str | None = None
-    trace_id: str | None = None
-    trace_store: Any | None = Field(default=None, exclude=True)
-    parent_span_id: str | None = Field(default=None, exclude=True)
-    user_id: str | None = None
-    session_id: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    skill_reference_grants: dict[str, list[str]] = Field(
-        default_factory=dict,
-        exclude=True,
-    )
-    cancel_token: Any | None = Field(default=None, exclude=True)
-
-    def is_cancelled(self) -> bool:
-        """Return whether the current run has requested cooperative cancellation."""
-
-        checker = getattr(self.cancel_token, "is_cancelled", None)
-        if callable(checker):
-            return bool(checker())
-        is_set = getattr(self.cancel_token, "is_set", None)
-        if callable(is_set):
-            return bool(is_set())
-        cancelled = getattr(self.cancel_token, "cancelled", None)
-        return bool(cancelled) if isinstance(cancelled, bool) else False
 
 
 class ToolBase(BaseTool):
@@ -120,7 +92,7 @@ class ToolBase(BaseTool):
         try:
             bound = _bind_native_input(self, payload, runtime)
             validated = self.input_schema.model_validate(bound)
-            result = self._execute(validated, _tool_context(runtime))
+            result = self._execute(validated, tool_context(runtime))
         except ValidationError as exc:
             raise ToolException(f"Invalid input: {exc.errors()[0]['msg']}") from exc
         except ToolException:
@@ -195,77 +167,10 @@ def _binding_value(
         if binding.key == "text":
             return "\n".join(memories)
     if binding.source == "request":
-        return _latest_human_request(state).get(binding.key or "", _MISSING)
+        return latest_human_request(state).get(binding.key or "", _MISSING)
     if binding.source == "durable_idempotency":
-        thread_id = getattr(execution, "thread_id", "") or "thread"
-        return f"native:{thread_id}:{runtime.tool_call_id or 'tool-call'}"
+        return native_idempotency_key(runtime)
     return _MISSING
-
-
-def _latest_human_request(state: Mapping[str, Any]) -> dict[str, Any]:
-    for message in reversed(state.get("messages", ())):
-        if not isinstance(message, HumanMessage):
-            continue
-        result: dict[str, Any] = {"image_ids": [], "video_ids": []}
-        if isinstance(message.content, str):
-            result["text"] = message.content
-            return result
-        texts: list[str] = []
-        for block in message.content:
-            if not isinstance(block, Mapping):
-                continue
-            block_type = block.get("type")
-            if block_type == "text" and isinstance(block.get("text"), str):
-                texts.append(block["text"])
-            elif block_type in {"image", "image_url"} and block.get("id"):
-                result["image_ids"].append(str(block["id"]))
-            elif block_type in {"video", "file"} and block.get("id"):
-                result["video_ids"].append(str(block["id"]))
-                target_sequence = block.get("target_sequence")
-                if (
-                    not isinstance(target_sequence, bool)
-                    and isinstance(target_sequence, int)
-                    and target_sequence >= 0
-                ):
-                    result["visual_target_sequence"] = target_sequence
-        result["text"] = "\n".join(texts)
-        return result
-    return {}
-
-
-def _tool_context(runtime: ToolRuntime[AssistantRunContext]) -> ToolContext:
-    execution = runtime.execution_info
-    request = _latest_human_request(
-        runtime.state if isinstance(runtime.state, Mapping) else {}
-    )
-    state = runtime.state if isinstance(runtime.state, Mapping) else {}
-    return ToolContext(
-        user_id=authenticated_user_identity(runtime),
-        session_id=getattr(execution, "thread_id", None),
-        run_id=getattr(execution, "run_id", None),
-        metadata={
-            "entry_profile": runtime.context.entry_profile,
-            "visual_target_sequence": request.get("visual_target_sequence"),
-        },
-        skill_reference_grants=_skill_reference_grants(state),
-    )
-
-
-def _skill_reference_grants(state: Mapping[str, Any]) -> dict[str, list[str]]:
-    raw = state.get("skill_reference_grants")
-    if not isinstance(raw, Mapping):
-        return {}
-    return {
-        skill_id: [
-            reference_id
-            for reference_id in reference_ids
-            if isinstance(reference_id, str) and reference_id
-        ]
-        for skill_id, reference_ids in raw.items()
-        if isinstance(skill_id, str)
-        and skill_id
-        and isinstance(reference_ids, (list, tuple))
-    }
 
 
 _MISSING = object()

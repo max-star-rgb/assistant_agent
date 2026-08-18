@@ -1,30 +1,35 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from langchain_core.tools import BaseTool, tool
+from langgraph.prebuilt import ToolRuntime
 
 from assistant_agent.config import ProviderConfig
+from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.runtime.chat_adapter import ChatRequest, ChatResult
-from assistant_agent.tools.base import ToolBase, ToolContext
+from assistant_agent.tools.native_boundary import builtin_tool_metadata, native_tool_response
 from assistant_agent.tools.models import ToolResult
 
 
-class ProbeInput(BaseModel):
-    value: str = Field(min_length=1)
+def create_probe_tool() -> BaseTool:
+    @tool("probe_tool", response_format="content_and_artifact")
+    def probe_tool(
+        value: str,
+        runtime: ToolRuntime[AssistantRunContext],
+    ) -> tuple[list[dict[str, object]], dict[str, object]]:
+        """Return a deterministic offline probe result."""
 
-
-class ProbeTool(ToolBase):
-    name = "probe_tool"
-    description = "probe-sentinel"
-    input_schema = ProbeInput
-    output_schema = ProbeInput
-    category = "read"
-
-    def _run(self, input: ProbeInput, context: ToolContext) -> ToolResult:
-        return ToolResult(
-            tool_name=self.name,
-            success=True,
-            data={"value": input.value},
+        del runtime
+        return native_tool_response(
+            "probe_tool",
+            ToolResult(
+                tool_name="probe_tool",
+                success=True,
+                data={"value": value},
+            ),
         )
+
+    probe_tool.metadata = builtin_tool_metadata("read")
+    return probe_tool
 
 
 class ScriptedChatAdapter:
