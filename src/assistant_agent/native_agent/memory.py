@@ -39,11 +39,15 @@ class MemoryBackendConfigurationError(RuntimeError):
 _LANGMEM_MEMORY_INSTRUCTIONS = """\
 你是长期记忆管理器，负责维护语义记忆、程序性记忆和情景记忆。
 
-从本次交互中判断助理应长期记住哪些与用户、助理自身或响应方式有关的信息：
+从本次交互中判断助理应长期记住哪些稳定、跨会话仍然有用的用户信息或响应方式：
 
-1. 提取并补充上下文：识别重要事实、关系、偏好、推理流程和适用场景；对不确定的推断标注置信度并说明依据。
+1. 提取并补充上下文：识别稳定的用户事实、关系、偏好、长期目标、可复用流程和适用场景；对不确定的推断标注置信度并说明依据。
 2. 比较并更新：关注偏离已有记忆的新信息；根据可靠性和时效性合并重复内容、修正错误，并保持内部一致。
 3. 综合并推理：用演绎、归纳或溯因总结稳定模式，但不要把一次性请求、测试口令或低置信度猜测当作长期事实。
+4. 严格排除时效性事实：不要保存天气、新闻、股价、日期时间、交通状态、搜索结果、网页内容或 Tool observation；
+   即使用户随后可能再次询问，这些信息也必须在当次请求中重新获取。
+5. 严格排除助理生成的内容：不要把助理的回答、自我描述、能力限制、知识截止日期、所谓“知识库”状态、
+   引用来源或对当前运行环境的猜测保存为长期记忆。只有用户明确表达且具有长期价值的事实才可写入。
 
 所有新增或更新的记忆正文必须使用简体中文。代码、协议字段、产品名和其他专有名词可保留原文；引用外语内容时，
 应以中文说明其含义。记忆应当紧凑、完整、可独立理解，并保留必要的置信度与理由。
@@ -213,7 +217,7 @@ class LangMemMemoryBackend:
         user_text, assistant_text = _completed_turn(messages)
         if not user_text or not assistant_text:
             return
-        value = {"messages": _messages_without_provider_metadata(messages)}
+        value = {"messages": [HumanMessage(content=user_text)]}
         config = {
             "configurable": {
                 "langgraph_user_id": _langmem_namespace(identity)[-1],
@@ -415,17 +419,6 @@ def _store_item_text(item: Any) -> str:
             return "" if value is None else str(value)
         value = value.get("content", value.get("memory", value))
     return str(value) if not isinstance(value, Mapping) else ""
-
-
-def _messages_without_provider_metadata(
-    messages: Sequence[AnyMessage],
-) -> list[AnyMessage]:
-    return [
-        message.model_copy(update={"response_metadata": {}})
-        if isinstance(message, AIMessage) and message.response_metadata
-        else message
-        for message in messages
-    ]
 
 
 def _completed_turn(messages: Sequence[AnyMessage]) -> tuple[str, str]:

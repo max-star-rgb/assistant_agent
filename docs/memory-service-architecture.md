@@ -56,9 +56,11 @@ Assistant state。`RetryPolicy`、error handler
 - `disabled`：离线默认，召回为空、提取跳过；
 - `mem0`：复用薄 `Mem0Client`；身份通过 opaque binding，提交的 `source_turn` 优先使用 Agent Server
   `run_id`，本地 Graph 无 run ID 时使用 thread ID；不构造旧 SQLite commit ledger；
-- `langmem`：使用官方 manager，召回访问 runtime Store，后台 manager 使用 conversation message 正文做
-  extract/consolidate，并在提交前剥离 AIMessage 的 Provider response metadata，避免联网来源与 request ID 进入
-  长期记忆；非结构化记忆正文默认使用简体中文，代码、协议字段和专有名词可保留原文；
+- `langmem`：使用官方 manager，召回访问 runtime Store，后台 manager 只接收当前已完成 turn 的用户正文做
+  extract/consolidate，不把 System、AI 或 Tool message 交给提取模型，避免助理生成内容、联网来源、Tool 结果与
+  request ID 干扰长期记忆；提取 instruction 只允许稳定用户事实、偏好、长期目标和可复用流程，显式排除天气、新闻、股价、
+  日期时间、交通、搜索/Tool 结果，以及助理回答、自我描述、能力限制、知识截止日期和“知识库”措辞；
+  非结构化记忆正文默认使用简体中文，代码、协议字段和专有名词可保留原文；
 - custom：composition 可注入任何满足 `MemoryBackend` 的第三方 adapter。
 
 mock mode 只能使用 disabled；远端 backend 要求 real mode 和完整显式配置，不能探测 key 后启用，也不能静默

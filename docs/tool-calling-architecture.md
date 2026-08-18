@@ -70,6 +70,8 @@ Tool 的 `artifact` 保留全部规范化 `ShoppingSearchResult`，`content` 按
 run 复用同一个 compiled graph 和 Tool 集合，实际 MCP Tool 调用仍遵循官方按调用创建 session 的行为。
 
 Skill manifest 的 `governed_tools` 使用上述最终 namespace 名，因此 MCP Tool 与本地 Tool 使用同一渐进暴露机制。
+未被任何 Skill manifest 声明为 `governed_tools` 的 allowlisted MCP Tool 默认对模型可见；当前高德
+`maps_weather` 以只读 `mcp_amap_maps_maps_weather` 默认暴露，天气实时事实优先由该结构化 Tool 获取。
 
 MCP 只有一份 `MCPServerConfig` 文件 schema：根对象包含 `servers` 列表，每个 server 只声明官方 adapter
 connection、显式 Tool allowlist、read-only 集合与 namespace。MCP 未启用时不读取配置；显式启用后，配置文件
@@ -91,8 +93,11 @@ Qwen 等模型原生联网参数属于 `BaseChatModel` 请求能力，不伪装�
 `QWEN_CHAT_ENABLE_SEARCH=true` 时原生请求设置 `enable_search=true`，默认使用 turbo、
 `forced_search=false`，同时设置 `enable_source=true`、`enable_citation=true` 和 `citation_format=[<number>]`。
 只有显式结构化 `provider_search_profile=deep_research` 才使用 max 与 forced search，不从用户文本关键词推断。
-每次模型回复的来源清洗后只保存在该 `AIMessage.response_metadata.provider_search_sources`；本地 Tool、ToolNode
-和后续模型上下文不接管或聚合这些来源。原生 adapter 按官方 message/tool_call/tool_call_id 结构与标准
+每次模型回复的来源清洗后把审计副本保存在该 `AIMessage.response_metadata.provider_search_sources`；本地 Tool 和
+ToolNode 不另行接管或聚合这些来源。原生 adapter 同时把来源投影为 LangChain 标准 text content block
+的 `Citation` annotations；Provider 未生成角标时只为机械追加的来源标题标注 URL，不伪造正文事实与来源的
+对应关系。流式响应只在 terminal chunk 写入稳定 response metadata、usage 和来源，避免标准 chunk 合并把
+标量 metadata 重复拼接。原生 adapter 按官方 message/tool_call/tool_call_id 结构与标准
 LangChain ToolCall 双向转换，流式 SSE 同时保留 usage、finish reason 与终态来源。是否调用候选本地 Tool 仍由
 模型按标准 tool calling 协议决定。
 
