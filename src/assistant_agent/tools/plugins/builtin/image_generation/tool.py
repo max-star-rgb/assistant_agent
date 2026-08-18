@@ -63,20 +63,32 @@ def create_image_generation_tool(
         不用于理解、检索或修改现有图片。
         """
 
-        state = runtime.state if isinstance(runtime.state, Mapping) else {}
-        request = ImageGenerationRequest(
-            prompt=prompt,
-            user_id=authenticated_user_identity(runtime),
-            session_id=runtime.execution_info.thread_id,
-            memory_context=list(state.get("memory_context", ())),
-        )
         return invoke_native_tool(
             IMAGE_GENERATION_TOOL_NAME,
-            lambda: _execute_image_generation(image_adapter, request),
+            lambda: _execute_image_generation_from_runtime(
+                image_adapter,
+                prompt,
+                runtime,
+            ),
         )
 
     image_generation.metadata = builtin_tool_metadata("generate")
     return image_generation
+
+
+def _execute_image_generation_from_runtime(
+    adapter: ImageGenerationAdapter,
+    prompt: str,
+    runtime: ToolRuntime[AssistantRunContext],
+) -> ToolResult:
+    state = runtime.state if isinstance(runtime.state, Mapping) else {}
+    request = ImageGenerationRequest(
+        prompt=prompt,
+        user_id=authenticated_user_identity(runtime),
+        session_id=runtime.execution_info.thread_id,
+        memory_context=list(state.get("memory_context", ())),
+    )
+    return _execute_image_generation(adapter, request)
 
 
 def _execute_image_generation(
