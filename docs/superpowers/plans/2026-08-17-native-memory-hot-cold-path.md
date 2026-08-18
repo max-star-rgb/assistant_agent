@@ -4,7 +4,7 @@
 
 **Goal:** 将主图改成每个 chat run 只 recall 一次，并通过 Agent Server SDK 在同一 thread 上调度 30 分钟后的独立 memory graph run。
 
-**Architecture:** `assistant-native-v1` 直接编排 `cancel_pending_memory_extractions -> memory_recall -> execution_router -> fast/planning -> enqueue_memory_extraction`；`assistant-memory-v1` 独立执行 `memory_extract`。SDK delayed run 使用当前 conversation thread、`after_seconds=1800` 与 `multitask_strategy="enqueue"`；项目只承担精确 list/cancel/create orchestration，不使用 ReflectionExecutor、自定义 timer 或队列。
+**Architecture:** `assistant-native-v1` 直接编排 `memory_recall -> execution_router -> fast/planning -> refresh_memory_extraction`；`assistant-memory-v1` 独立执行 `memory_extract`。回答后的 refresh 使用当前 conversation thread 精确 list/cancel/create，delayed run 使用 `after_seconds=1800` 与 `multitask_strategy="enqueue"`；不使用 ReflectionExecutor、自定义 timer 或队列。
 
 **Tech Stack:** Python 3.12、LangGraph `StateGraph`、LangChain `create_agent`、LangGraph Agent Server SDK、LangMem、pytest。
 
@@ -32,7 +32,7 @@
 - Consumes: `build_assistant_root_graph(...)`、`build_memory_extraction_graph(...)`、Agent Server graph factories。
 - Produces: 可观察契约——主图没有 compiled Memory/Agent 包装子图；recall 每顶层 run 一次；schedule 使用同一 thread、memory assistant、1800 秒和 enqueue；memory graph 只 commit。
 
-- [x] 修改 LOOP-001：主图节点固定包含 `cancel_pending_memory_extractions`、`memory_recall`、`execution_router`、`fast_agent`、`planning_graph`、`enqueue_memory_extraction` 与 START/END。
+- [x] 修改 LOOP-001：主图节点固定包含 `memory_recall`、`execution_router`、`fast_agent`、`planning_graph`、`refresh_memory_extraction` 与 START/END。
 - [ ] 修改 MEMORY-001：fast/planning 都只 recall 一次，schedule 不调用 commit；独立 memory graph 只调用一次 commit 且不调用 Agent。
 - [ ] 新增 delayed-run probe，monkeypatch SDK client 并断言：
 
@@ -61,10 +61,10 @@ assert request == {
 **Interfaces:**
 - Produces: `build_assistant_root_graph(memory_backend, fast_agent, planning_graph, extraction_delay_seconds=1800)`。
 - Produces: `build_memory_extraction_graph(backend)`。
-- Produces: `cancel_pending_memory_extractions_node(...)` 与 `enqueue_memory_extraction_node(...)`。
+- Produces: `refresh_memory_extraction_node(...)`。
 - Removes: `AssistantRunType`、`run_type`、`build_agent_graph`、主图中的 `AssistantMemoryGraph`。
 
-- [x] 将主图直接编排为 START → pending Memory cleanup → `memory_recall` → `execution_router` → fast/planning → `enqueue_memory_extraction` → END。
+- [x] 将主图直接编排为 START → `memory_recall` → `execution_router` → fast/planning → `refresh_memory_extraction` → END。
 - [ ] 为 recall 保留原生 RetryPolicy；最终失败 handler 更新 degraded snapshot 并跳到 `execution_router`。
 - [ ] 调度节点使用 `langgraph_sdk.get_client()` 创建 delayed run，参数严格匹配 Task 1；只等待调度请求，不等待 memory graph。
 - [ ] 为调度节点配置原生 retry/error handler；失败后直接 END，保留已经生成的标准 `AIMessage`。

@@ -9,8 +9,7 @@ from assistant_agent.config import ProviderConfig
 from assistant_agent.mcp.config import MCPServerConfig
 from assistant_agent.native_agent.tools import (
     NativeToolResources,
-    create_mcp_tools,
-    create_native_tools,
+    create_native_tool_inventory,
 )
 
 
@@ -29,9 +28,12 @@ class _MCPClient:
 
 @pytest.mark.core_invariant("EXT-001")
 def test_native_extensions_are_static_standard_tools() -> None:
-    tools = create_native_tools(
-        ProviderConfig(provider_mode="mock"),
-        resources=NativeToolResources(),
+    tools = asyncio.run(
+        create_native_tool_inventory(
+            ProviderConfig(provider_mode="mock"),
+            resources=NativeToolResources(),
+            mcp_server_configs=[],
+        )
     )
 
     assert tools
@@ -49,8 +51,15 @@ def test_mcp_extension_uses_allowlist_and_namespace() -> None:
         namespace_prefix="native",
     )
 
-    tools = asyncio.run(create_mcp_tools([config], client_factory=_MCPClient))
+    tools = asyncio.run(
+        create_native_tool_inventory(
+            ProviderConfig(provider_mode="mock"),
+            resources=NativeToolResources(),
+            mcp_server_configs=[config],
+            mcp_client_factory=_MCPClient,
+        )
+    )
 
-    assert [tool.name for tool in tools] == ["native_server_probe"]
-    assert tools[0].metadata["source"] == "mcp"
-    assert tools[0].metadata["effect"] == "read"
+    tool = next(tool for tool in tools if tool.name == "native_server_probe")
+    assert tool.metadata["source"] == "mcp"
+    assert tool.metadata["effect"] == "read"

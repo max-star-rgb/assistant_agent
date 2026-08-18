@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
 import pytest
 
+from assistant_agent.agent_server.auth import authenticate
 from assistant_agent.agent_server.media_protocol import MediaProtocolError, parse_chat, parse_envelope
 from assistant_agent.agent_server.media_session import MediaConnectionSession
 from assistant_agent.native_agent.context import AssistantRunContext
@@ -17,7 +19,10 @@ def test_agent_server_owns_the_production_graph_and_authenticated_media_route() 
     assert manifest["graphs"] == {
         "assistant-native-v1": (
             "assistant_agent.agent_server.graph:native_assistant_graph"
-        )
+        ),
+        "assistant-memory-v1": (
+            "assistant_agent.agent_server.graph:native_memory_graph"
+        ),
     }
     assert manifest["http"] == {
         "app": "assistant_agent.agent_server.media_app:app",
@@ -80,3 +85,25 @@ def test_native_run_context_contains_capabilities_not_identity() -> None:
         "media_capabilities",
     }
     assert context.media_capabilities == ("audio",)
+
+
+@pytest.mark.core_invariant("IDENT-001")
+def test_agent_server_auth_is_tokenless_for_all_provider_modes(monkeypatch) -> None:
+    monkeypatch.setenv("MULTIMODAL_AGENT_PROVIDER_MODE", "real")
+    monkeypatch.setenv(
+        "ASSISTANT_AGENT_SERVER_SERVICE_TOKEN",
+        "configured-token-must-be-ignored",
+    )
+
+    user = asyncio.run(
+        authenticate(
+            "Bearer invalid-token",
+            {b"x-assistant-user": b"user-sentinel"},
+        )
+    )
+
+    assert user == {
+        "identity": "user-sentinel",
+        "permissions": ["assistant:developer"],
+        "is_authenticated": True,
+    }

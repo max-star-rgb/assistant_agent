@@ -617,26 +617,19 @@ def _required_text(value: dict[str, Any], key: str) -> str:
 
 
 def _default_agent_server_client(websocket: WebSocket) -> SdkAgentServerClient:
-    """Call the public API so Agent Server auth is applied to the native run.
+    """Call the public API so Agent Server identity scope reaches the native run.
 
     ``get_client(url=None)`` is intended for trusted in-process access and uses
     the internal ``/noauth`` transport.  A media connection must preserve the
-    authenticated custom-route principal, so the adapter calls the same Agent
-    Server through its public origin and forwards only the Authorization header.
+    custom-route principal, so the adapter calls the same Agent Server through
+    its public origin and forwards the client-declared identity header.
     Deployments behind a proxy may set an explicit internal/public origin.
     """
 
     configured_url = os.environ.get("ASSISTANT_AGENT_SERVER_URL")
     url = configured_url or str(websocket.base_url).rstrip("/")
-    headers = {
-        name: value
-        for name in (
-            "authorization",
-            "x-assistant-user",
-            "x-assistant-signature",
-        )
-        if (value := websocket.headers.get(name)) is not None
-    } or None
+    identity = websocket.headers.get("x-assistant-user")
+    headers = {"x-assistant-user": identity} if identity is not None else None
     return SdkAgentServerClient(url=url, headers=headers)
 
 

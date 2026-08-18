@@ -13,14 +13,17 @@ from assistant_agent.native_agent.memory import (
     memory_extract_degraded,
     memory_extract_node,
 )
-from assistant_agent.native_agent.state import AssistantRootState, MemoryExtractionInput
+from assistant_agent.native_agent.state import (
+    MemoryExtractionInput,
+    MemoryExtractionState,
+)
 
 
 def build_memory_extraction_graph(*, backend: MemoryBackend):
     """Build the cold-path graph executed by an Agent Server delayed run."""
 
     builder = StateGraph(
-        AssistantRootState,
+        MemoryExtractionState,
         input_schema=MemoryExtractionInput,
         context_schema=AssistantRunContext,
     )

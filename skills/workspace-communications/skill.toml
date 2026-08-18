@@ -9,6 +9,8 @@ activation = "model"
 governed_tools = [
   "email_search",
   "email_read",
+  "mcp_google_gmail_readonly_search_gmail_messages",
+  "mcp_google_gmail_readonly_get_gmail_messages_content_batch",
   "calendar_search",
   "calendar_create",
   "contacts_search",

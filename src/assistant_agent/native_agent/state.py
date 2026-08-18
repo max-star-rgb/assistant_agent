@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import operator
+from collections.abc import Mapping, Sequence
 from typing import Annotated, Literal, NotRequired, Required
 
 from langchain.agents import AgentState
 from langchain_core.messages import AnyMessage
+from langgraph.graph import MessagesState
 from pydantic import BaseModel, ConfigDict
 
 from assistant_agent.native_agent.models import (
@@ -35,18 +37,30 @@ class MemoryExtractionInput(BaseModel):
     messages: list[AnyMessage]
 
 
-class FastAgentState(AgentState):
-    """State consumed by the reusable create_agent subgraph."""
+class AssistantRootState(MessagesState):
+    """State shared only across parent-graph execution branches."""
 
     memory_context: NotRequired[tuple[str, ...]]
     memory_status: NotRequired[MemoryStatus]
     execution_mode: NotRequired[ExecutionMode]
 
 
-class AssistantRootState(FastAgentState):
-    """Minimal state shared across the parent graph's execution branches."""
+class FastAgentState(AgentState):
+    """State consumed inside the reusable create_agent subgraph."""
 
+    memory_context: NotRequired[tuple[str, ...]]
+    memory_status: NotRequired[MemoryStatus]
     execution_mode: NotRequired[ExecutionMode]
+    active_skill_ids: NotRequired[Annotated[list[str], _merge_unique_strings]]
+    skill_reference_grants: NotRequired[
+        Annotated[dict[str, list[str]], _merge_reference_grants]
+    ]
+
+
+class MemoryExtractionState(MessagesState):
+    """Message-only state for the independent Memory extraction graph."""
+
+    pass
 
 
 class WorkerState(FastAgentState):
@@ -66,12 +80,35 @@ class PlanningState(AgentState):
     worker_results: NotRequired[Annotated[list[WorkerResult], operator.add]]
 
 
+def _merge_unique_strings(
+    current: Sequence[str] | None,
+    update: Sequence[str] | None,
+) -> list[str]:
+    return list(dict.fromkeys([*(current or ()), *(update or ())]))
+
+
+def _merge_reference_grants(
+    current: Mapping[str, Sequence[str]] | None,
+    update: Mapping[str, Sequence[str]] | None,
+) -> dict[str, list[str]]:
+    merged = {
+        skill_id: list(dict.fromkeys(reference_ids))
+        for skill_id, reference_ids in (current or {}).items()
+    }
+    for skill_id, reference_ids in (update or {}).items():
+        merged[skill_id] = list(
+            dict.fromkeys([*merged.get(skill_id, ()), *reference_ids])
+        )
+    return merged
+
+
 __all__ = [
     "AssistantRootInput",
     "AssistantRootState",
     "ExecutionMode",
     "FastAgentState",
     "MemoryExtractionInput",
+    "MemoryExtractionState",
     "MemoryStatus",
     "PlanningState",
     "WorkerState",

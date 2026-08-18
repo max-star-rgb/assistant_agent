@@ -1,15 +1,24 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.runnables import RunnableLambda
 from langgraph.store.memory import InMemoryStore
 from langgraph_sdk.auth.types import StudioUser
-from pydantic import ValidationError
+from pydantic import PrivateAttr, ValidationError
 import pytest
 
 from assistant_agent.agent_server.services import AgentServerExecutionOwner
 from assistant_agent.native_agent.context import AssistantRunContext
+from assistant_agent.native_agent.fast_agent import build_fast_agent
+from assistant_agent.native_agent.models import (
+    NativePlanNode,
+    NativePlanProposal,
+)
+from assistant_agent.native_agent.planning_graph import build_planning_graph
+from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.native_agent.state import AssistantRootInput
 
 
@@ -25,6 +34,57 @@ def _server_config() -> dict[str, object]:
 
 async def _open_owner() -> AgentServerExecutionOwner:
     return await AgentServerExecutionOwner.compose(store=InMemoryStore())
+
+
+class _PlanningProbeModel(MockAssistantChatModel):
+    objectives: tuple[str, ...]
+
+    _active_workers: int = PrivateAttr(default=0)
+    _max_active_workers: int = PrivateAttr(default=0)
+
+    def with_structured_output(self, _schema: Any, **_kwargs: Any):
+        async def propose(_messages):
+            return NativePlanProposal(
+                schema_version="native_plan_v1",
+                nodes=tuple(
+                    NativePlanNode(node_id=f"worker-{index}", objective=objective)
+                    for index, objective in enumerate(self.objectives, start=1)
+                ),
+            )
+
+        return RunnableLambda(propose)
+
+    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+        objective = _probe_last_human_text(messages)
+        if objective in self.objectives:
+            self._active_workers += 1
+            self._max_active_workers = max(
+                self._max_active_workers,
+                self._active_workers,
+            )
+            await asyncio.sleep(0.02)
+            try:
+                return self._generate(
+                    messages,
+                    stop=stop,
+                    run_manager=run_manager,
+                    **kwargs,
+                )
+            finally:
+                self._active_workers -= 1
+        return self._generate(
+            messages,
+            stop=stop,
+            run_manager=run_manager,
+            **kwargs,
+        )
+
+
+def _probe_last_human_text(messages) -> str:
+    for message in reversed(messages):
+        if isinstance(message, HumanMessage):
+            return str(message.content)
+    return ""
 
 
 @pytest.mark.core_invariant("BOOT-001")
@@ -51,12 +111,11 @@ def test_parent_graph_has_fast_and_planning_native_branches(monkeypatch) -> None
         assert owner.graph.name == "AssistantRootGraph"
         assert nodes == {
             "__start__",
-            "cancel_pending_memory_extractions",
             "memory_recall",
             "execution_router",
             "fast_agent",
             "planning_graph",
-            "enqueue_memory_extraction",
+            "refresh_memory_extraction",
             "__end__",
         }
         assert graph.nodes["fast_agent"].data.name == "AssistantFastAgent"
@@ -92,6 +151,35 @@ def test_both_modes_finish_with_standard_ai_messages(monkeypatch) -> None:
         assert all("final_response" not in result for result in results)
     finally:
         asyncio.run(owner.aclose())
+
+
+@pytest.mark.core_invariant("LOOP-001")
+def test_planning_workers_reuse_one_agent_without_state_leakage() -> None:
+    model = _PlanningProbeModel(
+        objectives=("worker-a-sentinel", "worker-b-sentinel")
+    )
+    shared_agent = build_fast_agent(model, [])
+    graph = build_planning_graph(model, shared_agent)
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {
+                "messages": [HumanMessage(content="request-sentinel")],
+                "memory_context": (),
+                "memory_status": "empty",
+            },
+            context=AssistantRunContext(),
+        )
+    )
+
+    contents = {
+        item.work_item_id: item.content for item in result["worker_results"]
+    }
+    assert model._max_active_workers == 2
+    assert "worker-a-sentinel" in contents["worker-1"]
+    assert "worker-b-sentinel" not in contents["worker-1"]
+    assert "worker-b-sentinel" in contents["worker-2"]
+    assert "worker-a-sentinel" not in contents["worker-2"]
 
 
 @pytest.mark.core_invariant("RUN-001")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -31,7 +32,7 @@ class NativeToolResources:
     visual_memory_text_index: Any | None = None
 
 
-def create_native_tools(
+def _create_builtin_tools(
     config: ProviderConfig,
     *,
     resources: NativeToolResources,
@@ -40,7 +41,6 @@ def create_native_tools(
 
     context = ToolPluginContext(
         config=config,
-        mcp_server_configs=[],
         video_context_store=resources.video_context_store,
         vision_client=resources.vision_client,
         realtime_video_memory_store=resources.realtime_video_memory_store,
@@ -83,7 +83,7 @@ def mcp_connections(
     return connections
 
 
-async def create_mcp_tools(
+async def _create_official_mcp_tools(
     server_configs: Sequence[MCPServerConfig],
     *,
     client_factory: Callable[..., Any] | None = None,
@@ -126,6 +126,31 @@ async def create_mcp_tools(
     if len(names) != len(set(names)):
         raise ValueError("namespaced MCP tool names must be unique")
     return assembled
+
+
+async def create_native_tool_inventory(
+    config: ProviderConfig,
+    *,
+    resources: NativeToolResources,
+    mcp_server_configs: Sequence[MCPServerConfig],
+    mcp_client_factory: Callable[..., Any] | None = None,
+) -> list[BaseTool]:
+    """Compose the one production inventory from built-ins and official MCP tools."""
+
+    builtins = await asyncio.to_thread(
+        _create_builtin_tools,
+        config,
+        resources=resources,
+    )
+    mcp_tools = await _create_official_mcp_tools(
+        mcp_server_configs,
+        client_factory=mcp_client_factory,
+    )
+    tools = [*builtins, *mcp_tools]
+    names = [tool.name for tool in tools]
+    if len(names) != len(set(names)):
+        raise ValueError("native and MCP tool names must be unique")
+    return sorted(tools, key=lambda tool: tool.name)
 
 
 def _builtin_plugins() -> tuple[Any, ...]:
@@ -182,7 +207,6 @@ def _builtin_plugins() -> tuple[Any, ...]:
 
 __all__ = [
     "NativeToolResources",
-    "create_mcp_tools",
-    "create_native_tools",
+    "create_native_tool_inventory",
     "mcp_connections",
 ]

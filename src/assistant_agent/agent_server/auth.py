@@ -1,21 +1,9 @@
-"""Agent Server authentication entry point.
-
-Mock mode is intentionally local/developer scoped. Real mode accepts an
-explicit service bearer token and a signed authenticated identity.
-"""
+"""Tokenless Agent Server identity and resource-authorization entry point."""
 
 from __future__ import annotations
 
-import hmac
-import hashlib
-import os
-
-from fastapi import HTTPException
 from langgraph_sdk import Auth
 
-
-_PROVIDER_MODE_ENV = "MULTIMODAL_AGENT_PROVIDER_MODE"
-_SERVICE_TOKEN_ENV = "ASSISTANT_AGENT_SERVER_SERVICE_TOKEN"
 
 auth = Auth()
 
@@ -31,31 +19,11 @@ async def authenticate(
     authorization: str | None,
     headers: dict[bytes, bytes],
 ) -> Auth.types.MinimalUserDict:
-    if os.environ.get(_PROVIDER_MODE_ENV, "mock") == "mock":
-        identity = _header_text(headers, b"x-assistant-user") or "local-developer"
-        return {
-            "identity": identity,
-            "permissions": ["assistant:developer"],
-            "is_authenticated": True,
-        }
-
-    expected = os.environ.get(_SERVICE_TOKEN_ENV)
-    received = (authorization or "").removeprefix("Bearer ")
-    if not expected or not received or not hmac.compare_digest(received, expected):
-        raise HTTPException(status_code=401, detail="Agent Server authentication failed")
+    del authorization
     identity = _header_text(headers, b"x-assistant-user")
-    signature = _header_text(headers, b"x-assistant-signature")
-    if not identity or not signature:
-        raise HTTPException(status_code=401, detail="Signed user delegation is required")
-    expected_signature = delegated_identity_signature(
-        secret=expected,
-        identity=identity,
-    )
-    if not hmac.compare_digest(signature, expected_signature):
-        raise HTTPException(status_code=401, detail="User delegation signature is invalid")
     return {
-        "identity": identity,
-        "permissions": [],
+        "identity": identity or "local-developer",
+        "permissions": ["assistant:developer"],
         "is_authenticated": True,
     }
 
@@ -66,11 +34,6 @@ def _header_text(headers: dict[bytes, bytes], name: bytes) -> str | None:
         return None
     value = raw.decode("utf-8", errors="strict").strip()
     return value or None
-
-
-def delegated_identity_signature(*, secret: str, identity: str) -> str:
-    payload = identity.encode("utf-8")
-    return hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
 
 
 @auth.on.assistants.read
@@ -169,6 +132,5 @@ __all__ = [
     "authorize_thread_search",
     "authorize_thread_update",
     "deny_all",
-    "delegated_identity_signature",
     "scope_store",
 ]

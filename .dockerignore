@@ -10,6 +10,9 @@ __pycache__
 venv
 .data
 .local
+.langgraph_api
+.superpowers
+tmp
 dist
 build
 *.egg-info

@@ -10,7 +10,9 @@ from typing import Any
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from langgraph.store.base import BaseStore
+
 from assistant_agent.config import ProviderConfig
+from assistant_agent.context.token_counter import create_context_token_counter
 from assistant_agent.mcp.config import load_mcp_server_configs_from_env
 from assistant_agent.media.visual_perception import get_visual_perception_module
 from assistant_agent.native_agent.fast_agent import build_fast_agent
@@ -21,8 +23,7 @@ from assistant_agent.native_agent.providers import create_chat_model
 from assistant_agent.native_agent.root_graph import build_assistant_root_graph
 from assistant_agent.native_agent.tools import (
     NativeToolResources,
-    create_mcp_tools,
-    create_native_tools,
+    create_native_tool_inventory,
 )
 
 
@@ -45,22 +46,33 @@ class AgentServerExecutionOwner:
         """Build configured clients without blocking the Agent Server loop."""
 
         config = ProviderConfig.from_env()
-        model, local_tools, memory_backend = await asyncio.to_thread(
+        model, tool_resources, memory_backend = await asyncio.to_thread(
             _compose_sync,
             config,
             store,
         )
-        mcp_tools = await create_mcp_tools(load_mcp_server_configs_from_env())
-        tools = [*local_tools, *mcp_tools]
-        names = [tool.name for tool in tools]
-        if len(names) != len(set(names)):
-            raise ValueError("native and MCP tool names must be unique")
+        tools = await create_native_tool_inventory(
+            config,
+            resources=tool_resources,
+            mcp_server_configs=load_mcp_server_configs_from_env(),
+        )
+        context_token_counter = await asyncio.to_thread(
+            create_context_token_counter,
+            config,
+        )
         fast_agent = build_fast_agent(
             model,
             tools,
             model_call_limit=config.max_tool_iterations,
             tool_call_limit=config.max_tool_iterations,
             context_window_tokens=config.context_input_token_limit,
+            compaction_trigger_ratio=config.context_compaction_trigger_ratio,
+            compaction_target_ratio=config.context_compaction_target_ratio,
+            token_counter=(
+                context_token_counter.count_messages
+                if context_token_counter is not None
+                else None
+            ),
         )
         planning_graph = build_planning_graph(model, fast_agent)
         graph = build_assistant_root_graph(
@@ -94,25 +106,22 @@ class AgentServerExecutionOwner:
 def _compose_sync(
     config: ProviderConfig,
     store: BaseStore | None,
-) -> tuple[BaseChatModel, list[BaseTool], MemoryBackend]:
+) -> tuple[BaseChatModel, NativeToolResources, MemoryBackend]:
     model = create_chat_model(config)
     visual_perception = get_visual_perception_module(config)
     visual_resources = visual_perception.tool_resources()
-    tools = create_native_tools(
-        config,
-        resources=NativeToolResources(
-            video_context_store=visual_resources.video_context_store,
-            vision_client=visual_resources.vision_client,
-            realtime_video_memory_store=(visual_resources.realtime_video_memory_store),
-            visual_semantic_store_pool=(visual_resources.visual_semantic_store_pool),
-            visual_memory_text_index=visual_resources.visual_memory_text_index,
-        ),
+    tool_resources = NativeToolResources(
+        video_context_store=visual_resources.video_context_store,
+        vision_client=visual_resources.vision_client,
+        realtime_video_memory_store=(visual_resources.realtime_video_memory_store),
+        visual_semantic_store_pool=(visual_resources.visual_semantic_store_pool),
+        visual_memory_text_index=visual_resources.visual_memory_text_index,
     )
     memory_backend = create_memory_backend(
         config,
         langmem_store=store,
     )
-    return model, tools, memory_backend
+    return model, tool_resources, memory_backend
 
 
 async def _close_if_supported(value: Any) -> None:

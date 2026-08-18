@@ -1,1 +1,1 @@
-"""Assistant context assembly and rendering package."""
+"""Context DTO, token-budget, source, and offline reporting utilities."""

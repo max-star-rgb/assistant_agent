@@ -19,12 +19,11 @@
 
 ```text
 AssistantRootGraph
-  -> cancel_pending_memory_extractions
   -> memory_recall
   -> execution_router
        fast     -> AssistantFastAgent --------+
        planning -> AssistantPlanningGraph     |
-  -> enqueue_memory_extraction <--------------+
+  -> refresh_memory_extraction <--------------+
   -> END
 ```
 
@@ -51,19 +50,26 @@ verifier、repair、revision、acceptance contract、deliverable binding 或 art
 
 - `execution_mode`；
 - 冻结的 `memory_context` 与 `memory_status`；
-- planning 子图内部的 plan 与 worker result；
-- `Send` 派发时从直接依赖结果派生的窄 `dependency_results` worker 输入。
+
+fast agent 子图才增加由成功 `load_skill` 标准 Tool 结果产生的 `active_skill_ids`
+与窄 `skill_reference_grants`；这两个 channel 只在子图的 model→tool→model 循环中累积，不进入
+父图节点、父图输出或独立 Memory Graph。planning 子图内部另外持有 plan、worker result，
+并在 `Send` 派发时从直接依赖结果派生窄 `dependency_results` worker 输入。
 
 已完成节点直接从 worker result 推导，不保存平行 completed-ID channel，也没有项目自定义 result/artifact
 reducer。Provider/Tool client、Memory backend、投递 Store、身份对象和 callback 不写入 checkpoint。旧
 `AssistantTurnState` checkpoint 不迁移进新图；旧 assistant/thread 仅作只读历史或外围兼容，新图使用版本化
 assistant ID `assistant-native-v1`。
 
-主图首先通过官方 Agent Server SDK 查询同 thread 的 pending runs，只对带
-`assistant_agent_run_kind=memory_extraction` metadata 的旧 Memory run 执行 `cancel(..., action="rollback")`；
-pending chat run 不受影响。Memory 重试、error handler 和失败后的 `Command(update=..., goto=...)` 均是 LangGraph 原生 node 扩展能力，
+完整 Tool inventory 仍静态注册给 fast `create_agent` 的 `ToolNode`；每次 model call 的可见子集由原生 middleware
+从上述 Skill 激活状态与受信 manifest 派生。该过滤不创建第二套 Tool runtime，也不改变 ToolNode 对已注册 Tool
+的标准执行路径。
+
+回答生成后，主图通过官方 Agent Server SDK 查询同 thread 的 pending runs，只对带
+`assistant_agent_run_kind=memory_extraction` metadata 的旧 Memory run 执行 `cancel(..., action="rollback")`，
+随后立即 enqueue 新 delayed Memory run；pending chat run 不受影响。Memory 重试、error handler 和失败后的 `Command(update=..., goto=...)` 均是 LangGraph 原生 node 扩展能力，
 不是项目自研降级层。chat run 的 recall 重试耗尽后 handler 写入显式 `memory_status=degraded` 并跳到
-`execution_router`；SDK 清理失败降级进入 recall，enqueue 失败只结束当前主图，均不阻塞回答。独立 Memory Graph 失败只影响后台 run。
+`execution_router`；回答后的 refresh 失败只结束当前主图，不丢弃已经生成的回答。独立 Memory Graph 失败只影响后台 run。
 项目只声明“Memory 是辅助能力，因此失败仍继续”这一产品结果。
 
 ## 原生流与生命周期

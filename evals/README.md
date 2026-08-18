@@ -13,8 +13,11 @@
 
 ## 当前验证分层
 
-当前只保留 System eval：在 operator 明确授权下验证真实 Provider、Tool、Memory 或媒体能力，并把有限、
-脱敏的结果写入 `.data/evals/system/`。默认 pytest 与临时 TDD 的边界仍由 `tests/README.md` 管理。
+当前只保留 System eval：真实能力评审在 operator 明确授权下验证 Provider、Tool、Memory 或媒体能力，并把有限、
+脱敏的结果写入 `.data/evals/system/`。`evals/system/tools/` 另保留离线 Tool 执行冒烟：每个当前注册 Tool 一个
+可在 PyCharm 直接运行的固定输入脚本，只判断标准 `ToolNode` 调用是否成功返回结果，不验证候选数量、排序或具体
+业务内容；`run_all.py` 一键运行该目录及子目录的全部非 helper 冒烟脚本。默认 pytest 与临时 TDD 的边界仍由
+`tests/README.md` 管理。
 
 旧 Runtime Regression、Workflow Regression 与 Release Review runner 已随通用旧 Graph Runtime 删除。它们的
 evidence、fixture backend、catalog 与终态合同绑定旧 `AgentState`，不能通过兼容 facade 投影到新图。仓库提供

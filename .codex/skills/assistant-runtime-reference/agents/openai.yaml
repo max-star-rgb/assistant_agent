@@ -1,4 +1,0 @@
-interface:
-  display_name: "Assistant Runtime Reference"
-  short_description: "Gateway compatibility workflow"
-  default_prompt: "Use $assistant-runtime-reference to compare assistant_agent.gateway behavior with the legacy runTime implementation."

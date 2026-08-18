@@ -14,7 +14,7 @@ from assistant_agent.tools.plugins.builtin.website_guidance.tools import (
     WebPageExploreTool,
     WebPageInspectTool,
 )
-from assistant_agent.tools.plugins.contracts import ToolPluginContext, ToolPluginDescriptor
+from assistant_agent.tools.plugins.contracts import ToolPluginContext
 
 
 MockBackendFactory = Callable[[], WebsiteGuidanceBackend]
@@ -24,8 +24,6 @@ ReadinessProbe = Callable[[], bool]
 
 class WebsiteGuidancePlugin:
     """Register website guidance only for an explicit, usable configuration."""
-
-    descriptor = ToolPluginDescriptor(plugin_id="website_guidance", plugin_version="1")
 
     def __init__(
         self,
@@ -80,7 +78,9 @@ def _tools_for(backend: WebsiteGuidanceBackend) -> list[BaseTool]:
     return [WebPageInspectTool(backend=backend), WebPageExploreTool(backend=backend)]
 
 
-def _website_guidance_enabled(enabled: object, navigation_timeout_seconds: object) -> bool:
+def _website_guidance_enabled(
+    enabled: object, navigation_timeout_seconds: object
+) -> bool:
     return (
         enabled is True
         and isinstance(navigation_timeout_seconds, (int, float))

@@ -60,6 +60,7 @@ class VideoUnderstandingBranch:
         self,
         adapter: VideoUnderstandingAdapter | None = None,
         *,
+        tool_name: str = "media_inspect",
         client: VisionUnderstandingClient | None = None,
         context_store: VideoContextStore | None = None,
         memory_store: RealtimeVideoMemoryStore | None = None,
@@ -67,6 +68,7 @@ class VideoUnderstandingBranch:
         context_window_size: int = DEFAULT_VIDEO_CONTEXT_WINDOW_SIZE,
         wall_clock_ms: Callable[[], int] | None = None,
     ) -> None:
+        self.name = tool_name
         if client is None:
             self.adapter = adapter or create_video_understanding_adapter()
             self.client = AdapterVisionUnderstandingClient(video_adapter=self.adapter)

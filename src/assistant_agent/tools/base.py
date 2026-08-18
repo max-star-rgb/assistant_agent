@@ -91,15 +91,6 @@ class ToolBase(BaseTool):
     runtime_input_bindings: ClassVar[tuple[Any, ...]] = ()
     trace_content_policy: ClassVar[Literal["default", "metadata_only"]] = "default"
 
-    def __setattr__(self, name: str, value: Any) -> None:
-        # A few test/peripheral tools choose their stable name at construction
-        # time. BaseTool models class-level names, so preserve that narrow
-        # compatibility without making arbitrary contract fields mutable.
-        if name == "name":
-            object.__setattr__(self, name, value)
-            return
-        super().__setattr__(name, value)
-
     def __init__(self) -> None:
         validate_tool_input_contract(self)
         super().__init__(
@@ -107,34 +98,6 @@ class ToolBase(BaseTool):
             response_format="content_and_artifact",
             metadata={"effect": self.category, "source": "builtin"},
         )
-
-    def _execute_governed(
-        self,
-        input: BaseModel | dict[str, Any],
-        context: ToolContext | None = None,
-    ) -> ToolResult:
-        """Validate one business invocation and normalize its safe result."""
-
-        try:
-            payload = self._validate_input(input)
-            return self._execute(payload, context or ToolContext())
-        except ValidationError as exc:
-            return ToolResult(
-                tool_name=self.name,
-                success=False,
-                error=f"Invalid input: {exc.errors()[0]['msg']}",
-            )
-        except Exception as exc:  # pragma: no cover - defensive boundary
-            return ToolResult(
-                tool_name=self.name,
-                success=False,
-                error=sanitize_error_message(exc),
-                data=(
-                    {"side_effect_state": "unknown"}
-                    if self.category in {"write", "dangerous"}
-                    else None
-                ),
-            )
 
     def _run(
         self,
@@ -155,10 +118,16 @@ class ToolBase(BaseTool):
         payload: Mapping[str, Any],
         runtime: ToolRuntime[AssistantRunContext],
     ) -> tuple[str, dict[str, Any]]:
-        result = self._execute_governed(
-            _bind_native_input(self, payload, runtime),
-            _tool_context(runtime),
-        )
+        try:
+            bound = _bind_native_input(self, payload, runtime)
+            validated = self.input_schema.model_validate(bound)
+            result = self._execute(validated, _tool_context(runtime))
+        except ValidationError as exc:
+            raise ToolException(f"Invalid input: {exc.errors()[0]['msg']}") from exc
+        except ToolException:
+            raise
+        except Exception as exc:  # pragma: no cover - defensive boundary
+            raise ToolException(sanitize_error_message(exc)) from exc
         if not result.success:
             raise ToolException(result.error or f"{self.name} failed")
         observation = result.model_observation
@@ -168,11 +137,6 @@ class ToolBase(BaseTool):
             json.dumps(observation, ensure_ascii=False, sort_keys=True),
             dict(result.data or {}),
         )
-
-    def _validate_input(self, input: BaseModel | dict[str, Any]) -> BaseModel:
-        if isinstance(input, self.input_schema):
-            return input
-        return self.input_schema.model_validate(input)
 
     def _execute(self, input: BaseModel, context: ToolContext) -> ToolResult:
         raise NotImplementedError
@@ -278,6 +242,7 @@ def _tool_context(runtime: ToolRuntime[AssistantRunContext]) -> ToolContext:
     request = _latest_human_request(
         runtime.state if isinstance(runtime.state, Mapping) else {}
     )
+    state = runtime.state if isinstance(runtime.state, Mapping) else {}
     return ToolContext(
         user_id=authenticated_user_identity(runtime),
         session_id=getattr(execution, "thread_id", None),
@@ -286,7 +251,25 @@ def _tool_context(runtime: ToolRuntime[AssistantRunContext]) -> ToolContext:
             "entry_profile": runtime.context.entry_profile,
             "visual_target_sequence": request.get("visual_target_sequence"),
         },
+        skill_reference_grants=_skill_reference_grants(state),
     )
+
+
+def _skill_reference_grants(state: Mapping[str, Any]) -> dict[str, list[str]]:
+    raw = state.get("skill_reference_grants")
+    if not isinstance(raw, Mapping):
+        return {}
+    return {
+        skill_id: [
+            reference_id
+            for reference_id in reference_ids
+            if isinstance(reference_id, str) and reference_id
+        ]
+        for skill_id, reference_ids in raw.items()
+        if isinstance(skill_id, str)
+        and skill_id
+        and isinstance(reference_ids, (list, tuple))
+    }
 
 
 _MISSING = object()

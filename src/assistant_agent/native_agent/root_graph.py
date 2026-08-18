@@ -33,26 +33,12 @@ def build_assistant_root_graph(
     planning_graph: Any,
     extraction_delay_seconds: int = DEFAULT_EXTRACTION_DELAY_SECONDS,
 ):
-    """Compose memory debounce, recall, execution, and extraction enqueueing."""
+    """Compose recall, execution, and post-answer Memory debounce."""
 
     builder = StateGraph(
         AssistantRootState,
         input_schema=AssistantRootInput,
         context_schema=AssistantRunContext,
-    )
-    builder.add_node(
-        "cancel_pending_memory_extractions",
-        partial(
-            cancel_pending_memory_extractions_node,
-            enabled=memory_backend.backend_id != "disabled",
-        ),
-        retry_policy=RetryPolicy(
-            initial_interval=0,
-            backoff_factor=0,
-            max_attempts=3,
-            jitter=False,
-        ),
-        error_handler=memory_debounce_degraded,
     )
     builder.add_node(
         "memory_recall",
@@ -69,9 +55,9 @@ def build_assistant_root_graph(
     builder.add_node("fast_agent", fast_agent)
     builder.add_node("planning_graph", planning_graph)
     builder.add_node(
-        "enqueue_memory_extraction",
+        "refresh_memory_extraction",
         partial(
-            enqueue_memory_extraction_node,
+            refresh_memory_extraction_node,
             delay_seconds=extraction_delay_seconds,
             enabled=memory_backend.backend_id != "disabled",
         ),
@@ -81,19 +67,18 @@ def build_assistant_root_graph(
             max_attempts=3,
             jitter=False,
         ),
-        error_handler=memory_extraction_enqueue_degraded,
+        error_handler=memory_extraction_refresh_degraded,
     )
-    builder.add_edge(START, "cancel_pending_memory_extractions")
-    builder.add_edge("cancel_pending_memory_extractions", "memory_recall")
+    builder.add_edge(START, "memory_recall")
     builder.add_edge("memory_recall", "execution_router")
     builder.add_conditional_edges(
         "execution_router",
         route_execution_mode,
         {"fast": "fast_agent", "planning": "planning_graph"},
     )
-    builder.add_edge("fast_agent", "enqueue_memory_extraction")
-    builder.add_edge("planning_graph", "enqueue_memory_extraction")
-    builder.add_edge("enqueue_memory_extraction", END)
+    builder.add_edge("fast_agent", "refresh_memory_extraction")
+    builder.add_edge("planning_graph", "refresh_memory_extraction")
+    builder.add_edge("refresh_memory_extraction", END)
     return builder.compile(name="AssistantRootGraph")
 
 
@@ -109,13 +94,15 @@ def route_execution_mode(state: AssistantRootState) -> str:
     return "planning" if state.get("execution_mode") == "planning" else "fast"
 
 
-async def cancel_pending_memory_extractions_node(
-    _state: AssistantRootState,
+async def refresh_memory_extraction_node(
+    state: AssistantRootState,
     config: RunnableConfig,
     *,
+    delay_seconds: int,
     enabled: bool,
+    assistant_id: str = MEMORY_ASSISTANT_ID,
 ) -> dict[str, object]:
-    """Rollback delayed Memory runs without changing pending chat runs."""
+    """Replace the old delayed Memory run after producing the answer."""
 
     if not enabled:
         return {}
@@ -146,23 +133,6 @@ async def cancel_pending_memory_extractions_node(
             wait=True,
             action="rollback",
         )
-    return {}
-
-
-async def enqueue_memory_extraction_node(
-    state: AssistantRootState,
-    config: RunnableConfig,
-    *,
-    delay_seconds: int,
-    enabled: bool,
-    assistant_id: str = MEMORY_ASSISTANT_ID,
-) -> dict[str, object]:
-    """Ask Agent Server to execute Memory later without invoking it here."""
-
-    if not enabled:
-        return {}
-    thread_id = _thread_id(config)
-    client = get_client()
     await client.runs.create(
         thread_id=thread_id,
         assistant_id=assistant_id,
@@ -174,20 +144,11 @@ async def enqueue_memory_extraction_node(
     return {}
 
 
-def memory_debounce_degraded(
+def memory_extraction_refresh_degraded(
     _state: AssistantRootState,
     _error: NodeError,
 ) -> Command[str]:
-    """Keep SDK cleanup failure from blocking memory recall and the answer."""
-
-    return Command(goto="memory_recall")
-
-
-def memory_extraction_enqueue_degraded(
-    _state: AssistantRootState,
-    _error: NodeError,
-) -> Command[str]:
-    """Keep extraction enqueue failure from invalidating an answer."""
+    """Keep post-answer Memory orchestration failure from invalidating an answer."""
 
     return Command(goto=END)
 
@@ -204,10 +165,8 @@ __all__ = [
     "MEMORY_ASSISTANT_ID",
     "MEMORY_EXTRACTION_RUN_KIND",
     "build_assistant_root_graph",
-    "cancel_pending_memory_extractions_node",
-    "enqueue_memory_extraction_node",
     "execution_router_node",
-    "memory_debounce_degraded",
-    "memory_extraction_enqueue_degraded",
+    "memory_extraction_refresh_degraded",
+    "refresh_memory_extraction_node",
     "route_execution_mode",
 ]

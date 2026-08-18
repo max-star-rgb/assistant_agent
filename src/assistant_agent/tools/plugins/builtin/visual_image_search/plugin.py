@@ -8,18 +8,10 @@ from langchain_core.tools import BaseTool
 from assistant_agent.tools.plugins.builtin.visual_image_search.tool import (
     VisualImageSearchTool,
 )
-from assistant_agent.tools.plugins.contracts import (
-    ToolPluginContext,
-    ToolPluginDescriptor,
-)
+from assistant_agent.tools.plugins.contracts import ToolPluginContext
 
 
 class VisualImageSearchPlugin:
-    descriptor = ToolPluginDescriptor(
-        plugin_id="visual_image_search",
-        plugin_version="1",
-    )
-
     def build_tools(self, context: ToolPluginContext) -> list[BaseTool]:
         if not context.mock_mode and not visual_search_provider_ready(context.config):
             return []

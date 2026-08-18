@@ -4,12 +4,12 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from langgraph_sdk import get_sync_client
 
-from assistant_agent.agent_server.auth import delegated_identity_signature
+ASSISTANT_ID = "assistant-native-v1"
 
 
 def _context() -> dict[str, object]:
@@ -47,7 +47,7 @@ def _ensure_thread(client: Any, thread_id: str | None) -> str:
 def _run_once(client: Any, *, text: str, thread_id: str, mode: str) -> int:
     result = client.runs.wait(
         thread_id,
-        "assistant-native-v1",
+        ASSISTANT_ID,
         input={
             "messages": [{"role": "user", "content": text}],
             "execution_mode": mode,
@@ -59,19 +59,93 @@ def _run_once(client: Any, *, text: str, thread_id: str, mode: str) -> int:
     return 0
 
 
+def _print_checkpoint_history(
+    client: Any,
+    *,
+    thread_id: str,
+    limit: int = 20,
+) -> int:
+    states = client.threads.get_history(thread_id, limit=limit)
+    if not states:
+        print("No checkpoints.")
+        return 0
+    for state in states:
+        checkpoint = state.get("checkpoint")
+        checkpoint = checkpoint if isinstance(checkpoint, Mapping) else {}
+        checkpoint_id = state.get("checkpoint_id") or checkpoint.get("checkpoint_id")
+        metadata = state.get("metadata")
+        metadata = metadata if isinstance(metadata, Mapping) else {}
+        next_nodes = state.get("next")
+        next_nodes = next_nodes if isinstance(next_nodes, (list, tuple)) else ()
+        print(
+            " ".join(
+                (
+                    f"checkpoint_id={checkpoint_id or 'unknown'}",
+                    f"step={metadata.get('step', 'unknown')}",
+                    f"next={','.join(str(node) for node in next_nodes) or '-'}",
+                    f"created_at={state.get('created_at', 'unknown')}",
+                )
+            )
+        )
+    return 0
+
+
+def _replay_checkpoint(
+    client: Any,
+    *,
+    thread_id: str,
+    checkpoint_id: str,
+    confirm: Callable[[str], str] = input,
+) -> int:
+    expected = f"REPLAY {checkpoint_id}"
+    answer = confirm(
+        "Replay re-executes nodes after the checkpoint and may repeat external "
+        f"side effects. Type {expected!r} to continue: "
+    )
+    if answer != expected:
+        print("Replay cancelled.")
+        return 1
+    result = client.runs.wait(
+        thread_id,
+        ASSISTANT_ID,
+        input=None,
+        checkpoint_id=checkpoint_id,
+        context=_context(),
+        multitask_strategy="enqueue",
+    )
+    print(_response_text(result))
+    return 0
+
+
+def _rollback_run(
+    client: Any,
+    *,
+    thread_id: str,
+    run_id: str,
+    confirm: Callable[[str], str] = input,
+) -> int:
+    expected = f"ROLLBACK {run_id}"
+    answer = confirm(
+        "Rollback deletes the run and its checkpoints, but does not undo external "
+        "tool side effects that already happened. "
+        f"Type {expected!r} to continue: "
+    )
+    if answer != expected:
+        print("Rollback cancelled.")
+        return 1
+    client.runs.cancel(
+        thread_id,
+        run_id,
+        action="rollback",
+        wait=True,
+    )
+    print(f"Rolled back run: {run_id}")
+    return 0
+
+
 def main() -> int:
     args = build_parser().parse_args()
     headers = {"x-assistant-user": args.identity}
-    if args.token:
-        headers.update(
-            {
-                "authorization": f"Bearer {args.token}",
-                "x-assistant-signature": delegated_identity_signature(
-                    secret=args.token,
-                    identity=args.identity,
-                ),
-            }
-        )
     client = get_sync_client(url=args.server, headers=headers, timeout=args.timeout)
     thread_id = _ensure_thread(client, args.thread_id)
     if not args.interactive:
@@ -81,7 +155,10 @@ def main() -> int:
         return _run_once(client, text=text, thread_id=thread_id, mode=args.assistant_mode)
     mode = args.assistant_mode
     print(f"Agent Server thread: {thread_id}")
-    print("Commands: /fast, /planning, /new, /exit")
+    print(
+        "Commands: /fast, /planning, /new, /history, "
+        "/replay <checkpoint_id>, /rollback <run_id>, /exit"
+    )
     while True:
         try:
             text = input("you> ").strip()
@@ -102,6 +179,33 @@ def main() -> int:
             thread_id = _ensure_thread(client, None)
             print(f"Agent Server thread: {thread_id}")
             continue
+        if text == "/history":
+            _print_checkpoint_history(client, thread_id=thread_id)
+            continue
+        if text == "/replay":
+            print("Usage: /replay <checkpoint_id>")
+            continue
+        if text.startswith("/replay "):
+            checkpoint_id = text.removeprefix("/replay ").strip()
+            if not checkpoint_id:
+                print("Usage: /replay <checkpoint_id>")
+                continue
+            _replay_checkpoint(
+                client,
+                thread_id=thread_id,
+                checkpoint_id=checkpoint_id,
+            )
+            continue
+        if text == "/rollback":
+            print("Usage: /rollback <run_id>")
+            continue
+        if text.startswith("/rollback "):
+            run_id = text.removeprefix("/rollback ").strip()
+            if not run_id:
+                print("Usage: /rollback <run_id>")
+                continue
+            _rollback_run(client, thread_id=thread_id, run_id=run_id)
+            continue
         _run_once(client, text=text, thread_id=thread_id, mode=mode)
 
 
@@ -113,7 +217,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--thread-id")
     parser.add_argument("--assistant-mode", choices=("fast", "planning"), default="fast")
     parser.add_argument("--timeout", type=float, default=120.0)
-    parser.add_argument("--token")
     parser.add_argument("--interactive", action="store_true")
     return parser
 

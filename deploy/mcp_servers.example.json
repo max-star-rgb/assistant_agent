@@ -13,7 +13,6 @@
       },
       "allowed_tools": [
         "maps_geo",
-        "maps_ip_location",
         "maps_bicycling",
         "maps_direction_walking",
         "maps_direction_driving",
@@ -23,15 +22,13 @@
       ],
       "read_only_tools": [
         "maps_geo",
-        "maps_ip_location",
         "maps_bicycling",
         "maps_direction_walking",
         "maps_direction_driving",
         "maps_direction_transit_integrated",
         "maps_text_search",
         "maps_around_search"
-      ],
-      "timeout_seconds": 30
+      ]
     },
     {
       "server_name": "google_gmail_readonly",
@@ -58,14 +55,7 @@
       "env": {
         "GOOGLE_OAUTH_CLIENT_ID": "${GOOGLE_OAUTH_CLIENT_ID}",
         "GOOGLE_OAUTH_CLIENT_SECRET": "${GOOGLE_OAUTH_CLIENT_SECRET}"
-      },
-      "email_tools": {
-        "search": "search_gmail_messages",
-        "read_batch": "get_gmail_messages_content_batch",
-        "profile": "workspace_mcp_v1",
-        "user_email": "<your-google-account@example.com>"
-      },
-      "timeout_seconds": 20
+      }
     }
   ]
 }

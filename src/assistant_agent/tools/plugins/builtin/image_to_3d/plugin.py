@@ -7,12 +7,10 @@ from assistant_agent.tools.plugins.builtin.image_to_3d.tool import (
     ImageTo3DTool,
     MockImageTo3DAdapter,
 )
-from assistant_agent.tools.plugins.contracts import ToolPluginContext, ToolPluginDescriptor
+from assistant_agent.tools.plugins.contracts import ToolPluginContext
 
 
 class ImageTo3DToolPlugin:
-    descriptor = ToolPluginDescriptor(plugin_id="image_to_3d", plugin_version="1")
-
     def build_tools(self, context: ToolPluginContext) -> list[BaseTool]:
         if context.mock_mode:
             return [ImageTo3DTool(adapter=MockImageTo3DAdapter())]

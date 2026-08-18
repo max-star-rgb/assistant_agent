@@ -11,21 +11,18 @@ from assistant_agent.tools.plugins.builtin.lodging.backend import (
 from assistant_agent.tools.plugins.builtin.lodging.watch_tool import (
     HotelPriceWatchCreateTool,
 )
-from assistant_agent.tools.plugins.contracts import (
-    ToolPluginContext,
-    ToolPluginDescriptor,
-)
+from assistant_agent.tools.plugins.contracts import ToolPluginContext
 
 
 class LodgingToolPlugin:
-    descriptor = ToolPluginDescriptor(plugin_id="lodging", plugin_version="1")
-
     def build_tools(self, context: ToolPluginContext) -> list[BaseTool]:
         if context.mock_mode:
             tools: list[BaseTool] = [LodgingSearchTool()]
-        elif context.config.lodging_provider == "flyai" and _is_executable_file(
-            context.config.flyai_cli_path
-        ) and context.config.flyai_api_key:
+        elif (
+            context.config.lodging_provider == "flyai"
+            and _is_executable_file(context.config.flyai_cli_path)
+            and context.config.flyai_api_key
+        ):
             tools = [
                 LodgingSearchTool(
                     FlyAILodgingSearchAdapter(

@@ -1,6 +1,6 @@
 # Media-Agent WebSocket 接口权威文档
 
-Last updated: 2026-08-14
+Last updated: 2026-08-17
 
 ## Authority contract
 
@@ -16,7 +16,8 @@ Last updated: 2026-08-14
 ## 1. 连接与 envelope
 
 - WebSocket：`ws://<agent_host>:<port>/agent-service/v1`
-- 默认本地端口：`8000`；媒体联调可用 `scripts/run_server.py --port 8089`。
+- 默认本地端口：`8000`；PyCharm 管理的本地 Studio 与媒体联调固定使用
+  `scripts/run_server.py --port 8089`。Codex 默认连接该实例，不另起并行 Server。
 - 外层是 JSON object，`body` 必须是序列化后的 JSON string。
 
 ```json
@@ -89,8 +90,8 @@ Graph 完成后发唯一成功终包：
 `assistantMode` 省略时为 `fast`，也可显式选择 `planning`；旧 `standard|deep_research` 不再接受。媒体适配器
 把请求机械转换为标准 HumanMessage content blocks 和根输入 `execution_mode`。最终正文来自 terminal values
 中的最新标准 `AIMessage`，适配器不得从 delta 拼接或自行生成业务回答。Memory debounce 是所有入口共享的
-主图规则：新 chat run 先通过官方 Agent Server SDK rollback 同 thread 的旧 pending Memory run，回答后再
-enqueue 一个 30 分钟 delayed Memory run；pending chat run 不受影响。该 orchestration 不扩展媒体 wire，
+主图规则：生成回答后通过官方 Agent Server SDK rollback 同 thread 的旧 pending Memory run，并立即 enqueue
+一个新的 30 分钟 delayed Memory run；pending chat run 不受影响。该 orchestration 不扩展媒体 wire，
 WebSocket 挂断也不承担 Memory 语义。
 
 ## 4. interrupt 与 delivery ACK
@@ -152,11 +153,11 @@ run/checkpoint，也不宣称跨进程、离线或 exactly-once 投递；没有 
 
 - 非 `v1` 连接返回失败并以 1008 关闭。
 - 非法 JSON body、缺字段、identity mismatch、重复关联或未知消息返回结构化失败 envelope。
-- custom route 启用 Agent Server auth。内部 thread/run 调用走同源公开 API 并转发认证与 delegation header；
-  Graph、Memory 与 Tool 只读取 Agent Server 注入的 authenticated `user.identity`，不得使用 `/noauth` 或信任客户端 Context 身份。
-- mock mode 默认使用本地 developer principal，也可用 `X-Assistant-User` 模拟用户隔离。
-- real mode 要求显式 `ASSISTANT_AGENT_SERVER_SERVICE_TOKEN`，并要求媒体服务提供 identity 与对应
-  HMAC-SHA256 签名；资源 owner 是验签后的 identity，裸 `userNumber` 不能授权。
+- custom route 启用 Agent Server auth hook。内部 thread/run 调用走同源公开 API 并转发 identity header；
+  Graph、Memory 与 Tool 只读取 Agent Server 注入的 `user.identity`，不得使用 `/noauth` 或信任客户端 Context 身份。
+- mock 与 real mode 都使用 tokenless developer principal；`X-Assistant-User` 存在时直接作为 identity，省略时
+  使用 `local-developer`。资源 owner 继续按该 identity 隔离，但 identity 未经密钥验证，因此服务端口不得暴露给
+  不受信网络。
 
 ## 7. 重连与当前限制
 

@@ -82,6 +82,7 @@ source_globs = [
   ".env.example",
   "src/assistant_agent/config/**",
   "src/assistant_agent/native_agent/providers.py",
+  "src/assistant_agent/native_agent/tool_exposure.py",
   "src/assistant_agent/native_agent/tools.py",
   "src/assistant_agent/tools/**",
   "src/assistant_agent/mcp/**",
@@ -113,7 +114,7 @@ source_globs = [
 thin_references = ["README.md", "docs/context_engineering_status.md", "scripts/README.md"]
 verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/integration/test_memory_lifecycle.py",
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/native-agent-parent-graph/test_native_memory.py",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/native-memory-service/test_delayed_extraction.py",
 ]
 exclusive_literals = []
 exclusive_allowlist = []

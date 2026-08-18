@@ -15,18 +15,10 @@ from assistant_agent.tools.plugins.builtin.media_inspection.visual_memory_tool i
 from assistant_agent.tools.plugins.builtin.media_inspection.visual_reminder_tool import (
     VisualReminderManageTool,
 )
-from assistant_agent.tools.plugins.contracts import (
-    ToolPluginContext,
-    ToolPluginDescriptor,
-)
+from assistant_agent.tools.plugins.contracts import ToolPluginContext
 
 
 class MediaInspectionPlugin:
-    descriptor = ToolPluginDescriptor(
-        plugin_id="media_inspection",
-        plugin_version="1",
-    )
-
     def build_tools(self, context: ToolPluginContext) -> list[BaseTool]:
         tools: list[BaseTool] = []
         vision_ready = context.mock_mode or vision_provider_ready(context.config)

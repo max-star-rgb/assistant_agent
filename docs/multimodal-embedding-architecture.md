@@ -213,7 +213,7 @@ lease 条目，避免长连接在持续处理期间被关闭。observer close �
 SigLIP2 image/text 双模态 readiness 和 text event 的 model/revision/space/dimension 契约一致；不可用、
 非归一化、非有限或零范数向量不会登记为 pending。提醒状态不写 `SessionVisualSemanticStore`、长期记忆 backend、
 durable task 或 notification outbox，不能跨连接恢复。仅执行 `visual_reminder_manage` 的纯连接级 turn
-不会被 `memory_commit` 当作跨 session 事实；混合其他工具的 turn 仍按正常 commit policy 处理。
+不会被独立 Memory Graph 的 `memory_extract` 当作跨 session 事实；混合其他工具的 turn 仍按正常提取策略处理。
 成功 server send 会在同一 runtime session 保存有界的 proactive session event，供下一轮主 LLM 理解
 “知道了”等指代；该事件在连接关闭时清除，不进入 ConversationStore、长期记忆 backend 或跨连接恢复。
 
@@ -239,16 +239,13 @@ hard gate。
 
 ## Tool 暴露与安全
 
-`visual_memory_search` 是 `category=read`、`requires_media=[]`，视频断线后仍可查询已有历史。Runtime
-在 catalog 构建前删除调用方传入的 `_trusted_visual_memory_available`，再根据当前 session Store 的
-`SessionVisualSemanticStore.has_visual_history()` 覆盖；exposure 不检查请求关键词。执行仍经过
-标准 `BaseTool -> ToolNode` 路径；模型不可提交 owner、session 或 as-of 边界。
+`visual_memory_search` 是 `category=read`，视频断线后仍可查询已有历史。生产 composition 只在进程级视觉
+资源可用时静态构造该 `BaseTool`，不按请求关键词建立动态 catalog。执行经过标准
+`BaseTool -> ToolNode` 路径，owner、session 与 as-of 边界由 `ToolRuntime` 注入，模型不可提交。
 
-`visual_reminder_manage` 是 `category=write`、`requires_media=[]`。Runtime 在 catalog 构建前删除调用方
-传入的 `_trusted_visual_reminder_available`，只有请求来自可信 Agent-Service entry profile、结构化
-`call_type=VIDEO` 且 owner/session registry 中存在活动 manager 时才覆盖为 true。Tool 的 session 由
-runtime identity 注入；模型不能提交 owner、manager、embedding 或阈值。create/list/cancel 均经过同一
-Validator、Executor 和 Registry 链路，exposure 不检查用户话术。
+`visual_reminder_manage` 是 `category=write`。只有显式注入连接级 reminder resources 的受信 composition
+才构造该 Tool；session 与身份由 `ToolRuntime` 绑定，模型不能提交 owner、manager、embedding 或阈值。
+create/list/cancel 经过同一 `BaseTool -> ToolNode` 路径，planning 模式下由原生 HITL 在执行前审批。
 
 向量、owned evidence 路径和原始 VLM payload 不进入模型 schema、Tool data、trace、日志或 system eval artifact。
 session evidence 不是长期记忆，不写 Mem0，也不跨 user/session 搜索。

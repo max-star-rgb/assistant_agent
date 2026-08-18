@@ -5,13 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from langchain.agents import AgentState
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 
 from assistant_agent.native_agent.context import AssistantRunContext
+from assistant_agent.native_agent.state import FastAgentState
 
 
 @dataclass(frozen=True)
@@ -41,29 +41,36 @@ def invoke_native_tool(
     user_identity: str,
     thread_id: str,
     tool_call_id: str,
+    request_content: str | list[dict[str, Any]] | None = None,
+    state: dict[str, Any] | None = None,
 ) -> NativeToolInvocation:
     """Execute one real BaseTool through LangGraph's standard ToolNode."""
 
-    builder = StateGraph(AgentState, context_schema=AssistantRunContext)
+    builder = StateGraph(FastAgentState, context_schema=AssistantRunContext)
     builder.add_node("tools", ToolNode([tool], handle_tool_errors=False))
     builder.add_edge(START, "tools")
     builder.add_edge("tools", END)
     graph = builder.compile()
+    messages = []
+    if request_content is not None:
+        messages.append(HumanMessage(content=request_content))
+    messages.append(
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": tool.name,
+                    "args": arguments,
+                    "id": tool_call_id,
+                    "type": "tool_call",
+                }
+            ],
+        )
+    )
     result = graph.invoke(
         {
-            "messages": [
-                AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": tool.name,
-                            "args": arguments,
-                            "id": tool_call_id,
-                            "type": "tool_call",
-                        }
-                    ],
-                )
-            ]
+            **(state or {}),
+            "messages": messages,
         },
         context=AssistantRunContext(entry_profile="system_eval"),
         config={

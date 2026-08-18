@@ -101,6 +101,7 @@ class MediaInspectTool(ToolBase):
             self.adapter = adapter or getattr(client, "image_adapter", None)
             self.client = client
         self._video_branch = VideoUnderstandingBranch(
+            tool_name=self.name,
             client=self.client,
             adapter=video_adapter,
             context_store=context_store,
@@ -247,19 +248,6 @@ class LiveViewInspectTool(MediaInspectTool):
         for binding in MediaInspectTool.runtime_input_bindings
         if binding.field != "user_query"
     )
-
-    def _validate_input(
-        self,
-        input: Any,
-    ) -> VisionUnderstandingRequest | LiveViewInspectRequest:
-        # Keep direct internal/test callers compatible; governed LLM calls use
-        # the query-required schema exposed by the native Tool.
-        if isinstance(input, VisionUnderstandingRequest) and not isinstance(
-            input,
-            LiveViewInspectRequest,
-        ):
-            return input
-        return super()._validate_input(input)
 
     def _execute(
         self,

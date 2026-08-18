@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
+from collections.abc import Iterable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Protocol, cast
+
+from langchain_core.messages import (
+    MessageLikeRepresentation,
+    convert_to_openai_messages,
+)
 
 from assistant_agent.runtime.chat_adapter import ChatRequest
 
@@ -22,6 +29,12 @@ class ContextTokenCounter(Protocol):
 
     def count_chat_request(self, request: ChatRequest) -> int:
         """Return the preflight token count for one compiled request."""
+
+    def count_messages(
+        self,
+        messages: Iterable[MessageLikeRepresentation],
+    ) -> int:
+        """Count one LangChain message history for native middleware."""
 
 
 class TokenizerJsonTokenCounter:
@@ -46,6 +59,7 @@ class TokenizerJsonTokenCounter:
             ) from exc
         self._tokenizer = Tokenizer.from_file(str(path))
         self.tokenizer_id = tokenizer_id
+        self._message_encoder = _load_deepseek_v4_encoder(path, tokenizer_id)
 
     def count_text(self, value: str) -> int:
         if not value:
@@ -67,6 +81,28 @@ class TokenizerJsonTokenCounter:
         )
         return self.count_text(serialized)
 
+    def count_messages(
+        self,
+        messages: Iterable[MessageLikeRepresentation],
+    ) -> int:
+        """Count native messages after applying the model's chat encoding."""
+
+        openai_messages = cast(
+            "list[dict[str, Any]]",
+            convert_to_openai_messages(list(messages)),
+        )
+        if self._message_encoder is not None:
+            return self.count_text(
+                self._message_encoder(openai_messages, thinking_mode="chat")
+            )
+        serialized = json.dumps(
+            {"messages": openai_messages},
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        return self.count_text(serialized)
+
 
 def create_context_token_counter(
     config: ProviderConfig,
@@ -76,9 +112,10 @@ def create_context_token_counter(
     if config.provider_mode != "real":
         return None
     if not config.context_tokenizer_path:
-        if config.context_compactor_mode == "llm":
+        model_id = str(config.chat_model or "").strip().lower()
+        if config.context_compactor_mode == "llm" or "deepseek-v4" in model_id:
             raise ValueError(
-                "LLM context compaction requires "
+                "DeepSeek V4/native LLM context compaction requires "
                 "MULTIMODAL_AGENT_CONTEXT_TOKENIZER_PATH"
             )
         return None
@@ -119,3 +156,31 @@ def _without_none(value: Any) -> Any:
     if isinstance(value, list):
         return [_without_none(item) for item in value]
     return value
+
+
+def _load_deepseek_v4_encoder(
+    tokenizer_path: Path,
+    tokenizer_id: str,
+) -> Callable[..., str] | None:
+    if "deepseek-v4" not in tokenizer_id.strip().lower():
+        return None
+    encoding_path = tokenizer_path.parent / "encoding" / "encoding_dsv4.py"
+    if not encoding_path.is_file():
+        raise ValueError(
+            "DeepSeek V4 context token counting requires the official "
+            f"encoding/encoding_dsv4.py beside {tokenizer_path}"
+        )
+    spec = importlib.util.spec_from_file_location(
+        "assistant_agent_deepseek_v4_encoding",
+        encoding_path,
+    )
+    if spec is None or spec.loader is None:
+        raise ValueError(f"cannot load DeepSeek V4 message encoding: {encoding_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    encoder = getattr(module, "encode_messages", None)
+    if not callable(encoder):
+        raise ValueError(
+            f"DeepSeek V4 encoding does not define encode_messages: {encoding_path}"
+        )
+    return cast("Callable[..., str]", encoder)

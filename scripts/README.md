@@ -8,11 +8,25 @@ eval、Agent Server 主链路覆盖的 probe 不应继续沉积到本目录。
 
 ## Realtime runtime
 
-- `scripts/run_server.py`：调用本环境的 `langgraph dev` 启动 `langgraph.json` 所声明的
-  Agent Server、原生 Graph 与 media custom route；它只负责 host/port/reload/env-file 参数，不构造项目自有
-  Runtime，也不打印旧 runtime completeness 或 Gateway lifecycle 摘要。控制台 stdout/stderr 默认同时追加到
-  `.data/logs/agent_server.log`，可用 `--log-file` 指定其他部署自有路径。LangSmith Studio 使用框架内建
-  `StudioUser` 认证；real mode 的 CLI/media 等非 Studio 客户端才需要项目 service token 与签名。
+- `scripts/run_server.py`：启动 `langgraph.json` 所声明的 Agent Server、原生 Graph 与 media custom route，
+  不构造项目自有 Runtime。`--backend dev`（默认）调用 `langgraph dev`，状态落在仓库共享的
+  `.langgraph_api/`，只适合单个本地开发实例。wrapper 使用工作目录级单实例锁，并在启动前检查请求端口；
+  端口被占用时直接失败，不允许 `langgraph dev` 自动改用随机端口。PyCharm 共享配置 **Agent Server (Real)**
+  固定使用 `8089` 并启用原生 hot reload；Codex 默认作为客户端连接该实例。只有 PyCharm Server 已停止时，
+  dev backend 才能临时在 `8090` 启动隔离诊断服务，并在诊断完成后停止。
+  `--backend postgres` 使用 `deploy/agent_server/compose.yaml` 启动专用 PostgreSQL、Redis 和本地构建的
+  Agent Server 镜像，API 只绑定回环地址，PostgreSQL named volume 跨容器重启保留 Store/checkpoint。
+  首次启动或代码变化后运行：
+
+  ```bash
+  /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_server.py \
+    --backend postgres --host 127.0.0.1 --port 8090 --env-file .env --rebuild
+  ```
+
+  后续启动可省略 `--rebuild`。控制台 stdout/stderr 默认同时追加到按请求端口隔离的
+  `.data/logs/agent_server-<port>.log`，可用 `--log-file` 指定其他部署自有路径；旧
+  `.data/logs/agent_server.log` 只保留历史记录。Studio 使用框架内建身份；其他本地客户端直接声明
+  `X-Assistant-User`，当前 tokenless 部署没有网络身份认证，因此不得把 API 暴露到不受信网络。
 - `scripts/run_qdrant.py`：PyCharm-friendly 本地 Qdrant supervisor。它只启动
   `docker/mem0/compose.yaml` 的 `visual-memory` profile 和 `qdrant` service，等待
   `http://127.0.0.1:6333/healthz` 就绪，并作为一个 Run process 持续运行。仓库已提供共享配置
@@ -47,7 +61,10 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
   Mem0 记忆为简体中文。默认命令只读；更新要求 real Provider mode、已配置的 Qwen 和
   Mem0，并同时传入 `--apply` 与 `--allow-real-provider`。输出只包含数量、memory ID、
   状态和稳定错误码，不持久化记忆正文或 Provider 响应。
-- `scripts/agent_cli.py`：通过公开 `langgraph_sdk` 调用 Agent Server 的 thread/run/stream/cancel CLI。
+- `scripts/agent_cli.py`：通过公开 `langgraph_sdk` 调用 Agent Server。交互模式支持 `/history` 查看脱敏
+  checkpoint 元数据、`/replay <checkpoint_id>` 从历史 checkpoint 创建原生 replay 分支，以及
+  `/rollback <run_id>` 用 `action="rollback"` 丢弃可取消 run；两个变更状态的命令都要求精确确认。CLI 不读取
+  saver、不维护 checkpoint facade，也不承诺撤销已经发生的外部 Tool 副作用。
 - `scripts/media_simulator.py`: server-backed Media-Agent protocol simulator for
   `/agent-service/v1`; type text repeatedly, or use `/new [sessionId]` to open a
   new media session. In interactive mode, `/planning` selects planning mode for
@@ -78,21 +95,18 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 ## Observability and local operations
 
 - `scripts/trace_metrics.py`: redacted trace metric summary.
-- 生产 Graph 生命周期以 Agent Server/LangSmith native trace 为准。`.data/gateway_events.jsonl` 只属于仍显式
-  启用旧兼容观测模块的外围入口，不由 `scripts/run_server.py` 自动生成，也不能作为原生 Graph 事实源。
+- 生产 Graph 生命周期以 Agent Server/LangSmith native trace 为准；旧 Gateway JSONL 兼容观测模块已删除。
 
 ## Eval and evidence
 
 - `scripts/run_demo_flows.py`: offline scenario matrix for regression demos.
 - `scripts/run_evals.py`: offline eval harness for lower-layer behavior checks.
-- `scripts/run_system_calendar_create_eval.py`: 不经过 LLM 或 Assistant Graph，通过最小 StateGraph 的原生
-  `ToolNode` 执行 `calendar_create`，验证首次提交、幂等回放和真实 SQLite
-  终态。无参数默认执行，`--dry-run` 无副作用；产物写入
-  `.data/evals/system/tools/calendar/create/<run>/`，不要求 real Provider mode。
-- `scripts/run_system_calendar_search_eval.py`: 在 run-scoped SQLite 中通过 adapter 预置合成事件，
-  再通过最小 StateGraph 的原生 `ToolNode` 执行一次 `calendar_search`，验证返回事件和只读终态。无参数默认
-  执行，产物写入
-  `.data/evals/system/tools/calendar/search/<run>/`。
+- `evals/system/tools/<tool_name>.py`: 每个当前注册 Tool 一个可在 PyCharm 直接运行的离线固定输入冒烟脚本；
+  通过原生 `ToolNode` 调用一次，只检查调用成功且返回结果，不断言候选数量、排序或具体业务内容。
+  `scripts/run_system_calendar_create_eval.py` 与 `scripts/run_system_calendar_search_eval.py` 仅保留为相应脚本的
+  兼容 PyCharm 入口。
+- `evals/system/tools/run_all.py`: 可在 PyCharm 中直接运行；递归发现并依次运行目录下除 helper 与自身之外的
+  全部 Tool 冒烟脚本，最后输出逐脚本 return code 和聚合通过状态。
 - `scripts/run_system_multimodal_embedding_eval.py`: 验证本地 SigLIP2 联合 image/text ONNX
   资产。`--dry-run` 不加载模型；真实 CUDA session 必须显式传入 `--allow-local-model`，结果写入
   `.data/evals/system/multimodal_embedding/`，不保存向量、文本、图片内容或媒体路径。dry-run 还列出

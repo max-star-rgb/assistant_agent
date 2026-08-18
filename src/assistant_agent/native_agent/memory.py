@@ -26,11 +26,28 @@ from assistant_agent.native_agent.context import (
     authenticated_user_identity,
 )
 from assistant_agent.native_agent.providers import create_chat_model
-from assistant_agent.native_agent.state import AssistantRootState
+from assistant_agent.native_agent.state import (
+    AssistantRootState,
+    MemoryExtractionState,
+)
 
 
 class MemoryBackendConfigurationError(RuntimeError):
     """The selected native memory backend cannot be constructed safely."""
+
+
+_LANGMEM_MEMORY_INSTRUCTIONS = """\
+你是长期记忆管理器，负责维护语义记忆、程序性记忆和情景记忆。
+
+从本次交互中判断助理应长期记住哪些与用户、助理自身或响应方式有关的信息：
+
+1. 提取并补充上下文：识别重要事实、关系、偏好、推理流程和适用场景；对不确定的推断标注置信度并说明依据。
+2. 比较并更新：关注偏离已有记忆的新信息；根据可靠性和时效性合并重复内容、修正错误，并保持内部一致。
+3. 综合并推理：用演绎、归纳或溯因总结稳定模式，但不要把一次性请求、测试口令或低置信度猜测当作长期事实。
+
+所有新增或更新的记忆正文必须使用简体中文。代码、协议字段、产品名和其他专有名词可保留原文；引用外语内容时，
+应以中文说明其含义。记忆应当紧凑、完整、可独立理解，并保留必要的置信度与理由。
+"""
 
 
 @runtime_checkable
@@ -289,7 +306,7 @@ def memory_recall_degraded(
 
 
 async def memory_extract_node(
-    state: AssistantRootState,
+    state: MemoryExtractionState,
     runtime: Runtime[AssistantRunContext],
     *,
     backend: MemoryBackend,
@@ -307,7 +324,7 @@ async def memory_extract_node(
 
 
 def memory_extract_degraded(
-    _state: AssistantRootState,
+    _state: MemoryExtractionState,
     error: NodeError,
 ) -> Command[str]:
     """Keep Memory extraction failure isolated from completed chat runs."""
@@ -333,6 +350,7 @@ def _create_langmem_manager(config: ProviderConfig, *, store: BaseStore | None):
         model = create_chat_model(replace(config, chat_model=config.langmem_model))
         return create_manager(
             model,
+            instructions=_LANGMEM_MEMORY_INSTRUCTIONS,
             namespace=("assistant_agent", "{langgraph_user_id}"),
             store=store,
         )

@@ -3,16 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Protocol
-
-from pydantic import BaseModel, Field
+from typing import TYPE_CHECKING
 
 from assistant_agent.config import ProviderConfig
-from langchain_core.tools import BaseTool
 
 if TYPE_CHECKING:
-    from assistant_agent.mcp.config import MCPServerConfig
-    from assistant_agent.mcp.registration import MCPToolDiscoveryRunner
     from assistant_agent.automation.durable_tasks.service import DurableTaskService
     from assistant_agent.media.video.realtime_video_memory import (
         RealtimeVideoMemoryStore,
@@ -37,8 +32,6 @@ class ToolPluginContext:
     """Dependencies and structured enablement facts available to built-in plugins."""
 
     config: ProviderConfig
-    mcp_server_configs: list[MCPServerConfig]
-    mcp_runner: MCPToolDiscoveryRunner | None = None
     video_context_store: VideoContextStore | None = None
     vision_client: VisionUnderstandingClient | None = None
     realtime_video_memory_store: RealtimeVideoMemoryStore | None = None
@@ -52,21 +45,3 @@ class ToolPluginContext:
     @property
     def mock_mode(self) -> bool:
         return self.config.provider_mode == "mock"
-
-
-class ToolPlugin(Protocol):
-    """A capability bundle that constructs tools but cannot bypass governance."""
-
-    descriptor: "ToolPluginDescriptor"
-
-    def build_tools(self, context: ToolPluginContext) -> list[BaseTool]:
-        """Create the tools contributed by this capability bundle."""
-
-
-class ToolPluginDescriptor(BaseModel):
-    """Versioned identity declared by one in-process Tool plugin."""
-
-    plugin_id: str = Field(pattern=r"^[a-z0-9][a-z0-9._]*$")
-    plugin_version: str = Field(min_length=1)
-    api_version: Literal["tool_plugin_v1"] = "tool_plugin_v1"
-

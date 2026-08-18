@@ -149,8 +149,8 @@ class ProviderConfig:
     context_compactor_mode: ContextCompactorMode = "off"
     context_tokenizer_path: str | None = None
     context_input_token_limit: int = 128_000
-    context_compaction_trigger_ratio: float = 0.70
-    context_compaction_target_ratio: float = 0.40
+    context_compaction_trigger_ratio: float = 0.75
+    context_compaction_target_ratio: float = 0.15
     context_compaction_hard_ratio: float = 0.85
     context_compaction_safety_margin_tokens: int = 50_000
     context_summary_max_tokens: int = 32_768
@@ -650,11 +650,11 @@ class ProviderConfig:
             ),
             context_compaction_trigger_ratio=_ratio_env(
                 source.get("MULTIMODAL_AGENT_CONTEXT_COMPACTION_TRIGGER_RATIO"),
-                0.70,
+                0.75,
             ),
             context_compaction_target_ratio=_ratio_env(
                 source.get("MULTIMODAL_AGENT_CONTEXT_COMPACTION_TARGET_RATIO"),
-                0.40,
+                0.15,
             ),
             context_compaction_hard_ratio=_ratio_env(
                 source.get("MULTIMODAL_AGENT_CONTEXT_COMPACTION_HARD_RATIO"),

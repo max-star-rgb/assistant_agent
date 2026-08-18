@@ -9,7 +9,7 @@
 - 采用 LangChain 官方 `memory-template` 的 Agent Server SDK 调度方式，不使用 `RemoteReflectionExecutor` 固定的 `rollback` 策略。
 - 主 graph 与 memory graph 作为两个 graph 注册到同一个 Agent Server。
 - delayed memory run 与 chat run 使用同一个 conversation `thread_id`，由 Agent Server 保存 shared thread state。
-- `after_seconds` 默认 1800 秒，使用 `multitask_strategy="enqueue"`；项目在每个新 chat run 开始时用官方 SDK 精确 rollback 旧 pending Memory run，并在最新回答后重新 enqueue。
+- `after_seconds` 默认 1800 秒，使用 `multitask_strategy="enqueue"`；项目在回答后用官方 SDK 精确 rollback 旧 pending Memory run，并立即重新 enqueue。
 - 用户身份只来自 Agent Server authenticated runtime；不把 `user_id` 暴露为可伪造 graph input 或 configurable 参数。
 
 ## 最终拓扑
@@ -18,7 +18,6 @@
 assistant-native-v1
 
 START
-  -> cancel_pending_memory_extractions
   -> memory_recall
   -> execution_router
        -> fast_agent ------------------+
@@ -26,7 +25,7 @@ START
             -> planner                 |
             -> workers                 | frozen memory_context
             -> finalize                |
-  -> enqueue_memory_extraction --------+
+  -> refresh_memory_extraction --------+
   -> END
 
 
@@ -49,7 +48,7 @@ recall 使用 LangGraph 原生 `RetryPolicy`。重试耗尽后使用原生 error
 
 ## 冷路径与 debounce
 
-每个 chat run 开始时，`cancel_pending_memory_extractions` 通过官方 SDK 查询同 thread 的 pending runs，只对带 `assistant_agent_run_kind=memory_extraction` metadata 的 run 调用 `cancel(..., wait=True, action="rollback")`。fast 或 planning 生成最终 `AIMessage` 后，主图进入 `enqueue_memory_extraction` 并创建 delayed run：
+fast 或 planning 生成最终 `AIMessage` 后，主图进入 `refresh_memory_extraction`：先通过官方 SDK 查询同 thread 的 pending runs，只对带 `assistant_agent_run_kind=memory_extraction` metadata 的 run 调用 `cancel(..., wait=True, action="rollback")`，随后创建新的 delayed run：
 
 ```text
 thread_id = 当前 conversation thread
@@ -77,7 +76,7 @@ metadata.assistant_agent_run_kind = memory_extraction
 
 ## 验证
 
-- 图结构：主图直接包含 pending Memory 清理、recall、router、agent 和 extraction enqueue，不包含 Memory compiled subgraph。
+- 图结构：主图直接包含 recall、router、agent 和回答后的 extraction refresh，不包含 Memory compiled subgraph。
 - fast/planning：每个顶层 run 仅 recall 一次，planning workers 共享同一快照。
 - 调度契约：SDK 收到同一 thread、`assistant-memory-v1`、完整 messages、1800 秒和 enqueue。
 - 隔离性：schedule 不直接调用 backend.commit；memory graph 不执行 Agent。

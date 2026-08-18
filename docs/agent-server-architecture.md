@@ -68,20 +68,60 @@ Provider、Observer 和语义 Store 生命周期；run-local Tool 只注入它�
 composition 只构造标准模型、Tool、Memory backend 与两张静态原生 Graph，不构造平行 Graph
 Runtime、产品状态投影器或 Workflow host。
 
+## 本地部署与持久化
+
+`scripts/run_server.py` 提供两个显式 backend：
+
+- `dev` 使用 `langgraph dev`，checkpoint 与 Store pickle 到仓库 `.langgraph_api/`。该目录由整个工作目录共享，
+  只允许同时运行一个 dev server；多个端口并行运行会竞争同一份退出落盘状态，不作为可靠持久化方案。
+- `postgres` 使用 `langgraph build` 生成 `assistant-agent/langgraph-api:local`，再由
+`deploy/agent_server/compose.yaml` 启动 Agent Server、PostgreSQL 16/pgvector 与 Redis 6。Agent Server
+通过 `POSTGRES_URI` 持久化 assistant、thread、run、checkpoint 与 LangGraph Store，Redis 只承担运行时
+stream/queue 协调。LangMem 仍使用 factory 注入的 Agent Server Store，不引入项目自有 PostgreSQL adapter。
+`langgraph.json` 同时声明运行镜像所需的 LangMem optional runtime 依赖，不能只依赖宿主 Python 环境已安装的
+extra。
+
+本地 dev 的唯一常驻入口由 PyCharm 管理，固定使用 `8089` 并保留 `langgraph dev` 原生 hot reload。Codex 默认
+作为客户端连接该服务；修改源码后先等待 reload，只有需要完整重启时才重启同一个 `8089` 实例。dev backend
+若临时使用 `8090`，仅供 PyCharm Server 已停止后的隔离诊断，诊断完成即停止；postgres backend 则把 `8090`
+作为独立持久化部署的默认端口。`scripts/run_server.py` 对 dev backend 持有工作目录级
+单实例锁，并在启动前要求请求端口可用，禁止框架自动漂移到随机端口；默认日志按请求端口写入
+`.data/logs/agent_server-<port>.log`。这些约束不创建项目自有 Runtime，也不把两个端口解释为两个 worker。
+
+postgres backend 的 API 仅映射到 `127.0.0.1:${ASSISTANT_AGENT_SERVER_PORT}:8000`，默认宿主端口为 8090；
+PostgreSQL 与 Redis 不映射宿主端口，也不复用旧 Langfuse 服务。PostgreSQL 数据保存在独立 named volume
+`assistant-agent-langgraph-postgres-data`，普通 `restart`、`stop` 或重新构建 API 镜像不会删除数据。
+`.langgraph_api/` 不迁移到 PostgreSQL。`.env` 仅作为未跟踪的容器 env file 注入，不能写入镜像或提交。
+
+首次构建启动：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_server.py \
+  --backend postgres --host 127.0.0.1 --port 8090 --env-file .env --rebuild
+```
+
+代码未变化时省略 `--rebuild`。此入口以前台 Compose 进程运行，Ctrl-C 停止该专用 stack，但保留 PostgreSQL
+volume。删除 volume 属于显式数据销毁操作，不是正常停止流程。
+
+operator 需要检查或恢复 conversation 时，`scripts/agent_cli.py` 直接使用公开 SDK：
+`threads.get_history()` 只显示 checkpoint 元数据，`runs.wait(input=None, checkpoint_id=...)` 从历史
+checkpoint 创建 replay 分支，`runs.cancel(action="rollback", wait=True)` 丢弃仍可取消的 run 及其
+checkpoints。replay 与 rollback 都要求精确确认；项目不读取 saver、不维护 checkpoint facade，也不把 Graph
+state 回滚描述为已完成外部 Tool 副作用的自动撤销。
+
 所有 chat 入口最终调用同一个 `assistant-native-v1`，因此 Memory debounce 不散落在 Studio、CLI、HTTP 或
-WebSocket adapter：主图开头使用官方 SDK 查找并 rollback 同 thread、带专用 metadata 的旧 pending Memory
-run，回答后再 enqueue 一个新的 delayed `assistant-memory-v1` run。Agent Server 继续拥有真正的 delay 与
+WebSocket adapter：主图在回答后使用官方 SDK 查找并 rollback 同 thread、带专用 metadata 的旧 pending Memory
+run，随后 enqueue 一个新的 delayed `assistant-memory-v1` run。Agent Server 继续拥有真正的 delay 与
 queue；项目不创建 timer 或第二套队列。
 
 ## Auth 与身份
 
-LangSmith Studio 携带 Agent Server 内建的 `x-auth-scheme: langsmith` 认证，先由框架校验 LangSmith 会话并
-构造 `StudioUser`，不会进入项目的 service-token authenticate handler；后续 assistant/thread/run 授权仍按
-该 Studio identity 执行。mock/local 的非 Studio 客户端可用 `X-Assistant-User` 构造开发 principal。
-
-real mode 的非 Studio HTTP/media 客户端要求 `ASSISTANT_AGENT_SERVER_SERVICE_TOKEN`；除 Bearer token 外还需
-提供 authenticated identity 与对应 HMAC-SHA256 签名。thread metadata 按 auth owner 限制；run 与 Store
-沿用同一 principal。connection、vendor session、thread、run 与 delivery ID 始终是不同身份轴。
+LangSmith Studio 携带 Agent Server 内建的 `x-auth-scheme: langsmith` 认证并构造 `StudioUser`；非 Studio
+客户端在 mock 与 real 模式下都通过 tokenless auth hook 构造 developer principal：`X-Assistant-User` 存在时
+直接作为 identity，省略时使用 `local-developer`。项目不读取 Bearer token，也不校验 delegation 签名。
+thread metadata 仍按 auth owner 限制，run 与 Store 沿用同一 principal；但 identity 由客户端声明，因此该部署
+不具备跨不受信网络的身份认证能力，不应把端口暴露给不受信调用方。connection、vendor session、thread、run
+与 delivery ID 始终是不同身份轴。
 
 ## `/agent-service/v1`
 
@@ -114,7 +154,5 @@ H.264 解码与 3D callback 属于媒体边缘资源。解码后的有界 JPEG �
 ```bash
 MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
   tests/core/contract/test_gateway_contract.py \
-  tests/tdd/native-agent-parent-graph/test_agent_server_factory.py \
-  tests/tdd/native-agent-parent-graph/test_media_native_adapter.py \
-  tests/tdd/native-proactive-delivery/test_media_delivery_pump.py
+  tests/core/integration/test_runtime_lifecycle.py
 ```

@@ -20,6 +20,15 @@
 具体 Tool；这些 Tool 本身继承 `BaseTool`，不再在生产装配时二次包装为通用 `StructuredTool`。新主链不做
 文件扫描、动态 Python module discovery 或 Registry lookup。
 
+进程 composition 仍把完整静态 `BaseTool` inventory 注册给 `create_agent` / `ToolNode`，但完整注册不等于每次
+模型调用全部可见。`ProgressiveToolExposureMiddleware` 在原生 `wrap_model_call` 中按受信 Skill manifest 和
+fast agent 子图当前执行的 state/checkpoint namespace 内 `active_skill_ids` 缩小 `ModelRequest.tools`：
+未加载 Skill 时，其 `governed_tools` schema 不发给
+模型；成功执行 `load_skill` 后，middleware 把原 `ToolMessage` 与窄 Skill/reference grant 一起写入标准
+`Command(update=...)`，下一次模型调用才暴露对应 Tool。Skill/reference channel 不进入父图或 Memory
+Graph。Tool 名只从 `skill.toml` 重新解析，不接受模型或 Tool
+artifact 声明任意 grant；该可见性层不替代具体 Tool 的身份、授权、参数和副作用校验。
+
 每个内建 Tool：
 
 - 模型只看到去除 runtime-owned 字段的 `tool_call_schema`；
@@ -34,10 +43,19 @@
 
 ## MCP 与 Plugin
 
-外部 MCP 只通过官方 `MultiServerMCPClient` 装配。受信 `MCPServerConfig` 机械转换为 stdio connection；发现后
+本地与 MCP Tool 通过一个 native inventory 一次完成装配。外部 MCP 只通过官方 `MultiServerMCPClient`
+发现和执行；受信 `MCPServerConfig` 机械转换为 stdio connection，发现后
 应用显式 allowlist、read-only effect 和 `<namespace>_<server>_<tool>` 命名。主链不建立 MCP proxy、ToolSpec
-镜像或 Registry。MCP tool discovery 属于 worker 进程 composition，只执行一次；schema、history、state 与
+镜像、plugin-private runner 或 Registry。旧 `personal_assistant_tools` / `email_tools` 远端映射已删除，MCP
+能力直接使用官方 adapter 生成的标准 Tool。MCP tool discovery 属于 worker 进程 composition，只执行一次；schema、history、state 与
 run 复用同一个 compiled graph 和 Tool 集合，实际 MCP Tool 调用仍遵循官方按调用创建 session 的行为。
+
+Skill manifest 的 `governed_tools` 使用上述最终 namespace 名，因此 MCP Tool 与本地 Tool 使用同一渐进暴露机制。
+
+MCP 只有一份 `MCPServerConfig` 文件 schema：根对象包含 `servers` 列表，每个 server 只声明官方 adapter
+connection、显式 Tool allowlist、read-only 集合与 namespace。MCP 未启用时不读取配置；显式启用后，配置文件
+缺失、JSON/schema 非法或出现遗留字段时 composition 立即以脱敏错误失败，不静默跳过 server，也不兼容旧的
+顶层数组、`email_tools`、`personal_assistant_tools` 或 server-local `timeout_seconds`。
 
 本地 Plugin 只复用纯构造逻辑和 Provider adapter，生产装配清单是代码中的显式列表。旧 Tool CLI、动态
 loader、Registry/Executor、离线 MCP server 与 Skill runtime 已删除。两个本地日历 system eval 也通过最小

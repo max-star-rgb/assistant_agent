@@ -11,7 +11,26 @@
 | 验证入口 | `docs/authority.toml` 中 `observability-diagnosis.verification` |
 | 相邻 authority | [`observability-harness.md`](observability-harness.md)、[`agent-server-architecture.md`](agent-server-architecture.md)、[`../evals/README.md`](../evals/README.md) |
 
-## 1. 诊断顺序
+## 1. 查询模式与诊断顺序
+
+### 1.1 精确 run_id 快速定位
+
+当用户只要求定位、打开或确认某条 LangSmith 记录，并提供了合法 UUID 形式的
+`run_id` 时，先走快速路径：
+
+1. 使用当前已配置的 LangSmith client 按 UUID 直接 retrieve run，不先扫描仓库、检索本地日志、
+   查询 project 列表或做时间范围搜索。
+2. 命中后立即返回 root name、status、开始/结束时间、总耗时和 LangSmith 直达 URL；定位请求
+   到此结束。
+3. 只有用户明确要求诊断、解释或展开执行轨迹时，才加载 child runs 并核对 node、LLM、Tool、
+   latency 与 Feedback。
+4. 只有直接 retrieve 未命中、无权限或请求对象不是 LangSmith run ID 时，才进入下节的完整
+   诊断与证据降级流程。
+
+快速定位不读取或输出 prompt、message content、Provider payload 或 Tool 原始结果；凭据仅从本地
+安全配置加载，不得在命令、输出或报告中展开 API key。
+
+### 1.2 完整诊断与证据降级
 
 当用户提供 `assistant.turn: <trace_id>`、真实 run、通话或机器日志时：
 

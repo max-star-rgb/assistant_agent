@@ -40,7 +40,7 @@ manifest 只用于 coding agent 选择工程文档，不进入产品 Runtime，�
   Provider-native 只读联网属于模型生成能力，不投影为本地 Tool，也不进入该执行链。
 - Provider 运行只分 `mock` 和 `real`。mock 模式下主 LLM 与 Provider-backed tools 强制使用 mock；real 模式下主 LLM 必须完整配置，Provider-backed tools 只注册已完整配置的真实实现，禁止静默回退到 mock。
 - Tool exposure 和入口路由不得用关键词、正则、高信号话术或手写请求规则推断用户意图；候选 Tool 由受信静态装配、MCP allowlist、entry/media/env 等结构化事实决定，具体调用与参数由 LLM 判断。
-- 长期 Memory recall 发生在父图固定节点并冻结为 `memory_context`；父图通过官方 Agent Server SDK 清理旧 pending Memory run、回答后 enqueue 独立 `assistant-memory-v1`，extract 只在该后台图执行。后端只实现最小 `MemoryBackend` 协议，可接 LangMem、Mem0 或第三方服务。
+- 长期 Memory recall 发生在父图固定节点并冻结为 `memory_context`；回答后父图通过官方 Agent Server SDK rollback 旧 pending Memory run 并 enqueue 独立 `assistant-memory-v1`，extract 只在该后台图执行。后端只实现最小 `MemoryBackend` 协议，可接 LangMem、Mem0 或第三方服务。
 - MCP、A2A、API、CLI、demo、eval 等交互入口应复用 Agent Server/native graph；不属于对话 run 的 durable task 与后台感知只使用窄业务 service/adapter，不得重建第二套 Agent Runtime。
 - 非 Python 的 Web UI、BFF、vendor adapter 或边缘入口只能做薄适配器；不要把旧 `runTime` agent loop 引入本项目。
 
@@ -61,6 +61,11 @@ manifest 只用于 coding agent 选择工程文档，不进入产品 Runtime，�
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python
 ```
+
+本地开发由 PyCharm 管理唯一的 `langgraph dev`，固定使用端口 `8089` 并默认启用原生 hot reload。Codex
+修改源码后应等待并验证该服务 reload；确需完整重启时重启同一个 `8089` 服务，不得另起并行 Server。Codex
+默认作为客户端连接现有 `8089`；同一工作目录不得同时运行两套 dev server，因为它们共享 `.langgraph_api/`；启动统一使用
+`scripts/run_server.py` 的单实例锁、严格端口检查和按端口隔离日志。
 
 测试与 eval 的职责边界见第 8 节；具体命令和运行约束以 `tests/README.md`、
 `evals/README.md`、`scripts/README.md` 或对应 `docs/*.md` 为准。历史 runbook

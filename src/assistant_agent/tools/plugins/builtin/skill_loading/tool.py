@@ -62,6 +62,7 @@ class LoadSkillTool(ToolBase):
             skill_id=descriptor.name,
             content=content,
             reference_ids=list(descriptor.references),
+            granted_tools=list(descriptor.governed_tools),
         )
         data = result.model_dump(mode="json")
         return ToolResult(

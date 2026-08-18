@@ -1,8 +1,14 @@
 {
-  "dependencies": ["."],
+  "dependencies": [
+    ".",
+    "fastapi==0.136.3",
+    "langmem==0.0.30",
+    "httpx[socks]==0.28.1"
+  ],
   "env": ".env",
   "graphs": {
-    "assistant-native-v1": "assistant_agent.agent_server.graph:native_assistant_graph"
+    "assistant-native-v1": "assistant_agent.agent_server.graph:native_assistant_graph",
+    "assistant-memory-v1": "assistant_agent.agent_server.graph:native_memory_graph"
   },
   "auth": {
     "path": "assistant_agent.agent_server.auth:auth"
