@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from langchain_core.tools import BaseTool, tool
 from langgraph.prebuilt import ToolRuntime
@@ -60,7 +60,7 @@ def create_lodging_search_tool(adapter: LodgingSearchAdapter | None = None) -> B
             ),
         ] = None,
         hotel_types: Annotated[
-            list[str],
+            list[Literal["酒店", "民宿", "客栈"]],
             Field(max_length=3, description="住宿类型筛选。"),
         ] = [],
         star_ratings: Annotated[
@@ -68,7 +68,7 @@ def create_lodging_search_tool(adapter: LodgingSearchAdapter | None = None) -> B
             Field(max_length=5, description="酒店星级筛选，取值为 1 到 5。"),
         ] = [],
         bed_types: Annotated[
-            list[str],
+            list[Literal["大床房", "双床房", "多床房"]],
             Field(max_length=3, description="床型筛选。"),
         ] = [],
         max_nightly_price: Annotated[
@@ -76,7 +76,13 @@ def create_lodging_search_tool(adapter: LodgingSearchAdapter | None = None) -> B
             Field(gt=0, description="每晚最高预算。"),
         ] = None,
         sort: Annotated[
-            str,
+            Literal[
+                "distance_asc",
+                "rate_desc",
+                "price_asc",
+                "price_desc",
+                "no_rank",
+            ],
             Field(description="候选排序方式。"),
         ] = "no_rank",
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
