@@ -6,8 +6,8 @@ from assistant_agent.skills.loading import (
 )
 from langchain_core.tools import BaseTool
 from assistant_agent.tools.plugins.builtin.skill_loading.tool import (
-    LoadSkillReferenceTool,
-    LoadSkillTool,
+    create_load_skill_reference_tool,
+    create_load_skill_tool,
 )
 from assistant_agent.tools.plugins.contracts import ToolPluginContext
 
@@ -18,6 +18,6 @@ class SkillLoadingPlugin:
         if not load_repo_skill_descriptors(root).descriptors:
             return []
         return [
-            LoadSkillTool(root=root),
-            LoadSkillReferenceTool(root=root),
+            create_load_skill_tool(root=root),
+            create_load_skill_reference_tool(root=root),
         ]
