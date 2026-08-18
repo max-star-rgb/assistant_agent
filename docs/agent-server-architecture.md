@@ -1,6 +1,6 @@
 # LangGraph Agent Server 部署架构
 
-最后更新：2026-08-17
+最后更新：2026-08-18
 
 ## Authority contract
 
@@ -86,6 +86,8 @@ extra。
 若临时使用 `8090`，仅供 PyCharm Server 已停止后的隔离诊断，诊断完成即停止；postgres backend 则把 `8090`
 作为独立持久化部署的默认端口。`scripts/run_server.py` 对 dev backend 持有工作目录级
 单实例锁，并在启动前要求请求端口可用，禁止框架自动漂移到随机端口；默认日志按请求端口写入
+系统临时目录下的 `assistant_agent/logs/agent_server-<port>.log`，避免日志写入触发源码 watcher 后形成
+自反馈 reload；dev 显式日志路径同样不得位于仓库监听树内。postgres 日志仍写入
 `.data/logs/agent_server-<port>.log`。这些约束不创建项目自有 Runtime，也不把两个端口解释为两个 worker。
 
 postgres backend 的 API 仅映射到 `127.0.0.1:${ASSISTANT_AGENT_SERVER_PORT}:8000`，默认宿主端口为 8090；

@@ -23,8 +23,10 @@ eval、Agent Server 主链路覆盖的 probe 不应继续沉积到本目录。
     --backend postgres --host 127.0.0.1 --port 8090 --env-file .env --rebuild
   ```
 
-  后续启动可省略 `--rebuild`。控制台 stdout/stderr 默认同时追加到按请求端口隔离的
-  `.data/logs/agent_server-<port>.log`，可用 `--log-file` 指定其他部署自有路径；旧
+  后续启动可省略 `--rebuild`。控制台 stdout/stderr 默认同时追加到按请求端口隔离的日志：dev 位于
+  系统临时目录的 `assistant_agent/logs/agent_server-<port>.log`，且拒绝仓库内路径，以免 hot reload
+  watcher 消费自己的日志输出并形成反馈循环；postgres 仍位于
+  `.data/logs/agent_server-<port>.log`。可用 `--log-file` 指定其他部署自有路径；旧
   `.data/logs/agent_server.log` 只保留历史记录。Studio 使用框架内建身份；其他本地客户端直接声明
   `X-Assistant-User`，当前 tokenless 部署没有网络身份认证，因此不得把 API 暴露到不受信网络。
 - `scripts/run_qdrant.py`：PyCharm-friendly 本地 Qdrant supervisor。它只启动
