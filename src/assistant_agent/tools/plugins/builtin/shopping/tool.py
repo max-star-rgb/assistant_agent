@@ -389,46 +389,155 @@ def _summary(
 
 
 def _model_observation(data: dict[str, Any]) -> dict[str, Any]:
+    need_results = data.get("needs")
+    if not isinstance(need_results, list):
+        need_results = []
     selections = data.get("selections")
     if not isinstance(selections, list):
         selections = []
-    items = [
-        _selection_observation(selection)
-        for selection in selections[:3]
-        if isinstance(selection, dict)
-    ]
-    observation: dict[str, Any] = {
-        "outcome": data.get("outcome"),
+    budget = {
+        "total_budget": data.get("total_budget"),
         "total_cost": data.get("total_cost"),
+        "currency": _selection_currency(selections),
         "within_budget": data.get("within_budget"),
+    }
+    observation: dict[str, Any] = {
+        "schema_version": "shopping_observation_v1",
+        "outcome": data.get("outcome"),
         "summary": data.get("summary"),
-        "items": items,
+        "budget": {
+            key: value for key, value in budget.items() if value is not None
+        },
+        "results": [
+            _need_result_observation(item)
+            for item in need_results
+            if isinstance(item, dict)
+        ],
     }
     uncovered_required_needs = data.get("uncovered_required_needs")
     if uncovered_required_needs:
         observation["uncovered_required_needs"] = uncovered_required_needs
+    errors = data.get("errors")
+    if isinstance(errors, list):
+        warnings = [
+            _warning_observation(item) for item in errors if isinstance(item, dict)
+        ]
+        if warnings:
+            observation["warnings"] = warnings
     return {
         key: value for key, value in observation.items() if value not in (None, [], {})
     }
 
 
+def _need_result_observation(need_result: dict[str, Any]) -> dict[str, Any]:
+    need = need_result.get("need")
+    if not isinstance(need, dict):
+        need = {}
+    selected = need_result.get("selected")
+    if not isinstance(selected, dict):
+        selected = None
+    selected_product = (
+        selected.get("product")
+        if selected is not None and isinstance(selected.get("product"), dict)
+        else {}
+    )
+    selected_product_id = selected_product.get("product_id")
+    candidates = need_result.get("candidates")
+    if not isinstance(candidates, list):
+        candidates = []
+    quantity = need.get("quantity")
+    result: dict[str, Any] = {
+        "need": _compact_fields(
+            need,
+            ("keyword", "quantity", "required", "max_unit_price"),
+        ),
+        "status": need_result.get("status"),
+        "selected": (
+            _selection_observation(selected) if selected is not None else None
+        ),
+        "alternatives": [
+            _product_observation(item, quantity=quantity)
+            for item in candidates
+            if isinstance(item, dict) and item.get("product_id") != selected_product_id
+        ][:2],
+    }
+    return {
+        key: value for key, value in result.items() if value not in (None, [], {})
+    }
+
+
 def _selection_observation(selection: dict[str, Any]) -> dict[str, Any]:
-    item = (
-        selection.get("product") if isinstance(selection.get("product"), dict) else {}
+    product = selection.get("product")
+    if not isinstance(product, dict):
+        product = {}
+    result = _product_observation(product, quantity=selection.get("quantity"))
+    result["unit_price"] = selection.get("unit_price")
+    result["subtotal"] = selection.get("subtotal")
+    return {key: value for key, value in result.items() if value is not None}
+
+
+def _product_observation(
+    product: dict[str, Any],
+    *,
+    quantity: Any,
+) -> dict[str, Any]:
+    unit_price = product.get("effective_price")
+    if unit_price is None:
+        unit_price = product.get("price")
+    subtotal = (
+        round(unit_price * quantity, 2)
+        if isinstance(unit_price, (int, float)) and isinstance(quantity, int)
+        else None
+    )
+    ranking_reason = product.get("ranking_reason")
+    ranking_explanation = (
+        ranking_reason.get("explanation")
+        if isinstance(ranking_reason, dict)
+        else None
     )
     return {
         key: value
         for key, value in {
-            "product_id": item.get("product_id"),
-            "need": selection.get("keyword"),
-            "title": item.get("title"),
-            "platform": item.get("platform"),
-            "shop": item.get("shop"),
-            "quantity": selection.get("quantity"),
-            "total_price": selection.get("subtotal"),
-            "currency": item.get("currency"),
-            "url_status": item.get("url_status"),
-            "availability": item.get("availability"),
+            "product_id": product.get("product_id"),
+            "title": product.get("title"),
+            "platform": product.get("platform"),
+            "shop": product.get("shop"),
+            "unit_price": unit_price,
+            "quantity": quantity,
+            "subtotal": subtotal,
+            "currency": product.get("currency"),
+            "product_url": (
+                product.get("product_url")
+                or product.get("landing_url")
+                or product.get("click_url")
+                or product.get("url")
+            ),
+            "url_status": product.get("url_status"),
+            "availability": product.get("availability"),
+            "reason": product.get("reason") or ranking_explanation,
         }.items()
         if value not in (None, "", [], {})
+    }
+
+
+def _selection_currency(selections: list[Any]) -> str | None:
+    currencies = {
+        product.get("currency")
+        for selection in selections
+        if isinstance(selection, dict)
+        and isinstance((product := selection.get("product")), dict)
+        and product.get("currency")
+    }
+    return next(iter(currencies)) if len(currencies) == 1 else None
+
+
+def _warning_observation(error: dict[str, Any]) -> dict[str, Any]:
+    return _compact_fields(error, ("code", "message", "recoverable"))
+
+
+def _compact_fields(data: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
+    return {
+        field: data[field]
+        for field in fields
+        if field in data and data[field] not in (None, "", [], {})
     }

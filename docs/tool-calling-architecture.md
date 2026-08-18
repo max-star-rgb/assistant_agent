@@ -42,8 +42,9 @@ WebSocket 已成功完成 `callType=VIDEO` 的 control 握手；`visual_memory_s
 - 模型只看到去除 runtime-owned 字段的 `tool_call_schema`；
 - 完整执行 schema 包含 `ToolRuntime[AssistantRunContext]`，由 `ToolNode` 注入当前 state、thread/run、Store
   和 `server_info`；受信用户身份只读取 `server_info.user.identity`，不从 Runtime Context 复制；
-- 成功返回标准 `ToolMessage(content, artifact)`：`content` 使用 LangChain 标准 `text` content block，
-  `artifact` 保留结构化业务数据；不定义项目私有的 Tool 输出或 UI 渲染协议；失败抛出 `ToolException`；
+- 成功通过 `response_format="content_and_artifact"` 返回模型投影与完整结构化业务结果，由 LangChain
+  原生构造 `ToolMessage(content, artifact)` 并序列化模型投影；不手工构造 content block，不定义项目私有的
+  Tool 输出或 UI 渲染协议；失败抛出 `ToolException`；
 - metadata 至少声明 `effect=read|generate|write|dangerous` 与 `source=builtin|mcp`。
 
 `uploaded_media_inspect`、`live_view_inspect` 和 `visual_memory_search` 都由原生函数 Tool 工厂构造；复杂逻辑
@@ -53,6 +54,11 @@ WebSocket 已成功完成 `callType=VIDEO` 的 control 握手；`visual_memory_s
 只读 Tool 由 `ToolRetryMiddleware` 做有界重试。fast 模式不触发 HITL；planning 模式的非 read Tool 由
 `HumanInTheLoopMiddleware` 在执行前产生原生 interrupt。schema、身份与授权仍由具体 Tool/业务 adapter 校验；
 外部副作用幂等属于具体 Tool 或业务 API，主链不再维护通用 operation ledger。
+
+Tool 的 Provider adapter 先把外部响应规范化为业务 Pydantic result；Provider 原始响应不进入模型上下文或
+`artifact`，需要审计时只保留受治理的引用。具体 Tool 再从完整业务 result 派生有界的模型投影：例如购物
+Tool 的 `artifact` 保留全部规范化 `ShoppingSearchResult`，`content` 按每个 need 保留状态、选中商品、
+购买链接、单价/小计与至多两个备选。两者是同一业务结果的完整视图与模型视图，不是两份相同 payload。
 
 ## MCP 与 Plugin
 

@@ -3,12 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
 from langchain.agents import AgentState
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 from pydantic import BaseModel, ConfigDict
-import pytest
 
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.tools.base import ToolBase, ToolContext
@@ -93,5 +93,6 @@ def test_toolnode_injects_identity_and_returns_standard_tool_message() -> None:
 
     message = result["messages"][-1]
     assert isinstance(message, ToolMessage)
+    assert isinstance(message.content, str)
     assert json.loads(message.content) == {"status": "ok"}
     assert message.artifact == {"value": "value-sentinel", "user_id": "user-sentinel"}

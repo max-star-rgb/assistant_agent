@@ -20,7 +20,7 @@ eval、Agent Server 主链路覆盖的 probe 不应继续沉积到本目录。
 
   ```bash
   /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_server.py \
-    --backend postgres --host 127.0.0.1 --port 8090 --env-file .env --rebuild
+    --backend postgres --host 127.0.0.1 --port 8088 --env-file .env --rebuild
   ```
 
   后续启动可省略 `--rebuild`。控制台 stdout/stderr 默认同时追加到按请求端口隔离的日志：dev 位于

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
-import json
 from typing import Any, ClassVar, Literal
 
 from langchain_core.messages import HumanMessage
@@ -103,21 +102,21 @@ class ToolBase(BaseTool):
         self,
         runtime: ToolRuntime[AssistantRunContext],
         **payload: Any,
-    ) -> tuple[str, dict[str, Any]]:
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         return self._invoke_native(payload, runtime)
 
     async def _arun(
         self,
         runtime: ToolRuntime[AssistantRunContext],
         **payload: Any,
-    ) -> tuple[str, dict[str, Any]]:
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         return await asyncio.to_thread(self._invoke_native, payload, runtime)
 
     def _invoke_native(
         self,
         payload: Mapping[str, Any],
         runtime: ToolRuntime[AssistantRunContext],
-    ) -> tuple[str, dict[str, Any]]:
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         try:
             bound = _bind_native_input(self, payload, runtime)
             validated = self.input_schema.model_validate(bound)
@@ -133,10 +132,7 @@ class ToolBase(BaseTool):
         observation = result.model_observation
         if observation is None:
             observation = result.data or {"status": "succeeded"}
-        return (
-            json.dumps(observation, ensure_ascii=False, sort_keys=True),
-            dict(result.data or {}),
-        )
+        return observation, dict(result.data or {})
 
     def _execute(self, input: BaseModel, context: ToolContext) -> ToolResult:
         raise NotImplementedError

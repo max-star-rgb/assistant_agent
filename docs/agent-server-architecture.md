@@ -83,14 +83,14 @@ extra。
 
 本地 dev 的唯一常驻入口由 PyCharm 管理，固定使用 `8089` 并保留 `langgraph dev` 原生 hot reload。Codex 默认
 作为客户端连接该服务；修改源码后先等待 reload，只有需要完整重启时才重启同一个 `8089` 实例。dev backend
-若临时使用 `8090`，仅供 PyCharm Server 已停止后的隔离诊断，诊断完成即停止；postgres backend 则把 `8090`
+若临时使用 `8090`，仅供 PyCharm Server 已停止后的隔离诊断，诊断完成即停止；postgres backend 则把 `8088`
 作为独立持久化部署的默认端口。`scripts/run_server.py` 对 dev backend 持有工作目录级
 单实例锁，并在启动前要求请求端口可用，禁止框架自动漂移到随机端口；默认日志按请求端口写入
 系统临时目录下的 `assistant_agent/logs/agent_server-<port>.log`，避免日志写入触发源码 watcher 后形成
 自反馈 reload；dev 显式日志路径同样不得位于仓库监听树内。postgres 日志仍写入
 `.data/logs/agent_server-<port>.log`。这些约束不创建项目自有 Runtime，也不把两个端口解释为两个 worker。
 
-postgres backend 的 API 仅映射到 `127.0.0.1:${ASSISTANT_AGENT_SERVER_PORT}:8000`，默认宿主端口为 8090；
+postgres backend 的 API 仅映射到 `127.0.0.1:${ASSISTANT_AGENT_SERVER_PORT}:8000`，默认宿主端口为 8088；
 PostgreSQL 与 Redis 不映射宿主端口，也不复用旧 Langfuse 服务。PostgreSQL 数据保存在独立 named volume
 `assistant-agent-langgraph-postgres-data`，普通 `restart`、`stop` 或重新构建 API 镜像不会删除数据。
 `.langgraph_api/` 不迁移到 PostgreSQL。`.env` 仅作为未跟踪的容器 env file 注入，不能写入镜像或提交。
@@ -99,7 +99,7 @@ PostgreSQL 与 Redis 不映射宿主端口，也不复用旧 Langfuse 服务。P
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_server.py \
-  --backend postgres --host 127.0.0.1 --port 8090 --env-file .env --rebuild
+  --backend postgres --host 127.0.0.1 --port 8088 --env-file .env --rebuild
 ```
 
 代码未变化时省略 `--rebuild`。此入口以前台 Compose 进程运行，Ctrl-C 停止该专用 stack，但保留 PostgreSQL
