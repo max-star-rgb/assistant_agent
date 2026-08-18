@@ -21,6 +21,7 @@ for candidate in (PROJECT_ROOT, SRC):
 from langchain_core.tools import BaseTool
 
 from evals.system.tools.native_tool import invoke_native_tool
+from assistant_agent.native_agent.context import AssistantRunContext
 
 
 def run_tool_smoke(
@@ -29,6 +30,7 @@ def run_tool_smoke(
     *,
     request_content: str | list[dict[str, Any]] | None = None,
     state: dict[str, Any] | None = None,
+    run_context: AssistantRunContext | None = None,
     cleanup: Callable[[], None] | None = None,
 ) -> int:
     """Run one Tool once and report only execution/return-contract health."""
@@ -43,6 +45,7 @@ def run_tool_smoke(
             tool_call_id=f"{tool.name}-fixed-input",
             request_content=request_content,
             state=state,
+            run_context=run_context,
         )
         artifact = invocation.artifact
         result_returned = bool(artifact) or bool(invocation.message.content)

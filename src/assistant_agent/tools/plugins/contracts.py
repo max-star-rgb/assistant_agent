@@ -22,9 +22,6 @@ if TYPE_CHECKING:
     from assistant_agent.media.video.visual_reminder import VisualReminderRegistry
     from assistant_agent.media.video.visual_memory_index import VisualMemoryTextIndex
     from assistant_agent.media.vision.vision_client import VisionUnderstandingClient
-    from assistant_agent.media.visual_perception.history_probe import (
-        VisualObservationHistoryProbe,
-    )
     from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.adapters import (
         CalendarAdapter,
     )
@@ -44,7 +41,6 @@ class ToolPluginContext:
     visual_semantic_store_pool: SessionVisualSemanticStorePool | None = None
     visual_reminder_registry: VisualReminderRegistry | None = None
     visual_memory_text_index: VisualMemoryTextIndex | None = None
-    visual_history_probe: VisualObservationHistoryProbe | None = None
 
     @property
     def mock_mode(self) -> bool:

@@ -43,6 +43,7 @@ def invoke_native_tool(
     tool_call_id: str,
     request_content: str | list[dict[str, Any]] | None = None,
     state: dict[str, Any] | None = None,
+    run_context: AssistantRunContext | None = None,
 ) -> NativeToolInvocation:
     """Execute one real BaseTool through LangGraph's standard ToolNode."""
 
@@ -72,7 +73,7 @@ def invoke_native_tool(
             **(state or {}),
             "messages": messages,
         },
-        context=AssistantRunContext(entry_profile="system_eval"),
+        context=(run_context or AssistantRunContext(entry_profile="system_eval")),
         config={
             "configurable": {
                 "assistant_id": "system-eval-assistant",

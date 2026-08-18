@@ -1,6 +1,6 @@
 # LangChain-native Tool 与扩展架构
 
-最后更新：2026-08-17
+最后更新：2026-08-18
 
 ## Authority contract
 
@@ -29,13 +29,26 @@ fast agent 子图当前执行的 state/checkpoint namespace 内 `active_skill_id
 Graph。Tool 名只从 `skill.toml` 重新解析，不接受模型或 Tool
 artifact 声明任意 grant；该可见性层不替代具体 Tool 的身份、授权、参数和副作用校验。
 
+媒体 Tool 使用另一条与 Skill 正交的条件暴露链。`ConditionalToolExposureMiddleware` 只过滤已经静态注册在
+`request.tools` 中的 Tool，并按 Tool metadata 的封闭 `availability` 枚举读取可信运行事实：
+`uploaded_media_inspect` 要求最新用户消息含 `source=uploaded` 的图片或视频；`live_view_inspect` 要求当前
+WebSocket 已成功完成 `callType=VIDEO` 的 control 握手；`visual_memory_search` 还要求当前
+`user/thread/as-of sequence` 已存在可检索视觉文本。它不读取 `active_skill_ids` 或
+`skill_reference_grants`，不根据用户关键词推断意图，探针异常时 fail closed。Tool 自身在执行时再次校验
+握手、媒体来源和身份边界，避免绕过模型可见性直接调用。
+
 每个内建 Tool：
 
 - 模型只看到去除 runtime-owned 字段的 `tool_call_schema`；
 - 完整执行 schema 包含 `ToolRuntime[AssistantRunContext]`，由 `ToolNode` 注入当前 state、thread/run、Store
   和 `server_info`；受信用户身份只读取 `server_info.user.identity`，不从 Runtime Context 复制；
-- 成功返回标准 `ToolMessage(content, artifact)`；失败抛出 `ToolException`；
+- 成功返回标准 `ToolMessage(content, artifact)`：`content` 使用 LangChain 标准 `text` content block，
+  `artifact` 保留结构化业务数据；不定义项目私有的 Tool 输出或 UI 渲染协议；失败抛出 `ToolException`；
 - metadata 至少声明 `effect=read|generate|write|dangerous` 与 `source=builtin|mcp`。
+
+`uploaded_media_inspect`、`live_view_inspect` 和 `visual_memory_search` 都由原生函数 Tool 工厂构造；复杂逻辑
+保留在普通 service 对象中，不再通过视觉 Tool 之间的 Python 继承共享字段。上传图片与用户主动上传视频
+复用 `VisualPerceptionModule` 持有的进程级 VLM client；摄像头实时视频仍由后台视觉观察链处理。
 
 只读 Tool 由 `ToolRetryMiddleware` 做有界重试。fast 模式不触发 HITL；planning 模式的非 read Tool 由
 `HumanInTheLoopMiddleware` 在执行前产生原生 interrupt。schema、身份与授权仍由具体 Tool/业务 adapter 校验；

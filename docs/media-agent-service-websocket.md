@@ -1,6 +1,6 @@
 # Media-Agent WebSocket 接口权威文档
 
-Last updated: 2026-08-17
+Last updated: 2026-08-18
 
 ## Authority contract
 
@@ -48,6 +48,10 @@ Last updated: 2026-08-17
 
 兼容 `assistantControlStart`，其 user 位于 `userInfo.number`，成功响应为
 `assistantControlStartAck` 和 `{"code":"OK"}`。同一连接不允许重复绑定握手。
+
+“完成 VIDEO 握手”的结构化定义是：服务端已成功校验并绑定首个 control 消息、创建该连接对应的 native
+`thread_id`，且绑定的 `callType` 等于 `VIDEO`。它不要求已经收到第一帧。后续 chat run 由媒体入口把该事实
+投影为 `AssistantRunContext.realtime_media_mode="video"`；AUDIO 握手和未完成 control 的连接均为 `none`。
 
 ## 3. 文本 chat
 
@@ -128,8 +132,13 @@ enqueue 时已有有效在线 presence 才排队，在线写成功后记为 sent
 
 `audio` 继续做字段校验后的传输层 ACK，不把原始音频写入 Graph State。`video` 校验独立 Annex-B H.264
 frame，在 media edge 的工作线程中解码为有界 JPEG window，Graph 输入只携带稳定 `video_id`。Graph worker
-的受治理 `media_inspect/live_view_inspect` Tool 通过共享 SQLite frame index 解析该引用；H.264 hex、JPEG
+的受治理 `live_view_inspect` Tool 通过共享 SQLite frame index 解析该引用；H.264 hex、JPEG
 正文和本地路径均不进入 Graph State、prompt 或 Agent Server Store。
+
+媒体入口给摄像头引用固定标记 `source=live_camera`；用户主动上传的图片或视频必须由普通请求入口标记为
+`source=uploaded`，交给独立的 `uploaded_media_inspect`，两类引用不能互相替代。VIDEO control 成功后即允许
+模型看到 `live_view_inspect`；当当前 `user/thread/as-of sequence` 已产生可检索视觉文本时，才进一步暴露
+`visual_memory_search`。这两项条件暴露不依赖 Skill 加载。
 
 解码帧由连接级句柄提交给 Agent Server 内部 `VisualPerceptionModule`；模块内的 `RealtimeVideoObserver`
 负责选帧、后台 VLM 调用和视觉语义发布。chat 到达时，媒体入口冻结当时最后一帧并触发 promotion，把
@@ -177,7 +186,8 @@ producer。citation、生成图片 detail、H.264 显式
 视觉资源按进程与连接分层：Agent Server custom FastAPI lifespan 拥有进程级
 `VisualPerceptionModule`，仅在进程 shutdown 时关闭；每个媒体 WebSocket 只拥有并关闭自己的
 `VisualPerceptionSession`、observer 与 lease，不得关闭或替换进程模块。临时 graph factory 与
-schema/history/state 请求同样不拥有该进程资源。
+schema/history/state 请求同样不拥有该进程资源。用户上传媒体使用的 VLM client 同样由该进程模块持有并
+复用，不随是否存在实时视频连接而创建或销毁。
 
 ## 8. 验证
 

@@ -1,6 +1,6 @@
 # 统一多模态 Embedding 架构
 
-Last updated: 2026-08-17
+Last updated: 2026-08-18
 
 ## Authority contract
 
@@ -24,7 +24,8 @@ Agent Runtime。它统一拥有 `VisionUnderstandingClient`/Provider adapter、`
 embedding coordinator、`SessionVisualSemanticStorePool`、视觉检索派生索引和连接级 session handle。
 `RealtimeVideoObserver` 是模块内部的实时分析流水线，不与 Tool 或模块平级。
 
-`media_inspect` 仍可为本次显式图片/视频附件执行受治理的同步 VLM 推理；`live_view_inspect` 是实时视觉文本的
+`uploaded_media_inspect` 为用户主动上传的图片/视频附件执行受治理的同步 VLM 推理，并复用模块持有的
+进程级 `VisionUnderstandingClient`；它不读取摄像头实时视频。`live_view_inspect` 是实时视觉文本的
 薄消费入口，不再为用户 query 二次调用 VLM。主 Agent LLM 根据模块已经发布的结构化文本回答 query。
 实时读取分为两种语义：没有冻结目标序号时读取 latest 已完成结果；Agent-Service chat 的 video block 携带
 可信 `target_sequence` 时等待 exact sequence，等待上限仍由 Tool 的有界 deadline 控制。strict 未命中 exact
@@ -42,14 +43,15 @@ sequence 时旧记录只能用于状态诊断，Tool 返回 `usable_visual_text=
 - 连接级视觉提醒：把用户提交的视觉条件计算一次 text embedding，与每个已选关键帧的现有 image
   embedding 匹配，首次命中后通过当前 Agent-Service VIDEO 连接即时通知。
 
-给主 LLM 的视觉语义 Tool 包括 `visual_memory_search` 和 `visual_reminder_manage`。后者只管理当前
+给主 LLM 的视觉语义 Tool 包括 `live_view_inspect`、`visual_memory_search` 和
+`visual_reminder_manage`。后者只管理当前
 可信 VIDEO 连接中的 `create/list/cancel`，不是 embedding Tool。`live_view_inspect` 继续回答当前实时画面，内部
-后台 observation service 继续生成 rolling VLM snapshot；它不是模型可见 Tool。`siglip2_embed*`、`find_object`、
+后台 observation service 继续生成 rolling VLM snapshot。`siglip2_embed*`、`find_object`、
 `visual_attention_manage` 都不是注册 Tool。Attention 仍只产生内部候选；连接级 reminder manager 是独立的
 一次性状态机，不复用 Attention consumer。
 
 VLM 推理层复用 Provider-neutral `VisionUnderstandingClient` 与 adapter：视觉 Tool 负责受信输入绑定、
-Tool 治理和结构化结果，client/adapter 负责具体模型协议。同步 `media_inspect` 或显式视频调用在当前
+Tool 治理和结构化结果，client/adapter 负责具体模型协议。同步 `uploaded_media_inspect` 调用在当前
 Assistant trace 中形成 `tool.execute -> vlm.infer`；后台 observation service 使用独立
 `vision.observation` trace。embedding、视觉提醒和已有 VLM 文本检索不属于 VLM 推理，不经过该调用边界。
 
@@ -239,8 +241,12 @@ hard gate。
 
 ## Tool 暴露与安全
 
-`visual_memory_search` 是 `category=read`，视频断线后仍可查询已有历史。生产 composition 只在进程级视觉
-资源可用时静态构造该 `BaseTool`，不按请求关键词建立动态 catalog。执行经过标准
+`visual_memory_search` 是 read Tool，但只在当前连接已完成 VIDEO 握手且可信
+`user/session/as-of sequence` 已有可检索视觉文本时对模型可见；视频断线后不会继续暴露。生产 composition
+在进程级视觉资源可用时静态构造该 `BaseTool`，再由统一条件 middleware 缩小每轮可见集合，不按请求关键词
+建立动态 catalog。`live_view_inspect` 在 VIDEO 握手成功后立即可见，不等待第一帧；
+`uploaded_media_inspect` 只在最新用户消息含明确 `source=uploaded` 的图片或视频时可见。这三条条件与 Skill
+渐进加载正交。执行经过标准
 `BaseTool -> ToolNode` 路径，owner、session 与 as-of 边界由 `ToolRuntime` 注入，模型不可提交。
 
 `visual_reminder_manage` 是 `category=write`。只有显式注入连接级 reminder resources 的受信 composition

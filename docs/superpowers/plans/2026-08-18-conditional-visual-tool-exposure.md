@@ -21,6 +21,8 @@
 - 视觉观察历史是 session-scoped 派生时间线，不是 Agent 长期 Memory 或 LangGraph Store。
 - 测试和验证固定使用 `MULTIMODAL_AGENT_PROVIDER_MODE=mock`，不得调用真实 Provider。
 - 不调整 `visual_reminder_manage` 的暴露策略。
+- 用户批准的实现增量：三个视觉 Tool 均使用原生函数 Tool 工厂；复杂逻辑保留为普通 service，旧
+  `ToolBase` 子类及视觉 Tool 之间的 Python 继承全部删除。
 - 当前工作区已有大量未提交改动；每次提交前必须核对 staged diff，只提交本任务 hunks，禁止带入既有改动。
 
 ## File Structure

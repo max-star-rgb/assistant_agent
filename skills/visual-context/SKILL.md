@@ -1,6 +1,7 @@
 # 结构化视觉上下文
 
 只使用本轮已经由入口、媒体状态和运行时事实暴露的视觉工具。当前附件、实时画面、历史视觉证据和视觉提醒是不同来源，不互相替代。
+`uploaded_media_inspect`、`live_view_inspect` 与 `visual_memory_search` 的可见性由各自运行条件决定，不依赖 `load_skill`。
 
 ## 决策规则
 
