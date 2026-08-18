@@ -7,7 +7,9 @@ from assistant_agent.tools.plugins.builtin.shopping.backend import (
 )
 from langchain_core.tools import BaseTool
 from assistant_agent.tools.plugins.contracts import ToolPluginContext
-from assistant_agent.tools.plugins.builtin.shopping.tool import ShoppingSearchTool
+from assistant_agent.tools.plugins.builtin.shopping.tool import (
+    create_shopping_search_tool,
+)
 
 
 class ShoppingToolPlugin:
@@ -16,7 +18,7 @@ class ShoppingToolPlugin:
             return []
         search_adapter = create_shopping_search_adapter(context.config)
         return [
-            ShoppingSearchTool(
+            create_shopping_search_tool(
                 search_adapter=search_adapter,
                 compare_adapter=create_shopping_compare_adapter(context.config),
             ),
