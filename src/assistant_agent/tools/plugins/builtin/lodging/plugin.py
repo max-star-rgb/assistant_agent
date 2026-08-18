@@ -4,7 +4,9 @@ import os
 from pathlib import Path
 
 from langchain_core.tools import BaseTool
-from assistant_agent.tools.plugins.builtin.lodging.tool import LodgingSearchTool
+from assistant_agent.tools.plugins.builtin.lodging.tool import (
+    create_lodging_search_tool,
+)
 from assistant_agent.tools.plugins.builtin.lodging.backend import (
     FlyAILodgingSearchAdapter,
 )
@@ -17,14 +19,14 @@ from assistant_agent.tools.plugins.contracts import ToolPluginContext
 class LodgingToolPlugin:
     def build_tools(self, context: ToolPluginContext) -> list[BaseTool]:
         if context.mock_mode:
-            tools: list[BaseTool] = [LodgingSearchTool()]
+            tools: list[BaseTool] = [create_lodging_search_tool()]
         elif (
             context.config.lodging_provider == "flyai"
             and _is_executable_file(context.config.flyai_cli_path)
             and context.config.flyai_api_key
         ):
             tools = [
-                LodgingSearchTool(
+                create_lodging_search_tool(
                     FlyAILodgingSearchAdapter(
                         cli_path=context.config.flyai_cli_path,
                         api_key=context.config.flyai_api_key,
