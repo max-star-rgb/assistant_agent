@@ -44,6 +44,10 @@ from assistant_agent.media.vision.vision_client import (
 from assistant_agent.media.visual_perception.observation_service import (
     RealtimeVisualObservationService,
 )
+from assistant_agent.media.visual_perception.history_probe import (
+    PoolVisualObservationHistoryProbe,
+    VisualObservationHistoryProbe,
+)
 
 
 DEFAULT_VISUAL_PERCEPTION_ROOT = Path(".data") / "visual_perception"
@@ -77,6 +81,7 @@ class VisualPerceptionToolResources:
     realtime_video_memory_store: RealtimeVideoMemoryStore
     visual_semantic_store_pool: SessionVisualSemanticStorePool
     visual_memory_text_index: VisualMemoryTextIndex
+    visual_history_probe: VisualObservationHistoryProbe
 
 
 class VisualPerceptionSession:
@@ -173,6 +178,9 @@ class VisualPerceptionModule:
         self.visual_memory_text_index = visual_memory_text_index or (
             create_visual_memory_text_index(self.config)
         )
+        self.visual_history_probe = PoolVisualObservationHistoryProbe(
+            self.visual_semantic_store_pool
+        )
         self._observer_factory = observer_factory or self._create_observer
         self._sessions: set[VisualPerceptionSession] = set()
         self._closed = False
@@ -226,6 +234,7 @@ class VisualPerceptionModule:
             realtime_video_memory_store=self.realtime_video_memory_store,
             visual_semantic_store_pool=self.visual_semantic_store_pool,
             visual_memory_text_index=self.visual_memory_text_index,
+            visual_history_probe=self.visual_history_probe,
         )
 
     async def aclose(self) -> None:

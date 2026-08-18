@@ -476,11 +476,15 @@ class SessionVisualSemanticStore:
         )
         return candidates[:limit]
 
-    def has_searchable_history(self) -> bool:
+    def has_searchable_history(self, *, as_of_sequence: int | None = None) -> bool:
+        if as_of_sequence is not None and as_of_sequence < 0:
+            raise ValueError("visual semantic as-of sequence must be non-negative")
         with self._lock:
             self._ensure_open()
             return any(
-                record.index_status == "ready" and record.search_embedding is not None
+                (as_of_sequence is None or record.frame_sequence <= as_of_sequence)
+                and record.index_status == "ready"
+                and record.search_embedding is not None
                 for record in self._records.values()
             )
 

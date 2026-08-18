@@ -1,5 +1,9 @@
 """Agent Server 内部统一视觉感知模块。"""
 
+from assistant_agent.media.visual_perception.history_probe import (
+    PoolVisualObservationHistoryProbe,
+    VisualObservationHistoryProbe,
+)
 from assistant_agent.media.visual_perception.module import (
     VisualPerceptionModule,
     VisualPerceptionSession,
@@ -14,10 +18,12 @@ from assistant_agent.media.visual_perception.observation_service import (
 )
 
 __all__ = [
+    "PoolVisualObservationHistoryProbe",
     "VisualPerceptionModule",
     "VisualPerceptionSession",
     "VisualPerceptionToolResources",
     "VisualTarget",
+    "VisualObservationHistoryProbe",
     "RealtimeVisualObservationOutcome",
     "RealtimeVisualObservationRequest",
     "RealtimeVisualObservationService",
