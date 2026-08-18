@@ -11,7 +11,7 @@ from pydantic import Field
 
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.tools.native_boundary import (
-    builtin_tool_metadata,
+    configure_builtin_tool,
     invoke_native_tool,
 )
 
@@ -86,21 +86,23 @@ def create_local_file_read_tool(
             Field(ge=0, description="续读使用上次返回的 next_cursor。"),
         ] = 0,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """读取已配置根目录内的 UTF-8 文本文件。"""
+        """按相对路径读取已配置文件根目录内的 UTF-8 文本，并用 cursor 分页续读。
 
-        request = FileReadRequest(path=path, cursor=cursor)
+        返回本页内容、字符范围、全文长度和 next_cursor。只读，不能访问根目录外、
+        隐藏路径、二进制文件或非白名单类型。
+        """
+
         return invoke_native_tool(
             LOCAL_FILE_READ_TOOL_NAME,
             lambda: _execute_local_file_read(
                 resolved_root,
                 max_file_bytes,
-                request,
+                FileReadRequest(path=path, cursor=cursor),
                 tool_context(runtime),
             ),
         )
 
-    file_read.metadata = builtin_tool_metadata("read")
-    return file_read
+    return configure_builtin_tool(file_read, "read")
 
 
 def _execute_local_file_read(

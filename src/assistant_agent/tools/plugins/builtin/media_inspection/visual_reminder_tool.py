@@ -21,7 +21,7 @@ from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.tools.ids import VISUAL_REMINDER_MANAGE_TOOL_NAME
 from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.native_boundary import (
-    builtin_tool_metadata,
+    configure_builtin_tool,
     invoke_native_tool,
 )
 from assistant_agent.tools.runtime import ToolContext, tool_context
@@ -122,25 +122,44 @@ def create_visual_reminder_manage_tool(
         才能视为已创建或取消。提醒只在本次连接内有效，不持久化或跨连接重放。
         """
 
-        input = VisualReminderManageInput(
-            action=action,
-            target=target,
-            message=message,
-            reminder_id=reminder_id,
-            session_id=runtime.execution_info.thread_id or "",
-        )
         return invoke_native_tool(
             VISUAL_REMINDER_MANAGE_TOOL_NAME,
-            lambda: _execute_visual_reminder_manage(
-                input,
-                tool_context(runtime),
+            lambda: _execute_visual_reminder_manage_from_runtime(
+                action=action,
+                target=target,
+                message=message,
+                reminder_id=reminder_id,
+                runtime=runtime,
                 coordinator_store=coordinator_store,
                 reminder_registry=reminder_registry,
             ),
         )
 
-    visual_reminder_manage.metadata = builtin_tool_metadata("write")
-    return visual_reminder_manage
+    return configure_builtin_tool(visual_reminder_manage, "write")
+
+
+def _execute_visual_reminder_manage_from_runtime(
+    *,
+    action: VisualReminderAction,
+    target: str | None,
+    message: str | None,
+    reminder_id: str | None,
+    runtime: ToolRuntime[AssistantRunContext],
+    coordinator_store: SessionEmbeddingCoordinatorStore,
+    reminder_registry: VisualReminderRegistry,
+) -> ToolResult:
+    return _execute_visual_reminder_manage(
+        VisualReminderManageInput(
+            action=action,
+            target=target,
+            message=message,
+            reminder_id=reminder_id,
+            session_id=runtime.execution_info.thread_id or "",
+        ),
+        tool_context(runtime),
+        coordinator_store=coordinator_store,
+        reminder_registry=reminder_registry,
+    )
 
 
 def _execute_visual_reminder_manage(

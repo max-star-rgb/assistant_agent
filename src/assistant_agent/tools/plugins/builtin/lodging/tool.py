@@ -15,7 +15,7 @@ from assistant_agent.tools.plugins.builtin.lodging.models import (
 )
 from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.native_boundary import (
-    builtin_tool_metadata,
+    configure_builtin_tool,
     invoke_native_tool,
 )
 from assistant_agent.tools.plugins.builtin.lodging.backend import (
@@ -86,34 +86,36 @@ def create_lodging_search_tool(adapter: LodgingSearchAdapter | None = None) -> B
             Field(description="候选排序方式。"),
         ] = "no_rank",
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """按目的地、日期和住宿偏好检索并排序酒店报价。"""
+        """按目的地、入住退房日期、人数、房间和住宿偏好检索并排序酒店报价。
 
-        request = LodgingSearchRequest(
-            destination=destination,
-            check_in=check_in,
-            check_out=check_out,
-            adults=adults,
-            rooms=rooms,
-            currency=currency,
-            keywords=keywords,
-            nearby_poi=nearby_poi,
-            hotel_types=hotel_types,
-            star_ratings=star_ratings,
-            bed_types=bed_types,
-            max_nightly_price=max_nightly_price,
-            sort=sort,
-        )
+        返回带观测时间、每晚价、总价、币种和 OTA booking_url 的候选。价格与库存
+        仅代表查询时结果；只读，不预订、占房或付款。
+        """
+
         return invoke_native_tool(
             "lodging_search",
             lambda: _execute_lodging_search(
                 search_adapter,
-                request,
+                LodgingSearchRequest(
+                    destination=destination,
+                    check_in=check_in,
+                    check_out=check_out,
+                    adults=adults,
+                    rooms=rooms,
+                    currency=currency,
+                    keywords=keywords,
+                    nearby_poi=nearby_poi,
+                    hotel_types=hotel_types,
+                    star_ratings=star_ratings,
+                    bed_types=bed_types,
+                    max_nightly_price=max_nightly_price,
+                    sort=sort,
+                ),
                 tool_context(runtime),
             ),
         )
 
-    lodging_search.metadata = builtin_tool_metadata("read")
-    return lodging_search
+    return configure_builtin_tool(lodging_search, "read")
 
 
 def _execute_lodging_search(

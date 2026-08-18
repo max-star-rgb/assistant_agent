@@ -11,7 +11,7 @@ from assistant_agent.tools.capability_output import build_capability_output_cont
 from assistant_agent.tools.ids import WEB_SEARCH_CAPABILITY, WEB_SEARCH_TOOL_NAME
 from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.native_boundary import (
-    builtin_tool_metadata,
+    configure_builtin_tool,
     invoke_native_tool,
 )
 from assistant_agent.tools.plugins.builtin.web_access.search_backend import (
@@ -45,24 +45,26 @@ def create_web_search_tool(adapter: WebSearchAdapter | None = None) -> BaseTool:
             Field(default=None, description="用户指定的来源域名。"),
         ] = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """按查询词检索公开网页结果，不读取目标页面正文。"""
+        """按查询词、可选时间范围和来源域名搜索公开网页。
 
-        request = WebSearchRequest(
-            query=query,
-            recency_days=recency_days,
-            site_filter=site_filter,
-        )
+        返回标题、URL、摘要、来源和发布时间等候选证据。只检索结果列表，不读取
+        目标网页正文或执行页面操作。
+        """
+
         return invoke_native_tool(
             WEB_SEARCH_TOOL_NAME,
             lambda: _execute_web_search(
                 search_adapter,
-                request,
+                WebSearchRequest(
+                    query=query,
+                    recency_days=recency_days,
+                    site_filter=site_filter,
+                ),
                 tool_context(runtime),
             ),
         )
 
-    web_search.metadata = builtin_tool_metadata("read")
-    return web_search
+    return configure_builtin_tool(web_search, "read")
 
 
 def _execute_web_search(

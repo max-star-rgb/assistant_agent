@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from typing import Annotated, Any
 
@@ -23,11 +22,14 @@ from assistant_agent.native_agent.context import (
     AssistantRunContext,
     authenticated_user_identity,
 )
-from assistant_agent.providers.provider_errors import sanitize_error_message
 from assistant_agent.tools.availability import ToolAvailability
 from assistant_agent.tools.runtime import ToolContext
 from assistant_agent.tools.ids import LIVE_VIEW_INSPECT_TOOL_NAME
 from assistant_agent.tools.models import ToolResult
+from assistant_agent.tools.native_boundary import (
+    configure_builtin_tool,
+    invoke_native_tool,
+)
 from assistant_agent.tools.plugins.builtin.media_inspection.video_branch import (
     VideoUnderstandingBranch,
 )
@@ -82,69 +84,50 @@ def create_live_view_inspect_tool(
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """检查视频握手后由媒体入口冻结的最新实时画面。"""
 
-        if runtime.context.realtime_media_mode != "video":
-            raise ToolException(
-                "video_handshake_required: 当前连接尚未完成 VIDEO 握手"
+        def inspect_live_view() -> ToolResult:
+            if runtime.context.realtime_media_mode != "video":
+                raise ToolException(
+                    "video_handshake_required: 当前连接尚未完成 VIDEO 握手"
+                )
+            state = runtime.state if isinstance(runtime.state, Mapping) else {}
+            media = latest_runtime_media(state)
+            if not media.live_video_ids:
+                raise ToolException(
+                    "live_video_required: 当前请求没有媒体入口投影的实时视频"
+                )
+            execution = runtime.execution_info
+            user_id = authenticated_user_identity(runtime)
+            session_id = getattr(execution, "thread_id", None)
+            request = VideoUnderstandingRequest(
+                video_ref=media.live_video_ids[-1],
+                video_ids=list(media.live_video_ids),
+                user_query=question,
+                user_id=user_id,
+                session_id=session_id,
+                memory_context=list(state.get("memory_context", ())) or None,
             )
-        state = runtime.state if isinstance(runtime.state, Mapping) else {}
-        media = latest_runtime_media(state)
-        if not media.live_video_ids:
-            raise ToolException(
-                "live_video_required: 当前请求没有媒体入口投影的实时视频"
+            context = ToolContext(
+                user_id=user_id,
+                session_id=session_id,
+                run_id=getattr(execution, "run_id", None),
+                metadata={
+                    "entry_profile": runtime.context.entry_profile,
+                    "media_source": "live_camera",
+                    "visual_target_sequence": media.visual_target_sequence,
+                },
             )
-        execution = runtime.execution_info
-        user_id = authenticated_user_identity(runtime)
-        session_id = getattr(execution, "thread_id", None)
-        request = VideoUnderstandingRequest(
-            video_ref=media.live_video_ids[-1],
-            video_ids=list(media.live_video_ids),
-            user_query=question,
-            user_id=user_id,
-            session_id=session_id,
-            memory_context=list(state.get("memory_context", ())) or None,
-        )
-        context = ToolContext(
-            user_id=user_id,
-            session_id=session_id,
-            run_id=getattr(execution, "run_id", None),
-            metadata={
-                "entry_profile": runtime.context.entry_profile,
-                "media_source": "live_camera",
-                "visual_target_sequence": media.visual_target_sequence,
-            },
-        )
-        try:
-            result = inspector.inspect(request, context)
-        except ToolException:
-            raise
-        except Exception as exc:  # noqa: BLE001 - native Tool boundary.
-            raise ToolException(sanitize_error_message(exc)) from exc
-        if not result.success:
-            raise ToolException(result.error or f"{LIVE_VIEW_INSPECT_TOOL_NAME} failed")
-        observation = result.model_observation or result.data or {
-            "status": "succeeded"
-        }
-        return (
-            [
-                {
-                    "type": "text",
-                    "text": json.dumps(
-                        observation,
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        indent=2,
-                    ),
-                }
-            ],
-            dict(result.data or {}),
+            return inspector.inspect(request, context)
+
+        return invoke_native_tool(
+            LIVE_VIEW_INSPECT_TOOL_NAME,
+            inspect_live_view,
         )
 
-    live_view_inspect.metadata = {
-        "effect": "read",
-        "source": "builtin",
-        "availability": ToolAvailability.VIDEO_HANDSHAKE_COMPLETED.value,
-    }
-    return live_view_inspect
+    return configure_builtin_tool(
+        live_view_inspect,
+        "read",
+        availability=ToolAvailability.VIDEO_HANDSHAKE_COMPLETED.value,
+    )
 
 
 __all__ = ["LiveViewInspector", "create_live_view_inspect_tool"]

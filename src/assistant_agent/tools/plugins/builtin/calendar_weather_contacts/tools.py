@@ -31,7 +31,7 @@ from assistant_agent.tools.ids import (
     CONTACTS_SEARCH_TOOL_NAME,
 )
 from assistant_agent.tools.native_boundary import (
-    builtin_tool_metadata,
+    configure_builtin_tool,
     invoke_native_tool,
     native_idempotency_key,
 )
@@ -57,24 +57,25 @@ def create_calendar_search_tool(adapter: CalendarAdapter | None = None) -> BaseT
             str | None, Field(description="用户指定的查询结束时间。")
         ] = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """按查询词和可选时间范围检索当前用户的日历。"""
+        """按查询词和可选时间范围检索当前用户的日历。
 
-        request = CalendarSearchRequest(
-            query=query,
-            start_time=start_time,
-            end_time=end_time,
-        )
+        返回事件 ID、标题、起止时间、时区、地点和参与人数。只读，不创建或修改事件。
+        """
+
         return invoke_native_tool(
             CALENDAR_SEARCH_TOOL_NAME,
             lambda: _execute_calendar_search(
                 calendar_adapter,
-                request,
+                CalendarSearchRequest(
+                    query=query,
+                    start_time=start_time,
+                    end_time=end_time,
+                ),
                 tool_context(runtime),
             ),
         )
 
-    calendar_search.metadata = builtin_tool_metadata("read")
-    return calendar_search
+    return configure_builtin_tool(calendar_search, "read")
 
 
 def create_calendar_create_tool(adapter: CalendarAdapter | None = None) -> BaseTool:
@@ -96,29 +97,31 @@ def create_calendar_create_tool(adapter: CalendarAdapter | None = None) -> BaseT
         attendees: Annotated[list[str], Field(description="受邀联系人或邮箱。")] = [],
         notes: Annotated[str | None, Field(description="事件备注。")] = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """在当前用户的日历中创建事件。"""
+        """在当前用户的日历中创建事件。
 
-        request = CalendarCreateRequest(
-            title=title,
-            start_time=start_time,
-            end_time=end_time,
-            timezone=timezone,
-            location=location,
-            attendees=attendees,
-            notes=notes,
-            idempotency_key=native_idempotency_key(runtime),
-        )
+        可设置起止时间、时区、地点、参与者和备注，并返回事件 ID 与创建结果。
+        会写入外部日历，不负责后续修改或删除。
+        """
+
         return invoke_native_tool(
             CALENDAR_CREATE_TOOL_NAME,
             lambda: _execute_calendar_create(
                 calendar_adapter,
-                request,
+                CalendarCreateRequest(
+                    title=title,
+                    start_time=start_time,
+                    end_time=end_time,
+                    timezone=timezone,
+                    location=location,
+                    attendees=attendees,
+                    notes=notes,
+                    idempotency_key=native_idempotency_key(runtime),
+                ),
                 tool_context(runtime),
             ),
         )
 
-    calendar_create.metadata = builtin_tool_metadata("write")
-    return calendar_create
+    return configure_builtin_tool(calendar_create, "write")
 
 
 def create_contacts_search_tool(adapter: ContactsAdapter | None = None) -> BaseTool:
@@ -134,20 +137,21 @@ def create_contacts_search_tool(adapter: ContactsAdapter | None = None) -> BaseT
         ],
         runtime: ToolRuntime[AssistantRunContext],
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """按姓名、关系、邮箱或电话检索当前用户的联系人。"""
+        """按姓名、关系、邮箱或电话检索当前用户的联系人。
 
-        request = ContactsSearchRequest(query=query)
+        返回联系人 ID、显示名称、邮箱和电话号码。只读，不新增、修改或联系任何人。
+        """
+
         return invoke_native_tool(
             CONTACTS_SEARCH_TOOL_NAME,
             lambda: _execute_contacts_search(
                 contacts_adapter,
-                request,
+                ContactsSearchRequest(query=query),
                 tool_context(runtime),
             ),
         )
 
-    contacts_search.metadata = builtin_tool_metadata("read")
-    return contacts_search
+    return configure_builtin_tool(contacts_search, "read")
 
 
 def _execute_calendar_search(

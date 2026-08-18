@@ -22,7 +22,7 @@ from assistant_agent.native_agent.context import (
 from assistant_agent.tools.ids import IMAGE_GENERATION_TOOL_NAME
 from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.native_boundary import (
-    builtin_tool_metadata,
+    configure_builtin_tool,
     invoke_native_tool,
 )
 from assistant_agent.tools.plugins.builtin.image_to_3d.models import ImageTo3DRequest
@@ -86,21 +86,31 @@ def create_image_to_3d_tool(
         3D 成品。
         """
 
-        state = runtime.state if isinstance(runtime.state, Mapping) else {}
-        request = ImageTo3DRequest(src_image=src_image)
         return invoke_native_tool(
             IMAGE_TO_3D_TOOL_NAME,
-            lambda: _execute_image_to_3d(
+            lambda: _execute_image_to_3d_from_runtime(
                 image_to_3d_adapter,
-                request,
-                user_id=authenticated_user_identity(runtime),
-                session_id=runtime.execution_info.thread_id,
-                latest_image_id=_latest_generated_image_id(state),
+                src_image,
+                runtime,
             ),
         )
 
-    image_to_3d.metadata = builtin_tool_metadata("generate")
-    return image_to_3d
+    return configure_builtin_tool(image_to_3d, "generate")
+
+
+def _execute_image_to_3d_from_runtime(
+    adapter: ImageTo3DStarter,
+    src_image: str | None,
+    runtime: ToolRuntime[AssistantRunContext],
+) -> ToolResult:
+    state = runtime.state if isinstance(runtime.state, Mapping) else {}
+    return _execute_image_to_3d(
+        adapter,
+        ImageTo3DRequest(src_image=src_image),
+        user_id=authenticated_user_identity(runtime),
+        session_id=runtime.execution_info.thread_id,
+        latest_image_id=_latest_generated_image_id(state),
+    )
 
 
 def _execute_image_to_3d(

@@ -33,7 +33,7 @@ from assistant_agent.tools.plugins.builtin.shopping.models import (
     ShoppingSearchResult,
 )
 from assistant_agent.tools.native_boundary import (
-    builtin_tool_metadata,
+    configure_builtin_tool,
     invoke_native_tool,
 )
 from assistant_agent.tools.runtime import ToolContext, tool_context
@@ -74,28 +74,30 @@ def create_shopping_search_tool(
             Field(description="用户明确指定的购物平台列表。"),
         ] = [],
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """检索候选并比较价格，按预算选择商品组合，不下单或付款。"""
+        """针对一个或多个明确商品需求检索候选、比较价格与购买链接。
 
-        request = ShoppingSearchRequest(
-            scenario=scenario,
-            decision_reason=decision_reason,
-            evidence=evidence,
-            total_budget=total_budget,
-            needs=needs,
-            platforms=platforms,
-        )
+        按数量、单件上限和总预算选择组合，并返回各需求的候选、选择、未覆盖项和
+        预算结果。只读，不加入购物车、下单或付款。
+        """
+
         return invoke_native_tool(
             SHOPPING_SEARCH_TOOL_NAME,
             lambda: _execute_shopping_search(
                 search_adapter,
                 compare_adapter,
-                request,
+                ShoppingSearchRequest(
+                    scenario=scenario,
+                    decision_reason=decision_reason,
+                    evidence=evidence,
+                    total_budget=total_budget,
+                    needs=needs,
+                    platforms=platforms,
+                ),
                 tool_context(runtime),
             ),
         )
 
-    shopping_search.metadata = builtin_tool_metadata("read")
-    return shopping_search
+    return configure_builtin_tool(shopping_search, "read")
 
 
 def _execute_shopping_search(
@@ -109,25 +111,25 @@ def _execute_shopping_search(
     comparisons: list[PriceCompareResult | None] = []
     for need in input.needs:
         search = search_adapter.search(
-                ProductSearchRequest(
-                    query=need.keyword,
-                    budget_max=need.max_unit_price,
-                    platforms=input.platforms,
-                    top_k=input.top_k_per_need,
-                )
+            ProductSearchRequest(
+                query=need.keyword,
+                budget_max=need.max_unit_price,
+                platforms=input.platforms,
+                top_k=input.top_k_per_need,
             )
+        )
         searches.append(search)
         comparisons.append(
             compare_adapter.compare(
-                    PriceCompareRequest(
-                        items=search.items,
-                        query=search.query_used or need.keyword,
-                        budget_max=need.max_unit_price,
-                        platforms=search.succeeded_platforms or input.platforms,
-                        sort_by="value",
-                        top_k=input.top_k_per_need,
-                    )
+                PriceCompareRequest(
+                    items=search.items,
+                    query=search.query_used or need.keyword,
+                    budget_max=need.max_unit_price,
+                    platforms=search.succeeded_platforms or input.platforms,
+                    sort_by="value",
+                    top_k=input.top_k_per_need,
                 )
+            )
             if search.items
             else None
         )

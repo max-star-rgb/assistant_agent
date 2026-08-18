@@ -19,12 +19,12 @@ from assistant_agent.tools.ids import (
 )
 from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.native_boundary import (
-    builtin_tool_metadata,
+    configure_builtin_tool,
     invoke_native_tool,
 )
 from assistant_agent.tools.plugins.builtin.lodging.models import (
     HotelPriceWatchGoal,
-    LodgingSearchRequest,
+    LodgingSearchInput,
 )
 
 if TYPE_CHECKING:
@@ -37,7 +37,7 @@ def create_hotel_price_watch_create_tool(service: DurableTaskService) -> BaseToo
     @tool(HOTEL_PRICE_WATCH_CREATE_TOOL_NAME, response_format="content_and_artifact")
     def hotel_price_watch_create(
         search: Annotated[
-            LodgingSearchRequest,
+            LodgingSearchInput,
             Field(description="每次查价时重复使用的结构化住宿检索条件。"),
         ],
         max_nightly_price: Annotated[
@@ -77,28 +77,50 @@ def create_hotel_price_watch_create_tool(service: DurableTaskService) -> BaseToo
         或付款。
         """
 
-        goal = HotelPriceWatchGoal(
-            search=search,
-            max_nightly_price=max_nightly_price,
-            check_interval_s=check_interval_s,
-            starts_at=starts_at,
-            ends_at=ends_at,
-            notification_channel=notification_channel,
-        )
-        execution = runtime.execution_info
         return invoke_native_tool(
             HOTEL_PRICE_WATCH_CREATE_TOOL_NAME,
-            lambda: _execute_hotel_price_watch_create(
+            lambda: _execute_hotel_price_watch_create_from_runtime(
                 service,
-                goal,
-                user_id=authenticated_user_identity(runtime),
-                session_id=getattr(execution, "thread_id", None),
-                run_id=getattr(execution, "run_id", None),
+                search=search,
+                max_nightly_price=max_nightly_price,
+                check_interval_s=check_interval_s,
+                starts_at=starts_at,
+                ends_at=ends_at,
+                notification_channel=notification_channel,
+                runtime=runtime,
             ),
         )
 
-    hotel_price_watch_create.metadata = builtin_tool_metadata("write")
-    return hotel_price_watch_create
+    return configure_builtin_tool(hotel_price_watch_create, "write")
+
+
+def _execute_hotel_price_watch_create_from_runtime(
+    service: DurableTaskService,
+    *,
+    search: LodgingSearchInput,
+    max_nightly_price: float,
+    check_interval_s: int,
+    starts_at: datetime | None,
+    ends_at: datetime,
+    notification_channel: str,
+    runtime: ToolRuntime[AssistantRunContext],
+) -> ToolResult:
+    execution = runtime.execution_info
+    goal = HotelPriceWatchGoal(
+        search=search,
+        max_nightly_price=max_nightly_price,
+        check_interval_s=check_interval_s,
+        starts_at=starts_at,
+        ends_at=ends_at,
+        notification_channel=notification_channel,
+    )
+    return _execute_hotel_price_watch_create(
+        service,
+        goal,
+        user_id=authenticated_user_identity(runtime),
+        session_id=getattr(execution, "thread_id", None),
+        run_id=getattr(execution, "run_id", None),
+    )
 
 
 def _execute_hotel_price_watch_create(

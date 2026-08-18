@@ -23,7 +23,7 @@ from assistant_agent.tools.ids import (
 )
 from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.native_boundary import (
-    builtin_tool_metadata,
+    configure_builtin_tool,
     invoke_native_tool,
 )
 from assistant_agent.tools.plugins.builtin.skill_loading.models import (
@@ -58,14 +58,15 @@ def create_load_skill_tool(*, root: str | Path | None = None) -> BaseTool:
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """当当前任务符合 skill_index 中某张 Skill 卡片时，在调用其相关业务工具前按 skill_id 静默加载完整工作流正文；不要加载无关 Skill 或向用户播报加载过程。成功结果会返回可按需读取的 reference_ids；不接受路径或未注册资源。"""
 
-        request = LoadSkillRequest(skill_id=skill_id)
         return invoke_native_tool(
             LOAD_SKILL_TOOL_NAME,
-            lambda: _execute_load_skill(resolved_root, request),
+            lambda: _execute_load_skill(
+                resolved_root,
+                LoadSkillRequest(skill_id=skill_id),
+            ),
         )
 
-    load_skill.metadata = builtin_tool_metadata("read")
-    return load_skill
+    return configure_builtin_tool(load_skill, "read")
 
 
 def create_load_skill_reference_tool(*, root: str | Path | None = None) -> BaseTool:
@@ -97,21 +98,19 @@ def create_load_skill_reference_tool(*, root: str | Path | None = None) -> BaseT
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """仅在已加载 Skill 的专项细节确有必要时，按 skill_id 和本轮 load_skill 实际返回的 reference_id 静默读取参考正文；不得猜测标识，也不接受路径或越权资源。"""
 
-        request = LoadSkillReferenceRequest(
-            skill_id=skill_id,
-            reference_id=reference_id,
-        )
         return invoke_native_tool(
             LOAD_SKILL_REFERENCE_TOOL_NAME,
             lambda: _execute_load_skill_reference(
                 resolved_root,
-                request,
+                LoadSkillReferenceRequest(
+                    skill_id=skill_id,
+                    reference_id=reference_id,
+                ),
                 tool_context(runtime),
             ),
         )
 
-    load_skill_reference.metadata = builtin_tool_metadata("read")
-    return load_skill_reference
+    return configure_builtin_tool(load_skill_reference, "read")
 
 
 def _execute_load_skill(root: Path, input: LoadSkillRequest) -> ToolResult:

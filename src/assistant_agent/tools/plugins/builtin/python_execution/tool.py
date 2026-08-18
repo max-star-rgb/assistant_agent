@@ -12,7 +12,7 @@ from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.tools.capability_output import build_capability_output_contract
 from assistant_agent.tools.ids import PYTHON_INTERPRETER_TOOL_NAME
 from assistant_agent.tools.native_boundary import (
-    builtin_tool_metadata,
+    configure_builtin_tool,
     invoke_native_tool,
 )
 from assistant_agent.tools.models import ToolResult
@@ -60,21 +60,34 @@ def create_python_interpreter_tool(
         """
 
         del runtime
-        error = validate_python_code_safety(code)
-        if error is not None:
-            raise ToolException(f"{error.code}: {error.message}")
-        request = PythonInterpreterInput(code=code, input_data=input_data)
         return invoke_native_tool(
             PYTHON_INTERPRETER_TOOL_NAME,
-            lambda: _execute_python_interpreter(
+            lambda: _execute_python_interpreter_from_input(
                 python_sandbox,
-                request,
+                code,
+                input_data,
                 require_enable_env=require_enable_env,
             ),
         )
 
-    python_interpreter.metadata = builtin_tool_metadata("write")
-    return python_interpreter
+    return configure_builtin_tool(python_interpreter, "write")
+
+
+def _execute_python_interpreter_from_input(
+    sandbox: PythonSandbox,
+    code: str,
+    input_data: Any | None,
+    *,
+    require_enable_env: bool,
+) -> ToolResult:
+    error = validate_python_code_safety(code)
+    if error is not None:
+        raise ToolException(f"{error.code}: {error.message}")
+    return _execute_python_interpreter(
+        sandbox,
+        PythonInterpreterInput(code=code, input_data=input_data),
+        require_enable_env=require_enable_env,
+    )
 
 
 def _execute_python_interpreter(

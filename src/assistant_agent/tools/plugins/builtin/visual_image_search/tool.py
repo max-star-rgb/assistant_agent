@@ -22,7 +22,7 @@ from assistant_agent.tools.ids import (
     VISUAL_IMAGE_SEARCH_TOOL_NAME,
 )
 from assistant_agent.tools.native_boundary import (
-    builtin_tool_metadata,
+    configure_builtin_tool,
     invoke_native_tool,
 )
 from assistant_agent.tools.runtime import ToolContext, tool_context
@@ -51,24 +51,26 @@ def create_visual_image_search_tool(
             Field(default=None, description="相似搜索提示。"),
         ] = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """以公开图片 URL 检索视觉相似图片，不支持私有媒体或本地路径。"""
+        """使用公开 HTTP(S) 图片 URL 检索视觉相似图片。
 
-        request = VisualImageSearchRequest(
-            image_url=image_url,
-            image_ids=image_ids,
-            query_hint=query_hint,
-        )
+        返回匹配图片、来源页面、摘要和可选相似度。只读，不理解图片内容，也不支持
+        本地路径、私有媒体 ID 或 base64。
+        """
+
         return invoke_native_tool(
             VISUAL_IMAGE_SEARCH_TOOL_NAME,
             lambda: _execute_visual_image_search(
                 search_adapter,
-                request,
+                VisualImageSearchRequest(
+                    image_url=image_url,
+                    image_ids=image_ids,
+                    query_hint=query_hint,
+                ),
                 tool_context(runtime),
             ),
         )
 
-    visual_image_search.metadata = builtin_tool_metadata("read")
-    return visual_image_search
+    return configure_builtin_tool(visual_image_search, "read")
 
 
 def _execute_visual_image_search(

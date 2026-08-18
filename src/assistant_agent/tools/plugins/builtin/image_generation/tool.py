@@ -34,7 +34,7 @@ from assistant_agent.tools.ids import (
     IMAGE_GENERATION_TOOL_NAME,
 )
 from assistant_agent.tools.native_boundary import (
-    builtin_tool_metadata,
+    configure_builtin_tool,
     invoke_native_tool,
 )
 
@@ -72,8 +72,7 @@ def create_image_generation_tool(
             ),
         )
 
-    image_generation.metadata = builtin_tool_metadata("generate")
-    return image_generation
+    return configure_builtin_tool(image_generation, "generate")
 
 
 def _execute_image_generation_from_runtime(
