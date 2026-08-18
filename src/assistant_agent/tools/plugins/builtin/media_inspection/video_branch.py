@@ -60,7 +60,7 @@ class VideoUnderstandingBranch:
         self,
         adapter: VideoUnderstandingAdapter | None = None,
         *,
-        tool_name: str = "media_inspect",
+        tool_name: str = "uploaded_media_inspect",
         client: VisionUnderstandingClient | None = None,
         context_store: VideoContextStore | None = None,
         memory_store: RealtimeVideoMemoryStore | None = None,
@@ -735,6 +735,8 @@ def _error_code(message: str) -> str:
 
 
 def _is_agent_service_realtime_video_tool_call(context: ToolContext) -> bool:
+    if context.metadata.get("media_source") == "uploaded":
+        return False
     if context.metadata.get("entry_profile") == "agent_service":
         return True
     request_metadata = context.metadata.get("request_metadata")

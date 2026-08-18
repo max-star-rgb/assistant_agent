@@ -1,16 +1,15 @@
-"""Attached and live media inspection plugin."""
+"""Uploaded, live, and historical visual inspection plugin."""
 
 from assistant_agent.config import ProviderConfig
-from assistant_agent.media.vision.vision_client import (
-    create_vision_understanding_client,
-)
 from langchain_core.tools import BaseTool
-from assistant_agent.tools.plugins.builtin.media_inspection.tool import (
-    LiveViewInspectTool,
-    MediaInspectTool,
+from assistant_agent.tools.plugins.builtin.media_inspection.live_tool import (
+    create_live_view_inspect_tool,
+)
+from assistant_agent.tools.plugins.builtin.media_inspection.uploaded_tool import (
+    create_uploaded_media_inspect_tool,
 )
 from assistant_agent.tools.plugins.builtin.media_inspection.visual_memory_tool import (
-    VisualMemorySearchTool,
+    create_visual_memory_search_tool,
 )
 from assistant_agent.tools.plugins.builtin.media_inspection.visual_reminder_tool import (
     VisualReminderManageTool,
@@ -33,22 +32,15 @@ class MediaInspectionPlugin:
                     reminder_registry=context.visual_reminder_registry,
                 )
             )
-        if vision_ready:
+        if vision_ready and vision_client is not None:
             tools.extend(
                 [
-                    MediaInspectTool(
-                        client=(
-                            vision_client
-                            or create_vision_understanding_client(context.config)
-                        ),
+                    create_uploaded_media_inspect_tool(
+                        vision_client,
                         context_store=context.video_context_store,
-                        memory_store=context.realtime_video_memory_store,
                     ),
-                    LiveViewInspectTool(
-                        client=(
-                            vision_client
-                            or create_vision_understanding_client(context.config)
-                        ),
+                    create_live_view_inspect_tool(
+                        vision_client,
                         context_store=context.video_context_store,
                         memory_store=context.realtime_video_memory_store,
                         semantic_store_pool=context.visual_semantic_store_pool,
@@ -56,12 +48,11 @@ class MediaInspectionPlugin:
                 ]
             )
         if (
-            vision_ready
-            and context.visual_semantic_store_pool is not None
+            context.visual_semantic_store_pool is not None
             and context.visual_memory_text_index is not None
         ):
             tools.append(
-                VisualMemorySearchTool(
+                create_visual_memory_search_tool(
                     semantic_store_pool=context.visual_semantic_store_pool,
                     text_index=context.visual_memory_text_index,
                     limit=context.config.visual_memory_result_limit,

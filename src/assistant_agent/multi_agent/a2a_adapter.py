@@ -20,7 +20,7 @@ from assistant_agent.multi_agent.router_models import AgentCollaborationMode, Ag
 from assistant_agent.api.models import AgentRunResponse
 from assistant_agent.tools.ids import (
     IMAGE_GENERATION_TOOL_NAME,
-    MEDIA_INSPECT_TOOL_NAME,
+    UPLOADED_MEDIA_INSPECT_TOOL_NAME,
     SHOPPING_SEARCH_TOOL_NAME,
 )
 
@@ -33,7 +33,7 @@ PUBLIC_CAPABILITY_TAGS = {
     IMAGE_GENERATION_TOOL_NAME,
     SHOPPING_SEARCH_TOOL_NAME,
     "tool_calling",
-    MEDIA_INSPECT_TOOL_NAME,
+    UPLOADED_MEDIA_INSPECT_TOOL_NAME,
 }
 PRIVATE_TEXT_MARKERS = (
     "NativeGraphEvaluationTarget",

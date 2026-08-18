@@ -73,6 +73,7 @@ class AgentServerExecutionOwner:
                 if context_token_counter is not None
                 else None
             ),
+            visual_history_probe=tool_resources.visual_history_probe,
         )
         planning_graph = build_planning_graph(model, fast_agent)
         graph = build_assistant_root_graph(
@@ -116,6 +117,7 @@ def _compose_sync(
         realtime_video_memory_store=(visual_resources.realtime_video_memory_store),
         visual_semantic_store_pool=(visual_resources.visual_semantic_store_pool),
         visual_memory_text_index=visual_resources.visual_memory_text_index,
+        visual_history_probe=visual_resources.visual_history_probe,
     )
     memory_backend = create_memory_backend(
         config,

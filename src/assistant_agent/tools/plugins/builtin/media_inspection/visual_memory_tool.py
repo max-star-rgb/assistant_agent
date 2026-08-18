@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from time import time
-from typing import Literal
+from typing import Annotated, Any, Literal
 
+from langchain_core.tools import BaseTool, ToolException, tool
+from langgraph.prebuilt import ToolRuntime
 from pydantic import BaseModel, Field, model_validator
 
 from assistant_agent.media.embedding.consumers.object_search import (
@@ -16,6 +20,7 @@ from assistant_agent.media.embedding.observability import (
     EmbeddingObserver,
     emit_visual_semantic_observation,
 )
+from assistant_agent.media.runtime_media import latest_runtime_media
 from assistant_agent.media.video.semantic_store_pool import (
     SessionVisualSemanticStorePool,
 )
@@ -24,9 +29,14 @@ from assistant_agent.media.video.visual_timeline_context import (
     VisualTimelineContextService,
     VisualTimelineHardLimitError,
 )
-from assistant_agent.tools.base import ToolBase, ToolContext
+from assistant_agent.native_agent.context import (
+    AssistantRunContext,
+    authenticated_user_identity,
+)
+from assistant_agent.providers.provider_errors import sanitize_error_message
+from assistant_agent.tools.availability import ToolAvailability
+from assistant_agent.tools.base import ToolContext
 from assistant_agent.tools.ids import VISUAL_MEMORY_SEARCH_TOOL_NAME
-from assistant_agent.tools.input_binding import RuntimeInputBinding
 from assistant_agent.tools.models import ToolResult
 
 
@@ -53,24 +63,8 @@ class VisualMemorySearchInput(BaseModel):
     session_id: str = ""
 
 
-class VisualMemorySearchTool(ToolBase):
-    name = VISUAL_MEMORY_SEARCH_TOOL_NAME
-    description = (
-        "按查询词、可选时间范围和搜索模式检索当前会话已索引的历史画面文本；返回匹配的"
-        "物体、场景或事件观察及时间线摘要。判断结果时须结合 timeline_summary、coverage、"
-        "全部 observations 和最近原文；coverage 只描述压缩覆盖，status=records 不代表目标"
-        "已出现。只读，不检查当前画面，也不重新调用视觉模型。"
-    )
-    input_schema = VisualMemorySearchInput
-    output_schema = VisualMemorySearchResult
-    category = "read"
-    repeat_policy = "distinct_inputs"
-    requires_media = []
-    runtime_input_bindings = (
-        RuntimeInputBinding(
-            field="session_id", source="runtime_identity", key="session_id"
-        ),
-    )
+class VisualMemorySearcher:
+    """Search session-owned visual text history independently of Tool wrapping."""
 
     def __init__(
         self,
@@ -80,7 +74,6 @@ class VisualMemorySearchTool(ToolBase):
         limit: int = 12,
         timeline_context_service: VisualTimelineContextService | None = None,
     ) -> None:
-        super().__init__()
         self.semantic_store_pool = semantic_store_pool
         self.text_index = text_index
         self.limit = limit
@@ -95,7 +88,7 @@ class VisualMemorySearchTool(ToolBase):
         if self.timeline_context_service is None:
             self.timeline_context_service = service
 
-    def _execute(
+    def search(
         self, input: VisualMemorySearchInput, context: ToolContext
     ) -> ToolResult:
         user_id = context.user_id or ""
@@ -149,7 +142,7 @@ class VisualMemorySearchTool(ToolBase):
                 semantic_lease.release()
         data = result.model_dump(mode="json", exclude_none=True)
         return ToolResult(
-            tool_name=self.name,
+            tool_name=VISUAL_MEMORY_SEARCH_TOOL_NAME,
             success=result.status != "unavailable",
             data=data,
             model_observation=data,
@@ -236,6 +229,102 @@ class VisualMemorySearchTool(ToolBase):
                 "compaction": projection.compaction,
             },
         )
+
+
+def create_visual_memory_search_tool(
+    *,
+    semantic_store_pool: SessionVisualSemanticStorePool,
+    text_index: VisualMemoryTextIndex,
+    limit: int = 12,
+    timeline_context_service: VisualTimelineContextService | None = None,
+) -> BaseTool:
+    """Create the native read Tool for previously generated visual text."""
+
+    searcher = VisualMemorySearcher(
+        semantic_store_pool=semantic_store_pool,
+        text_index=text_index,
+        limit=limit,
+        timeline_context_service=timeline_context_service,
+    )
+
+    @tool(VISUAL_MEMORY_SEARCH_TOOL_NAME, response_format="content_and_artifact")
+    def visual_memory_search(
+        query: Annotated[
+            str,
+            Field(
+                min_length=1,
+                max_length=500,
+                description="要在当前会话历史画面文本中检索的对象、场景或事件。",
+            ),
+        ],
+        runtime: ToolRuntime[AssistantRunContext],
+        time_window: VisualMemoryTimeWindow | None = None,
+        search_mode: Literal["auto", "object", "scene", "event"] = "auto",
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """检索实时视觉链已经生成的当前会话历史文本，不重新调用视觉模型。"""
+
+        if runtime.context.realtime_media_mode != "video":
+            raise ToolException(
+                "video_handshake_required: 当前连接尚未完成 VIDEO 握手"
+            )
+        state = runtime.state if isinstance(runtime.state, Mapping) else {}
+        execution = runtime.execution_info
+        session_id = getattr(execution, "thread_id", None)
+        if not isinstance(session_id, str) or not session_id:
+            raise ToolException("session_required: 视觉历史检索需要有效 thread_id")
+        user_id = authenticated_user_identity(runtime)
+        request = VisualMemorySearchInput(
+            query=query,
+            time_window=time_window,
+            search_mode=search_mode,
+            session_id=session_id,
+        )
+        media = latest_runtime_media(state)
+        context = ToolContext(
+            user_id=user_id,
+            session_id=session_id,
+            run_id=getattr(execution, "run_id", None),
+            metadata={
+                "entry_profile": runtime.context.entry_profile,
+                "request_metadata": {
+                    "_trusted_visual_memory_as_of_sequence": (
+                        media.visual_target_sequence
+                    )
+                },
+            },
+        )
+        try:
+            result = searcher.search(request, context)
+        except ToolException:
+            raise
+        except Exception as exc:  # noqa: BLE001 - native Tool boundary.
+            raise ToolException(sanitize_error_message(exc)) from exc
+        if not result.success:
+            raise ToolException(
+                result.error or f"{VISUAL_MEMORY_SEARCH_TOOL_NAME} failed"
+            )
+        observation = result.model_observation or result.data or {"status": "empty"}
+        return (
+            [
+                {
+                    "type": "text",
+                    "text": json.dumps(
+                        observation,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        indent=2,
+                    ),
+                }
+            ],
+            dict(result.data or {}),
+        )
+
+    visual_memory_search.metadata = {
+        "effect": "read",
+        "source": "builtin",
+        "availability": ToolAvailability.VISUAL_HISTORY_AVAILABLE.value,
+    }
+    return visual_memory_search
 
 
 def _time_bounds(

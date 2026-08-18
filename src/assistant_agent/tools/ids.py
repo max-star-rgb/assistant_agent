@@ -7,12 +7,10 @@ need an entry here unless their identifier becomes a cross-layer protocol.
 DIRECT_CHAT_CAPABILITY = "direct_chat"
 IMAGE_UNDERSTANDING_CAPABILITY = "image_understanding"
 VIDEO_UNDERSTANDING_CAPABILITY = "video_understanding"
-MEDIA_INSPECT_TOOL_NAME = "media_inspect"
+UPLOADED_MEDIA_INSPECT_TOOL_NAME = "uploaded_media_inspect"
 LIVE_VIEW_INSPECT_TOOL_NAME = "live_view_inspect"
 VISUAL_MEMORY_SEARCH_TOOL_NAME = "visual_memory_search"
 VISUAL_REMINDER_MANAGE_TOOL_NAME = "visual_reminder_manage"
-# Deprecated import compatibility only; no tool is registered under the legacy name.
-IMAGE_UNDERSTANDING_TOOL_NAME = MEDIA_INSPECT_TOOL_NAME
 IMAGE_GENERATION_CAPABILITY = "image_generation"
 IMAGE_GENERATION_TOOL_NAME = "image_generation"
 WEB_SEARCH_CAPABILITY = "web_search"
