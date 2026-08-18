@@ -111,10 +111,12 @@ def test_parent_graph_has_fast_and_planning_native_branches(monkeypatch) -> None
         assert owner.graph.name == "AssistantRootGraph"
         assert nodes == {
             "__start__",
+            "capture_trusted_runtime_facts",
             "memory_recall",
             "execution_router",
             "fast_agent",
             "planning_graph",
+            "project_generated_images",
             "refresh_memory_extraction",
             "__end__",
         }

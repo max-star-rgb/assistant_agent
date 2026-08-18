@@ -213,7 +213,7 @@ class LangMemMemoryBackend:
         user_text, assistant_text = _completed_turn(messages)
         if not user_text or not assistant_text:
             return
-        value = {"messages": list(messages)}
+        value = {"messages": _messages_without_provider_metadata(messages)}
         config = {
             "configurable": {
                 "langgraph_user_id": _langmem_namespace(identity)[-1],
@@ -415,6 +415,17 @@ def _store_item_text(item: Any) -> str:
             return "" if value is None else str(value)
         value = value.get("content", value.get("memory", value))
     return str(value) if not isinstance(value, Mapping) else ""
+
+
+def _messages_without_provider_metadata(
+    messages: Sequence[AnyMessage],
+) -> list[AnyMessage]:
+    return [
+        message.model_copy(update={"response_metadata": {}})
+        if isinstance(message, AIMessage) and message.response_metadata
+        else message
+        for message in messages
+    ]
 
 
 def _completed_turn(messages: Sequence[AnyMessage]) -> tuple[str, str]:

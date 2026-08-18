@@ -1,6 +1,6 @@
 # LangGraph-native 长期记忆架构
 
-最后更新：2026-08-17
+最后更新：2026-08-18
 
 ## Authority contract
 
@@ -18,7 +18,7 @@
 Memory 是领域和 backend protocol 边界，不是必须整体嵌入主图的 compiled subgraph。实际编译拓扑拆成：
 
 ```text
-assistant-native-v1: memory_recall -> fast/planning -> refresh delayed memory -> END
+assistant-native-v1: capture_trusted_runtime_facts -> memory_recall -> fast/planning -> refresh delayed memory -> END
 assistant-memory-v1: memory_extract -> END
 ```
 
@@ -27,6 +27,8 @@ assistant-memory-v1: memory_extract -> END
 不继承父图的 execution、Memory 快照或 fast agent Skill channel。recall 使用
 LangGraph `RetryPolicy(max_attempts=3)`；最终失败由 LangGraph 原生 node error handler 返回
 `Command(update={memory_context: (), memory_status: degraded}, goto=execution_router)`，父图随后继续回答。
+从已完成 recall 之后的 checkpoint resume 时沿用冻结快照；从更早 checkpoint replay 并重新执行 recall 时允许
+重新读取最新记忆。其恢复语义与前置 TrustedRuntimeFacts capture 节点一致，二者不建立跨 replay 的额外冻结层。
 
 最终回答产生后，主图使用官方 `langgraph_sdk` 调用 `runs.list(thread_id, status="pending")`，只筛选带
 `assistant_agent_run_kind=memory_extraction` metadata 的旧 Memory run，再逐个调用
@@ -54,8 +56,9 @@ Assistant state。`RetryPolicy`、error handler
 - `disabled`：离线默认，召回为空、提取跳过；
 - `mem0`：复用薄 `Mem0Client`；身份通过 opaque binding，提交的 `source_turn` 优先使用 Agent Server
   `run_id`，本地 Graph 无 run ID 时使用 thread ID；不构造旧 SQLite commit ledger；
-- `langmem`：使用官方 manager，召回访问 runtime Store，后台 manager 使用完整 conversation messages 做
-  extract/consolidate；非结构化记忆正文默认使用简体中文，代码、协议字段和专有名词可保留原文；
+- `langmem`：使用官方 manager，召回访问 runtime Store，后台 manager 使用 conversation message 正文做
+  extract/consolidate，并在提交前剥离 AIMessage 的 Provider response metadata，避免联网来源与 request ID 进入
+  长期记忆；非结构化记忆正文默认使用简体中文，代码、协议字段和专有名词可保留原文；
 - custom：composition 可注入任何满足 `MemoryBackend` 的第三方 adapter。
 
 mock mode 只能使用 disabled；远端 backend 要求 real mode 和完整显式配置，不能探测 key 后启用，也不能静默

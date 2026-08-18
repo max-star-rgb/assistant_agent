@@ -15,6 +15,7 @@ from assistant_agent.native_agent.models import (
     NativePlanProposal,
     WorkerResult,
 )
+from assistant_agent.native_agent.runtime_facts import TrustedRuntimeFacts
 
 ExecutionMode = Literal["fast", "planning"]
 MemoryStatus = Literal["ready", "empty", "degraded"]
@@ -43,6 +44,7 @@ class AssistantRootState(MessagesState):
     memory_context: NotRequired[tuple[str, ...]]
     memory_status: NotRequired[MemoryStatus]
     execution_mode: NotRequired[ExecutionMode]
+    trusted_runtime_facts: NotRequired[TrustedRuntimeFacts]
 
 
 class FastAgentState(AgentState):
@@ -51,6 +53,7 @@ class FastAgentState(AgentState):
     memory_context: NotRequired[tuple[str, ...]]
     memory_status: NotRequired[MemoryStatus]
     execution_mode: NotRequired[ExecutionMode]
+    trusted_runtime_facts: NotRequired[TrustedRuntimeFacts]
     active_skill_ids: NotRequired[Annotated[list[str], _merge_unique_strings]]
     skill_reference_grants: NotRequired[
         Annotated[dict[str, list[str]], _merge_reference_grants]
@@ -76,6 +79,7 @@ class PlanningState(AgentState):
 
     memory_context: Required[tuple[str, ...]]
     memory_status: Required[MemoryStatus]
+    trusted_runtime_facts: NotRequired[TrustedRuntimeFacts]
     plan: NotRequired[NativePlanProposal]
     worker_results: NotRequired[Annotated[list[WorkerResult], operator.add]]
 

@@ -53,7 +53,7 @@ class DashScopeHttpTransport(Protocol):
     ) -> Iterator[dict[str, Any]]: ...
 
 
-class _UrllibDashScopeTransport:
+class UrllibDashScopeTransport:
     def post_json(
         self,
         *,
@@ -111,7 +111,7 @@ class DashScopeChatAdapter:
         self.model = model
         self.timeout_seconds = timeout_seconds
         self.capabilities = chat_capabilities_for_provider(provider)
-        self._http_transport = http_transport or _UrllibDashScopeTransport()
+        self._http_transport = http_transport or UrllibDashScopeTransport()
 
     def chat(self, request: ChatRequest) -> ChatResult:
         started_at = perf_counter()
@@ -123,7 +123,7 @@ class DashScopeChatAdapter:
                 pass
         try:
             data = self._http_transport.post_json(
-                url=_dashscope_generation_url(self.base_url),
+                url=dashscope_generation_url(self.base_url),
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",
@@ -180,7 +180,7 @@ class DashScopeChatAdapter:
         terminal_seen = False
         try:
             stream = self._http_transport.stream_sse(
-                url=_dashscope_generation_url(self.base_url),
+                url=dashscope_generation_url(self.base_url),
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",
@@ -457,7 +457,7 @@ def _stream_tool_call_deltas(value: Any) -> list[LLMToolCallDelta]:
     return deltas
 
 
-def _dashscope_generation_url(base_url: str) -> str:
+def dashscope_generation_url(base_url: str) -> str:
     parsed = urlsplit(base_url.rstrip("/"))
     path = parsed.path
     if "/compatible-mode" in path:
@@ -473,6 +473,14 @@ def _dashscope_generation_url(base_url: str) -> str:
         "",
         "",
     ))
+
+
+__all__ = [
+    "DashScopeChatAdapter",
+    "DashScopeHttpTransport",
+    "UrllibDashScopeTransport",
+    "dashscope_generation_url",
+]
 
 
 def _fallback_messages(request: ChatRequest) -> list[dict[str, Any]]:

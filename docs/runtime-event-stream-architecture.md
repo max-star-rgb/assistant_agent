@@ -1,6 +1,6 @@
 # LangGraph-native Assistant 运行与流式架构
 
-最后更新：2026-08-17
+最后更新：2026-08-18
 
 ## Authority contract
 
@@ -19,17 +19,24 @@
 
 ```text
 AssistantRootGraph
+  -> capture_trusted_runtime_facts
   -> memory_recall
   -> execution_router
        fast     -> AssistantFastAgent --------+
        planning -> AssistantPlanningGraph     |
-  -> refresh_memory_extraction <--------------+
+  -> project_generated_images <---------------+
+  -> refresh_memory_extraction
   -> END
 ```
 
 `execution_mode` 是结构化输入字段，只允许 `fast|planning`；省略时按公开 input schema 默认使用 `fast`，以兼容
 Studio 的标准 messages-only run。路由函数不从用户文本、关键词、Tool 或 Memory 推断模式。父图不绑定 saver，
 由 LangGraph Agent Server 注入 checkpoint、thread、run、cancel、resume 与 Store 资源。
+
+`capture_trusted_runtime_facts` 在 `memory_recall` 前采集带时区的当前时间与部署默认地点，写入结构化
+`trusted_runtime_facts`。当前默认地点为上海，并显式标记 `source=deployment_default`、`is_fallback=true`，
+不得表述为已观测到的用户物理位置。节点完成后快照随 checkpoint 冻结：从其后的 interrupt 恢复不会重新采集；
+从更早 checkpoint replay 并重新执行该节点时允许刷新。这与 `memory_recall` 的原生节点恢复语义一致。
 
 fast 与 planning 直接作为父图节点装配。fast 分支是 `create_agent` 编译出的 `AssistantFastAgent`，使用标准 `BaseChatModel`、`BaseTool`、`ToolRuntime`、
 messages channel 和官方 middleware，不维护项目自建 assistant/tool loop。
@@ -50,11 +57,18 @@ verifier、repair、revision、acceptance contract、deliverable binding 或 art
 
 - `execution_mode`；
 - 冻结的 `memory_context` 与 `memory_status`；
+- 冻结的 `trusted_runtime_facts`；
 
 fast agent 子图才增加由成功 `load_skill` 标准 Tool 结果产生的 `active_skill_ids`
 与窄 `skill_reference_grants`；这两个 channel 只在子图的 model→tool→model 循环中累积，不进入
 父图节点、父图输出或独立 Memory Graph。planning 子图内部另外持有 plan、worker result，
 并在 `Send` 派发时从直接依赖结果派生窄 `dependency_results` worker 输入。
+planning 的 planner、worker 与 finalizer 都读取父图传入的同一份可信事实快照，不在子图内重新采集。
+
+`project_generated_images` 只读取当前用户轮次中成功的标准 `image_generation` ToolMessage artifact，
+把受管 `/artifacts/generated/*` 引用确定性附加为最终 `AIMessage` 的标准 image content block，并在 text
+block 中补充指向同一受管 URL 的 Markdown 图片，兼容当前只渲染 AI 文本内容的 Studio Chat UI。
+它不让模型生成或改写 artifact URL，不复制图片正文，也不改变媒体 WebSocket 的 wire 投影。
 
 已完成节点直接从 worker result 推导，不保存平行 completed-ID channel，也没有项目自定义 result/artifact
 reducer。Provider/Tool client、Memory backend、投递 Store、身份对象和 callback 不写入 checkpoint。旧

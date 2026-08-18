@@ -83,13 +83,18 @@ StateGraph 的标准 `ToolNode` 执行真实 Tool。durable task 不伪造 Agent
 
 ## Provider-native 能力
 
-Qwen 等模型原生联网参数属于 `BaseChatModel` 请求能力，不伪装成本地 Tool。生产主链的 Qwen/DashScope
-OpenAI-compatible 入口直接构造 `ChatOpenAI`，只通过 `base_url`、模型名以及 DashScope 确实支持的
-`extra_body` 参数表达差异。流式模式同时启用 usage 回传。联网默认关闭，只有
-`QWEN_CHAT_ENABLE_SEARCH=true` 才在 `extra_body` 中启用 `enable_search` 与 `search_options`。
-`enable_source`、`enable_citation` 和
-`citation_format` 仅属于 DashScope 原生调用风格，不得塞入 OpenAI-compatible 请求。是否调用候选本地 Tool
-仍由模型按标准 tool calling 协议决定。
+Qwen 等模型原生联网参数属于 `BaseChatModel` 请求能力，不伪装成本地 Tool。real 模式选择 qwen 且
+`QWEN_CHAT_API_PROTOCOL=dashscope` 时，生产主链构造实现标准 LangChain `BaseChatModel` 的
+`DashScopeNativeChatModel`，使用官方 text-generation Generation API；不得静默回退到 OpenAI-compatible。
+显式选择 `openai_compatible` 时才构造 `ChatOpenAI`。
+
+`QWEN_CHAT_ENABLE_SEARCH=true` 时原生请求设置 `enable_search=true`，默认使用 turbo、
+`forced_search=false`，同时设置 `enable_source=true`、`enable_citation=true` 和 `citation_format=[<number>]`。
+只有显式结构化 `provider_search_profile=deep_research` 才使用 max 与 forced search，不从用户文本关键词推断。
+每次模型回复的来源清洗后只保存在该 `AIMessage.response_metadata.provider_search_sources`；本地 Tool、ToolNode
+和后续模型上下文不接管或聚合这些来源。原生 adapter 按官方 message/tool_call/tool_call_id 结构与标准
+LangChain ToolCall 双向转换，流式 SSE 同时保留 usage、finish reason 与终态来源。是否调用候选本地 Tool 仍由
+模型按标准 tool calling 协议决定。
 
 ## 验证
 

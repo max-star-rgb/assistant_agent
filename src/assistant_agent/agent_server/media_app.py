@@ -6,11 +6,14 @@ import asyncio
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 from langchain_core.messages import AIMessage
 
 from assistant_agent.agent_server.client import SdkAgentServerClient
@@ -38,7 +41,12 @@ from assistant_agent.media.video.video_context import SQLiteVideoContextStore
 from assistant_agent.media.video.video_context import VideoFrame
 from assistant_agent.media.visual_perception import get_visual_perception_module
 from assistant_agent.media.artifact_delivery import get_media_artifact_delivery_hub
+from assistant_agent.native_agent.generated_images import generated_image_output_refs
 from assistant_agent.proactive_delivery import SQLiteProactiveDeliveryStore
+from assistant_agent.runtime.generated_artifacts import (
+    GENERATED_ARTIFACT_DIR,
+    generated_artifact_file,
+)
 
 
 @asynccontextmanager
@@ -80,6 +88,25 @@ class _VisualPerceptionConnection:
 @app.get("/health/agent-server-adapter")
 async def adapter_health() -> dict[str, str]:
     return {"status": "ok", "execution_owner": "agent_server"}
+
+
+@app.get("/artifacts/generated/{filename}")
+async def generated_artifact(request: Request, filename: str) -> FileResponse:
+    """Serve one bounded backend-owned generated image."""
+
+    artifact_dir = getattr(
+        request.app.state,
+        "generated_artifact_dir",
+        GENERATED_ARTIFACT_DIR,
+    )
+    artifact = generated_artifact_file(filename, artifact_dir=artifact_dir)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="generated artifact not found")
+    return FileResponse(
+        artifact.path,
+        media_type=artifact.media_type,
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
 
 
 @app.websocket("/agent-service/{version}")
@@ -578,17 +605,28 @@ def native_response_from_state(state: dict[str, Any] | None) -> dict[str, Any]:
     messages = state.get("messages") if isinstance(state, Mapping) else None
     if not isinstance(messages, (list, tuple)):
         raise MediaProtocolError("Agent Server run returned no standard messages")
+    output_refs = generated_image_output_refs(messages)
     for message in reversed(messages):
         if isinstance(message, AIMessage):
             text = _message_content_text(message.content)
+            response_metadata = message.response_metadata
         elif isinstance(message, Mapping) and (
             message.get("role") == "assistant" or message.get("type") == "ai"
         ):
             text = _message_content_text(message.get("content"))
+            raw_metadata = message.get("response_metadata")
+            response_metadata = (
+                raw_metadata if isinstance(raw_metadata, Mapping) else {}
+            )
         else:
             continue
         if text:
-            return {"message": text}
+            citations = _terminal_source_citations(text, response_metadata)
+            return {
+                "message": text,
+                **({"output_refs": output_refs} if output_refs else {}),
+                **({"citations": citations} if citations else {}),
+            }
     raise MediaProtocolError("Agent Server run returned no final AIMessage")
 
 
@@ -604,6 +642,55 @@ def _message_content_text(content: Any) -> str:
         and block.get("type") in {"text", "output_text"}
         and str(block.get("text", "")).strip()
     )
+
+
+def _terminal_source_citations(
+    text: str,
+    response_metadata: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    raw_sources = response_metadata.get("provider_search_sources")
+    if not isinstance(raw_sources, list):
+        return []
+    sources_by_index: dict[int, tuple[str, str]] = {}
+    for raw_source in raw_sources:
+        if not isinstance(raw_source, Mapping):
+            continue
+        index = raw_source.get("index")
+        title = raw_source.get("title")
+        url = raw_source.get("url")
+        if (
+            not isinstance(index, int)
+            or isinstance(index, bool)
+            or index < 1
+            or not isinstance(title, str)
+            or not title.strip()
+            or not isinstance(url, str)
+        ):
+            continue
+        normalized_url = url.strip()
+        parsed = urlsplit(normalized_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            continue
+        sources_by_index[index] = (title.strip(), normalized_url)
+
+    citations: list[dict[str, Any]] = []
+    for match in re.finditer(r"\[([1-9][0-9]*)\]", text):
+        index = int(match.group(1))
+        source = sources_by_index.get(index)
+        if source is None:
+            continue
+        title, url = source
+        citations.append(
+            {
+                "type": "url_citation",
+                "start_index": match.start(),
+                "end_index": match.end(),
+                "source_id": f"source_{index}",
+                "title": title,
+                "url": url,
+            }
+        )
+    return citations
 
 
 def _client_capabilities(body: dict[str, Any]) -> dict[str, bool]:

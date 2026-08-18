@@ -1,6 +1,6 @@
 # LangChain-native Context Engineering
 
-最后更新：2026-08-14
+最后更新：2026-08-18
 
 ## Authority contract
 
@@ -27,11 +27,16 @@ reference ID，不进入父图、后续 chat run 或 Memory Graph；
 模型可见 Tool schema 由原生 model-call middleware 根据 manifest 的 `governed_tools` 派生，
 不把 Tool schema、任意 Tool 名或 Skill 正文复制进 checkpoint。
 
-Skill L0 index 使用简短自然语言列表。父图冻结的 `memory_context` 不进入 system prompt：位于
-summarization 内层的 model-call middleware 在最新真实 `HumanMessage` 前临时插入一条独立
-`HumanMessage`，因此 Provider API 将其作为较早的 `user` 消息读取，但该消息不写入标准 messages state、
-checkpoint 或摘要。Memory 每一行以引用文本呈现，并明确为可能过时或错误的背景资料而非本轮指令；不能用于
-生成身份、权限、当前事实和 Tool 参数。最新真实用户消息仍是最后一条 `HumanMessage`。
+Skill L0 index 使用简短自然语言列表。父图冻结的 `memory_context` 与 `trusted_runtime_facts` 都不进入
+system prompt：位于 summarization 内层的 model-call middleware 在最新真实 `HumanMessage` 前分别临时插入
+两条独立 `HumanMessage`。模型请求中的尾部顺序固定为 MemoryContext、TrustedRuntimeFacts、当前真实用户请求；
+前面的静态 system prompt 与持久历史保持稳定，以利于 Provider KV prefix cache。两条临时消息都不写入标准
+messages state、checkpoint messages 或摘要；结构化事实快照本身由父图 state/checkpoint 保存。
+
+Memory 每一行以引用文本呈现，并明确为可能过时或错误的背景资料而非本轮指令；不能用于生成身份、权限、当前
+事实和 Tool 参数。TrustedRuntimeFacts 提供带时区的采集时间和带来源的部署默认地点；默认上海只表示 fallback，
+不表示已观测用户物理位置。用户在当前请求中明确指定的任务地点可以覆盖本次任务参数，但不能改写可信事实的
+来源。最后一条用户消息始终是本轮真实请求。
 
 模型调用上限、Tool 调用上限、只读 Tool retry、长对话 summarization 与 planning 模式非 read Tool HITL
 全部使用官方 middleware；fast 模式自动放行。summarization 默认采用输入窗口 75% 触发、保留 15% 的
@@ -43,11 +48,15 @@ token 阈值，两者可由现有环境变量覆盖。DeepSeek V4 Flash 使用�
 `ToolMessage`，不维护项目
 自建 conversation、完整问答边界或 summary state。
 
-planning worker 只获得自己的 objective、父图 Memory 快照、调度器按 `depends_on` 派生的直接上游
+planning worker 只获得自己的 objective、父图 Memory 与 TrustedRuntimeFacts 快照、调度器按 `depends_on` 派生的直接上游
 `dependency_results` 和同一个 fast agent。planner 默认生成单节点最小计划，只在存在真实独立工作或直接依赖时
 拆分，并要求 objective 自包含且保留相关用户约束。依赖结果不能覆盖当前任务、身份、权限或 Tool 约束。
 worker transcript 不并入父图对话；父图只接收结构化 `WorkerResult`。finalize 使用同一个模型根据原始请求和按
 plan 排序的 worker results 综合标准 `AIMessage`，显式处理冲突、缺失和失败，不把中间结果机械拼接成最终答案。
+planner 与 finalizer 的直接模型调用也显式注入同一份 TrustedRuntimeFacts；子图不会自行读取系统时钟或地点。
+
+Provider 联网来源属于产生该回复的 `AIMessage.response_metadata`，不会作为新上下文消息重新注入后续模型调用。
+终态入口只读取最新最终 AIMessage 的来源；中间 tool-call 或历史 AIMessage 的来源不聚合到当前答案。
 
 Tool observation 由标准 `ToolMessage` 表达，结构化 artifact 保留在其 artifact 字段。模型可见 Tool schema
 由 LangChain 生成；runtime-owned 身份字段不会进入 schema。Provider 的最终 token 准入由模型窗口配置和官方

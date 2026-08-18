@@ -17,6 +17,7 @@ from assistant_agent.native_agent.models import (
     WorkerResult,
 )
 from assistant_agent.native_agent.state import PlanningState, WorkerState
+from assistant_agent.native_agent.runtime_facts import trusted_runtime_facts_message
 
 
 class NativePlanAdmissionError(ValueError):
@@ -65,9 +66,13 @@ def build_planning_graph(
     structured_planner = model.with_structured_output(NativePlanProposal)
 
     async def planner_node(state: PlanningState) -> dict[str, Any]:
+        runtime_facts = trusted_runtime_facts_message(
+            state.get("trusted_runtime_facts")
+        )
         proposal = await structured_planner.ainvoke(
             [
                 SystemMessage(content=_PLANNER_PROMPT),
+                *([runtime_facts] if runtime_facts is not None else []),
                 HumanMessage(content=_last_human_text(state)),
             ]
         )
@@ -91,6 +96,7 @@ def build_planning_graph(
                 "memory_context": tuple(state.get("memory_context", ())),
                 "memory_status": state.get("memory_status", "empty"),
                 "execution_mode": state["execution_mode"],
+                "trusted_runtime_facts": state.get("trusted_runtime_facts"),
             },
             context=runtime.context,
         )
@@ -118,9 +124,13 @@ def build_planning_graph(
             },
             ensure_ascii=False,
         )
+        runtime_facts = trusted_runtime_facts_message(
+            state.get("trusted_runtime_facts")
+        )
         final_message = await model.ainvoke(
             [
                 SystemMessage(content=_FINALIZER_PROMPT),
+                *([runtime_facts] if runtime_facts is not None else []),
                 HumanMessage(content=payload),
             ]
         )
@@ -170,6 +180,7 @@ def _ready_worker_sends(state: PlanningState) -> list[Send]:
                     "memory_context": tuple(state.get("memory_context", ())),
                     "memory_status": state.get("memory_status", "empty"),
                     "execution_mode": "planning",
+                    "trusted_runtime_facts": state.get("trusted_runtime_facts"),
                     "work_item_id": node.node_id,
                     "objective": node.objective,
                     "dependency_results": tuple(

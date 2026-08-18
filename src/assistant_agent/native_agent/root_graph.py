@@ -12,10 +12,14 @@ from langgraph.types import Command, RetryPolicy
 from langgraph_sdk import get_client
 
 from assistant_agent.native_agent.context import AssistantRunContext
+from assistant_agent.native_agent.generated_images import project_generated_images
 from assistant_agent.native_agent.memory import (
     MemoryBackend,
     memory_recall_degraded,
     memory_recall_node,
+)
+from assistant_agent.native_agent.runtime_facts import (
+    capture_trusted_runtime_facts_node,
 )
 from assistant_agent.native_agent.state import AssistantRootInput, AssistantRootState
 
@@ -32,6 +36,7 @@ def build_assistant_root_graph(
     fast_agent: Any,
     planning_graph: Any,
     extraction_delay_seconds: int = DEFAULT_EXTRACTION_DELAY_SECONDS,
+    artifact_base_url: str | None = None,
 ):
     """Compose recall, execution, and post-answer Memory debounce."""
 
@@ -39,6 +44,10 @@ def build_assistant_root_graph(
         AssistantRootState,
         input_schema=AssistantRootInput,
         context_schema=AssistantRunContext,
+    )
+    builder.add_node(
+        "capture_trusted_runtime_facts",
+        capture_trusted_runtime_facts_node,
     )
     builder.add_node(
         "memory_recall",
@@ -55,6 +64,13 @@ def build_assistant_root_graph(
     builder.add_node("fast_agent", fast_agent)
     builder.add_node("planning_graph", planning_graph)
     builder.add_node(
+        "project_generated_images",
+        partial(
+            project_generated_images_node,
+            artifact_base_url=artifact_base_url,
+        ),
+    )
+    builder.add_node(
         "refresh_memory_extraction",
         partial(
             refresh_memory_extraction_node,
@@ -69,15 +85,17 @@ def build_assistant_root_graph(
         ),
         error_handler=memory_extraction_refresh_degraded,
     )
-    builder.add_edge(START, "memory_recall")
+    builder.add_edge(START, "capture_trusted_runtime_facts")
+    builder.add_edge("capture_trusted_runtime_facts", "memory_recall")
     builder.add_edge("memory_recall", "execution_router")
     builder.add_conditional_edges(
         "execution_router",
         route_execution_mode,
         {"fast": "fast_agent", "planning": "planning_graph"},
     )
-    builder.add_edge("fast_agent", "refresh_memory_extraction")
-    builder.add_edge("planning_graph", "refresh_memory_extraction")
+    builder.add_edge("fast_agent", "project_generated_images")
+    builder.add_edge("planning_graph", "project_generated_images")
+    builder.add_edge("project_generated_images", "refresh_memory_extraction")
     builder.add_edge("refresh_memory_extraction", END)
     return builder.compile(name="AssistantRootGraph")
 
@@ -92,6 +110,20 @@ def route_execution_mode(state: AssistantRootState) -> str:
     """Route only on the trusted structured execution mode."""
 
     return "planning" if state.get("execution_mode") == "planning" else "fast"
+
+
+def project_generated_images_node(
+    state: AssistantRootState,
+    *,
+    artifact_base_url: str | None,
+) -> dict[str, object]:
+    """Expose generated artifacts as standard image blocks to native chat UIs."""
+
+    projected = project_generated_images(
+        state.get("messages", ()),
+        artifact_base_url=artifact_base_url,
+    )
+    return {"messages": [projected]} if projected is not None else {}
 
 
 async def refresh_memory_extraction_node(
@@ -167,6 +199,7 @@ __all__ = [
     "build_assistant_root_graph",
     "execution_router_node",
     "memory_extraction_refresh_degraded",
+    "project_generated_images_node",
     "refresh_memory_extraction_node",
     "route_execution_mode",
 ]

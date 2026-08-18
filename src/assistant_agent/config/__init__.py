@@ -197,7 +197,7 @@ class ProviderConfig:
     ark_image_output_format: str = "png"
     local_image_base_url: str | None = None
     local_image_model: str = "local-image"
-    artifact_base_url: str | None = None
+    artifact_base_url: str | None = "http://127.0.0.1:8089"
     td_gen_ip: str | None = None
     td_gen_port: int | None = None
     public_ip: str | None = None
@@ -793,7 +793,9 @@ class ProviderConfig:
             ark_image_output_format="png",
             local_image_base_url=source.get("LOCAL_IMAGE_BASE_URL"),
             local_image_model=source.get("LOCAL_IMAGE_MODEL", "local-image"),
-            artifact_base_url=source.get("ARTIFACT_BASE_URL"),
+            artifact_base_url=source.get(
+                "ARTIFACT_BASE_URL", "http://127.0.0.1:8089"
+            ),
             td_gen_ip=source.get("TD_GEN_IP"),
             td_gen_port=_optional_int_env(source.get("TD_GEN_PORT")),
             public_ip=source.get("PUBLIC_IP"),

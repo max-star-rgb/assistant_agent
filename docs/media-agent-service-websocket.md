@@ -98,6 +98,11 @@ Graph 完成后发唯一成功终包：
 一个新的 30 分钟 delayed Memory run；pending chat run 不受影响。该 orchestration 不扩展媒体 wire，
 WebSocket 挂断也不承担 Memory 语义。
 
+当客户端声明 `clientCapabilities.urlCitationAnnotationsV1=true`，媒体入口只读取最新终态 `AIMessage` 自身的
+`provider_search_sources`，把正文中实际存在的 `[n]` 角标投影为 `intentResult.annotations`，并保持
+`fullDescription` 与原正文一致。历史回复和中间 tool-call AIMessage 的来源不得聚合；无角标、索引不匹配或
+非 HTTP(S) URL 的来源不进入 wire。
+
 ## 4. interrupt 与 delivery ACK
 
 `interrupt` 会对该连接已关联的 run 调用 Agent Server 原生 cancel，然后返回：
@@ -182,6 +187,12 @@ outbox 保持两套不同语义。当前主动 Store 是单实例/共享持久�
 durable task 生产者尚未接入该主动 Outbox；后台视觉 observer 只发布视觉语义记录，不伪装 proactive
 producer。citation、生成图片 detail、H.264 显式
 视觉引用和在线 3D artifact 投影已支持。
+
+生成图片的公共 Graph 终态同时包含最终 `AIMessage` 的标准 image content block，以及指向相同受管 URL
+的 Markdown 图片文本；后者兼容当前只读取 AI 文本内容的 Studio Chat UI。媒体入口不直接转发这些
+展示内容，而是从同轮成功 `image_generation`
+ToolMessage artifact 提取受管 `output_ref`，读取有界本地图片并继续按本协议投影为
+`intentResult.detail[].type=IMAGE` 的 Base64 正文。
 
 视觉资源按进程与连接分层：Agent Server custom FastAPI lifespan 拥有进程级
 `VisualPerceptionModule`，仅在进程 shutdown 时关闭；每个媒体 WebSocket 只拥有并关闭自己的

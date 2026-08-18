@@ -151,6 +151,24 @@ def create_chat_model(config: ProviderConfig | None = None) -> BaseChatModel:
         raise ProviderConfigurationError(
             f"{settings.provider} chat provider is missing {', '.join(missing)}"
         )
+    if (
+        settings.provider == "qwen"
+        and resolved.qwen_chat_api_protocol == "dashscope"
+    ):
+        from assistant_agent.providers.dashscope_langchain import (
+            DashScopeNativeChatModel,
+        )
+
+        return DashScopeNativeChatModel(
+            api_key=settings.api_key or "",
+            base_url=settings.base_url or "",
+            model_name=settings.model or "",
+            timeout_seconds=resolved.chat_timeout_seconds,
+            max_tokens=resolved.chat_max_tokens,
+            enable_thinking=resolved.qwen_chat_enable_thinking,
+            enable_search=resolved.qwen_chat_enable_search,
+            streaming=(resolved.native_provider_streaming or resolved.chat_stream),
+        )
     if settings.adapter_kind not in {"openai_compatible", "local_http"}:
         raise ProviderConfigurationError(
             f"unsupported native chat adapter: {settings.adapter_kind}"

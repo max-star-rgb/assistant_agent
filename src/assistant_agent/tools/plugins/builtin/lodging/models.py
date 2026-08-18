@@ -3,10 +3,28 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Literal
+from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    Field,
+    field_validator,
+    model_validator,
+)
+
+
+def _parse_iso_date(value: object) -> object:
+    if not isinstance(value, str):
+        return value
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError("must be a valid date in YYYY-MM-DD format") from exc
+
+
+LodgingDate = Annotated[date, BeforeValidator(_parse_iso_date)]
 
 
 class LodgingSearchRequest(BaseModel):
@@ -15,8 +33,8 @@ class LodgingSearchRequest(BaseModel):
         max_length=160,
         description="目的地城市或区域。",
     )
-    check_in: date = Field(description="入住日期 YYYY-MM-DD。")
-    check_out: date = Field(description="退房日期 YYYY-MM-DD。")
+    check_in: LodgingDate = Field(description="入住日期 YYYY-MM-DD。")
+    check_out: LodgingDate = Field(description="退房日期 YYYY-MM-DD。")
     adults: int = Field(
         default=1,
         ge=1,

@@ -42,6 +42,14 @@ class GeneratedArtifactPayload:
     base64_data: str
 
 
+@dataclass(frozen=True)
+class GeneratedArtifactFile:
+    """Validated generated image file safe to serve from the custom route."""
+
+    path: Path
+    media_type: str
+
+
 def materialize_image_generation_result(
     result: ImageGenerationResult,
     *,
@@ -120,6 +128,33 @@ def generated_artifact_data_url(
         return None
     encoded = base64.b64encode(payload).decode("ascii")
     return f"data:{media_type};base64,{encoded}"
+
+
+def generated_artifact_file(
+    filename: str,
+    *,
+    artifact_dir: Path | None = None,
+    max_bytes: int = MAX_ARTIFACT_BYTES,
+) -> GeneratedArtifactFile | None:
+    """Resolve one bounded image filename inside the managed artifact root."""
+
+    if max_bytes <= 0 or not filename or Path(filename).name != filename:
+        return None
+    root = (artifact_dir or GENERATED_ARTIFACT_DIR).resolve()
+    path = (root / filename).resolve()
+    if path.parent != root:
+        return None
+    try:
+        if not path.is_file() or path.stat().st_size > max_bytes:
+            return None
+        with path.open("rb") as file:
+            header = file.read(16)
+    except OSError:
+        return None
+    media_type = _image_media_type(header)
+    if media_type is None:
+        return None
+    return GeneratedArtifactFile(path=path, media_type=media_type)
 
 
 def generated_artifact_payload(
