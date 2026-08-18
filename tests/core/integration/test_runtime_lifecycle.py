@@ -222,6 +222,7 @@ def test_public_input_separates_mode_from_non_identity_runtime_context() -> None
     assert set(type(context).model_fields) == {
         "entry_profile",
         "media_capabilities",
+        "realtime_media_mode",
     }
     with pytest.raises(ValidationError):
         AssistantRootInput.model_validate(
