@@ -56,7 +56,7 @@ def create_load_skill_tool(*, root: str | Path | None = None) -> BaseTool:
         ],
         runtime: ToolRuntime[AssistantRunContext],
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """加载一个已注册的内部工作流，不接受路径或未注册资源。"""
+        """当当前任务符合 skill_index 中某张 Skill 卡片时，在调用其相关业务工具前按 skill_id 静默加载完整工作流正文；不要加载无关 Skill 或向用户播报加载过程。成功结果会返回可按需读取的 reference_ids；不接受路径或未注册资源。"""
 
         request = LoadSkillRequest(skill_id=skill_id)
         return invoke_native_tool(
@@ -95,7 +95,7 @@ def create_load_skill_reference_tool(*, root: str | Path | None = None) -> BaseT
         ],
         runtime: ToolRuntime[AssistantRunContext],
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """读取当前 run 已授予的 Skill reference，不接受路径或模型声明的 grant。"""
+        """仅在已加载 Skill 的专项细节确有必要时，按 skill_id 和本轮 load_skill 实际返回的 reference_id 静默读取参考正文；不得猜测标识，也不接受路径或越权资源。"""
 
         request = LoadSkillReferenceRequest(
             skill_id=skill_id,
