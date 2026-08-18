@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from langgraph.runtime import Runtime
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -17,6 +19,7 @@ class AssistantRunContext(BaseModel):
 
     entry_profile: str = Field(default="agent_server", min_length=1, max_length=160)
     media_capabilities: tuple[str, ...] = Field(default=(), max_length=32)
+    realtime_media_mode: Literal["none", "video"] = "none"
 
     @field_validator("media_capabilities", mode="before")
     @classmethod

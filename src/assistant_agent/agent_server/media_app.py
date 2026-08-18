@@ -211,6 +211,7 @@ async def _handle_frame(
             protocol_session_id=frame.session_id,
             user_id=user_id,
             thread_id=thread_id,
+            call_type=call_type,
             client_capabilities=_client_capabilities(frame.body),
             media_capabilities=("audio", "video")
             if call_type == "VIDEO"
@@ -417,6 +418,9 @@ async def _run_chat(
         run_context = {
             "entry_profile": "agent_service",
             "media_capabilities": list(session.media_capabilities),
+            "realtime_media_mode": (
+                "video" if session.video_handshake_completed else "none"
+            ),
         }
         async for part in client.stream_run(
             thread_id=session.thread_id,
@@ -554,7 +558,11 @@ def media_graph_input(
 
     content: list[dict[str, Any]] = [{"type": "text", "text": chat.text}]
     for video_id in video_ids:
-        block: dict[str, Any] = {"type": "video", "id": video_id}
+        block: dict[str, Any] = {
+            "type": "video",
+            "id": video_id,
+            "source": "live_camera",
+        }
         if video_id == visual_target_video_id and visual_target_sequence is not None:
             block["target_sequence"] = visual_target_sequence
         content.append(block)

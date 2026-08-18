@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 
 @dataclass
@@ -16,6 +17,7 @@ class MediaConnectionSession:
     last_event_id: str | None = None
     client_capabilities: dict[str, bool] = field(default_factory=dict)
     media_capabilities: tuple[str, ...] = ()
+    call_type: Literal["AUDIO", "VIDEO"] | None = None
     video_ids: list[str] = field(default_factory=list)
     submitted_chat_indexes: set[str] = field(default_factory=set)
 
@@ -25,6 +27,7 @@ class MediaConnectionSession:
         protocol_session_id: str | None,
         user_id: str,
         thread_id: str,
+        call_type: Literal["AUDIO", "VIDEO"] = "AUDIO",
         client_capabilities: dict[str, bool] | None = None,
         media_capabilities: tuple[str, ...] = (),
     ) -> None:
@@ -33,8 +36,13 @@ class MediaConnectionSession:
         self.protocol_session_id = protocol_session_id
         self.user_id = user_id
         self.thread_id = thread_id
+        self.call_type = call_type
         self.client_capabilities = dict(client_capabilities or {})
         self.media_capabilities = media_capabilities
+
+    @property
+    def video_handshake_completed(self) -> bool:
+        return self.thread_id is not None and self.call_type == "VIDEO"
 
     def bind_run(self, *, chat_index: str, run_id: str) -> None:
         existing = self.active_runs.get(chat_index)
