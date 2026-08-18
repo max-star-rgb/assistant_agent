@@ -28,7 +28,13 @@ from langchain_core.messages import (
 from langchain_core.tools import BaseTool
 
 from assistant_agent.native_agent.context import AssistantRunContext
+from assistant_agent.media.visual_perception.history_probe import (
+    VisualObservationHistoryProbe,
+)
 from assistant_agent.native_agent.state import FastAgentState
+from assistant_agent.native_agent.conditional_tool_exposure import (
+    ConditionalToolExposureMiddleware,
+)
 from assistant_agent.native_agent.tool_exposure import (
     ProgressiveToolExposureMiddleware,
     discoverable_skill_descriptors,
@@ -52,6 +58,7 @@ def build_fast_agent(
     compaction_target_ratio: float = 0.15,
     token_counter: Callable[[Iterable[MessageLikeRepresentation]], int] | None = None,
     skill_catalog: SkillCatalog | None = None,
+    visual_history_probe: VisualObservationHistoryProbe | None = None,
 ):
     """Build the shared create_agent unit without binding saver or Store."""
 
@@ -89,6 +96,7 @@ def build_fast_agent(
     middleware = [
         assistant_prompt,
         ProgressiveToolExposureMiddleware(resolved_skill_catalog),
+        ConditionalToolExposureMiddleware(visual_history_probe),
         ModelCallLimitMiddleware(
             run_limit=model_call_limit,
             exit_behavior="error",
