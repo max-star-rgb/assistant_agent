@@ -153,6 +153,7 @@ class VisualPerceptionModule:
         visual_semantic_store_pool: SessionVisualSemanticStorePool | None = None,
         visual_memory_text_index: VisualMemoryTextIndex | None = None,
         observer_factory: ObserverFactory | None = None,
+        vision_client: VisionUnderstandingClient | None = None,
     ) -> None:
         self.config = config or ProviderConfig.from_env()
         self.data_root = Path(data_root)
@@ -181,6 +182,10 @@ class VisualPerceptionModule:
         self.visual_history_probe = PoolVisualObservationHistoryProbe(
             self.visual_semantic_store_pool
         )
+        self._vision_client = vision_client or _create_process_vision_client(
+            self.config
+        )
+        self._vision_client_lock = Lock()
         self._observer_factory = observer_factory or self._create_observer
         self._sessions: set[VisualPerceptionSession] = set()
         self._closed = False
@@ -219,13 +224,10 @@ class VisualPerceptionModule:
 
         if self._closed:
             raise RuntimeError("visual_perception_module_closed")
-        client = create_vision_understanding_client(self.config)
-        try:
-            return client.understand(request)
-        finally:
-            close = getattr(client, "close", None)
-            if callable(close):
-                close()
+        if self._vision_client is None:
+            raise RuntimeError("vision_understanding_client_unconfigured")
+        with self._vision_client_lock:
+            return self._vision_client.understand(request)
 
     def tool_resources(self) -> VisualPerceptionToolResources:
         return VisualPerceptionToolResources(
@@ -252,6 +254,9 @@ class VisualPerceptionModule:
         close_index = getattr(self.visual_memory_text_index, "close", None)
         if callable(close_index):
             close_index()
+        close_vision = getattr(self._vision_client, "close", None)
+        if callable(close_vision):
+            close_vision()
 
     def _create_observer(self, user_id: str, session_id: str) -> RealtimeVideoObserver:
         semantic_lease = self.visual_semantic_store_pool.acquire(user_id, session_id)
@@ -304,3 +309,14 @@ def get_visual_perception_module(
         if _default_module is None or _default_module.closed:
             _default_module = VisualPerceptionModule(config=config)
         return _default_module
+
+
+def _create_process_vision_client(
+    config: ProviderConfig,
+) -> VisionUnderstandingClient | None:
+    if config.provider_mode == "real" and (
+        config.vision_provider == "mock"
+        or config.resolved_vision_provider().missing_required_env()
+    ):
+        return None
+    return create_vision_understanding_client(config)
