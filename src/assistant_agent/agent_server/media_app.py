@@ -302,9 +302,9 @@ async def _handle_frame(
                 delivery_id=delivery_id,
             ),
         )
-        visual_target = None
+        visual_window = None
         if visual_perception.session is not None:
-            visual_target = await visual_perception.session.prepare_strict_target(
+            visual_window = await visual_perception.session.prepare_strict_window(
                 session.video_ids
             )
         task = asyncio.create_task(
@@ -317,11 +317,21 @@ async def _handle_frame(
                 delivery_id=delivery_id,
                 send_lock=send_lock,
                 interrupted_chats=interrupted_chats,
+                visual_window_id=(
+                    visual_window.window_id if visual_window is not None else None
+                ),
+                visual_window_start_sequence=(
+                    visual_window.start_sequence
+                    if visual_window is not None
+                    else None
+                ),
                 visual_target_sequence=(
-                    visual_target.sequence if visual_target is not None else None
+                    visual_window.target_sequence
+                    if visual_window is not None
+                    else None
                 ),
                 visual_target_video_id=(
-                    visual_target.video_id if visual_target is not None else None
+                    visual_window.video_id if visual_window is not None else None
                 ),
             ),
             name=f"media-chat:{chat.chat_index}",
@@ -434,6 +444,8 @@ async def _run_chat(
     delivery_id: str,
     send_lock: asyncio.Lock,
     interrupted_chats: set[str],
+    visual_window_id: str | None = None,
+    visual_window_start_sequence: int | None = None,
     visual_target_sequence: int | None = None,
     visual_target_video_id: str | None = None,
 ) -> None:
@@ -455,6 +467,8 @@ async def _run_chat(
             input=media_graph_input(
                 chat,
                 video_ids=session.video_ids,
+                visual_window_id=visual_window_id,
+                visual_window_start_sequence=visual_window_start_sequence,
                 visual_target_sequence=visual_target_sequence,
                 visual_target_video_id=visual_target_video_id,
             ),
@@ -578,6 +592,8 @@ def media_graph_input(
     chat: Any,
     *,
     video_ids: list[str],
+    visual_window_id: str | None = None,
+    visual_window_start_sequence: int | None = None,
     visual_target_sequence: int | None = None,
     visual_target_video_id: str | None = None,
 ) -> dict[str, Any]:
@@ -590,8 +606,19 @@ def media_graph_input(
             "id": video_id,
             "source": "live_camera",
         }
-        if video_id == visual_target_video_id and visual_target_sequence is not None:
-            block["target_sequence"] = visual_target_sequence
+        if (
+            video_id == visual_target_video_id
+            and visual_window_id is not None
+            and visual_window_start_sequence is not None
+            and visual_target_sequence is not None
+        ):
+            block.update(
+                {
+                    "window_id": visual_window_id,
+                    "window_start_sequence": visual_window_start_sequence,
+                    "target_sequence": visual_target_sequence,
+                }
+            )
         content.append(block)
     return {
         "messages": [{"role": "user", "content": content}],
