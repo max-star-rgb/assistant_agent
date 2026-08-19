@@ -62,8 +62,8 @@ def _frame(tmp_path: Path, sequence: int) -> VideoFrame:
     )
 
 
-def test_each_window_frame_has_a_safe_correlated_vlm_generation(tmp_path: Path) -> None:
-    """Regression: parallel VLM spans need sequence/role correlation without content."""
+def test_each_submitted_frame_has_a_safe_vlm_generation(tmp_path: Path) -> None:
+    """Regression: frame-arrival VLM spans need safe sequence correlation."""
 
     async def scenario() -> InMemoryTraceStore:
         trace_store = InMemoryTraceStore()
@@ -86,12 +86,8 @@ def test_each_window_frame_has_a_safe_correlated_vlm_generation(tmp_path: Path) 
             keyframe_root=tmp_path / "keyframes",
         )
         try:
-            await observer.promote_window(
-                tuple(_frame(tmp_path, sequence) for sequence in range(4, 9)),
-                window_id="visual-window-observed",
-                window_start_sequence=4,
-                target_sequence=8,
-            )
+            for sequence in range(4, 9):
+                await observer.submit(_frame(tmp_path, sequence))
             await observer.wait_idle()
         finally:
             await observer.close()
@@ -114,17 +110,13 @@ def test_each_window_frame_has_a_safe_correlated_vlm_generation(tmp_path: Path) 
         8,
     }
     assert all(
-        event.attributes["visual_window_id"] == "visual-window-observed"
-        and event.attributes["window_start_sequence"] == 4
-        and event.attributes["target_sequence"] == 8
-        and event.attributes["provider_connection_isolated"] is True
+        event.attributes["provider_connection_isolated"] is True
+        and event.attributes["window_role"] == "background"
+        and "visual_window_id" not in event.attributes
+        and "window_start_sequence" not in event.attributes
+        and "target_sequence" not in event.attributes
         for event in generations
     )
-    assert {
-        event.attributes["frame_sequence"]
-        for event in generations
-        if event.attributes["window_role"] == "target"
-    } == {8}
     serialized = "\n".join(event.model_dump_json() for event in trace_store.events)
     assert "private-frame-path" not in serialized
     assert "visible-summary" not in serialized
@@ -197,4 +189,3 @@ def test_live_view_records_a_content_free_target_barrier(tmp_path: Path) -> None
         "wait_ms": barrier_events[-1].attributes["wait_ms"],
     }
     assert isinstance(barrier_events[-1].attributes["wait_ms"], int)
-

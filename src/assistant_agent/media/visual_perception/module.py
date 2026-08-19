@@ -132,7 +132,7 @@ class VisualPerceptionSession:
         self,
         video_ids: Sequence[str],
     ) -> VisualTargetWindow | None:
-        """Freeze and promote the newest requested five-frame window."""
+        """Freeze the newest frame boundaries without starting VLM work."""
 
         self._ensure_open()
         selected: tuple[VideoFrame, ...] = ()
@@ -150,12 +150,6 @@ class VisualPerceptionSession:
             return None
         _validate_target_window(selected)
         window_id = f"visual-window-{uuid4().hex}"
-        await self._observer.promote_window(
-            selected,
-            window_id=window_id,
-            window_start_sequence=selected[0].sequence,
-            target_sequence=selected[-1].sequence,
-        )
         return VisualTargetWindow(
             window_id=window_id,
             video_id=selected[-1].video_id,

@@ -192,13 +192,13 @@ class RealtimeVideoObserver:
                 fps=resolved_provider_config.semantic_input_fps
             ),
             retention_root=self.keyframe_root / "semantic-input",
-            on_selected=self._enqueue_semantic_selection,
+            on_selected=self._handle_semantic_selection,
             on_state_change=self._update_semantic_pipeline_state,
             observer=embedding_coordinator.observer,
         )
 
     async def submit(self, frame: VideoFrame) -> FrameProcessingResult:
-        """Admit a frame for background semantic processing without waiting."""
+        """Start one frame-owned VLM task and preserve semantic processing."""
 
         if self.closed:
             raise RuntimeError("realtime video observer is closed")
@@ -207,6 +207,11 @@ class RealtimeVideoObserver:
     async def _submit(self, frame: VideoFrame) -> FrameProcessingResult:
         self._accept_video_id(frame)
         started_ns = self.clock_ns()
+        vlm_enqueued = await self._enqueue(
+            frame,
+            enqueued_ns=started_ns,
+            keyframe_selection_latency_ms=0,
+        )
         admission = await self.semantic_pipeline.submit(frame)
         finished_ns = self.clock_ns()
         return FrameProcessingResult(
@@ -216,7 +221,7 @@ class RealtimeVideoObserver:
             sampling_rate=self.semantic_pipeline.sampler.fps,
             metrics=KeyframeChangeMetrics(),
             keyframe_selected=False,
-            qwen_called=False,
+            qwen_called=vlm_enqueued,
             latency_ms=_elapsed_ms(started_ns, finished_ns),
             decision_reason=admission.reason,
             semantic_admission=admission.reason,
@@ -413,30 +418,24 @@ class RealtimeVideoObserver:
             semantic_admission=admission.reason,
         )
 
-    async def _enqueue_semantic_selection(
+    async def _handle_semantic_selection(
         self,
         frame: VideoFrame,
         event: EmbeddingEvent | None,
         reason: str,
     ) -> None:
+        """Publish keyframe-derived reminders without gating or repeating VLM."""
+
         if self.closed:
             raise RuntimeError("realtime video observer is closed")
-        enqueued_ns = self.clock_ns()
+        del reason
         if self.visual_reminder_registry is not None:
             await self.visual_reminder_registry.publish_image_event(
                 self.user_id,
                 self.session_id,
                 event,
             )
-        await self._enqueue(
-            frame,
-            enqueued_ns=enqueued_ns,
-            keyframe_selection_latency_ms=_keyframe_selection_latency_ms(
-                frame,
-                selected_ns=enqueued_ns,
-            ),
-            already_retained=True,
-        )
+        self._delete_transferred_duplicate(frame)
 
     async def _enqueue(
         self,
@@ -1153,19 +1152,6 @@ def _frame_timestamp_ns(frame: VideoFrame, key: str) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return None
     return value
-
-
-def _keyframe_selection_latency_ms(
-    frame: VideoFrame,
-    *,
-    selected_ns: int,
-) -> int:
-    ingress_ns = _frame_timestamp_ns(frame, "video_ingress_ns")
-    if ingress_ns is None:
-        return 0
-    ingress_to_selection_ms = _elapsed_ms(ingress_ns, selected_ns)
-    decode_latency_ms = _frame_latency_ms(frame, "h264_decode_latency_ms") or 0
-    return max(0, ingress_to_selection_ms - decode_latency_ms)
 
 
 def _elapsed_ms(start_ns: int, end_ns: int) -> int:

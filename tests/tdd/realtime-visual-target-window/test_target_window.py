@@ -16,20 +16,22 @@ from assistant_agent.media.visual_perception.module import VisualPerceptionSessi
 
 class RecordingObserver:
     def __init__(self) -> None:
-        self.promoted_sequences: list[tuple[int, ...]] = []
+        self.promote_window_called = False
 
     async def submit(self, _frame: VideoFrame) -> None:
         return None
 
     async def promote_window(self, frames: tuple[VideoFrame, ...], **_metadata) -> None:
-        self.promoted_sequences.append(tuple(frame.sequence for frame in frames))
+        del frames
+        self.promote_window_called = True
+        raise AssertionError("chat freeze must not start or replay VLM observations")
 
     async def close(self) -> None:
         return None
 
 
-def test_chat_freezes_the_latest_five_decoded_frames() -> None:
-    """Regression: keeping only the latest frame loses context 4-7 at chat time."""
+def test_chat_only_freezes_the_latest_five_decoded_frame_boundaries() -> None:
+    """Regression: chat-time promotion starts VLM after the user has already asked."""
 
     store = InMemoryVideoContextStore(window_size=5)
     observer = RecordingObserver()
@@ -60,7 +62,7 @@ def test_chat_freezes_the_latest_five_decoded_frames() -> None:
     assert window.target_sequence == 8
     assert window.sequences == (4, 5, 6, 7, 8)
     assert window.window_id.startswith("visual-window-")
-    assert observer.promoted_sequences == [(4, 5, 6, 7, 8)]
+    assert observer.promote_window_called is False
 
 
 def test_chat_uses_all_frames_when_fewer_than_five_exist() -> None:

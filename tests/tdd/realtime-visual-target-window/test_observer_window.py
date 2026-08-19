@@ -59,6 +59,16 @@ class BlockingObservationService:
         self.release.set()
 
 
+class RecordingEmbeddingProvider(MockMultimodalEmbeddingProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.image_sequences: list[int | None] = []
+
+    def embed_image(self, observation):
+        self.image_sequences.append(observation.frame_sequence)
+        return super().embed_image(observation)
+
+
 def _frame(tmp_path: Path, sequence: int) -> VideoFrame:
     source = tmp_path / f"source-{sequence}.jpg"
     source.write_bytes(f"frame-{sequence}".encode())
@@ -74,10 +84,12 @@ def _frame(tmp_path: Path, sequence: int) -> VideoFrame:
 def _observer(
     tmp_path: Path,
     service: BlockingObservationService,
+    *,
+    embedding_provider: MockMultimodalEmbeddingProvider | None = None,
 ) -> RealtimeVideoObserver:
     coordinator = SessionEmbeddingCoordinator(
         "session-window",
-        MockMultimodalEmbeddingProvider(),
+        embedding_provider or MockMultimodalEmbeddingProvider(),
     )
     return RealtimeVideoObserver(
         user_id="user-window",
@@ -91,6 +103,37 @@ def _observer(
         embedding_coordinator=coordinator,
         keyframe_root=tmp_path / "keyframes",
     )
+
+
+def test_each_submitted_frame_starts_vlm_while_semantic_selection_stays_active(
+    tmp_path: Path,
+) -> None:
+    """Regression: semantic sampling must not gate the every-frame VLM path."""
+
+    async def scenario() -> None:
+        service = BlockingObservationService(expected_count=5)
+        embedding_provider = RecordingEmbeddingProvider()
+        observer = _observer(
+            tmp_path,
+            service,
+            embedding_provider=embedding_provider,
+        )
+        try:
+            for sequence in range(4, 9):
+                await observer.submit(_frame(tmp_path, sequence))
+
+            assert await asyncio.to_thread(service.all_entered.wait, 1) is True
+            assert set(service.entered_sequences) == {4, 5, 6, 7, 8}
+            assert service.max_active == 5
+        finally:
+            service.release.set()
+            await observer.wait_idle()
+            await observer.close()
+
+        assert len(service.entered_sequences) == 5
+        assert 4 in embedding_provider.image_sequences
+
+    asyncio.run(scenario())
 
 
 def test_strict_window_starts_all_five_observations_without_waiting(
@@ -156,7 +199,7 @@ def test_duplicate_already_retained_frame_is_deleted(tmp_path: Path) -> None:
             await observer.promote_window((source,))
             assert await asyncio.to_thread(service.all_entered.wait, 1) is True
 
-            await observer._enqueue_semantic_selection(
+            await observer._handle_semantic_selection(
                 VideoFrame(
                     video_id=source.video_id,
                     frame_id=source.frame_id,

@@ -125,9 +125,8 @@ def test_each_frame_owns_one_service_for_the_whole_observation(tmp_path: Path) -
         registry = IsolatedServiceRegistry(expected_count=5)
         observer = _observer(tmp_path, registry)
         try:
-            await observer.promote_window(
-                tuple(_frame(tmp_path, sequence) for sequence in range(4, 9))
-            )
+            for sequence in range(4, 9):
+                await observer.submit(_frame(tmp_path, sequence))
             assert await asyncio.to_thread(registry.all_entered.wait, 1) is True
 
             assert len(registry.created_ids) == 5
@@ -153,9 +152,8 @@ def test_one_frame_failure_does_not_reuse_or_close_another_service(
         registry = IsolatedServiceRegistry(expected_count=5, failing_sequence=7)
         observer = _observer(tmp_path, registry)
         try:
-            await observer.promote_window(
-                tuple(_frame(tmp_path, sequence) for sequence in range(4, 9))
-            )
+            for sequence in range(4, 9):
+                await observer.submit(_frame(tmp_path, sequence))
             assert await asyncio.to_thread(registry.all_entered.wait, 1) is True
         finally:
             registry.release.set()
@@ -166,4 +164,3 @@ def test_one_frame_failure_does_not_reuse_or_close_another_service(
         assert registry.close_counts == {1: 1, 2: 1, 3: 1, 4: 1, 5: 1}
 
     asyncio.run(scenario())
-
