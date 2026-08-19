@@ -335,6 +335,18 @@ class SessionVisualSemanticStore:
             )[-limit:]
             return [record.model_copy(deep=True) for record in records]
 
+    def has_exact_sequence(self, video_id: str, *, sequence: int) -> bool:
+        """Return whether one successful record exists for the exact sequence."""
+
+        if isinstance(sequence, bool) or sequence < 0:
+            return False
+        with self._lock:
+            self._ensure_open()
+            return any(
+                record.frame_sequence == sequence
+                for record in self._records_for_video_locked(video_id)
+            )
+
     def text_timeline(
         self,
         *,
