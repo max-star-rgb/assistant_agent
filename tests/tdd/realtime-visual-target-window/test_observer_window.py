@@ -69,6 +69,21 @@ class RecordingEmbeddingProvider(MockMultimodalEmbeddingProvider):
         return super().embed_image(observation)
 
 
+class RecordingVisualReminderRegistry:
+    def __init__(self) -> None:
+        self.image_sequences: list[int | None] = []
+
+    async def publish_image_event(
+        self,
+        _user_id: str,
+        _session_id: str,
+        event,
+    ) -> None:
+        self.image_sequences.append(
+            event.frame_sequence if event is not None else None
+        )
+
+
 def _frame(tmp_path: Path, sequence: int) -> VideoFrame:
     source = tmp_path / f"source-{sequence}.jpg"
     source.write_bytes(f"frame-{sequence}".encode())
@@ -86,6 +101,7 @@ def _observer(
     service: BlockingObservationService,
     *,
     embedding_provider: MockMultimodalEmbeddingProvider | None = None,
+    visual_reminder_registry=None,
 ) -> RealtimeVideoObserver:
     coordinator = SessionEmbeddingCoordinator(
         "session-window",
@@ -101,6 +117,7 @@ def _observer(
             session_id="session-window",
         ),
         embedding_coordinator=coordinator,
+        visual_reminder_registry=visual_reminder_registry,
         keyframe_root=tmp_path / "keyframes",
     )
 
@@ -132,6 +149,34 @@ def test_each_submitted_frame_starts_vlm_while_semantic_selection_stays_active(
 
         assert len(service.entered_sequences) == 5
         assert 4 in embedding_provider.image_sequences
+
+    asyncio.run(scenario())
+
+
+def test_semantic_keyframe_selection_still_publishes_reminder_without_second_vlm(
+    tmp_path: Path,
+) -> None:
+    """Regression: every-frame VLM must not remove the semantic reminder branch."""
+
+    async def scenario() -> None:
+        service = BlockingObservationService(expected_count=1)
+        reminder_registry = RecordingVisualReminderRegistry()
+        observer = _observer(
+            tmp_path,
+            service,
+            visual_reminder_registry=reminder_registry,
+        )
+        try:
+            await observer.submit(_frame(tmp_path, 4))
+            assert await asyncio.to_thread(service.all_entered.wait, 1) is True
+            await observer.semantic_pipeline.wait_idle()
+
+            assert reminder_registry.image_sequences == [4]
+            assert service.entered_sequences == [4]
+        finally:
+            service.release.set()
+            await observer.wait_idle()
+            await observer.close()
 
     asyncio.run(scenario())
 
