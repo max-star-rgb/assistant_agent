@@ -112,7 +112,8 @@ ToolNode 不另行接管或聚合这些来源。原生 adapter 同时把来源�
 标量 metadata 重复拼接；生产装配显式使用 LangChain 原生 `output_version="v1"`，确保 Agent Server wire
 和 checkpoint 中的 `AIMessage.content` 全部序列化为标准 content block，不混入 legacy 字符串。连续正文
 delta 由 LangChain 使用同一个原生 text block index 合并；terminal 只补充相对完整正文的 Citation annotation，
-或在正文无角标时追加一个独立来源 block，不按 Provider token 人工拆分 block。原生 adapter 按官方
+或在正文无角标时追加一个独立来源 block，不按 Provider token 人工拆分 block；`finish_reason=tool_calls`
+的中间消息只保留标准正文与 ToolCall，搜索来源仅留在 response metadata，不插入聊天内容。原生 adapter 按官方
 message/tool_call/tool_call_id 结构与标准
 LangChain ToolCall 双向转换，流式 SSE 同时保留 usage、finish reason 与终态来源。是否调用候选本地 Tool 仍由
 模型按标准 tool calling 协议决定。

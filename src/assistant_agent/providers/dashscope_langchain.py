@@ -177,7 +177,7 @@ class DashScopeNativeChatModel(BaseChatModel):
                         full_text=streamed_text,
                         sources=sources,
                     )
-                    if terminal
+                    if terminal and finish_reason != "tool_calls"
                     else content
                 )
                 yield ChatGenerationChunk(
