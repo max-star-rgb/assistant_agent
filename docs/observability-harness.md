@@ -1,6 +1,6 @@
 # LangGraph-native 可观测性
 
-最后更新：2026-08-14
+最后更新：2026-08-19
 
 ## Authority contract
 
@@ -24,6 +24,18 @@ Agent Server 的原生 LangChain/LangGraph callback tracing 由标准 `LANGSMITH
 显式 LangSmith helper/client 路径，不能替代原生 tracing 开关。未显式启用时，mock pytest 不得创建远端
 client 或发出网络请求。Provider 原始 payload、Authorization、Memory 正文和媒体正文不得进入 metadata；
 Tool artifact 和 message content 是否记录遵循 LangSmith/部署脱敏配置。
+
+### fast 路由与实时视觉定位
+
+`route_execution_mode()` 是原生 conditional edge，其 trace input/output 显示 `fast` 只表示本轮选择了
+`fast_agent` 分支，不是 LLM 或 VLM 的输入输出被改写成字符串 `fast`。诊断视觉调用时应定位
+`vlm.infer` generation，而不是把 route span 当作 generation。
+
+严格实时视觉窗口为每个实际执行的 frame sequence 产生独立 `vlm.infer` span。安全 attributes 包含
+`visual_window_id`、`window_start_sequence`、`target_sequence`、`frame_sequence`、
+`window_role=target|context|background` 与 `provider_connection_isolated`，不包含 frame path、JPEG、
+VLM summary 或 Provider 原始响应。`visual.target_barrier.started/finished` 只记录目标序号、等待时长、
+ready/missing 数量和目标终态；context 帧晚完成不能延长 target barrier span。
 
 ## 旧本地观测兼容
 

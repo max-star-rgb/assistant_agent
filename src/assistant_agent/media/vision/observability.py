@@ -52,6 +52,11 @@ _VLM_INPUT_FIELDS = (
     "query",
     "media_kind",
     "frame_sequence",
+    "visual_window_id",
+    "window_start_sequence",
+    "target_sequence",
+    "window_role",
+    "provider_connection_isolated",
     "frame_count",
     "history_frame_count",
     "memory_context_present",
@@ -106,6 +111,11 @@ def observe_vision_inference(
     media_kind: str,
     media_count: int,
     frame_sequence: int | None = None,
+    visual_window_id: str | None = None,
+    window_start_sequence: int | None = None,
+    target_sequence: int | None = None,
+    window_role: str | None = None,
+    provider_connection_isolated: bool | None = None,
     query_provided: bool | None = None,
     prompt_version: str = VISION_INFERENCE_PROMPT_VERSION,
     local_input_content: Mapping[str, Any] | None = None,
@@ -145,6 +155,35 @@ def observe_vision_inference(
         **(
             {"query_provided": query_provided}
             if isinstance(query_provided, bool)
+            else {}
+        ),
+        **(
+            {"visual_window_id": visual_window_id}
+            if isinstance(visual_window_id, str) and visual_window_id
+            else {}
+        ),
+        **(
+            {"window_start_sequence": window_start_sequence}
+            if isinstance(window_start_sequence, int)
+            and not isinstance(window_start_sequence, bool)
+            and window_start_sequence >= 0
+            else {}
+        ),
+        **(
+            {"target_sequence": target_sequence}
+            if isinstance(target_sequence, int)
+            and not isinstance(target_sequence, bool)
+            and target_sequence >= 0
+            else {}
+        ),
+        **(
+            {"window_role": window_role}
+            if window_role in {"target", "context", "background"}
+            else {}
+        ),
+        **(
+            {"provider_connection_isolated": provider_connection_isolated}
+            if isinstance(provider_connection_isolated, bool)
             else {}
         ),
     }

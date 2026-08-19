@@ -61,7 +61,14 @@ class RealtimeVisualObserver(Protocol):
 
     async def promote(self, frame: VideoFrame) -> Any: ...
 
-    async def promote_window(self, frames: Sequence[VideoFrame]) -> Any: ...
+    async def promote_window(
+        self,
+        frames: Sequence[VideoFrame],
+        *,
+        window_id: str | None = None,
+        window_start_sequence: int | None = None,
+        target_sequence: int | None = None,
+    ) -> Any: ...
 
     async def close(self) -> None: ...
 
@@ -142,9 +149,15 @@ class VisualPerceptionSession:
         if not selected:
             return None
         _validate_target_window(selected)
-        await self._observer.promote_window(selected)
+        window_id = f"visual-window-{uuid4().hex}"
+        await self._observer.promote_window(
+            selected,
+            window_id=window_id,
+            window_start_sequence=selected[0].sequence,
+            target_sequence=selected[-1].sequence,
+        )
         return VisualTargetWindow(
-            window_id=f"visual-window-{uuid4().hex}",
+            window_id=window_id,
             video_id=selected[-1].video_id,
             start_sequence=selected[0].sequence,
             target_sequence=selected[-1].sequence,

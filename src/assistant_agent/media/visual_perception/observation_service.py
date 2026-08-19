@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from typing import Any
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -34,6 +35,11 @@ class RealtimeVisualObservationRequest(BaseModel):
     frame_ref: str = Field(min_length=1, max_length=4_000)
     frame_sequence: int = Field(ge=0)
     frame_timestamp_ms: int | None = Field(default=None, ge=0)
+    visual_window_id: str | None = Field(default=None, min_length=1, max_length=160)
+    window_start_sequence: int | None = Field(default=None, ge=0)
+    target_sequence: int | None = Field(default=None, ge=0)
+    window_role: Literal["target", "context", "background"] = "background"
+    provider_connection_isolated: bool = False
 
 
 class RealtimeVisualObservationOutcome(BaseModel):
@@ -96,11 +102,25 @@ class RealtimeVisualObservationService:
                 media_kind="live_view",
                 media_count=1,
                 frame_sequence=request.frame_sequence,
+                visual_window_id=request.visual_window_id,
+                window_start_sequence=request.window_start_sequence,
+                target_sequence=request.target_sequence,
+                window_role=request.window_role,
+                provider_connection_isolated=(
+                    request.provider_connection_isolated
+                ),
                 prompt_version="realtime-single-frame-v1",
                 local_input_content={
                     "mode": "background_keyframe_observation",
                     "media_kind": "live_view",
                     "frame_sequence": request.frame_sequence,
+                    "visual_window_id": request.visual_window_id,
+                    "window_start_sequence": request.window_start_sequence,
+                    "target_sequence": request.target_sequence,
+                    "window_role": request.window_role,
+                    "provider_connection_isolated": (
+                        request.provider_connection_isolated
+                    ),
                     "query": provider_request.user_query,
                 },
                 trace_link_callback=trace_links.append,

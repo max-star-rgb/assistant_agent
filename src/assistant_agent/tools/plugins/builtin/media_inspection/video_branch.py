@@ -1,7 +1,7 @@
 """Video understanding Tool backed by a shared video adapter."""
 
 from collections.abc import Callable
-from time import time
+from time import perf_counter_ns, time
 from typing import Any
 
 from assistant_agent.tools.capability_output import build_capability_output_contract
@@ -48,6 +48,7 @@ from assistant_agent.tools.ids import (
     VIDEO_UNDERSTANDING_CAPABILITY,
 )
 from assistant_agent.tools.runtime import ToolContext
+from assistant_agent.observability.trace_store import append_observability_event
 
 
 LIVE_VIEW_SNAPSHOT_WAIT_SECONDS = 4.0
@@ -95,11 +96,20 @@ class VideoUnderstandingBranch:
         text_observations: list[dict[str, object]] | None = None
         visual_target_sequence = self._live_target_sequence(context)
         visual_window_start_sequence = self._live_window_start_sequence(context)
+        barrier_started_ns: int | None = None
         if (
             video_ref
             and agent_service_text_only
             and (self.semantic_store_pool is not None or self.memory_store is not None)
         ):
+            if visual_target_sequence is not None:
+                barrier_started_ns = perf_counter_ns()
+                self._record_target_barrier(
+                    context,
+                    canonical_event="visual.target_barrier.started",
+                    window_start_sequence=visual_window_start_sequence,
+                    target_sequence=visual_target_sequence,
+                )
             snapshot = self._live_snapshot_for_request(
                 video_ref,
                 context=context,
@@ -127,12 +137,20 @@ class VideoUnderstandingBranch:
                     )
                 )
             ):
-                return self._memory_result(
+                result = self._memory_result(
                     snapshot,
                     window_start_sequence=visual_window_start_sequence,
                     target_sequence=visual_target_sequence,
                     observations=text_observations,
                 )
+                self._record_target_barrier_finished(
+                    context,
+                    result=result,
+                    started_ns=barrier_started_ns,
+                    window_start_sequence=visual_window_start_sequence,
+                    target_sequence=visual_target_sequence,
+                )
+                return result
         if agent_service_text_only:
             status_override = None
             target_status = None
@@ -155,7 +173,7 @@ class VideoUnderstandingBranch:
                 )
                 target_status = "failed" if target_failed else "timeout"
                 status_override = target_status
-            return self._memory_unavailable_result(
+            result = self._memory_unavailable_result(
                 video_ref=video_ref,
                 snapshot=status_snapshot,
                 window_start_sequence=visual_window_start_sequence,
@@ -163,6 +181,14 @@ class VideoUnderstandingBranch:
                 status_override=status_override,
                 target_status=target_status,
             )
+            self._record_target_barrier_finished(
+                context,
+                result=result,
+                started_ns=barrier_started_ns,
+                window_start_sequence=visual_window_start_sequence,
+                target_sequence=visual_target_sequence,
+            )
+            return result
 
         input = self._with_context_frames(input)
         self._sync_client_video_adapter()
@@ -402,6 +428,87 @@ class VideoUnderstandingBranch:
         ):
             return start_sequence
         return None
+
+    @staticmethod
+    def _live_window_id(context: ToolContext) -> str | None:
+        value = context.metadata.get("visual_window_id")
+        return value if isinstance(value, str) and 1 <= len(value) <= 160 else None
+
+    def _record_target_barrier(
+        self,
+        context: ToolContext,
+        *,
+        canonical_event: str,
+        window_start_sequence: int | None,
+        target_sequence: int,
+        extra_attributes: dict[str, object] | None = None,
+    ) -> None:
+        if not context.trace_id or not context.run_id:
+            return
+        attributes: dict[str, object] = {
+            "target_sequence": target_sequence,
+        }
+        window_id = self._live_window_id(context)
+        if window_id is not None:
+            attributes["visual_window_id"] = window_id
+        if window_start_sequence is not None:
+            attributes["window_start_sequence"] = window_start_sequence
+        if extra_attributes:
+            attributes.update(extra_attributes)
+        try:
+            append_observability_event(
+                context.trace_store,
+                trace_id=context.trace_id,
+                run_id=context.run_id,
+                user_id=context.user_id,
+                session_id=context.session_id,
+                canonical_event=canonical_event,
+                observation_type="span",
+                observation_name="visual.target_barrier",
+                observation_scope="iteration",
+                node_name="live_view",
+                status=(
+                    str(extra_attributes.get("target_status"))
+                    if extra_attributes and extra_attributes.get("target_status")
+                    else "started"
+                ),
+                attributes=attributes,
+            )
+        except Exception:
+            return
+
+    def _record_target_barrier_finished(
+        self,
+        context: ToolContext,
+        *,
+        result: ToolResult,
+        started_ns: int | None,
+        window_start_sequence: int | None,
+        target_sequence: int | None,
+    ) -> None:
+        if started_ns is None or target_sequence is None:
+            return
+        data = result.data if isinstance(result.data, dict) else {}
+        ready_sequences = data.get("ready_sequences")
+        missing_sequences = data.get("missing_sequences")
+        self._record_target_barrier(
+            context,
+            canonical_event="visual.target_barrier.finished",
+            window_start_sequence=window_start_sequence,
+            target_sequence=target_sequence,
+            extra_attributes={
+                "target_status": str(data.get("target_status") or "unavailable"),
+                "ready_count": (
+                    len(ready_sequences) if isinstance(ready_sequences, list) else 0
+                ),
+                "missing_count": (
+                    len(missing_sequences)
+                    if isinstance(missing_sequences, list)
+                    else 0
+                ),
+                "wait_ms": max(0, (perf_counter_ns() - started_ns) // 1_000_000),
+            },
+        )
 
     def _sync_client_video_adapter(self) -> None:
         if (

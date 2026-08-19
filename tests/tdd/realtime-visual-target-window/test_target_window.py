@@ -21,7 +21,7 @@ class RecordingObserver:
     async def submit(self, _frame: VideoFrame) -> None:
         return None
 
-    async def promote_window(self, frames: tuple[VideoFrame, ...]) -> None:
+    async def promote_window(self, frames: tuple[VideoFrame, ...], **_metadata) -> None:
         self.promoted_sequences.append(tuple(frame.sequence for frame in frames))
 
     async def close(self) -> None:

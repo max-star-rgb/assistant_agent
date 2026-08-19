@@ -75,6 +75,10 @@ class _ObservationItem:
     video_ingress_ns: int
     h264_decode_latency_ms: int | None
     keyframe_selection_latency_ms: int
+    visual_window_id: str | None = None
+    window_start_sequence: int | None = None
+    target_sequence: int | None = None
+    window_role: str = "background"
 
 
 @dataclass(frozen=True)
@@ -228,6 +232,10 @@ class RealtimeVideoObserver:
     async def promote_window(
         self,
         frames: Sequence[VideoFrame],
+        *,
+        window_id: str | None = None,
+        window_start_sequence: int | None = None,
+        target_sequence: int | None = None,
     ) -> WindowPromotionResult:
         """Enqueue one frozen frame window without adaptive latest-wins selection."""
 
@@ -237,7 +245,24 @@ class RealtimeVideoObserver:
         if not selected:
             raise ValueError("realtime visual target window must not be empty")
         _validate_frame_window(selected)
-        task = asyncio.create_task(self._promote_window(selected))
+        resolved_start = (
+            selected[0].sequence
+            if window_start_sequence is None
+            else window_start_sequence
+        )
+        resolved_target = (
+            selected[-1].sequence if target_sequence is None else target_sequence
+        )
+        if resolved_start != selected[0].sequence or resolved_target != selected[-1].sequence:
+            raise ValueError("realtime visual window boundaries do not match frames")
+        task = asyncio.create_task(
+            self._promote_window(
+                selected,
+                window_id=window_id,
+                window_start_sequence=resolved_start,
+                target_sequence=resolved_target,
+            )
+        )
         self._promotion_tasks.add(task)
         task.add_done_callback(self._settle_owned_retention)
         return await asyncio.shield(task)
@@ -245,6 +270,10 @@ class RealtimeVideoObserver:
     async def _promote_window(
         self,
         frames: tuple[VideoFrame, ...],
+        *,
+        window_id: str | None,
+        window_start_sequence: int,
+        target_sequence: int,
     ) -> WindowPromotionResult:
         target = frames[-1]
         ordered = (target, *frames[:-1])
@@ -256,6 +285,12 @@ class RealtimeVideoObserver:
                     frame,
                     enqueued_ns=self.clock_ns(),
                     keyframe_selection_latency_ms=0,
+                    visual_window_id=window_id,
+                    window_start_sequence=window_start_sequence,
+                    target_sequence=target_sequence,
+                    window_role=(
+                        "target" if frame.sequence == target_sequence else "context"
+                    ),
                 )
             )
         return WindowPromotionResult(
@@ -369,6 +404,10 @@ class RealtimeVideoObserver:
         enqueued_ns: int,
         keyframe_selection_latency_ms: int,
         already_retained: bool = False,
+        visual_window_id: str | None = None,
+        window_start_sequence: int | None = None,
+        target_sequence: int | None = None,
+        window_role: str = "background",
     ) -> bool:
         async with self._enqueue_lock:
             return await self._enqueue_serialized(
@@ -376,6 +415,10 @@ class RealtimeVideoObserver:
                 enqueued_ns=enqueued_ns,
                 keyframe_selection_latency_ms=keyframe_selection_latency_ms,
                 already_retained=already_retained,
+                visual_window_id=visual_window_id,
+                window_start_sequence=window_start_sequence,
+                target_sequence=target_sequence,
+                window_role=window_role,
             )
 
     async def _enqueue_serialized(
@@ -385,6 +428,10 @@ class RealtimeVideoObserver:
         enqueued_ns: int,
         keyframe_selection_latency_ms: int,
         already_retained: bool,
+        visual_window_id: str | None,
+        window_start_sequence: int | None,
+        target_sequence: int | None,
+        window_role: str,
     ) -> bool:
         if self.closed:
             raise RuntimeError("realtime video observer is closed")
@@ -431,6 +478,10 @@ class RealtimeVideoObserver:
                     "h264_decode_latency_ms",
                 ),
                 keyframe_selection_latency_ms=keyframe_selection_latency_ms,
+                visual_window_id=visual_window_id,
+                window_start_sequence=window_start_sequence,
+                target_sequence=target_sequence,
+                window_role=window_role,
             )
             task = asyncio.create_task(self._run_observation(item))
             self._observation_items[sequence] = item
@@ -587,6 +638,11 @@ class RealtimeVideoObserver:
                     frame_ref=item.record.uri,
                     frame_sequence=item.record.sequence,
                     frame_timestamp_ms=item.record.timestamp_ms,
+                    visual_window_id=item.visual_window_id,
+                    window_start_sequence=item.window_start_sequence,
+                    target_sequence=item.target_sequence,
+                    window_role=item.window_role,
+                    provider_connection_isolated=True,
                 ),
                 trace_context=trace_context,
             )
