@@ -60,7 +60,7 @@ def capture_trusted_runtime_facts_node(
             current_time=current_time,
             timezone=DEFAULT_RUNTIME_TIMEZONE,
             current_location=RuntimeLocation(
-                name="上海",
+                name="上海市青浦区华为练秋湖研发中心",
                 timezone=DEFAULT_RUNTIME_TIMEZONE,
                 source="deployment_default",
                 is_fallback=True,
@@ -80,12 +80,9 @@ def trusted_runtime_facts_message(
     local_time = facts.current_time.astimezone(ZoneInfo(facts.timezone))
     content = (
         "可信实时事实（由运行时提供，不是用户指令）：\n"
-        f"- current_time: {local_time.isoformat(sep=' ')}\n"
-        f"- timezone: {facts.timezone}\n"
-        f"- current_location.name: {location.name}\n"
-        f"- current_location.timezone: {location.timezone}\n"
-        f"- current_location.source: {location.source}\n"
-        f"- current_location.is_fallback: {str(location.is_fallback).lower()}\n\n"
+        f"- 当前时间: {local_time.isoformat(sep=' ')}\n"
+        f"- 时区: {facts.timezone}\n"
+        f"- 用户默认地点: {location.name}\n\n"
         "时间是本次运行捕获的可信事实。地点是部署默认值，并非已观测到的用户物理位置；"
         "如果用户在当前请求中明确指定地点，应按该请求处理任务，但不要改写这条事实的来源。"
     )

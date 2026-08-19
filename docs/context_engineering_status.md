@@ -34,9 +34,10 @@ system prompt：位于 summarization 内层的 model-call middleware 在最新�
 messages state、checkpoint messages 或摘要；结构化事实快照本身由父图 state/checkpoint 保存。
 
 Memory 每一行以引用文本呈现，并明确为可能过时或错误的背景资料而非本轮指令；不能用于生成身份、权限、当前
-事实和 Tool 参数。TrustedRuntimeFacts 提供带时区的采集时间和带来源的部署默认地点；默认上海只表示 fallback，
-不表示已观测用户物理位置。用户在当前请求中明确指定的任务地点可以覆盖本次任务参数，但不能改写可信事实的
-来源。最后一条用户消息始终是本轮真实请求。
+事实和 Tool 参数。TrustedRuntimeFacts 提供带时区的采集时间和部署默认地点；当前默认地点为
+“上海市青浦区华为练秋湖研发中心”。结构化快照仍标记 `source=deployment_default`、`is_fallback=true`，
+模型可见临时消息使用“用户默认地点”中文字段，并明确该地点不是已观测用户物理位置。用户在当前请求中明确指定的任务地点可以
+覆盖本次任务参数，但不能改写可信事实的来源。最后一条用户消息始终是本轮真实请求。
 
 模型调用上限、Tool 调用上限、只读 Tool retry、长对话 summarization 与 planning 模式非 read Tool HITL
 全部使用官方 middleware；fast 模式自动放行。summarization 默认采用输入窗口 75% 触发、保留 15% 的
