@@ -141,6 +141,7 @@ class DashScopeNativeChatModel(BaseChatModel):
         stream: Iterator[dict[str, Any]] | None = None
         sources: list[dict[str, Any]] = []
         stream_has_citations = False
+        next_text_block_index = 0
         terminal_seen = False
         try:
             stream = self.http_transport.stream_sse(
@@ -183,9 +184,14 @@ class DashScopeNativeChatModel(BaseChatModel):
                         sources,
                         append_uncited_sources=True,
                     )
+                indexed_content = _indexed_stream_text_blocks(
+                    rendered_content,
+                    start_index=next_text_block_index,
+                )
+                next_text_block_index += len(indexed_content)
                 yield ChatGenerationChunk(
                     message=AIMessageChunk(
-                        content=rendered_content,
+                        content=indexed_content,
                         tool_call_chunks=chunks,
                         response_metadata=metadata,
                         usage_metadata=usage,
@@ -593,6 +599,24 @@ def _content_has_citations(content: str | list[dict[str, Any]]) -> bool:
         isinstance(block, Mapping) and bool(block.get("annotations"))
         for block in content
     )
+
+
+def _indexed_stream_text_blocks(
+    content: str | list[dict[str, Any]],
+    *,
+    start_index: int,
+) -> list[dict[str, Any]]:
+    if isinstance(content, str):
+        blocks = [create_text_block(content)] if content else []
+    else:
+        blocks = content
+    return [
+        {
+            **block,
+            "index": f"lc_dashscope_text_{start_index + offset}",
+        }
+        for offset, block in enumerate(blocks)
+    ]
 
 
 def _usage_metadata(value: Any) -> dict[str, int] | None:

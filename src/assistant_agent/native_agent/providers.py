@@ -163,6 +163,7 @@ def create_chat_model(config: ProviderConfig | None = None) -> BaseChatModel:
             api_key=settings.api_key or "",
             base_url=settings.base_url or "",
             model_name=settings.model or "",
+            output_version="v1",
             timeout_seconds=resolved.chat_timeout_seconds,
             max_tokens=resolved.chat_max_tokens,
             enable_thinking=resolved.qwen_chat_enable_thinking,
