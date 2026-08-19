@@ -145,12 +145,17 @@ frame，在 media edge 的工作线程中解码为有界 JPEG window，Graph 输
 模型看到 `live_view_inspect`；当当前 `user/thread/as-of sequence` 已产生可检索视觉文本时，才进一步暴露
 `visual_memory_search`。这两项条件暴露不依赖 Skill 加载。
 
-解码帧由连接级句柄提交给 Agent Server 内部 `VisualPerceptionModule`；模块内的 `RealtimeVideoObserver`
-负责选帧、后台 VLM 调用和视觉语义发布。chat 到达时，媒体入口冻结当时最后一帧并触发 promotion，把
-`target_sequence` 绑定到受信入口生成的标准 video content block。`live_view_inspect` 只消费模块已发布的文本：
-没有 target 时立即读取 latest；有 target 时有界等待 exact sequence。strict 等待超时或失败时只返回
-`pending|failed|stale` 与 `usable_visual_text=false`，不得把旧帧文本当作最后一帧结果；VLM 变慢只延迟该次
-严格查询的 run。
+解码帧由连接级句柄提交给 Agent Server 内部 `VisualPerceptionModule`；raw window 固定保留最近五个成功
+解码帧。模块内的 `RealtimeVideoObserver` 负责后台选择、VLM 调用和视觉语义发布。chat 到达时，媒体入口冻结
+当时最近五帧并触发 strict promotion；例如 target 为 8 时冻结 4–8。它把可信 `window_id`、
+`window_start_sequence=4` 和 `target_sequence=8` 绑定到标准 live-camera video content block，不传 JPEG 或 task。
+
+strict window 绕过后台 semantic latest-wins pending；五个 sequence 各自拥有独立
+`RealtimeVisualObservationService`、client、adapter 与 Provider WebSocket，并行执行。`live_view_inspect` 最多
+4 秒等待 exact target，target 完成即返回，不等待较早帧或 observer idle。若 7 未完成而 8 已完成，Tool 可以
+立即返回 4、5、6、8，并结构化标记 7 缺失；9 及之后和 3 及之前均不能进入本轮结果。target 超时或失败时
+返回 `usable_visual_text=false`，不得把 7 或更旧文本当作当前画面。晚到的 context 结果只进入历史语义存储，
+不修改已经发送的回答。
 
 保留 callback：
 
