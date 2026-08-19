@@ -13,6 +13,7 @@ from assistant_agent.native_agent.context import (
     AssistantRunContext,
     authenticated_user_identity,
 )
+from assistant_agent.media.runtime_media import live_visual_window_boundary
 
 
 class ToolContext(BaseModel):
@@ -65,12 +66,11 @@ def latest_human_request(state: Mapping[str, Any]) -> dict[str, Any]:
                 result["image_ids"].append(str(block["id"]))
             elif block_type in {"video", "file"} and block.get("id"):
                 result["video_ids"].append(str(block["id"]))
-                target_sequence = block.get("target_sequence")
-                if (
-                    not isinstance(target_sequence, bool)
-                    and isinstance(target_sequence, int)
-                    and target_sequence >= 0
-                ):
+                boundary = live_visual_window_boundary(block)
+                if boundary is not None:
+                    window_id, start_sequence, target_sequence = boundary
+                    result["visual_window_id"] = window_id
+                    result["visual_window_start_sequence"] = start_sequence
                     result["visual_target_sequence"] = target_sequence
         result["text"] = "\n".join(texts)
         return result
@@ -89,6 +89,10 @@ def tool_context(
     request = latest_human_request(state)
     context_metadata = {
         "entry_profile": runtime.context.entry_profile,
+        "visual_window_id": request.get("visual_window_id"),
+        "visual_window_start_sequence": request.get(
+            "visual_window_start_sequence"
+        ),
         "visual_target_sequence": request.get("visual_target_sequence"),
     }
     if metadata is not None:
