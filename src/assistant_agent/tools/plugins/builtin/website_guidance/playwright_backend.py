@@ -13,7 +13,7 @@ import time
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 
-from assistant_agent.tools.base import ToolContext
+from assistant_agent.tools.runtime import ToolContext
 from assistant_agent.tools.plugins.builtin.website_guidance.models import (
     WebPageElement,
     WebPageExploreRequest,

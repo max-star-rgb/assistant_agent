@@ -7,9 +7,9 @@ from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.adapters im
 from langchain_core.tools import BaseTool
 from assistant_agent.tools.plugins.contracts import ToolPluginContext
 from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.tools import (
-    CalendarCreateTool,
-    CalendarSearchTool,
-    ContactsSearchTool,
+    create_calendar_create_tool,
+    create_calendar_search_tool,
+    create_contacts_search_tool,
 )
 from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.local_calendar import (
     LocalSQLiteCalendarAdapter,
@@ -29,9 +29,9 @@ class CalendarContactsPlugin:
                 else LocalSQLiteCalendarAdapter(DEFAULT_LOCAL_CALENDAR_PATH)
             )
         tools: list[BaseTool] = [
-            CalendarSearchTool(adapter=calendar_adapter),
-            CalendarCreateTool(adapter=calendar_adapter),
+            create_calendar_search_tool(adapter=calendar_adapter),
+            create_calendar_create_tool(adapter=calendar_adapter),
         ]
         if context.mock_mode:
-            tools.append(ContactsSearchTool(adapter=MockContactsAdapter()))
+            tools.append(create_contacts_search_tool(adapter=MockContactsAdapter()))
         return tools

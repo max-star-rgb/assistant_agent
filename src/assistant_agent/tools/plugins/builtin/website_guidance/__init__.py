@@ -11,17 +11,17 @@ from assistant_agent.tools.plugins.builtin.website_guidance.models import (
     WebPageInspectRequest,
 )
 from assistant_agent.tools.plugins.builtin.website_guidance.tools import (
-    WebPageExploreTool,
-    WebPageInspectTool,
+    create_web_page_explore_tool,
+    create_web_page_inspect_tool,
 )
 
 __all__ = [
     "MockWebsiteGuidanceBackend",
     "WebPageElement",
     "WebPageExploreRequest",
-    "WebPageExploreTool",
     "WebPageGuidanceResult",
     "WebPageInspectRequest",
-    "WebPageInspectTool",
     "WebsiteGuidanceBackend",
+    "create_web_page_explore_tool",
+    "create_web_page_inspect_tool",
 ]

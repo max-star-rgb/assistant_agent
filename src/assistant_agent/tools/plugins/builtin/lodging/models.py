@@ -27,7 +27,9 @@ def _parse_iso_date(value: object) -> object:
 LodgingDate = Annotated[date, BeforeValidator(_parse_iso_date)]
 
 
-class LodgingSearchRequest(BaseModel):
+class LodgingSearchInput(BaseModel):
+    """Static model-visible lodging criteria without server-owned limits."""
+
     destination: str = Field(
         min_length=1,
         max_length=160,
@@ -95,15 +97,8 @@ class LodgingSearchRequest(BaseModel):
         default="no_rank",
         description="候选排序方式。",
     )
-    limit: int = Field(
-        default=5,
-        ge=1,
-        le=10,
-        description="内部候选数量上限。",
-    )
-
     @model_validator(mode="after")
-    def validate_dates(self) -> "LodgingSearchRequest":
+    def validate_dates(self) -> "LodgingSearchInput":
         if self.check_out <= self.check_in:
             raise ValueError("check_out must be later than check_in")
         if any(star < 1 or star > 5 for star in self.star_ratings):
@@ -111,6 +106,17 @@ class LodgingSearchRequest(BaseModel):
         if len(self.star_ratings) != len(set(self.star_ratings)):
             raise ValueError("star_ratings must not contain duplicates")
         return self
+
+
+class LodgingSearchRequest(LodgingSearchInput):
+    """Complete server-side lodging request with a bounded result limit."""
+
+    limit: int = Field(
+        default=5,
+        ge=1,
+        le=10,
+        description="内部候选数量上限。",
+    )
 
 
 class LodgingOffer(BaseModel):
@@ -154,7 +160,7 @@ class LodgingSearchResult(BaseModel):
 
 
 class HotelPriceWatchGoal(BaseModel):
-    search: LodgingSearchRequest = Field(
+    search: LodgingSearchInput = Field(
         description="每次查价时重复使用的结构化住宿检索条件。",
     )
     max_nightly_price: float = Field(

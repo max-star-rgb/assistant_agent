@@ -12,7 +12,7 @@ from assistant_agent.tools.plugins.builtin.media_inspection.visual_memory_tool i
     create_visual_memory_search_tool,
 )
 from assistant_agent.tools.plugins.builtin.media_inspection.visual_reminder_tool import (
-    VisualReminderManageTool,
+    create_visual_reminder_manage_tool,
 )
 from assistant_agent.tools.plugins.contracts import ToolPluginContext
 
@@ -27,7 +27,7 @@ class MediaInspectionPlugin:
             and context.visual_reminder_registry is not None
         ):
             tools.append(
-                VisualReminderManageTool(
+                create_visual_reminder_manage_tool(
                     coordinator_store=context.embedding_coordinator_store,
                     reminder_registry=context.visual_reminder_registry,
                 )

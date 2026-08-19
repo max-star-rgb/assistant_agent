@@ -46,7 +46,7 @@ from assistant_agent.media.video.semantic_store_pool import (
 from assistant_agent.tools.ids import (
     VIDEO_UNDERSTANDING_CAPABILITY,
 )
-from assistant_agent.tools.base import ToolContext
+from assistant_agent.tools.runtime import ToolContext
 
 
 LIVE_VIEW_SNAPSHOT_WAIT_SECONDS = 10.0

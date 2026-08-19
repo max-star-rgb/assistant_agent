@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from time import time
 from typing import Annotated, Any, Literal
@@ -33,11 +32,14 @@ from assistant_agent.native_agent.context import (
     AssistantRunContext,
     authenticated_user_identity,
 )
-from assistant_agent.providers.provider_errors import sanitize_error_message
 from assistant_agent.tools.availability import ToolAvailability
-from assistant_agent.tools.base import ToolContext
+from assistant_agent.tools.runtime import ToolContext
 from assistant_agent.tools.ids import VISUAL_MEMORY_SEARCH_TOOL_NAME
 from assistant_agent.tools.models import ToolResult
+from assistant_agent.tools.native_boundary import (
+    configure_builtin_tool,
+    invoke_native_tool,
+)
 
 
 class VisualMemoryTimeWindow(BaseModel):
@@ -263,68 +265,51 @@ def create_visual_memory_search_tool(
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """检索实时视觉链已经生成的当前会话历史文本，不重新调用视觉模型。"""
 
-        if runtime.context.realtime_media_mode != "video":
-            raise ToolException(
-                "video_handshake_required: 当前连接尚未完成 VIDEO 握手"
+        def search_visual_memory() -> ToolResult:
+            if runtime.context.realtime_media_mode != "video":
+                raise ToolException(
+                    "video_handshake_required: 当前连接尚未完成 VIDEO 握手"
+                )
+            state = runtime.state if isinstance(runtime.state, Mapping) else {}
+            execution = runtime.execution_info
+            session_id = getattr(execution, "thread_id", None)
+            if not isinstance(session_id, str) or not session_id:
+                raise ToolException(
+                    "session_required: 视觉历史检索需要有效 thread_id"
+                )
+            user_id = authenticated_user_identity(runtime)
+            request = VisualMemorySearchInput(
+                query=query,
+                time_window=time_window,
+                search_mode=search_mode,
+                session_id=session_id,
             )
-        state = runtime.state if isinstance(runtime.state, Mapping) else {}
-        execution = runtime.execution_info
-        session_id = getattr(execution, "thread_id", None)
-        if not isinstance(session_id, str) or not session_id:
-            raise ToolException("session_required: 视觉历史检索需要有效 thread_id")
-        user_id = authenticated_user_identity(runtime)
-        request = VisualMemorySearchInput(
-            query=query,
-            time_window=time_window,
-            search_mode=search_mode,
-            session_id=session_id,
-        )
-        media = latest_runtime_media(state)
-        context = ToolContext(
-            user_id=user_id,
-            session_id=session_id,
-            run_id=getattr(execution, "run_id", None),
-            metadata={
-                "entry_profile": runtime.context.entry_profile,
-                "request_metadata": {
-                    "_trusted_visual_memory_as_of_sequence": (
-                        media.visual_target_sequence
-                    )
+            media = latest_runtime_media(state)
+            context = ToolContext(
+                user_id=user_id,
+                session_id=session_id,
+                run_id=getattr(execution, "run_id", None),
+                metadata={
+                    "entry_profile": runtime.context.entry_profile,
+                    "request_metadata": {
+                        "_trusted_visual_memory_as_of_sequence": (
+                            media.visual_target_sequence
+                        )
+                    },
                 },
-            },
-        )
-        try:
-            result = searcher.search(request, context)
-        except ToolException:
-            raise
-        except Exception as exc:  # noqa: BLE001 - native Tool boundary.
-            raise ToolException(sanitize_error_message(exc)) from exc
-        if not result.success:
-            raise ToolException(
-                result.error or f"{VISUAL_MEMORY_SEARCH_TOOL_NAME} failed"
             )
-        observation = result.model_observation or result.data or {"status": "empty"}
-        return (
-            [
-                {
-                    "type": "text",
-                    "text": json.dumps(
-                        observation,
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        indent=2,
-                    ),
-                }
-            ],
-            dict(result.data or {}),
+            return searcher.search(request, context)
+
+        return invoke_native_tool(
+            VISUAL_MEMORY_SEARCH_TOOL_NAME,
+            search_visual_memory,
         )
 
-    visual_memory_search.metadata = {
-        "effect": "read",
-        "source": "builtin",
-        "availability": ToolAvailability.VISUAL_HISTORY_AVAILABLE.value,
-    }
-    return visual_memory_search
+    return configure_builtin_tool(
+        visual_memory_search,
+        "read",
+        availability=ToolAvailability.VISUAL_HISTORY_AVAILABLE.value,
+    )
 
 
 def _time_bounds(

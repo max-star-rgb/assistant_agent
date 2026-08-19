@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Annotated, Any
 
 from langchain_core.tools import BaseTool, ToolException, tool
@@ -29,16 +28,19 @@ from assistant_agent.native_agent.context import (
 from assistant_agent.providers.provider_errors import (
     ProviderAdapterError,
     build_provider_error,
-    sanitize_error_message,
 )
 from assistant_agent.tools.availability import ToolAvailability
-from assistant_agent.tools.base import ToolContext
+from assistant_agent.tools.runtime import ToolContext
 from assistant_agent.tools.capability_output import build_capability_output_contract
 from assistant_agent.tools.ids import (
     IMAGE_UNDERSTANDING_CAPABILITY,
     UPLOADED_MEDIA_INSPECT_TOOL_NAME,
 )
 from assistant_agent.tools.models import ToolResult
+from assistant_agent.tools.native_boundary import (
+    configure_builtin_tool,
+    invoke_native_tool,
+)
 from assistant_agent.tools.plugins.builtin.media_inspection.video_branch import (
     VideoUnderstandingBranch,
 )
@@ -183,66 +185,45 @@ def create_uploaded_media_inspect_tool(
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """分析当前请求中由用户主动上传的图片或视频附件。"""
 
-        state = runtime.state if isinstance(runtime.state, dict) else {}
-        media = latest_runtime_media(state)
-        if not media.has_uploaded_media:
-            raise ToolException(
-                "uploaded_media_required: 当前请求没有用户主动上传的图片或视频"
+        def inspect_uploaded_media() -> ToolResult:
+            state = runtime.state if isinstance(runtime.state, dict) else {}
+            media = latest_runtime_media(state)
+            if not media.has_uploaded_media:
+                raise ToolException(
+                    "uploaded_media_required: 当前请求没有用户主动上传的图片或视频"
+                )
+            execution = runtime.execution_info
+            request = VisionUnderstandingRequest(
+                image_ids=list(media.uploaded_image_ids),
+                video_ids=list(media.uploaded_video_ids),
+                question=question,
+                user_query=media.text,
+                user_id=authenticated_user_identity(runtime),
+                session_id=getattr(execution, "thread_id", None),
+                metadata={"media_source": "uploaded"},
+                memory_context=list(state.get("memory_context", ())) or None,
             )
-        execution = runtime.execution_info
-        request = VisionUnderstandingRequest(
-            image_ids=list(media.uploaded_image_ids),
-            video_ids=list(media.uploaded_video_ids),
-            question=question,
-            user_query=media.text,
-            user_id=authenticated_user_identity(runtime),
-            session_id=getattr(execution, "thread_id", None),
-            metadata={"media_source": "uploaded"},
-            memory_context=list(state.get("memory_context", ())) or None,
-        )
-        context = ToolContext(
-            user_id=request.user_id,
-            session_id=request.session_id,
-            run_id=getattr(execution, "run_id", None),
-            metadata={
-                "entry_profile": runtime.context.entry_profile,
-                "media_source": "uploaded",
-            },
-        )
-        try:
-            result = inspector.inspect(request, context)
-        except ToolException:
-            raise
-        except Exception as exc:  # noqa: BLE001 - native Tool boundary.
-            raise ToolException(sanitize_error_message(exc)) from exc
-        if not result.success:
-            raise ToolException(
-                result.error or f"{UPLOADED_MEDIA_INSPECT_TOOL_NAME} failed"
+            context = ToolContext(
+                user_id=request.user_id,
+                session_id=request.session_id,
+                run_id=getattr(execution, "run_id", None),
+                metadata={
+                    "entry_profile": runtime.context.entry_profile,
+                    "media_source": "uploaded",
+                },
             )
-        observation = result.model_observation or result.data or {
-            "status": "succeeded"
-        }
-        return (
-            [
-                {
-                    "type": "text",
-                    "text": json.dumps(
-                        observation,
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        indent=2,
-                    ),
-                }
-            ],
-            dict(result.data or {}),
+            return inspector.inspect(request, context)
+
+        return invoke_native_tool(
+            UPLOADED_MEDIA_INSPECT_TOOL_NAME,
+            inspect_uploaded_media,
         )
 
-    uploaded_media_inspect.metadata = {
-        "effect": "read",
-        "source": "builtin",
-        "availability": ToolAvailability.UPLOADED_MEDIA_PRESENT.value,
-    }
-    return uploaded_media_inspect
+    return configure_builtin_tool(
+        uploaded_media_inspect,
+        "read",
+        availability=ToolAvailability.UPLOADED_MEDIA_PRESENT.value,
+    )
 
 
 def _vision_tool_result(result: VisionUnderstandingResult) -> ToolResult:

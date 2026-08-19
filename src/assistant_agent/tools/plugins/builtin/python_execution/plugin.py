@@ -2,11 +2,11 @@
 
 from langchain_core.tools import BaseTool
 from assistant_agent.tools.plugins.builtin.python_execution.tool import (
-    PythonInterpreterTool,
+    create_python_interpreter_tool,
 )
 from assistant_agent.tools.plugins.contracts import ToolPluginContext
 
 
 class PythonExecutionPlugin:
     def build_tools(self, context: ToolPluginContext) -> list[BaseTool]:
-        return [PythonInterpreterTool()]
+        return [create_python_interpreter_tool()]

@@ -1,12 +1,16 @@
-"""Visual image search Tool backed by a Plugin-private adapter."""
+"""Native visual image search Tool backed by a Plugin-private adapter."""
 
-from typing import Any
+from typing import Annotated, Any
 
+from langchain_core.tools import BaseTool, tool
+from langgraph.prebuilt import ToolRuntime
+from pydantic import Field
+
+from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.tools.capability_output import build_capability_output_contract
 from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.plugins.builtin.visual_image_search.models import (
     VisualImageSearchRequest,
-    VisualImageSearchResult,
 )
 from assistant_agent.providers.provider_errors import sanitize_error_detail
 from assistant_agent.tools.plugins.builtin.visual_image_search.backend import (
@@ -17,67 +21,102 @@ from assistant_agent.tools.ids import (
     VISUAL_IMAGE_SEARCH_CAPABILITY,
     VISUAL_IMAGE_SEARCH_TOOL_NAME,
 )
-from assistant_agent.tools.base import ToolBase, ToolContext
+from assistant_agent.tools.native_boundary import (
+    configure_builtin_tool,
+    invoke_native_tool,
+)
+from assistant_agent.tools.runtime import ToolContext, tool_context
 
 
-class VisualImageSearchTool(ToolBase):
-    name = VISUAL_IMAGE_SEARCH_TOOL_NAME
-    description = (
-        "使用公开 HTTP(S) 图片 URL 检索视觉相似图片；返回匹配图片、来源页面、摘要和"
-        "可选相似度。只读，不理解图片内容，也不支持本地路径、私有媒体 ID 或 base64。"
-    )
-    input_schema = VisualImageSearchRequest
-    output_schema = VisualImageSearchResult
-    category = "read"
-    repeat_policy = "distinct_inputs"
-    requires_media = ["image"]
-    llm_hidden_input_fields = ("limit",)
+def create_visual_image_search_tool(
+    adapter: VisualImageSearchAdapter | None = None,
+) -> BaseTool:
+    """Create a native read-only visual image search Tool."""
 
-    def __init__(self, adapter: VisualImageSearchAdapter | None = None) -> None:
-        super().__init__()
-        self.adapter = adapter or create_visual_image_search_adapter()
+    search_adapter = adapter or create_visual_image_search_adapter()
 
-    def _execute(
-        self, input: VisualImageSearchRequest, context: ToolContext
-    ) -> ToolResult:
-        result = self.adapter.search(input)
-        data = result.model_dump(mode="json")
-        model_observation = _visual_image_search_model_observation(data)
-        contract = build_capability_output_contract(
-            capability=VISUAL_IMAGE_SEARCH_CAPABILITY,
-            status="failed" if result.errors else "succeeded",
-            output_ref=result.output_ref,
-            data={
-                "image_used": result.image_used,
-                "query_hint_used": result.query_hint_used,
-                "matches": data.get("matches", []),
-                "total": result.total,
-            },
-            errors=[error.model_dump(mode="json") for error in result.errors],
-            metadata={"provider": result.provider, "latency_ms": result.latency_ms},
+    @tool(VISUAL_IMAGE_SEARCH_TOOL_NAME, response_format="content_and_artifact")
+    def visual_image_search(
+        runtime: ToolRuntime[AssistantRunContext],
+        image_url: Annotated[
+            str | None,
+            Field(default=None, description="公开 HTTP(S) 图片 URL。"),
+        ] = None,
+        image_ids: Annotated[
+            list[str],
+            Field(description="公开图片 URL 列表，使用首项。"),
+        ] = [],
+        query_hint: Annotated[
+            str | None,
+            Field(default=None, description="相似搜索提示。"),
+        ] = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """使用公开 HTTP(S) 图片 URL 检索视觉相似图片。
+
+        返回匹配图片、来源页面、摘要和可选相似度。只读，不理解图片内容，也不支持
+        本地路径、私有媒体 ID 或 base64。
+        """
+
+        return invoke_native_tool(
+            VISUAL_IMAGE_SEARCH_TOOL_NAME,
+            lambda: _execute_visual_image_search(
+                search_adapter,
+                VisualImageSearchRequest(
+                    image_url=image_url,
+                    image_ids=image_ids,
+                    query_hint=query_hint,
+                ),
+                tool_context(runtime),
+            ),
         )
-        if result.errors:
-            first_error = result.errors[0]
-            return ToolResult(
-                tool_name=self.name,
-                success=False,
-                data=data,
-                model_observation=model_observation,
-                error=f"{first_error.code}: {first_error.message}",
-                output_ref=result.output_ref,
-                latency_ms=result.latency_ms,
-                contract=contract,
-            )
 
+    return configure_builtin_tool(visual_image_search, "read")
+
+
+def _execute_visual_image_search(
+    adapter: VisualImageSearchAdapter,
+    input: VisualImageSearchRequest,
+    context: ToolContext,
+) -> ToolResult:
+    del context
+    result = adapter.search(input)
+    data = result.model_dump(mode="json")
+    model_observation = _visual_image_search_model_observation(data)
+    contract = build_capability_output_contract(
+        capability=VISUAL_IMAGE_SEARCH_CAPABILITY,
+        status="failed" if result.errors else "succeeded",
+        output_ref=result.output_ref,
+        data={
+            "image_used": result.image_used,
+            "query_hint_used": result.query_hint_used,
+            "matches": data.get("matches", []),
+            "total": result.total,
+        },
+        errors=[error.model_dump(mode="json") for error in result.errors],
+        metadata={"provider": result.provider, "latency_ms": result.latency_ms},
+    )
+    if result.errors:
+        first_error = result.errors[0]
         return ToolResult(
-            tool_name=self.name,
-            success=True,
+            tool_name=VISUAL_IMAGE_SEARCH_TOOL_NAME,
+            success=False,
             data=data,
             model_observation=model_observation,
+            error=f"{first_error.code}: {first_error.message}",
             output_ref=result.output_ref,
             latency_ms=result.latency_ms,
             contract=contract,
         )
+
+    return ToolResult(
+        tool_name=VISUAL_IMAGE_SEARCH_TOOL_NAME,
+        success=True,
+        data=data,
+        model_observation=model_observation,
+        output_ref=result.output_ref,
+        latency_ms=result.latency_ms,
+        contract=contract,
+    )
 
 
 def _visual_image_search_model_observation(data: dict[str, Any]) -> dict[str, Any]:

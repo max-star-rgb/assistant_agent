@@ -6,14 +6,14 @@ from assistant_agent.tools.plugins.builtin.skill_loading.plugin import (
 from assistant_agent.tools.plugins.builtin.skill_loading.tool import (
     LOAD_SKILL_REFERENCE_TOOL_NAME,
     LOAD_SKILL_TOOL_NAME,
-    LoadSkillReferenceTool,
-    LoadSkillTool,
+    create_load_skill_reference_tool,
+    create_load_skill_tool,
 )
 
 __all__ = [
     "LOAD_SKILL_REFERENCE_TOOL_NAME",
     "LOAD_SKILL_TOOL_NAME",
-    "LoadSkillReferenceTool",
-    "LoadSkillTool",
     "SkillLoadingPlugin",
+    "create_load_skill_reference_tool",
+    "create_load_skill_tool",
 ]

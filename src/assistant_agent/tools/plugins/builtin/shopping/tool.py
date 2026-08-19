@@ -1,9 +1,13 @@
-"""Unified real-provider shopping search for one or more product needs."""
+"""Unified native shopping search for one or more product needs."""
 
 from itertools import product
-from typing import Any
+from typing import Annotated, Any
 
-from assistant_agent.tools.base import ToolBase, ToolContext
+from langchain_core.tools import BaseTool, tool
+from langgraph.prebuilt import ToolRuntime
+from pydantic import Field
+
+from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.tools.capability_output import build_capability_output_contract
 from assistant_agent.tools.ids import (
     SHOPPING_SEARCH_CAPABILITY,
@@ -21,106 +25,152 @@ from assistant_agent.tools.plugins.builtin.shopping.models import (
     ProductResult,
     ProductSearchRequest,
     ProductSearchResult,
+    ShoppingEvidence,
     ShoppingListNeed,
     ShoppingListNeedResult,
     ShoppingListSelection,
     ShoppingSearchRequest,
     ShoppingSearchResult,
 )
+from assistant_agent.tools.native_boundary import (
+    configure_builtin_tool,
+    invoke_native_tool,
+)
+from assistant_agent.tools.runtime import ToolContext, tool_context
 
 
-class ShoppingSearchTool(ToolBase):
-    """Search, compare, and budget one or more product needs."""
+def create_shopping_search_tool(
+    *,
+    search_adapter: ProductSearchAdapter,
+    compare_adapter: PriceCompareAdapter,
+) -> BaseTool:
+    """Create a native read-only shopping search Tool."""
 
-    name = SHOPPING_SEARCH_TOOL_NAME
-    description = (
-        "针对一个或多个明确商品需求检索候选、比较价格与购买链接，并按数量、单件"
-        "上限和总预算选择组合；返回各需求的候选、选择、未覆盖项和预算结果。只读，"
-        "不加入购物车、下单或付款。"
-    )
-    input_schema = ShoppingSearchRequest
-    output_schema = ShoppingSearchResult
-    category = "read"
-    repeat_policy = "distinct_inputs"
-    llm_hidden_input_fields = ("top_k_per_need",)
+    @tool(SHOPPING_SEARCH_TOOL_NAME, response_format="content_and_artifact")
+    def shopping_search(
+        needs: Annotated[
+            list[ShoppingListNeed],
+            Field(min_length=1, max_length=8, description="需要分别搜索的商品清单项，最多八项。"),
+        ],
+        runtime: ToolRuntime[AssistantRunContext],
+        scenario: Annotated[
+            str | None,
+            Field(default=None, min_length=1, description="清单服务的具体场景。"),
+        ] = None,
+        decision_reason: Annotated[
+            str | None,
+            Field(default=None, min_length=1, description="选择这些商品品类的原因。"),
+        ] = None,
+        evidence: Annotated[
+            list[ShoppingEvidence],
+            Field(description="支持场景判断的结构化前序工具证据。"),
+        ] = [],
+        total_budget: Annotated[
+            float | None,
+            Field(default=None, gt=0, description="整份清单的总预算。"),
+        ] = None,
+        platforms: Annotated[
+            list[str],
+            Field(description="用户明确指定的购物平台列表。"),
+        ] = [],
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """针对一个或多个明确商品需求检索候选、比较价格与购买链接。
 
-    def __init__(
-        self,
-        *,
-        search_adapter: ProductSearchAdapter,
-        compare_adapter: PriceCompareAdapter,
-    ) -> None:
-        super().__init__()
-        self.search_adapter = search_adapter
-        self.compare_adapter = compare_adapter
+        按数量、单件上限和总预算选择组合，并返回各需求的候选、选择、未覆盖项和
+        预算结果。只读，不加入购物车、下单或付款。
+        """
 
-    def _execute(
-        self, input: ShoppingSearchRequest, context: ToolContext
-    ) -> ToolResult:
-        searches: list[ProductSearchResult] = []
-        comparisons: list[PriceCompareResult | None] = []
-        for need in input.needs:
-            search = self.search_adapter.search(
-                ProductSearchRequest(
-                    query=need.keyword,
+        return invoke_native_tool(
+            SHOPPING_SEARCH_TOOL_NAME,
+            lambda: _execute_shopping_search(
+                search_adapter,
+                compare_adapter,
+                ShoppingSearchRequest(
+                    scenario=scenario,
+                    decision_reason=decision_reason,
+                    evidence=evidence,
+                    total_budget=total_budget,
+                    needs=needs,
+                    platforms=platforms,
+                ),
+                tool_context(runtime),
+            ),
+        )
+
+    return configure_builtin_tool(shopping_search, "read")
+
+
+def _execute_shopping_search(
+    search_adapter: ProductSearchAdapter,
+    compare_adapter: PriceCompareAdapter,
+    input: ShoppingSearchRequest,
+    context: ToolContext,
+) -> ToolResult:
+    del context
+    searches: list[ProductSearchResult] = []
+    comparisons: list[PriceCompareResult | None] = []
+    for need in input.needs:
+        search = search_adapter.search(
+            ProductSearchRequest(
+                query=need.keyword,
+                budget_max=need.max_unit_price,
+                platforms=input.platforms,
+                top_k=input.top_k_per_need,
+            )
+        )
+        searches.append(search)
+        comparisons.append(
+            compare_adapter.compare(
+                PriceCompareRequest(
+                    items=search.items,
+                    query=search.query_used or need.keyword,
                     budget_max=need.max_unit_price,
-                    platforms=input.platforms,
+                    platforms=search.succeeded_platforms or input.platforms,
+                    sort_by="value",
                     top_k=input.top_k_per_need,
                 )
             )
-            searches.append(search)
-            comparisons.append(
-                self.compare_adapter.compare(
-                    PriceCompareRequest(
-                        items=search.items,
-                        query=search.query_used or need.keyword,
-                        budget_max=need.max_unit_price,
-                        platforms=search.succeeded_platforms or input.platforms,
-                        sort_by="value",
-                        top_k=input.top_k_per_need,
-                    )
-                )
-                if search.items
-                else None
-            )
-
-        result = _build_result(input, searches, comparisons)
-        data = result.model_dump(mode="json")
-        errors = [error.model_dump(mode="json") for error in result.errors]
-        output_ref = result.output_refs[0] if result.output_refs else None
-        contract = build_capability_output_contract(
-            capability=SHOPPING_SEARCH_CAPABILITY,
-            status="succeeded" if result.success else "failed",
-            output_ref=output_ref,
-            data=data,
-            errors=errors,
-            metadata={
-                "provider": result.provider,
-                "latency_ms": result.latency_ms,
-                "query_count": len(input.needs),
-            },
+            if search.items
+            else None
         )
-        observation = _model_observation(data)
-        if not result.success:
-            return ToolResult(
-                tool_name=self.name,
-                success=False,
-                data=data,
-                model_observation=observation,
-                error=errors[0]["message"] if errors else result.summary,
-                output_ref=output_ref,
-                latency_ms=result.latency_ms,
-                contract=contract,
-            )
+
+    result = _build_result(input, searches, comparisons)
+    data = result.model_dump(mode="json")
+    errors = [error.model_dump(mode="json") for error in result.errors]
+    output_ref = result.output_refs[0] if result.output_refs else None
+    contract = build_capability_output_contract(
+        capability=SHOPPING_SEARCH_CAPABILITY,
+        status="succeeded" if result.success else "failed",
+        output_ref=output_ref,
+        data=data,
+        errors=errors,
+        metadata={
+            "provider": result.provider,
+            "latency_ms": result.latency_ms,
+            "query_count": len(input.needs),
+        },
+    )
+    observation = _model_observation(data)
+    if not result.success:
         return ToolResult(
-            tool_name=self.name,
-            success=True,
+            tool_name=SHOPPING_SEARCH_TOOL_NAME,
+            success=False,
             data=data,
             model_observation=observation,
+            error=errors[0]["message"] if errors else result.summary,
             output_ref=output_ref,
             latency_ms=result.latency_ms,
             contract=contract,
         )
+    return ToolResult(
+        tool_name=SHOPPING_SEARCH_TOOL_NAME,
+        success=True,
+        data=data,
+        model_observation=observation,
+        output_ref=output_ref,
+        latency_ms=result.latency_ms,
+        contract=contract,
+    )
 
 
 def _build_result(

@@ -7,17 +7,19 @@ from assistant_agent.tools.plugins.builtin.lodging.backend import (
     SequenceLodgingSearchAdapter,
 )
 from assistant_agent.tools.plugins.builtin.lodging.plugin import LodgingToolPlugin
-from assistant_agent.tools.plugins.builtin.lodging.tool import LodgingSearchTool
+from assistant_agent.tools.plugins.builtin.lodging.tool import (
+    create_lodging_search_tool,
+)
 from assistant_agent.tools.plugins.builtin.lodging.watch_tool import (
-    HotelPriceWatchCreateTool,
+    create_hotel_price_watch_create_tool,
 )
 
 __all__ = [
     "FlyAILodgingSearchAdapter",
     "LodgingSearchAdapter",
-    "LodgingSearchTool",
+    "create_lodging_search_tool",
     "LodgingToolPlugin",
-    "HotelPriceWatchCreateTool",
+    "create_hotel_price_watch_create_tool",
     "MockLodgingSearchAdapter",
     "SequenceLodgingSearchAdapter",
 ]

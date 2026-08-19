@@ -2,7 +2,9 @@
 
 from _smoke_runner import PROJECT_ROOT, run_tool_smoke
 
-from assistant_agent.tools.plugins.builtin.skill_loading.tool import LoadSkillReferenceTool
+from assistant_agent.tools.plugins.builtin.skill_loading.tool import (
+    create_load_skill_reference_tool,
+)
 
 
 SKILL_ROOT = PROJECT_ROOT / "evals" / "system" / "tools" / "fixtures" / "skill_repo"
@@ -18,7 +20,7 @@ FIXED_STATE = {
 if __name__ == "__main__":
     raise SystemExit(
         run_tool_smoke(
-            LoadSkillReferenceTool(root=SKILL_ROOT),
+            create_load_skill_reference_tool(root=SKILL_ROOT),
             FIXED_INPUT,
             state=FIXED_STATE,
         )

@@ -21,6 +21,7 @@ from assistant_agent.identity import RequestIdentity
 from assistant_agent.tools.plugins.builtin.lodging.models import (
     HotelPriceWatchGoal,
     LodgingOffer,
+    LodgingSearchRequest,
 )
 from assistant_agent.tools.plugins.builtin.lodging.backend import (
     LodgingSearchAdapter,
@@ -160,7 +161,7 @@ class HotelPriceWatchRuntime:
                 state=state,
                 binding=binding,
             )
-        tool_input = goal.search.model_dump(mode="json", exclude={"limit"})
+        tool_input = goal.search.model_dump(mode="json")
         active_binding = self.task_service.begin_attempt(
             binding=binding,
             step_id=step_id,
@@ -170,7 +171,9 @@ class HotelPriceWatchRuntime:
         request.metadata["durable_task_binding"] = active_binding.model_dump(
             mode="json"
         )
-        result = self.adapter.search(goal.search)
+        result = self.adapter.search(
+            LodgingSearchRequest.model_validate(goal.search.model_dump())
+        )
         next_check_at = min(
             now + timedelta(seconds=goal.check_interval_s),
             goal.ends_at,

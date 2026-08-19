@@ -1,8 +1,17 @@
 """Image generation Tool backed by a Plugin-private adapter."""
 
+from collections.abc import Mapping
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Annotated, Any
 
+from langchain_core.tools import BaseTool, tool
+from langgraph.prebuilt import ToolRuntime
+from pydantic import Field
+
+from assistant_agent.native_agent.context import (
+    AssistantRunContext,
+    authenticated_user_identity,
+)
 from assistant_agent.tools.plugins.builtin.image_generation.models import (
     GeneratedImageArtifact,
     ImageGenerationRequest,
@@ -28,108 +37,129 @@ from assistant_agent.tools.ids import (
     IMAGE_GENERATION_CAPABILITY,
     IMAGE_GENERATION_TOOL_NAME,
 )
-from assistant_agent.tools.base import ToolBase, ToolContext
-from assistant_agent.tools.input_binding import RuntimeInputBinding
+from assistant_agent.tools.native_boundary import (
+    configure_builtin_tool,
+    invoke_native_tool,
+)
 
 
-class ImageGenerationTool(ToolBase):
-    name = IMAGE_GENERATION_TOOL_NAME
-    description = (
-        "根据文本中的内容、构图和风格要求生成图片；返回可供后续展示或处理的 image_id "
-        "及生成结果。会调用图片生成服务；不用于理解、检索或修改现有图片。"
-    )
-    input_schema = ImageGenerationRequest
-    output_schema = ImageGenerationResult
-    category = "generate"
-    repeat_policy = "once_per_run"
-    llm_hidden_input_fields = (
-        "size",
-        "n",
-        "prompt_extend",
-        "watermark",
-        "style",
-        "product_id",
-        "product_title",
-        "product_info",
-        "reference_image_ids",
-        "negative_prompt",
-        "seed",
-        "width",
-        "height",
-    )
-    runtime_input_bindings = (
-        RuntimeInputBinding(field="user_id", source="runtime_identity", key="user_id"),
-        RuntimeInputBinding(
-            field="session_id", source="runtime_identity", key="session_id"
-        ),
-        RuntimeInputBinding(
-            field="memory_context", source="memory_context", key="summaries"
-        ),
-    )
+def create_image_generation_tool(
+    adapter: ImageGenerationAdapter | None = None,
+    *,
+    artifact_base_url: str | None = None,
+) -> BaseTool:
+    """Create the native image generation Tool."""
 
-    def __init__(
-        self,
-        adapter: ImageGenerationAdapter | None = None,
-        *,
-        artifact_base_url: str | None = None,
-    ) -> None:
-        super().__init__()
-        self.adapter = adapter or MockImageGenerationAdapter()
-        self.artifact_base_url = str(artifact_base_url or "").strip().rstrip("/")
+    image_adapter = adapter or MockImageGenerationAdapter()
+    public_artifact_base_url = str(artifact_base_url or "").strip().rstrip("/")
 
-    def _execute(
-        self, input: ImageGenerationRequest, context: ToolContext
-    ) -> ToolResult:
-        try:
-            result = self.adapter.generate(input)
-            if result.status == "succeeded":
-                result = materialize_image_generation_result(result)
-                result = _publish_image_ids(result)
-        except ProviderAdapterError as exc:
-            data, contract = _image_generation_provider_error_contract(exc)
-            return ToolResult(
-                tool_name=self.name,
-                success=False,
-                error=str(exc),
-                data=data,
-                model_observation=_image_generation_model_observation(data),
-                contract=contract,
-            )
-        except ValueError as exc:
-            data, contract = _image_generation_error_contract(str(exc))
-            return ToolResult(
-                tool_name=self.name,
-                success=False,
-                error=str(exc),
-                data=data,
-                model_observation=_image_generation_model_observation(data),
-                contract=contract,
-            )
-        data, contract = _image_generation_output_contract(
-            result,
-            artifact_base_url=self.artifact_base_url,
+    @tool(IMAGE_GENERATION_TOOL_NAME, response_format="content_and_artifact")
+    def image_generation(
+        prompt: Annotated[
+            str,
+            Field(
+                min_length=1,
+                description="图片内容、构图、风格和关键视觉要求。",
+            ),
+        ],
+        runtime: ToolRuntime[AssistantRunContext],
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """根据文本中的内容、构图和风格要求生成图片。
+
+        返回可供后续展示或处理的 image_id 及生成结果。会调用图片生成服务；
+        不用于理解、检索或修改现有图片。
+        """
+
+        return invoke_native_tool(
+            IMAGE_GENERATION_TOOL_NAME,
+            lambda: _execute_image_generation_from_runtime(
+                image_adapter,
+                prompt,
+                runtime,
+                artifact_base_url=public_artifact_base_url,
+            ),
         )
-        if result.status == "failed":
-            return ToolResult(
-                tool_name=self.name,
-                success=False,
-                data=data,
-                model_observation=_image_generation_model_observation(data),
-                error=result.error or "image_generation_failed",
-                output_ref=result.output_ref,
-                latency_ms=result.latency_ms,
-                contract=contract,
-            )
 
+    return configure_builtin_tool(image_generation, "generate")
+
+
+def _execute_image_generation_from_runtime(
+    adapter: ImageGenerationAdapter,
+    prompt: str,
+    runtime: ToolRuntime[AssistantRunContext],
+    *,
+    artifact_base_url: str = "",
+) -> ToolResult:
+    state = runtime.state if isinstance(runtime.state, Mapping) else {}
+    request = ImageGenerationRequest(
+        prompt=prompt,
+        user_id=authenticated_user_identity(runtime),
+        session_id=runtime.execution_info.thread_id,
+        memory_context=list(state.get("memory_context", ())),
+    )
+    return _execute_image_generation(
+        adapter,
+        request,
+        artifact_base_url=artifact_base_url,
+    )
+
+
+def _execute_image_generation(
+    adapter: ImageGenerationAdapter,
+    input: ImageGenerationRequest,
+    *,
+    artifact_base_url: str = "",
+) -> ToolResult:
+    try:
+        result = adapter.generate(input)
+        if result.status == "succeeded":
+            result = materialize_image_generation_result(result)
+            result = _publish_image_ids(result)
+    except ProviderAdapterError as exc:
+        data, contract = _image_generation_provider_error_contract(exc)
         return ToolResult(
-            tool_name=self.name,
-            success=True,
+            tool_name=IMAGE_GENERATION_TOOL_NAME,
+            success=False,
+            error=str(exc),
             data=data,
             model_observation=_image_generation_model_observation(data),
-            output_ref=result.output_ref or result.image_url,
-            latency_ms=result.latency_ms or 1,
             contract=contract,
         )
+    except ValueError as exc:
+        data, contract = _image_generation_error_contract(str(exc))
+        return ToolResult(
+            tool_name=IMAGE_GENERATION_TOOL_NAME,
+            success=False,
+            error=str(exc),
+            data=data,
+            model_observation=_image_generation_model_observation(data),
+            contract=contract,
+        )
+    data, contract = _image_generation_output_contract(
+        result,
+        artifact_base_url=artifact_base_url,
+    )
+    if result.status == "failed":
+        return ToolResult(
+            tool_name=IMAGE_GENERATION_TOOL_NAME,
+            success=False,
+            data=data,
+            model_observation=_image_generation_model_observation(data),
+            error=result.error or "image_generation_failed",
+            output_ref=result.output_ref,
+            latency_ms=result.latency_ms,
+            contract=contract,
+        )
+
+    return ToolResult(
+        tool_name=IMAGE_GENERATION_TOOL_NAME,
+        success=True,
+        data=data,
+        model_observation=_image_generation_model_observation(data),
+        output_ref=result.output_ref or result.image_url,
+        latency_ms=result.latency_ms or 1,
+        contract=contract,
+    )
 
 
 def _image_generation_output_contract(

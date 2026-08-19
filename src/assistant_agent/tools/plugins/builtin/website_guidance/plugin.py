@@ -11,8 +11,8 @@ from assistant_agent.tools.plugins.builtin.website_guidance.backend import (
     WebsiteGuidanceBackend,
 )
 from assistant_agent.tools.plugins.builtin.website_guidance.tools import (
-    WebPageExploreTool,
-    WebPageInspectTool,
+    create_web_page_explore_tool,
+    create_web_page_inspect_tool,
 )
 from assistant_agent.tools.plugins.contracts import ToolPluginContext
 
@@ -75,7 +75,10 @@ class WebsiteGuidancePlugin:
 def _tools_for(backend: WebsiteGuidanceBackend) -> list[BaseTool]:
     """Construct both public projections over one shared backend and store."""
 
-    return [WebPageInspectTool(backend=backend), WebPageExploreTool(backend=backend)]
+    return [
+        create_web_page_inspect_tool(backend),
+        create_web_page_explore_tool(backend),
+    ]
 
 
 def _website_guidance_enabled(

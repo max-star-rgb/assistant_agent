@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
+from langchain_core.tools import BaseTool, tool
+from langgraph.prebuilt import ToolRuntime
+from pydantic import Field
+
+from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.tools.capability_output import build_capability_output_contract
 from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.models import (
     CalendarCreateRequest,
@@ -25,124 +30,194 @@ from assistant_agent.tools.ids import (
     CALENDAR_SEARCH_TOOL_NAME,
     CONTACTS_SEARCH_TOOL_NAME,
 )
-from assistant_agent.tools.base import ToolBase, ToolContext
-from assistant_agent.tools.input_binding import RuntimeInputBinding
+from assistant_agent.tools.native_boundary import (
+    configure_builtin_tool,
+    invoke_native_tool,
+    native_idempotency_key,
+)
+from assistant_agent.tools.runtime import ToolContext, tool_context
 
 
-class CalendarSearchTool(ToolBase):
-    """Search calendar events through the configured calendar adapter."""
+def create_calendar_search_tool(adapter: CalendarAdapter | None = None) -> BaseTool:
+    """Create a native, read-only calendar event search Tool."""
 
-    name = CALENDAR_SEARCH_TOOL_NAME
-    description = (
-        "按查询词和可选时间范围检索当前用户的日历；返回事件 ID、标题、起止时间、"
-        "时区、地点和参与人数。只读，不创建或修改事件。"
-    )
-    input_schema = CalendarSearchRequest
-    output_schema = CalendarSearchResult
-    category = "read"
-    repeat_policy = "distinct_inputs"
-    llm_hidden_input_fields = ("limit",)
+    calendar_adapter = adapter or MockCalendarAdapter()
 
-    def __init__(self, adapter: CalendarAdapter | None = None) -> None:
-        super().__init__()
-        self.adapter = adapter or MockCalendarAdapter()
+    @tool(CALENDAR_SEARCH_TOOL_NAME, response_format="content_and_artifact")
+    def calendar_search(
+        runtime: ToolRuntime[AssistantRunContext],
+        query: Annotated[
+            str,
+            Field(default="today", min_length=1, description="日历查询；默认今天。"),
+        ] = "today",
+        start_time: Annotated[
+            str | None, Field(description="用户指定的查询开始时间。")
+        ] = None,
+        end_time: Annotated[
+            str | None, Field(description="用户指定的查询结束时间。")
+        ] = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """按查询词和可选时间范围检索当前用户的日历。
 
-    def _execute(
-        self, input: CalendarSearchRequest, context: ToolContext
-    ) -> ToolResult:
-        result = _calendar_adapter_for_context(self.adapter, context).search(input)
-        return _tool_result(
-            tool_name=self.name,
-            capability=self.name,
-            success=result.success,
-            data=result.model_dump(mode="json"),
-            model_observation=_calendar_search_observation(result),
-            output_ref=result.output_ref,
-            raw_data_ref=result.raw_data_ref,
-            latency_ms=result.latency_ms,
-            errors=result.errors,
-            provider=result.provider,
+        返回事件 ID、标题、起止时间、时区、地点和参与人数。只读，不创建或修改事件。
+        """
+
+        return invoke_native_tool(
+            CALENDAR_SEARCH_TOOL_NAME,
+            lambda: _execute_calendar_search(
+                calendar_adapter,
+                CalendarSearchRequest(
+                    query=query,
+                    start_time=start_time,
+                    end_time=end_time,
+                ),
+                tool_context(runtime),
+            ),
         )
 
+    return configure_builtin_tool(calendar_search, "read")
 
-class CalendarCreateTool(ToolBase):
-    """Create calendar events through the native ToolNode path."""
 
-    name = CALENDAR_CREATE_TOOL_NAME
-    description = (
-        "在当前用户的日历中创建事件，可设置起止时间、时区、地点、参与者和备注；"
-        "返回事件 ID 与创建结果。会写入外部日历，不负责后续修改或删除。"
+def create_calendar_create_tool(adapter: CalendarAdapter | None = None) -> BaseTool:
+    """Create a native calendar write Tool with runtime-owned idempotency."""
+
+    calendar_adapter = adapter or MockCalendarAdapter()
+
+    @tool(CALENDAR_CREATE_TOOL_NAME, response_format="content_and_artifact")
+    def calendar_create(
+        title: Annotated[str, Field(min_length=1, description="事件标题。")],
+        start_time: Annotated[
+            str,
+            Field(min_length=1, description="事件开始日期、时间和时区。"),
+        ],
+        runtime: ToolRuntime[AssistantRunContext],
+        end_time: Annotated[str | None, Field(description="事件结束时间。")] = None,
+        timezone: Annotated[str | None, Field(description="事件时区。")] = None,
+        location: Annotated[str | None, Field(description="事件地点。")] = None,
+        attendees: Annotated[list[str], Field(description="受邀联系人或邮箱。")] = [],
+        notes: Annotated[str | None, Field(description="事件备注。")] = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """在当前用户的日历中创建事件。
+
+        可设置起止时间、时区、地点、参与者和备注，并返回事件 ID 与创建结果。
+        会写入外部日历，不负责后续修改或删除。
+        """
+
+        return invoke_native_tool(
+            CALENDAR_CREATE_TOOL_NAME,
+            lambda: _execute_calendar_create(
+                calendar_adapter,
+                CalendarCreateRequest(
+                    title=title,
+                    start_time=start_time,
+                    end_time=end_time,
+                    timezone=timezone,
+                    location=location,
+                    attendees=attendees,
+                    notes=notes,
+                    idempotency_key=native_idempotency_key(runtime),
+                ),
+                tool_context(runtime),
+            ),
+        )
+
+    return configure_builtin_tool(calendar_create, "write")
+
+
+def create_contacts_search_tool(adapter: ContactsAdapter | None = None) -> BaseTool:
+    """Create a native, read-only personal contacts search Tool."""
+
+    contacts_adapter = adapter or MockContactsAdapter()
+
+    @tool(CONTACTS_SEARCH_TOOL_NAME, response_format="content_and_artifact")
+    def contacts_search(
+        query: Annotated[
+            str,
+            Field(min_length=1, description="姓名、关系、邮箱或电话查询词。"),
+        ],
+        runtime: ToolRuntime[AssistantRunContext],
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """按姓名、关系、邮箱或电话检索当前用户的联系人。
+
+        返回联系人 ID、显示名称、邮箱和电话号码。只读，不新增、修改或联系任何人。
+        """
+
+        return invoke_native_tool(
+            CONTACTS_SEARCH_TOOL_NAME,
+            lambda: _execute_contacts_search(
+                contacts_adapter,
+                ContactsSearchRequest(query=query),
+                tool_context(runtime),
+            ),
+        )
+
+    return configure_builtin_tool(contacts_search, "read")
+
+
+def _execute_calendar_search(
+    adapter: CalendarAdapter,
+    input: CalendarSearchRequest,
+    context: ToolContext,
+) -> ToolResult:
+    result = _calendar_adapter_for_context(adapter, context).search(input)
+    return _tool_result(
+        tool_name=CALENDAR_SEARCH_TOOL_NAME,
+        capability=CALENDAR_SEARCH_TOOL_NAME,
+        success=result.success,
+        data=result.model_dump(mode="json"),
+        model_observation=_calendar_search_observation(result),
+        output_ref=result.output_ref,
+        raw_data_ref=result.raw_data_ref,
+        latency_ms=result.latency_ms,
+        errors=result.errors,
+        provider=result.provider,
     )
-    input_schema = CalendarCreateRequest
-    output_schema = CalendarCreateResult
-    category = "write"
-    repeat_policy = "distinct_inputs"
-    runtime_input_bindings = (
-        RuntimeInputBinding(field="idempotency_key", source="durable_idempotency"),
-    )
 
-    def __init__(self, adapter: CalendarAdapter | None = None) -> None:
-        super().__init__()
-        self.adapter = adapter or MockCalendarAdapter()
 
-    def _execute(
-        self, input: CalendarCreateRequest, context: ToolContext
-    ) -> ToolResult:
-        result = _calendar_adapter_for_context(self.adapter, context).create(input)
-        return _tool_result(
-            tool_name=self.name,
-            capability=self.name,
-            success=result.success,
-            data={
-                **result.model_dump(mode="json"),
-                "idempotency": {
-                    "key": input.idempotency_key,
-                    "present": input.idempotency_key is not None,
-                    "required": True,
-                },
+def _execute_calendar_create(
+    adapter: CalendarAdapter,
+    input: CalendarCreateRequest,
+    context: ToolContext,
+) -> ToolResult:
+    result = _calendar_adapter_for_context(adapter, context).create(input)
+    return _tool_result(
+        tool_name=CALENDAR_CREATE_TOOL_NAME,
+        capability=CALENDAR_CREATE_TOOL_NAME,
+        success=result.success,
+        data={
+            **result.model_dump(mode="json"),
+            "idempotency": {
+                "key": input.idempotency_key,
+                "present": input.idempotency_key is not None,
+                "required": True,
             },
-            model_observation=_calendar_create_observation(result),
-            output_ref=result.output_ref,
-            latency_ms=result.latency_ms,
-            errors=result.errors,
-            provider=result.provider,
-        )
-
-
-class ContactsSearchTool(ToolBase):
-    """Search personal contacts through the configured contacts adapter."""
-
-    name = CONTACTS_SEARCH_TOOL_NAME
-    description = (
-        "按姓名、关系、邮箱或电话检索当前用户的联系人；返回联系人 ID、显示名称、"
-        "邮箱和电话号码。只读，不新增、修改或联系任何人。"
+        },
+        model_observation=_calendar_create_observation(result),
+        output_ref=result.output_ref,
+        latency_ms=result.latency_ms,
+        errors=result.errors,
+        provider=result.provider,
     )
-    input_schema = ContactsSearchRequest
-    output_schema = ContactsSearchResult
-    category = "read"
-    repeat_policy = "distinct_inputs"
-    llm_hidden_input_fields = ("limit",)
 
-    def __init__(self, adapter: ContactsAdapter | None = None) -> None:
-        super().__init__()
-        self.adapter = adapter or MockContactsAdapter()
 
-    def _execute(
-        self, input: ContactsSearchRequest, context: ToolContext
-    ) -> ToolResult:
-        result = self.adapter.search(input)
-        return _tool_result(
-            tool_name=self.name,
-            capability=self.name,
-            success=result.success,
-            data=result.model_dump(mode="json"),
-            model_observation=_contacts_observation(result),
-            output_ref=result.output_ref,
-            raw_data_ref=result.raw_data_ref,
-            latency_ms=result.latency_ms,
-            errors=result.errors,
-            provider=result.provider,
-        )
+def _execute_contacts_search(
+    adapter: ContactsAdapter,
+    input: ContactsSearchRequest,
+    context: ToolContext,
+) -> ToolResult:
+    result = adapter.search(input)
+    return _tool_result(
+        tool_name=CONTACTS_SEARCH_TOOL_NAME,
+        capability=CONTACTS_SEARCH_TOOL_NAME,
+        success=result.success,
+        data=result.model_dump(mode="json"),
+        model_observation=_contacts_observation(result),
+        output_ref=result.output_ref,
+        raw_data_ref=result.raw_data_ref,
+        latency_ms=result.latency_ms,
+        errors=result.errors,
+        provider=result.provider,
+    )
 
 
 def _tool_result(

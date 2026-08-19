@@ -17,8 +17,9 @@
 
 生产 Agent 的硬边界是 LangChain 标准 Tool，不再是
 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`。受信 composition 显式列出内建 Plugin，构造既有
-具体 Tool；这些 Tool 本身继承 `BaseTool`，不再在生产装配时二次包装为通用 `StructuredTool`。新主链不做
-文件扫描、动态 Python module discovery 或 Registry lookup。
+进程内 Tool。所有内建 Tool 都由官方 `@tool` 工厂创建为标准 `BaseTool`，不使用项目自定义的具体
+`BaseTool` 子类，也不存在动态生成的项目 Tool schema 层。新主链不做文件扫描、动态 Python module
+discovery 或 Registry lookup。
 
 进程 composition 仍把完整静态 `BaseTool` inventory 注册给 `create_agent` / `ToolNode`，但完整注册不等于每次
 模型调用全部可见。`ProgressiveToolExposureMiddleware` 在原生 `wrap_model_call` 中按受信 Skill manifest 和
@@ -39,19 +40,25 @@ WebSocket 已成功完成 `callType=VIDEO` 的 control 握手；`visual_memory_s
 
 每个内建 Tool：
 
-- 模型只看到去除 runtime-owned 字段的 `tool_call_schema`；
-- 完整执行 schema 包含 `ToolRuntime[AssistantRunContext]`，由 `ToolNode` 注入当前 state、thread/run、Store
-  和 `server_info`；受信用户身份只读取 `server_info.user.identity`，不从 Runtime Context 复制；
-- 成功通过 `response_format="content_and_artifact"` 返回模型投影与完整结构化业务结果，由 LangChain
-  原生构造 `ToolMessage(content, artifact)` 并序列化模型投影；不手工构造 content block，不定义项目私有的
-  Tool 输出或 UI 渲染协议；失败抛出 `ToolException`；
+- 是官方 `@tool` factory 返回的标准 `BaseTool`；函数签名中的
+  `ToolRuntime[AssistantRunContext]` 是隐藏参数，LangChain/LangGraph 官方注入会直接将其从模型可见
+  `tool_call_schema` 排除，不经项目生成 execution schema 或剥离字段；
+- `ToolNode` 注入的 runtime 提供当前 state、thread/run、Store 和 `server_info`；受信用户身份只读取
+  `server_info.user.identity`，不从 Runtime Context 复制；
+- 成功时统一 native boundary 把有界模型投影 JSON 序列化为一个标准 text content block，并把完整
+  结构化业务结果作为 artifact，`response_format="content_and_artifact"` 返回这组标准二元值；LangChain
+  据此原生构造 `ToolMessage(content, artifact)`。该边界不定义项目私有 Tool 输出或 UI 渲染协议；失败
+  抛出 `ToolException`；
 - metadata 至少声明 `effect=read|generate|write|dangerous` 与 `source=builtin|mcp`。
 
 `uploaded_media_inspect`、`live_view_inspect` 和 `visual_memory_search` 都由原生函数 Tool 工厂构造；复杂逻辑
 保留在普通 service 对象中，不再通过视觉 Tool 之间的 Python 继承共享字段。上传图片与用户主动上传视频
 复用 `VisualPerceptionModule` 持有的进程级 VLM client；摄像头实时视频仍由后台视觉观察链处理。
 
-只读 Tool 由 `ToolRetryMiddleware` 做有界重试。fast 模式不触发 HITL；planning 模式的非 read Tool 由
+只读 Tool 由 `ToolRetryMiddleware` 做有界重试，重试耗尽后产生 error `ToolMessage`；非 read 内建 Tool
+使用官方 `BaseTool.handle_tool_error` 把 native boundary 抛出的 `ToolException` 转为同类 error
+`ToolMessage`，因此无需替换默认 `ToolNode`。native boundary 会先脱敏未知异常，领域 Request 校验也在
+该边界内成为有界、可解释的 `ToolException`。fast 模式不触发 HITL；planning 模式的非 read Tool 由
 `HumanInTheLoopMiddleware` 在执行前产生原生 interrupt。schema、身份与授权仍由具体 Tool/业务 adapter 校验；
 外部副作用幂等属于具体 Tool 或业务 API，主链不再维护通用 operation ledger。
 
