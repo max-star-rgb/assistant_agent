@@ -110,9 +110,10 @@ ToolNode 不另行接管或聚合这些来源。原生 adapter 同时把来源�
 的 `Citation` annotations；Provider 未生成角标时只为机械追加的来源标题标注 URL，不伪造正文事实与来源的
 对应关系。流式响应只在 terminal chunk 写入稳定 response metadata、usage 和来源，避免标准 chunk 合并把
 标量 metadata 重复拼接；生产装配显式使用 LangChain 原生 `output_version="v1"`，确保 Agent Server wire
-和 checkpoint 中的 `AIMessage.content` 全部序列化为标准 content block，不混入 legacy 字符串。流式正文
-与来源 block 使用互不冲突的 LangChain stream index，避免 chunk 合并后 Citation 的局部 span 偏移。原生
-adapter 按官方 message/tool_call/tool_call_id 结构与标准
+和 checkpoint 中的 `AIMessage.content` 全部序列化为标准 content block，不混入 legacy 字符串。连续正文
+delta 由 LangChain 使用同一个原生 text block index 合并；terminal 只补充相对完整正文的 Citation annotation，
+或在正文无角标时追加一个独立来源 block，不按 Provider token 人工拆分 block。原生 adapter 按官方
+message/tool_call/tool_call_id 结构与标准
 LangChain ToolCall 双向转换，流式 SSE 同时保留 usage、finish reason 与终态来源。是否调用候选本地 Tool 仍由
 模型按标准 tool calling 协议决定。
 

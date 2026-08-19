@@ -140,8 +140,7 @@ class DashScopeNativeChatModel(BaseChatModel):
         payload = self._build_payload(messages, stop=stop, stream=True, **kwargs)
         stream: Iterator[dict[str, Any]] | None = None
         sources: list[dict[str, Any]] = []
-        stream_has_citations = False
-        next_text_block_index = 0
+        streamed_text = ""
         terminal_seen = False
         try:
             stream = self.http_transport.stream_sse(
@@ -171,27 +170,19 @@ class DashScopeNativeChatModel(BaseChatModel):
                 )
                 chunks = _tool_call_chunks(raw_message.get("tool_calls"))
                 content = _message_text(raw_message.get("content"))
-                rendered_content = _content_with_search_citations(
-                    content,
-                    sources,
-                    append_uncited_sources=False,
-                )
-                if _content_has_citations(rendered_content):
-                    stream_has_citations = True
-                if terminal and sources and not stream_has_citations:
-                    rendered_content = _content_with_search_citations(
-                        content,
-                        sources,
-                        append_uncited_sources=True,
+                streamed_text += content
+                rendered_content = (
+                    _terminal_stream_content_with_search_citations(
+                        delta_text=content,
+                        full_text=streamed_text,
+                        sources=sources,
                     )
-                indexed_content = _indexed_stream_text_blocks(
-                    rendered_content,
-                    start_index=next_text_block_index,
+                    if terminal
+                    else content
                 )
-                next_text_block_index += len(indexed_content)
                 yield ChatGenerationChunk(
                     message=AIMessageChunk(
-                        content=indexed_content,
+                        content=rendered_content,
                         tool_call_chunks=chunks,
                         response_metadata=metadata,
                         usage_metadata=usage,
@@ -514,6 +505,58 @@ def _content_with_search_citations(
     if not sources:
         return text
 
+    valid_sources, answer_annotations = _search_citation_parts(text, sources)
+    if not valid_sources:
+        return text
+    if answer_annotations:
+        return [
+            create_text_block(
+                text,
+                id="answer",
+                annotations=answer_annotations,
+            )
+        ]
+    if not append_uncited_sources:
+        return text
+
+    blocks = []
+    if text:
+        blocks.append(
+            create_text_block(
+                text,
+                id="answer",
+            )
+        )
+    blocks.append(_search_sources_text_block(valid_sources))
+    return blocks
+
+
+def _terminal_stream_content_with_search_citations(
+    *,
+    delta_text: str,
+    full_text: str,
+    sources: Sequence[Mapping[str, Any]],
+) -> str | list[dict[str, Any]]:
+    valid_sources, answer_annotations = _search_citation_parts(full_text, sources)
+    if not valid_sources:
+        return delta_text
+    if answer_annotations:
+        return [
+            create_text_block(
+                delta_text,
+                index=0,
+                annotations=answer_annotations,
+            )
+        ]
+    blocks = [create_text_block(delta_text, index=0)] if delta_text else []
+    blocks.append(_search_sources_text_block(valid_sources, block_index=1))
+    return blocks
+
+
+def _search_citation_parts(
+    text: str,
+    sources: Sequence[Mapping[str, Any]],
+) -> tuple[list[tuple[int, str, str]], list[dict[str, Any]]]:
     answer_annotations = []
     valid_sources: list[tuple[int, str, str]] = []
     for source in sources:
@@ -542,32 +585,28 @@ def _content_with_search_citations(
                     cited_text=marker,
                 )
             )
-    if not valid_sources:
-        return text
-    if answer_annotations:
-        return [
-            create_text_block(
-                text,
-                id="answer",
-                annotations=answer_annotations,
-            )
-        ]
-    if not append_uncited_sources:
-        return text
+    return valid_sources, answer_annotations
 
+
+def _search_sources_text_block(
+    valid_sources: Sequence[tuple[int, str, str]],
+    *,
+    block_index: int | None = None,
+) -> dict[str, Any]:
     sources_text = "\n\n来源：\n" + "\n".join(
-        f"[{index}] {title}" for index, title, _url in valid_sources
+        f"[{source_index}] {title}"
+        for source_index, title, _url in valid_sources
     )
     source_annotations = []
     search_from = 0
-    for index, title, url in valid_sources:
-        source_label = f"[{index}] {title}"
+    for source_index, title, url in valid_sources:
+        source_label = f"[{source_index}] {title}"
         start_index = sources_text.index(source_label, search_from)
         end_index = start_index + len(source_label)
         search_from = end_index
         source_annotations.append(
             create_citation(
-                id=f"source_{index}",
+                id=f"source_{source_index}",
                 url=url,
                 title=title,
                 start_index=start_index,
@@ -576,47 +615,12 @@ def _content_with_search_citations(
             )
         )
 
-    blocks = []
-    if text:
-        blocks.append(
-            create_text_block(
-                text,
-                id="answer",
-            )
-        )
-    blocks.append(
-        create_text_block(
-            sources_text,
-            id="sources",
-            annotations=source_annotations,
-        )
+    return create_text_block(
+        sources_text,
+        id="sources",
+        annotations=source_annotations,
+        index=block_index,
     )
-    return blocks
-
-
-def _content_has_citations(content: str | list[dict[str, Any]]) -> bool:
-    return isinstance(content, list) and any(
-        isinstance(block, Mapping) and bool(block.get("annotations"))
-        for block in content
-    )
-
-
-def _indexed_stream_text_blocks(
-    content: str | list[dict[str, Any]],
-    *,
-    start_index: int,
-) -> list[dict[str, Any]]:
-    if isinstance(content, str):
-        blocks = [create_text_block(content)] if content else []
-    else:
-        blocks = content
-    return [
-        {
-            **block,
-            "index": f"lc_dashscope_text_{start_index + offset}",
-        }
-        for offset, block in enumerate(blocks)
-    ]
 
 
 def _usage_metadata(value: Any) -> dict[str, int] | None:
