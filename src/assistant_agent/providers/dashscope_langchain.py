@@ -449,12 +449,20 @@ def _tool_call_chunks(value: Any) -> list[Any]:
         function = raw.get("function")
         function = function if isinstance(function, Mapping) else {}
         raw_index = raw.get("index", position)
+        provider_index = (
+            raw_index
+            if isinstance(raw_index, int)
+            and not isinstance(raw_index, bool)
+            and raw_index >= 0
+            else position
+        )
+        # v1 content block indexes are message-global; index 0 is reserved for text.
         chunks.append(
             tool_call_chunk(
                 name=_optional_text(function.get("name") or raw.get("name")),
                 args=_optional_text(function.get("arguments", raw.get("arguments"))),
                 id=_optional_text(raw.get("id")),
-                index=raw_index if isinstance(raw_index, int) else position,
+                index=provider_index + 1,
             )
         )
     return chunks
