@@ -9,6 +9,7 @@ from assistant_agent.media.visual_perception.module import (
     VisualPerceptionSession,
     VisualPerceptionToolResources,
     VisualTarget,
+    VisualTargetWindow,
     get_visual_perception_module,
 )
 from assistant_agent.media.visual_perception.observation_service import (
@@ -23,6 +24,7 @@ __all__ = [
     "VisualPerceptionSession",
     "VisualPerceptionToolResources",
     "VisualTarget",
+    "VisualTargetWindow",
     "VisualObservationHistoryProbe",
     "RealtimeVisualObservationOutcome",
     "RealtimeVisualObservationRequest",

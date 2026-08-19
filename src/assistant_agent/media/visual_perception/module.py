@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 from typing import Any, Protocol
+from uuid import uuid4
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
@@ -28,7 +29,9 @@ from assistant_agent.media.video.semantic_store_pool import (
     SessionVisualSemanticStorePool,
 )
 from assistant_agent.media.video.video_context import (
+    REALTIME_VISUAL_TARGET_WINDOW_SIZE,
     SQLiteVideoContextStore,
+    VideoContextStore,
     VideoFrame,
 )
 from assistant_agent.media.video.visual_memory_index import VisualMemoryTextIndex
@@ -58,6 +61,8 @@ class RealtimeVisualObserver(Protocol):
 
     async def promote(self, frame: VideoFrame) -> Any: ...
 
+    async def promote_window(self, frames: Sequence[VideoFrame]) -> Any: ...
+
     async def close(self) -> None: ...
 
 
@@ -70,6 +75,17 @@ class VisualTarget:
 
     video_id: str
     sequence: int
+
+
+@dataclass(frozen=True)
+class VisualTargetWindow:
+    """Immutable decoded-frame boundary frozen when one chat starts."""
+
+    window_id: str
+    video_id: str
+    start_sequence: int
+    target_sequence: int
+    sequences: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -91,19 +107,49 @@ class VisualPerceptionSession:
         self,
         *,
         observer: RealtimeVisualObserver,
+        video_context_store: VideoContextStore,
         release: Callable[["VisualPerceptionSession"], None],
     ) -> None:
         self._observer = observer
+        self._video_context_store = video_context_store
         self._release = release
-        self._latest_frames: dict[str, VideoFrame] = {}
         self._closed = False
 
     async def submit(self, frame: VideoFrame) -> Any:
         """Submit a decoded frame without waiting for its VLM result."""
 
         self._ensure_open()
-        self._latest_frames[frame.video_id] = frame
         return await self._observer.submit(frame)
+
+    async def prepare_strict_window(
+        self,
+        video_ids: Sequence[str],
+    ) -> VisualTargetWindow | None:
+        """Freeze and promote the newest requested five-frame window."""
+
+        self._ensure_open()
+        selected: tuple[VideoFrame, ...] = ()
+        for video_id in reversed(tuple(video_ids)):
+            frames = tuple(
+                self._video_context_store.get_recent_frames(
+                    video_id,
+                    limit=REALTIME_VISUAL_TARGET_WINDOW_SIZE,
+                )
+            )
+            if frames:
+                selected = frames
+                break
+        if not selected:
+            return None
+        _validate_target_window(selected)
+        await self._observer.promote_window(selected)
+        return VisualTargetWindow(
+            window_id=f"visual-window-{uuid4().hex}",
+            video_id=selected[-1].video_id,
+            start_sequence=selected[0].sequence,
+            target_sequence=selected[-1].sequence,
+            sequences=tuple(frame.sequence for frame in selected),
+        )
 
     async def prepare_strict_target(
         self,
@@ -111,19 +157,10 @@ class VisualPerceptionSession:
     ) -> VisualTarget | None:
         """Freeze and promote the newest requested frame for strict inspection."""
 
-        self._ensure_open()
-        frame = next(
-            (
-                self._latest_frames[video_id]
-                for video_id in reversed(tuple(video_ids))
-                if video_id in self._latest_frames
-            ),
-            None,
-        )
-        if frame is None:
+        window = await self.prepare_strict_window(video_ids)
+        if window is None:
             return None
-        await self._observer.promote(frame)
-        return VisualTarget(video_id=frame.video_id, sequence=frame.sequence)
+        return VisualTarget(video_id=window.video_id, sequence=window.target_sequence)
 
     async def aclose(self) -> None:
         if self._closed:
@@ -132,7 +169,6 @@ class VisualPerceptionSession:
         try:
             await self._observer.close()
         finally:
-            self._latest_frames.clear()
             self._release(self)
 
     def _ensure_open(self) -> None:
@@ -206,6 +242,7 @@ class VisualPerceptionModule:
             raise ValueError("visual perception identity must be non-empty")
         handle = VisualPerceptionSession(
             observer=self._observer_factory(user_id, session_id),
+            video_context_store=self.video_context_store,
             release=self._sessions.discard,
         )
         self._sessions.add(handle)
@@ -320,3 +357,14 @@ def _create_process_vision_client(
     ):
         return None
     return create_vision_understanding_client(config)
+
+
+def _validate_target_window(frames: Sequence[VideoFrame]) -> None:
+    video_id = frames[0].video_id
+    previous_sequence: int | None = None
+    for frame in frames:
+        if frame.video_id != video_id:
+            raise ValueError("visual target window must contain one video id")
+        if previous_sequence is not None and frame.sequence <= previous_sequence:
+            raise ValueError("visual target window sequences must be strictly increasing")
+        previous_sequence = frame.sequence
