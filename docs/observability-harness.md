@@ -11,7 +11,7 @@
 | Does not own | Graph 路由、Agent Server/media wire、Provider 语义、评测 Dataset 与发布决策 |
 | 源码与 schema 入口 | `src/assistant_agent/native_agent/`、`src/assistant_agent/observability/` |
 | 验证入口 | `docs/authority.toml` 中 `runtime-observability.verification`；核心不变量 `OBS-001` |
-| 相邻 authority | [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md)、[`observability-diagnosis-runbook.md`](observability-diagnosis-runbook.md)、[`../evals/README.md`](../evals/README.md) |
+| 相邻 authority | [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md)、[`visual-perception-architecture.md`](visual-perception-architecture.md)、[`observability-diagnosis-runbook.md`](observability-diagnosis-runbook.md)、[`../evals/README.md`](../evals/README.md) |
 
 ## 生产 tracing
 
@@ -25,17 +25,14 @@ Agent Server 的原生 LangChain/LangGraph callback tracing 由标准 `LANGSMITH
 client 或发出网络请求。Provider 原始 payload、Authorization、Memory 正文和媒体正文不得进入 metadata；
 Tool artifact 和 message content 是否记录遵循 LangSmith/部署脱敏配置。
 
-### fast 路由与实时视觉定位
+### fast 路由与视觉 trace 定位
 
 `route_execution_mode()` 是原生 conditional edge，其 trace input/output 显示 `fast` 只表示本轮选择了
 `fast_agent` 分支，不是 LLM 或 VLM 的输入输出被改写成字符串 `fast`。诊断视觉调用时应定位
 `vlm.infer` generation，而不是把 route span 当作 generation。
 
-每个成功解码 frame 到达时产生独立 `vlm.infer` span。此时 chat window 尚不存在，因此安全 attributes 只包含
-`frame_sequence`、`window_role=background` 与 `provider_connection_isolated=true`，不伪造
-`visual_window_id/window_start_sequence/target_sequence`，也不包含 frame path、JPEG、VLM summary 或 Provider
-原始响应。chat 后的 `visual.target_barrier.started/finished` 才记录 window ID、起止序号、等待时长、
-ready/missing 数量和目标终态；context 帧晚完成不能延长 target barrier span。
+视觉 span 的父子关系、安全字段和目标帧 barrier 语义由视觉 authority 定义；本 authority 只要求它们继续
+使用 LangSmith native tracing、遵守全局脱敏边界，并能从 route span 导航到真正的 `vlm.infer` generation。
 
 ## 旧本地观测兼容
 

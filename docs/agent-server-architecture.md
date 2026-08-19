@@ -11,7 +11,7 @@
 | Does not own | Assistant 节点推理、Tool schema、Memory 后端语义、Media-Agent wire 字段 |
 | 源码与 schema 入口 | `langgraph.json`、`src/assistant_agent/agent_server/` |
 | 验证入口 | `docs/authority.toml` 中 `agent-server.verification` |
-| 相邻 authority | 媒体 wire 见 [`media-agent-service-websocket.md`](media-agent-service-websocket.md)；运行图见 [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md) |
+| 相邻 authority | 媒体 wire 见 [`media-agent-service-websocket.md`](media-agent-service-websocket.md)；运行图见 [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md)；视觉流水线见 [`visual-perception-architecture.md`](visual-perception-architecture.md) |
 
 ## 生产 Graph 入口
 
@@ -40,8 +40,8 @@ messages；它由 Assistant Graph 通过 Agent Server SDK 调度，不向普通�
 认证用户唯一来自 Agent Server 原生
 `Runtime.server_info.user.identity`；`AssistantRunContext` 不复制用户或租户身份，只保存有默认值的
 `entry_profile` 与 `media_capabilities`。执行模式不放入 context。
-chat 到达时冻结的 `window_id + window_start_sequence + target_sequence` 绑定在媒体入口生成的标准 video
-content block，模型不能提交。冻结只读取已保留的 sequence 边界，不启动或重放 VLM。
+媒体入口可在标准 video content block 中绑定视觉模块生成的可信目标边界，模型不能提交；目标边界与实时等待
+语义由视觉 authority 定义，父图只接收稳定字段。
 
 ## 资源模型与 composition
 
@@ -53,15 +53,15 @@ content block，模型不能提交。冻结只读取已保留的 sequence 边界
 | media connection | custom route | 一次 WebSocket 传输连接，不是 thread |
 | delivery ID | custom route/outbox | 媒体 ACK 关联，不是 run 或 checkpoint |
 | proactive delivery Store | custom route 与显式产品 publisher | 媒体连接 presence/claim/ACK；不是 LangGraph Store |
-| Visual Perception Module | Agent Server 进程资源 | VLM client、Realtime Observer、视觉语义 Store 与连接级观察句柄；不是 Graph Runtime |
+| Visual Perception Module | Agent Server 进程资源 | 视觉 authority 的进程级 owner；不是 Graph Runtime |
 
 Agent Server async factory 在每个 worker 进程首次取图时创建唯一 `AgentServerExecutionOwner`，持有标准
 `BaseChatModel` Provider adapter、静态本地 `BaseTool`、一次发现得到的官方 MCP tools、一个
 `MemoryBackend`、已编译但不绑定 checkpointer 的 `AssistantRootGraph` 与
 `AssistantMemoryExtractionGraph`；后续两个 graph 的 schema、history、state 与 run 取图全部复用同一 owner，
 不重复装配。LangMem 引用首次 factory 注入的进程 Store；custom-app
-lifespan 在进程 shutdown 时统一关闭 owner。进程级 `VisualPerceptionModule` 独立拥有视觉
-Provider、Observer 和语义 Store 生命周期；run-local Tool 只注入它的只读资源，不重复创建实时观察流水线。
+lifespan 在进程 shutdown 时统一关闭 owner。进程级 `VisualPerceptionModule` 的内部算法和资源边界由视觉
+authority 定义；run-local Tool 只借用其窄消费接口，不创建第二套视觉流水线。
 `http.app` 的 FastAPI lifespan 是该模块的进程 owner：API Server、queue worker 或独立 custom app 各自在
 本进程 shutdown 时关闭一次。graph factory、schema/history/state 请求和单个 run 只借用该模块，不参与
 关闭；媒体 WebSocket 只关闭自己创建的 `VisualPerceptionSession`。
@@ -134,7 +134,7 @@ custom route 只负责：
 - 关联 connection、vendor session、native thread/run、chat 与 delivery；
 - 使用公开 `langgraph_sdk` 创建 run、消费 resumable stream、join 与 cancel；
 - 从 terminal values 选择最新标准 `AIMessage` 并机械投影媒体响应；
-- 把每个解码帧提交给连接级视觉观察句柄并立即启动该帧独立 VLM，在 chat 到达时只冻结最近五帧边界；
+- 把解码帧提交给连接级视觉句柄，并把视觉模块返回的可信目标边界投影到 chat；
 - 按 native thread 从主动投递 Store 串行 claim，处理 ACK、lease 与重连补投；
 - 承载不执行 Graph 的 callback route。
 
@@ -153,10 +153,8 @@ durable 行只有匹配 ACK 才完成，断线或超时释放为
 queued，ephemeral 离线时直接 skipped。当前 SQLite 实现面向单实例或共享受控卷，不宣称多主机一致性。
 
 H.264 解码与 3D callback 属于媒体边缘资源。解码后的有界 JPEG 引用保存在 SQLite frame index，Graph State
-只携带稳定引用。每个解码帧提交给 `VisualPerceptionModule` 内部的 `RealtimeVideoObserver` 后立即创建独立
-VLM task；semantic keyframe/embedding/reminder 是并行派生支路，不控制逐帧 VLM。后台 VLM 文本写入视觉语义
-Store。需要严格当前画面的 run 通过 video block 的可信窗口边界等待 exact target 的有界结果，其他 Agent
-Server run 不依赖该等待。3D callback 只向当前在线连接发布中性 artifact，不启动第二次 Graph。
+只携带稳定引用。解码帧提交后的并发观察、关键帧、文本发布和目标帧等待全部由视觉 authority 负责；Agent
+Server 只传递稳定引用与可信目标边界。3D callback 只向当前在线连接发布中性 artifact，不启动第二次 Graph。
 
 ## 验证
 

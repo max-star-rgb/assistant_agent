@@ -21,6 +21,10 @@
 manifest 只用于 coding agent 选择工程文档，不进入产品 Runtime，不得用于判断终端用户意图、预选 Tool
 或选择 workflow。
 
+涉及实时视频帧、逐帧 VLM、semantic keyframe、SigLIP2、视觉提醒、视觉时间线或历史找物时，先读
+`docs/visual-perception-architecture.md`。视觉算法与 LangGraph、自研 Runtime 或入口框架解耦；框架迁移只能
+调整接入与消费边界，不得绕过、串行化或删除该 authority 定义的并行视觉流水线。
+
 - 遇到 Provider 相关实现/调试时，优先联网核对官方文档，重点包括 DeepSeek tool calls（`https://api-docs.deepseek.com/zh-cn/guides/tool_calls`）、阿里百炼模型文档（`https://bailian.console.aliyun.com/cn-beijing/?spm=a2c4g.11186623.0.0.60393ba2UI7e5t&tab=doc#/doc/?type=model&url=2963787`）和火山引擎模型文档（`https://docs.volcengine.com/docs/82379/1099455?lang=zh`）。
 
 `docs/development/**` 和 `docs/superpowers/**` 是开发阶段/历史材料，不作为当前规则或默认权威；`docs/interview/**` 只用于面试资料。只有用户点名、运行历史 runbook 或做对应历史/面试任务时才读。

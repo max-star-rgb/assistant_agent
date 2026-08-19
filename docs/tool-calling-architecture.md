@@ -11,7 +11,7 @@
 | Does not own | 父图路由、Memory、Provider HTTP wire、媒体 WebSocket、后台感知和 durable 状态机 |
 | 源码与 schema 入口 | `src/assistant_agent/native_agent/tools.py`、`src/assistant_agent/tools/`、`src/assistant_agent/mcp/` |
 | 验证入口 | `docs/authority.toml` 中 `tool-calling.verification` |
-| 相邻 authority | Runtime 见 [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md)；Memory 见 [`memory-service-architecture.md`](memory-service-architecture.md) |
+| 相邻 authority | Runtime 见 [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md)；Memory 见 [`memory-service-architecture.md`](memory-service-architecture.md)；视觉能力见 [`visual-perception-architecture.md`](visual-perception-architecture.md) |
 
 ## 生产边界
 
@@ -51,9 +51,8 @@ WebSocket 已成功完成 `callType=VIDEO` 的 control 握手；`visual_memory_s
   抛出 `ToolException`；
 - metadata 至少声明 `effect=read|generate|write|dangerous` 与 `source=builtin|mcp`。
 
-`uploaded_media_inspect`、`live_view_inspect` 和 `visual_memory_search` 都由原生函数 Tool 工厂构造；复杂逻辑
-保留在普通 service 对象中，不再通过视觉 Tool 之间的 Python 继承共享字段。上传图片与用户主动上传视频
-复用 `VisualPerceptionModule` 持有的进程级 VLM client；摄像头实时视频仍由后台视觉观察链处理。
+`uploaded_media_inspect`、`live_view_inspect` 和 `visual_memory_search` 都由原生函数 Tool 工厂构造；Tool
+层只负责标准执行与可信运行事实注入，视觉算法和资源复用全部由视觉 authority 负责。
 
 只读 Tool 由 `ToolRetryMiddleware` 做有界重试，重试耗尽后产生 error `ToolMessage`；非 read 内建 Tool
 使用官方 `BaseTool.handle_tool_error` 把 native boundary 抛出的 `ToolException` 转为同类 error

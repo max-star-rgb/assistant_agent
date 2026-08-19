@@ -11,7 +11,7 @@ Last updated: 2026-08-19
 | Does not own | Agent Server thread/run/checkpoint、Assistant 推理、Tool/Memory 策略和媒体服务内部实现 |
 | 源码与 schema 入口 | `src/assistant_agent/agent_server/media_*.py`、`src/assistant_agent/api/rendering_3d_callback.py` |
 | 验证入口 | `docs/authority.toml` 中 `media-agent-protocol.verification` |
-| 相邻 authority | Agent Server 部署见 [`agent-server-architecture.md`](agent-server-architecture.md)；视觉能力见 [`multimodal-embedding-architecture.md`](multimodal-embedding-architecture.md) |
+| 相邻 authority | Agent Server 部署见 [`agent-server-architecture.md`](agent-server-architecture.md)；视觉能力见 [`visual-perception-architecture.md`](visual-perception-architecture.md) |
 
 ## 1. 连接与 envelope
 
@@ -166,20 +166,10 @@ frame，在 media edge 的工作线程中解码为有界 JPEG window，Graph 输
 模型看到 `live_view_inspect`；当当前 `user/thread/as-of sequence` 已产生可检索视觉文本时，才进一步暴露
 `visual_memory_search`。这两项条件暴露不依赖 Skill 加载。
 
-解码帧由连接级句柄提交给 Agent Server 内部 `VisualPerceptionModule`；raw window 固定保留最近五个成功
-解码帧。每个帧到达时，`RealtimeVideoObserver` 立即为该 sequence 创建独立
-`RealtimeVisualObservationService`、client、adapter 与 Provider WebSocket task，完成后发布逐帧视觉文本。
-semantic keyframe 支路继续执行固定频率准入、image embedding、`SemanticKeyframeSelector`、latest-wins 和
-视觉提醒，但不再决定是否调用 VLM，也不会重复调用 VLM。
-
-chat 到达时，媒体入口只冻结当时最近五帧的边界；例如 target 为 8 时冻结 4–8。它把可信 `window_id`、
-`window_start_sequence=4` 和 `target_sequence=8` 绑定到标准 live-camera video content block，不传 JPEG 或 task。
-chat 不 promotion、不启动或重放任何帧的 VLM。此时 4–6 可能已经发布文本，7 和 8 继续使用帧到达时创建的
-独立 VLM task 并行执行。`live_view_inspect` 最多
-4 秒等待 exact target，target 完成即返回，不等待较早帧或 observer idle。若 7 未完成而 8 已完成，Tool 可以
-立即返回 4、5、6、8，并结构化标记 7 缺失；9 及之后和 3 及之前均不能进入本轮结果。target 超时或失败时
-返回 `usable_visual_text=false`，不得把 7 或更旧文本当作当前画面。晚到的 context 结果只进入历史语义存储，
-不修改已经发送的回答。
+媒体 wire 只负责把每个成功解码帧提交给连接级视觉句柄。chat 时，它把视觉模块冻结得到的可信
+`window_id`、`window_start_sequence` 和 `target_sequence` 绑定到标准 `source=live_camera` video content
+block，不传 JPEG、Provider client 或 task。逐帧并发、semantic keyframe、目标帧等待、ready/missing 结果和
+晚到帧处理均以 [`visual-perception-architecture.md`](visual-perception-architecture.md) 为唯一权威。
 
 保留 callback：
 
@@ -222,11 +212,8 @@ producer。citation、生成图片 detail、H.264 显式
 兼容读取 `download_urls` / `output_ref`。随后读取有界本地图片，并继续按本协议投影为
 `intentResult.detail[].type=IMAGE` 的 Base64 正文。Studio 当前只显示最终文本，不承诺渲染 Tool artifact。
 
-视觉资源按进程与连接分层：Agent Server custom FastAPI lifespan 拥有进程级
-`VisualPerceptionModule`，仅在进程 shutdown 时关闭；每个媒体 WebSocket 只拥有并关闭自己的
-`VisualPerceptionSession`、observer 与 lease，不得关闭或替换进程模块。临时 graph factory 与
-schema/history/state 请求同样不拥有该进程资源。用户上传媒体使用的 VLM client 同样由该进程模块持有并
-复用，不随是否存在实时视频连接而创建或销毁。
+媒体连接只关闭自己取得的视觉 session handle，不关闭 Agent Server 进程级视觉 owner；完整资源所有权和
+清理规则见视觉 authority 与 Agent Server authority。
 
 ## 8. 验证
 

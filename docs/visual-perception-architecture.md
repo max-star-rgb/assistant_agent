@@ -1,4 +1,4 @@
-# 统一多模态 Embedding 架构
+# 实时视觉感知与语义关键帧架构
 
 Last updated: 2026-08-19
 
@@ -6,21 +6,22 @@ Last updated: 2026-08-19
 
 | 字段 | 内容 |
 | --- | --- |
-| 定位 | 统一 image/text embedding 与短期视觉语义能力的当前权威 |
-| Owns | SigLIP2、semantic keyframe、视觉时间线、Qdrant 检索、历史找物与连接级视觉提醒 |
-| Does not own | Media-Agent wire、通用 Tool 执行链、长期记忆、VLM Provider 私有协议 |
+| 定位 | 与 Agent 运行框架解耦的视觉感知、逐帧文本化和语义关键帧算法权威 |
+| Owns | 逐帧并行 VLM、目标帧实时屏障、SigLIP2、semantic keyframe、视觉时间线、Qdrant 检索、历史找物、连接级视觉提醒与视觉 trace 语义 |
+| Does not own | LangGraph/Agent Server 生命周期、Media-Agent wire、通用 Tool 执行链、长期记忆、VLM Provider 私有协议 |
 | 源码与 schema 入口 | `src/assistant_agent/media/visual_perception/`、`media/embedding/`、`media/video/`、`tools/plugins/builtin/media_inspection/` |
-| 验证入口 | `docs/authority.toml` 中 `multimodal-embedding.verification` |
-| 相邻 authority | 媒体协议见 [`media-agent-service-websocket.md`](media-agent-service-websocket.md)；Tool 见 [`tool-calling-architecture.md`](tool-calling-architecture.md) |
+| 验证入口 | `docs/authority.toml` 中 `visual-perception.verification` |
+| 相邻 authority | 媒体 wire 见 [`media-agent-service-websocket.md`](media-agent-service-websocket.md)；Tool 集成见 [`tool-calling-architecture.md`](tool-calling-architecture.md)；部署资源见 [`agent-server-architecture.md`](agent-server-architecture.md) |
 
-本文档是 `assistant_agent` 当前 image/text embedding 平台、session 短期视觉时间线、历史找物和连接级视觉提醒能力的
-事实权威。媒体接入与关键帧生命周期见 `media-agent-service-websocket.md`，显式 Tool 治理见
-`tool-calling-architecture.md`；源码和测试与本文冲突时，以源码和测试为准并回补本文。
+本文档是 `assistant_agent` 当前视觉能力的唯一事实权威。视觉流水线不依赖 LangGraph、自研 Runtime 或具体
+Agent 编排框架：它接收已解码帧，独立完成逐帧并行 VLM、语义关键帧、提醒和视觉文本存储，再通过窄接口供
+Agent Tool 消费。框架迁移只能更换接入 adapter，不能重写、串行化或删除这里定义的视觉算法。媒体 wire、
+Agent Server 资源装配和标准 Tool 执行分别由相邻 authority 负责；源码和测试与本文冲突时，以源码和测试为准并回补本文。
 
 ## Visual Perception Module 边界
 
-`VisualPerceptionModule` 是 Agent Server 内部的进程级视觉能力 owner，不是平级网络服务，也不是第二套
-Agent Runtime。它统一拥有 `VisionUnderstandingClient`/Provider adapter、`RealtimeVideoObserver`、
+`VisualPerceptionModule` 是进程级视觉能力 owner；当前由 Agent Server lifespan 挂载，但公开契约不依赖
+Agent Server 或 LangGraph，也不是第二套 Agent Runtime。它统一拥有 `VisionUnderstandingClient`/Provider adapter、`RealtimeVideoObserver`、
 embedding coordinator、`SessionVisualSemanticStorePool`、视觉检索派生索引和连接级 session handle。
 `RealtimeVideoObserver` 是模块内部的实时分析流水线，不与 Tool 或模块平级。
 
@@ -177,6 +178,18 @@ Store 自身的 retention 继续提供更大的有界历史；`visual_memory_sea
 当前 Agent-Service realtime observer 不构造、不调用它们，也不把 revisioned summary 或旧 record 文本
 送入 VLM。
 
+## 视觉观测与 trace 契约
+
+每个成功解码 frame 到达时产生独立 `vision.observation -> vlm.infer` 路径。帧到达时 chat window 尚不存在，
+因此 span 的安全 attributes 只包含 `frame_sequence`、`window_role=background` 与
+`provider_connection_isolated=true`，不得伪造 `visual_window_id/window_start_sequence/target_sequence`，也不
+记录 frame path、JPEG、VLM summary 或 Provider 原始响应。
+
+chat 冻结目标边界后，`visual.target_barrier.started/finished` 才记录 window ID、起止序号、等待时长、
+ready/missing 数量和目标终态。context 帧晚完成不能延长 target barrier span。LangGraph conditional edge 的
+input/output 出现 `fast` 只代表 Agent 路由选择，视觉诊断必须定位真正的 `vlm.infer` generation；视觉流水线
+本身不读取或依赖该路由结果。
+
 ## 文本、ASR 与跨模态消费者
 
 平台不直接处理语音。音频在上游转为稳定文本后，与键盘输入一样成为 `TextObservation`；`source`
@@ -264,10 +277,13 @@ session evidence 不是长期记忆，不写 Mem0，也不跨 user/session 搜�
 
 ```bash
 MULTIMODAL_AGENT_PROVIDER_MODE=mock /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  -m pytest -q tests/tdd/qdrant-visual-memory-search
+  -m pytest -q tests/tdd/realtime-visual-target-window
 
 MULTIMODAL_AGENT_PROVIDER_MODE=mock /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  -m pytest -q tests/tdd/unified-siglip2
+  scripts/run_system_realtime_visual_target_window_eval.py --dry-run
+
+MULTIMODAL_AGENT_PROVIDER_MODE=mock /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_system_multimodal_embedding_eval.py --dry-run
 
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
   scripts/run_system_multimodal_embedding_eval.py --dry-run

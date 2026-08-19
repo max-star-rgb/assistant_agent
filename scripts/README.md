@@ -154,7 +154,7 @@ CUDA 12.8 对应的 `1.21 <= version < 1.27`，启动时还会验证实际 sessi
 Runtime 使用 `onnx` 解析图中真实 external-data 引用并核对 manifest；`torch`、`transformers`
 和 `onnxscript` 只属于模型准备环境，不是线上 Runtime 依赖。
 旧 provider/model-dir 环境变量是迁移 alias，计划不早于 `0.3.0` 删除。完整平台边界见
-`docs/multimodal-embedding-architecture.md`。
+`docs/visual-perception-architecture.md`。
 
 ### Website guidance local verification
 

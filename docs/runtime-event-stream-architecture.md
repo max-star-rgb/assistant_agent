@@ -11,7 +11,7 @@
 | Does not own | Agent Server HTTP 生命周期、Tool schema、Memory 后端、媒体 wire、Provider 凭据 |
 | 源码与 schema 入口 | `src/assistant_agent/native_agent/` |
 | 验证入口 | `docs/authority.toml` 中 `runtime-event-stream.verification` |
-| 相邻 authority | Agent Server 见 [`agent-server-architecture.md`](agent-server-architecture.md)；Tool 见 [`tool-calling-architecture.md`](tool-calling-architecture.md) |
+| 相邻 authority | Agent Server 见 [`agent-server-architecture.md`](agent-server-architecture.md)；Tool 见 [`tool-calling-architecture.md`](tool-calling-architecture.md)；视觉能力见 [`visual-perception-architecture.md`](visual-perception-architecture.md) |
 
 ## 生产运行图
 
@@ -69,11 +69,9 @@ planning 的 planner、worker 与 finalizer 都读取父图传入的同一份可
 只读取窄文本 `content`，程序消费者从 `artifact.images[]` 读取受管图片引用。最终 `AIMessage` 保持模型原始
 回答，因此 Studio 当前只显示生成成功文本，不承诺图片预览；媒体 WebSocket 在入口适配层完成自己的 wire 投影。
 
-实时摄像头 chat 仍只通过最新标准 `HumanMessage` 的 `source=live_camera` video block 进入父图。媒体入口可在
-该 block 中投影可信 `window_id`、`window_start_sequence` 与 `target_sequence`；JPEG、Provider client、task
-和 lease 不进入 state。fast Agent 的 `live_view_inspect` 经标准 ToolNode 有界等待 exact target，只消费冻结
-sequence 范围内当时已完成的文本。context 帧未完成不阻塞 target，future sequence 不得进入本轮 Tool 结果；
-晚到结果只更新外围 session visual store，不回写已完成 checkpoint 或 message。
+实时摄像头 chat 只通过最新标准 `HumanMessage` 的 `source=live_camera` video block 进入父图；其中可以携带
+视觉模块生成的可信目标边界，但 JPEG、Provider client、task 和 lease 不进入 state。父图只通过标准 ToolNode
+消费视觉结果，逐帧并发、等待和晚到结果语义见视觉 authority。
 
 已完成节点直接从 worker result 推导，不保存平行 completed-ID channel，也没有项目自定义 result/artifact
 reducer。Provider/Tool client、Memory backend、投递 Store、身份对象和 callback 不写入 checkpoint。旧

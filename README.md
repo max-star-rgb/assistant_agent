@@ -17,7 +17,7 @@ Core project docs:
 - Context engineering architecture: [docs/context_engineering_status.md](docs/context_engineering_status.md)
 - Multi-agent routing: [docs/agent-communication-routing.md](docs/agent-communication-routing.md)
 - Media-Agent WebSocket contract: [docs/media-agent-service-websocket.md](docs/media-agent-service-websocket.md)
-- 统一 SigLIP2 image/text embedding、短期视觉回忆与历史找物: [docs/multimodal-embedding-architecture.md](docs/multimodal-embedding-architecture.md)
+- 实时逐帧 VLM、语义关键帧、视觉提醒与历史找物: [docs/visual-perception-architecture.md](docs/visual-perception-architecture.md)
 - Core pytest、临时 TDD 与 incubating 边界: [tests/README.md](tests/README.md)
 - System eval、原生 evaluation target 与当前评测缺口: [evals/README.md](evals/README.md)
 
