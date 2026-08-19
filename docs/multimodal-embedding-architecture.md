@@ -35,7 +35,7 @@ exact sequence 时旧记录只能用于状态诊断，Tool 返回 `usable_visual
 
 当前用户能力包括：
 
-- 会话内短期视觉回忆：把选中的语义关键帧交给 VLM 文本化，并在 session 内保留成功结果；
+- 会话内短期视觉回忆：把每个成功解码帧立即交给独立 VLM 文本化，并在 session 内保留成功结果；
 - 历史找物：在可信 user/session/as-of/time 边界内读取 Store 保留的最多 256 条带时间戳 VLM 文本，
   使用本地 Qdrant 的 multilingual BM25 与 `BAAI/bge-small-zh-v1.5` dense vector 做 Weighted RRF，
   BM25:dense 权重为 `3:1`、两路各 prefetch 32 条、返回最多 12 条。Tool 不在查询阶段再次调用 VLM，
@@ -66,16 +66,16 @@ ImageObservation / TextObservation
 
 Realtime frame
         -> VisualPerceptionModule / connection session
-        -> 5 FPS fixed admission
-        -> one image embedding per admitted frame
-        -> SemanticKeyframeSelector
-        -> selected image EmbeddingEvent
-             ├─ VisualReminderManager（只比较 pending target，命中后即时 chatResponse）
-             └─ current JPEG（单帧、无视觉历史）
-                  -> parallel observation service task per selected frame
-                  -> VLM current-frame summary text
-                  -> VisualSemanticRecord（带时间戳的单帧文本）
-                  -> bounded timestamped text timeline + Qdrant derived index
+        ├─ current JPEG（每个成功解码帧、单帧、无视觉历史）
+        │    -> frame-owned observation service/client/WebSocket task
+        │    -> VLM current-frame summary text
+        │    -> VisualSemanticRecord（带时间戳的逐帧文本）
+        │    -> bounded timestamped text timeline + Qdrant derived index
+        └─ 5 FPS fixed semantic admission
+             -> one image embedding per admitted frame
+             -> SemanticKeyframeSelector + latest-wins pending
+             -> selected image EmbeddingEvent
+             -> VisualReminderManager（只比较 pending target，命中后即时 chatResponse）
         -> SessionVisualSemanticStore
              ├─ live_view_inspect（冻结窗口内的 ready subset）
              └─ visual_memory_search（最多 256 条可信候选）
@@ -135,34 +135,36 @@ embedding；不再运行像素差、灰度指纹、SSIM、结构阈值或 combin
 `REALTIME_KEYFRAME_SEMANTIC_PROBE_FPS` 仅作为 `REALTIME_SEMANTIC_INPUT_FPS` 的迁移 alias，显式配置
 旧 structural/combined 参数会启动失败，防止部署误以为像素路径仍然生效。
 
-后台自适应流水线最多一个 embedding in-flight 和一个 pending，pending 使用 latest-wins；因此不会积压，
-但高于处理能力的准入帧可以被更新帧替换。chat 驱动的 strict window 不进入该 pending 队列：它直接把提问
-时最近五个成功解码帧交给 observer，不能被后台帧替换。Selector 只根据当前 image embedding 与上一已选关键帧的 cosine distance、首次事件、交互提升
-和最长 10 秒间隔选帧。semantic change 比较当前帧与上一已选 VLM 关键帧，使缓慢但累计明显的场景
-变化仍能产生新记录；Provider 失败时只允许交互目标或最长间隔走降级 VLM，不伪造 semantic score。
+semantic 自适应支路最多一个 embedding in-flight 和一个 pending，pending 使用 latest-wins；因此不会积压，
+但高于处理能力的准入帧可以被更新帧替换。该支路不控制逐帧 VLM：每个成功解码帧在进入 semantic sampler
+之前已经创建自己的 VLM task。Selector 只根据当前 image embedding 与上一已选语义关键帧的 cosine
+distance、首次事件、交互提升和最长 10 秒间隔选帧；缓慢但累计明显的场景变化仍能产生新的 selected event。
+embedding Provider 失败时只允许交互目标或最长间隔形成无 embedding event 的降级选择，不伪造 semantic score。
 
 提醒匹配只发生在 Selector 最终选中的帧上。`SemanticFramePipeline` 把同一次 image inference 产生的
-`EmbeddingEvent` 交给 `RealtimeVideoObserver`，observer 不再计算 image embedding。embedding 失败后
-因 interactive/max interval 降级选出的关键帧没有 event，因此跳过提醒匹配，但原有 VLM 流程仍可继续。
+`EmbeddingEvent` 交给 `RealtimeVideoObserver`；observer 用它执行 reminder comparison 后释放 semantic
+支路的临时证据，不再次调用 VLM。embedding 失败后因 interactive/max interval 降级选出的关键帧没有 event，
+因此跳过提醒匹配；对应帧的独立 VLM 不受影响。
 
 ## 单帧文本时间线
 
-后台 observation service 对自适应选中的关键帧以及 strict window 的每一帧调用 VLM。每次请求只有当前一张 JPEG，`memory_context`
+后台 observation service 对每个成功解码帧立即调用 VLM。每次请求只有当前一张 JPEG，`memory_context`
 固定为空；提示词要求模型只描述当前图片并返回非空 `summary`。每次 observation 新建独立 Qwen
 WebSocket conversation；成功文本先发布到时间线，再在该帧独立清理阶段关闭连接，失败或不完整响应也会关闭，因此连续性不依赖 Provider 会话，也不由
 主 LLM 选择图片窗口。
 
-选帧后的每个关键帧立即建立独立 asyncio task，并为该 task 新建窄 `RealtimeVisualObservationService`、
+每个解码帧提交时立即建立独立 asyncio task，并为该 task 新建窄 `RealtimeVisualObservationService`、
 client、adapter 和 Provider WebSocket；它不构造 AgentState、ToolRegistry 或 ToolExecutor。不同 sequence
 并行执行，不共享可变 Provider 状态，也没有 observer 级
-one-inflight/one-pending 队列。较新的关键帧可以先完成并发布；较早任务后续成功时只补入时间线，不回退
-rolling latest snapshot。SigLIP2 选帧流水线仍保留一个执行中和一个 latest-wins pending，避免平时对所有输入帧
-都调用 embedding/VLM；该限制不适用于 chat 时冻结的五帧 strict window。
+one-inflight/one-pending 队列。较新的帧可以先完成并发布；较早任务后续成功时只补入时间线，不回退
+rolling latest snapshot。SigLIP2 选帧流水线仍保留一个执行中和一个 latest-wins pending，只限制
+image embedding/selector/reminder 派生支路，不限制、延迟或替代逐帧 VLM。
 
 连续性在 VLM 之后建立：每个成功结果成为带 `frame_sequence` 和 `captured_at_ms` 的
 `VisualSemanticRecord`，并保留产生该文本的 `source_vision_trace_id`、`source_vision_run_id` 和
-`source_vlm_span_id`。chat 到达 A 时刻时冻结最近五个成功解码帧；例如 target 为 8 时冻结 4–8，五帧分别
-使用独立 service/client/adapter/WebSocket 并行观察。`live_view_inspect` 只等待 exact target 8，完成即返回，
+`source_vlm_span_id`。chat 到达 A 时刻时只冻结最近五个成功解码帧的 sequence 边界；例如 target 为 8 时
+冻结 4–8，不 promotion、不补跑或重放 VLM。此时 4–6 可能已有文本，7 和 8 仍由各自在帧到达时启动的
+service/client/adapter/WebSocket 并行观察。`live_view_inspect` 只等待 exact target 8，完成即返回，
 不等待 4–7 或 observer idle。随后它只读取 `[window_start_sequence, target_sequence]` 内当时已完成的 ready
 subset；若 7 尚未完成，可立即返回 4、5、6、8 并标记 `missing_sequences=[7]`。未来帧和窗口前旧帧不能进入
 本次列表；target 失败或超时不得回退到 7。较早帧晚完成只补入历史，不修改已结束的 Graph run；

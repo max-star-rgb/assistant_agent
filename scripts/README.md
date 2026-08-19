@@ -114,7 +114,8 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   `.data/evals/system/multimodal_embedding/`，不保存向量、文本、图片内容或媒体路径。dry-run 还列出
   固定 5 FPS、latest-wins、纯语义选帧、VLM 文本索引和无 query-time VLM 的架构检查面；流水线行为
   由离线 pytest 验证。
-- `scripts/run_system_realtime_visual_target_window_eval.py`：验证 live camera chat 冻结的连续五帧窗口。默认
+- `scripts/run_system_realtime_visual_target_window_eval.py`：验证 live camera 每帧到达即启动独立 VLM、chat
+  只冻结连续五帧 sequence 边界的行为。默认
   `--dry-run` 不读取图片、不联网；真实运行要求 real Provider mode、完整 Qwen realtime vision 配置、
   `--allow-real-provider` 和 operator 提供的五张 sequence-named JPEG。五帧使用五个隔离 WebSocket client
   并行观察，Tool 只等待 exact target；artifact 只保存 sequence/status/latency/concurrency 和 trace/span ID。

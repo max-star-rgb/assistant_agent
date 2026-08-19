@@ -31,10 +31,10 @@ Tool artifact 和 message content 是否记录遵循 LangSmith/部署脱敏配�
 `fast_agent` 分支，不是 LLM 或 VLM 的输入输出被改写成字符串 `fast`。诊断视觉调用时应定位
 `vlm.infer` generation，而不是把 route span 当作 generation。
 
-严格实时视觉窗口为每个实际执行的 frame sequence 产生独立 `vlm.infer` span。安全 attributes 包含
-`visual_window_id`、`window_start_sequence`、`target_sequence`、`frame_sequence`、
-`window_role=target|context|background` 与 `provider_connection_isolated`，不包含 frame path、JPEG、
-VLM summary 或 Provider 原始响应。`visual.target_barrier.started/finished` 只记录目标序号、等待时长、
+每个成功解码 frame 到达时产生独立 `vlm.infer` span。此时 chat window 尚不存在，因此安全 attributes 只包含
+`frame_sequence`、`window_role=background` 与 `provider_connection_isolated=true`，不伪造
+`visual_window_id/window_start_sequence/target_sequence`，也不包含 frame path、JPEG、VLM summary 或 Provider
+原始响应。chat 后的 `visual.target_barrier.started/finished` 才记录 window ID、起止序号、等待时长、
 ready/missing 数量和目标终态；context 帧晚完成不能延长 target barrier span。
 
 ## 旧本地观测兼容

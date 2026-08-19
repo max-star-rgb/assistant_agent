@@ -1,7 +1,8 @@
 # Realtime visual target window system eval
 
-该专项验证实时视觉严格窗口的真实 Provider 行为：一次冻结连续五帧，每帧使用独立 Qwen realtime
-WebSocket client 并行执行，Tool 只等待 exact target；上下文帧缺失不会阻塞 target 已完成的回答。
+该专项验证实时视觉严格窗口的真实 Provider 行为：五个 frame submit 各自在到达时立即创建独立 Qwen
+realtime WebSocket client；随后 chat 只冻结连续五帧的 sequence 边界，Tool 只等待 exact target，不通过
+promotion 启动 VLM。上下文帧缺失不会阻塞 target 已完成的回答。
 
 默认 `--dry-run` 只检查门禁和输入形状，不加载图片、不建立网络连接。真实运行必须由 operator 提供恰好五张
 以十进制 sequence 命名的本地 `.jpg` / `.jpeg`，同时显式设置

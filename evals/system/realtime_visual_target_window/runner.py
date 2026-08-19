@@ -168,14 +168,10 @@ async def _run_window(
             memory_store=memory_store,
             semantic_store_pool=_SingleSemanticStorePool(semantic_store),
         )
-        tool_started_ns = perf_counter_ns()
         try:
-            await observer.promote_window(
-                frames,
-                window_id=window_id,
-                window_start_sequence=start_sequence,
-                target_sequence=target_sequence,
-            )
+            for frame in frames:
+                await observer.submit(frame)
+            tool_started_ns = perf_counter_ns()
             tool_result = await asyncio.to_thread(
                 branch.execute,
                 VideoUnderstandingRequest(video_ref=video_id),
