@@ -25,7 +25,8 @@ class ImageGenerationToolPlugin:
                     adapter=LocalFixtureImageGenerationAdapter(
                         DEVELOPMENT_IMAGE_FIXTURE_ID,
                         artifact_dir=GENERATED_ARTIFACT_DIR,
-                    )
+                    ),
+                    artifact_base_url=context.config.artifact_base_url,
                 )
             ]
         if not context.mock_mode and not image_generation_provider_ready(
@@ -33,7 +34,10 @@ class ImageGenerationToolPlugin:
         ):
             return []
         return [
-            ImageGenerationTool(adapter=create_image_generation_adapter(context.config))
+            ImageGenerationTool(
+                adapter=create_image_generation_adapter(context.config),
+                artifact_base_url=context.config.artifact_base_url,
+            )
         ]
 
 

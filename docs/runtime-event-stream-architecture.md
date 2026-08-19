@@ -23,8 +23,7 @@ AssistantRootGraph
   -> memory_recall
   -> execution_router
        fast     -> AssistantFastAgent --------+
-       planning -> AssistantPlanningGraph     |
-  -> project_generated_images <---------------+
+       planning -> AssistantPlanningGraph ----+
   -> refresh_memory_extraction
   -> END
 ```
@@ -65,10 +64,9 @@ fast agent 子图才增加由成功 `load_skill` 标准 Tool 结果产生的 `ac
 并在 `Send` 派发时从直接依赖结果派生窄 `dependency_results` worker 输入。
 planning 的 planner、worker 与 finalizer 都读取父图传入的同一份可信事实快照，不在子图内重新采集。
 
-`project_generated_images` 只读取当前用户轮次中成功的标准 `image_generation` ToolMessage artifact，
-把受管 `/artifacts/generated/*` 引用确定性附加为最终 `AIMessage` 的标准 image content block，并在 text
-block 中补充指向同一受管 URL 的 Markdown 图片，兼容当前只渲染 AI 文本内容的 Studio Chat UI。
-它不让模型生成或改写 artifact URL，不复制图片正文，也不改变媒体 WebSocket 的 wire 投影。
+父图不投影或改写生成图片。`image_generation` 直接使用标准 `ToolMessage(content, artifact)`：模型下一次调用
+只读取窄文本 `content`，程序消费者从 `artifact.images[]` 读取受管图片引用。最终 `AIMessage` 保持模型原始
+回答，因此 Studio 当前只显示生成成功文本，不承诺图片预览；媒体 WebSocket 在入口适配层完成自己的 wire 投影。
 
 已完成节点直接从 worker result 推导，不保存平行 completed-ID channel，也没有项目自定义 result/artifact
 reducer。Provider/Tool client、Memory backend、投递 Store、身份对象和 callback 不写入 checkpoint。旧

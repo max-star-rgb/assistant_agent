@@ -41,11 +41,11 @@ from assistant_agent.media.video.video_context import SQLiteVideoContextStore
 from assistant_agent.media.video.video_context import VideoFrame
 from assistant_agent.media.visual_perception import get_visual_perception_module
 from assistant_agent.media.artifact_delivery import get_media_artifact_delivery_hub
-from assistant_agent.native_agent.generated_images import generated_image_output_refs
 from assistant_agent.proactive_delivery import SQLiteProactiveDeliveryStore
 from assistant_agent.runtime.generated_artifacts import (
     GENERATED_ARTIFACT_DIR,
     generated_artifact_file,
+    generated_image_output_refs,
 )
 
 

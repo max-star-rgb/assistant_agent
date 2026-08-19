@@ -137,10 +137,10 @@ custom route 只负责：
 - 按 native thread 从主动投递 Store 串行 claim，处理 ACK、lease 与重连补投；
 - 承载不执行 Graph 的 callback route。
 
-同一 custom app 还提供只读 `/artifacts/generated/{filename}`，供 Studio 等普通 Agent Server
-客户端加载最终 `AIMessage` 中的受管图片 URL。该路由只接受受管目录中的单层文件名，并限制文件大小和
-可识别图片 MIME；本地 Studio 默认 origin 为 `http://127.0.0.1:8089`，其他部署必须通过
-`ARTIFACT_BASE_URL` 配置客户端可访问的 origin。
+同一 custom app 还提供只读 `/artifacts/generated/{filename}`，供受信程序消费者读取图像 Tool 落盘后的
+受管图片。该路由只接受受管目录中的单层文件名，并限制文件大小和可识别图片 MIME；配置
+`ARTIFACT_BASE_URL` 时，图像 Tool 会在 `ToolMessage.artifact.images[].url` 中附带客户端可访问的绝对 URL。
+当前 Studio 不保证渲染 Tool artifact。
 
 它不读取 checkpoint，不执行 Tool/Memory，不构造旧 Runtime，也不翻译项目 run/error 状态机。SDK stream 使用
 messages/updates/values；短暂订阅断开后按 last event ID 调用 `threads.join_stream`。WebSocket 断开时

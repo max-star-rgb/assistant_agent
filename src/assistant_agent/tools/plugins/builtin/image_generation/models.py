@@ -8,6 +8,15 @@ from pydantic import BaseModel, Field, field_validator
 GenerationStatus = Literal["pending", "running", "succeeded", "failed"]
 
 
+class GeneratedImageArtifact(BaseModel):
+    """One backend-managed image exposed to programmatic consumers."""
+
+    image_id: str = Field(min_length=1)
+    output_ref: str = Field(min_length=1)
+    url: str | None = None
+    mime_type: str = Field(min_length=1)
+
+
 class ImageGenerationRequest(BaseModel):
     """图片生成工具和 Provider 适配器的输入。"""
 

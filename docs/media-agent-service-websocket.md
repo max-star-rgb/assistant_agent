@@ -188,11 +188,10 @@ durable task 生产者尚未接入该主动 Outbox；后台视觉 observer 只�
 producer。citation、生成图片 detail、H.264 显式
 视觉引用和在线 3D artifact 投影已支持。
 
-生成图片的公共 Graph 终态同时包含最终 `AIMessage` 的标准 image content block，以及指向相同受管 URL
-的 Markdown 图片文本；后者兼容当前只读取 AI 文本内容的 Studio Chat UI。媒体入口不直接转发这些
-展示内容，而是从同轮成功 `image_generation`
-ToolMessage artifact 提取受管 `output_ref`，读取有界本地图片并继续按本协议投影为
-`intentResult.detail[].type=IMAGE` 的 Base64 正文。
+生成图片使用标准 `ToolMessage(content, artifact)` 双通道，公共 Graph 不改写最终 `AIMessage`。媒体入口从
+当前用户轮次成功的 `image_generation` ToolMessage 中优先读取 `artifact.images[].output_ref`；对旧 checkpoint
+兼容读取 `download_urls` / `output_ref`。随后读取有界本地图片，并继续按本协议投影为
+`intentResult.detail[].type=IMAGE` 的 Base64 正文。Studio 当前只显示最终文本，不承诺渲染 Tool artifact。
 
 视觉资源按进程与连接分层：Agent Server custom FastAPI lifespan 拥有进程级
 `VisualPerceptionModule`，仅在进程 shutdown 时关闭；每个媒体 WebSocket 只拥有并关闭自己的

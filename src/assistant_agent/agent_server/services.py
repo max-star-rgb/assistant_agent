@@ -81,7 +81,6 @@ class AgentServerExecutionOwner:
             fast_agent=fast_agent,
             planning_graph=planning_graph,
             extraction_delay_seconds=config.memory_extraction_delay_seconds,
-            artifact_base_url=config.artifact_base_url,
         )
         memory_graph = build_memory_extraction_graph(backend=memory_backend)
         return cls(

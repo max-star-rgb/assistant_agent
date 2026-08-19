@@ -116,7 +116,6 @@ def test_parent_graph_has_fast_and_planning_native_branches(monkeypatch) -> None
             "execution_router",
             "fast_agent",
             "planning_graph",
-            "project_generated_images",
             "refresh_memory_extraction",
             "__end__",
         }

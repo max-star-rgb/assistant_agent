@@ -1,8 +1,10 @@
 """Image generation Tool backed by a Plugin-private adapter."""
 
+from pathlib import PurePosixPath
 from typing import Any
 
 from assistant_agent.tools.plugins.builtin.image_generation.models import (
+    GeneratedImageArtifact,
     ImageGenerationRequest,
     ImageGenerationResult,
 )
@@ -17,6 +19,8 @@ from assistant_agent.tools.plugins.builtin.image_generation.backend import (
     MockImageGenerationAdapter,
 )
 from assistant_agent.runtime.generated_artifacts import (
+    GENERATED_ARTIFACT_PUBLIC_PREFIX,
+    MAX_DELIVERED_IMAGE_COUNT,
     generated_artifact_payload,
     materialize_image_generation_result,
 )
@@ -63,9 +67,15 @@ class ImageGenerationTool(ToolBase):
         ),
     )
 
-    def __init__(self, adapter: ImageGenerationAdapter | None = None) -> None:
+    def __init__(
+        self,
+        adapter: ImageGenerationAdapter | None = None,
+        *,
+        artifact_base_url: str | None = None,
+    ) -> None:
         super().__init__()
         self.adapter = adapter or MockImageGenerationAdapter()
+        self.artifact_base_url = str(artifact_base_url or "").strip().rstrip("/")
 
     def _execute(
         self, input: ImageGenerationRequest, context: ToolContext
@@ -95,7 +105,10 @@ class ImageGenerationTool(ToolBase):
                 model_observation=_image_generation_model_observation(data),
                 contract=contract,
             )
-        data, contract = _image_generation_output_contract(result)
+        data, contract = _image_generation_output_contract(
+            result,
+            artifact_base_url=self.artifact_base_url,
+        )
         if result.status == "failed":
             return ToolResult(
                 tool_name=self.name,
@@ -121,20 +134,24 @@ class ImageGenerationTool(ToolBase):
 
 def _image_generation_output_contract(
     result: ImageGenerationResult,
+    *,
+    artifact_base_url: str,
 ) -> tuple[dict, CapabilityOutputContract]:
     data = {
         "task_id": result.task_id,
-        "image_url": result.image_url,
-        "image_urls": result.image_urls
-        or ([result.image_url] if result.image_url else []),
-        "download_url": result.download_url,
-        "download_urls": result.download_urls,
         "image_id": result.image_id,
         "request_id": result.request_id,
         "prompt": result.prompt,
         "prompt_used": result.prompt_used or result.prompt,
         "provider": result.provider,
         "model": result.model,
+        "images": [
+            image.model_dump(exclude_none=True)
+            for image in _generated_image_artifacts(
+                result,
+                artifact_base_url=artifact_base_url,
+            )
+        ],
     }
     public = build_text_capability_output(
         capability=IMAGE_GENERATION_CAPABILITY,
@@ -146,11 +163,59 @@ def _image_generation_output_contract(
     payload = {
         **data,
         "status": result.status,
-        "output_ref": result.output_ref or result.image_url,
         "errors": result.errors,
         "contract": public,
     }
     return payload, CapabilityOutputContract.model_validate(public)
+
+
+def _generated_image_artifacts(
+    result: ImageGenerationResult,
+    *,
+    artifact_base_url: str,
+) -> list[GeneratedImageArtifact]:
+    refs = result.download_urls or (
+        [result.download_url] if result.download_url else []
+    )
+    if not refs and result.output_ref:
+        refs = [result.output_ref]
+    images: list[GeneratedImageArtifact] = []
+    seen: set[str] = set()
+    for ref in refs:
+        if not _is_managed_generated_ref(ref) or ref in seen:
+            continue
+        path = PurePosixPath(ref)
+        images.append(
+            GeneratedImageArtifact(
+                image_id=path.stem,
+                output_ref=ref,
+                url=f"{artifact_base_url}{ref}" if artifact_base_url else None,
+                mime_type=_image_mime_type(path.suffix),
+            )
+        )
+        seen.add(ref)
+        if len(images) >= MAX_DELIVERED_IMAGE_COUNT:
+            break
+    return images
+
+
+def _is_managed_generated_ref(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    prefix = GENERATED_ARTIFACT_PUBLIC_PREFIX.rstrip("/") + "/"
+    if not value.startswith(prefix):
+        return False
+    filename = value.removeprefix(prefix)
+    return bool(filename) and PurePosixPath(filename).name == filename
+
+
+def _image_mime_type(suffix: str) -> str:
+    return {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+    }.get(suffix.lower(), "image/png")
 
 
 def _image_generation_error_contract(
