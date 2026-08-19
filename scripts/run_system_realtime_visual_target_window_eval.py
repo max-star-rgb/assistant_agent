@@ -14,12 +14,12 @@ for candidate in (ROOT, SRC):
     if str(candidate) not in sys.path:
         sys.path.insert(0, str(candidate))
 
-from evals.system.realtime_visual_target_window.runner import (
+from evals.system.realtime_visual_target_window.runner import (  # noqa: E402
     DEFAULT_OUTPUT_ROOT,
     RealtimeVisualEvalConfigurationError,
     dry_run_report,
     run_real_eval,
-)  # noqa: E402
+)
 
 
 def main() -> int:
