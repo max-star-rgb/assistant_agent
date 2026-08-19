@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Protocol, cast
 
@@ -92,8 +92,9 @@ class TokenizerJsonTokenCounter:
             convert_to_openai_messages(list(messages)),
         )
         if self._message_encoder is not None:
+            encoder_messages = _project_user_content_blocks_to_text(openai_messages)
             return self.count_text(
-                self._message_encoder(openai_messages, thinking_mode="chat")
+                self._message_encoder(encoder_messages, thinking_mode="chat")
             )
         serialized = json.dumps(
             {"messages": openai_messages},
@@ -156,6 +157,28 @@ def _without_none(value: Any) -> Any:
     if isinstance(value, list):
         return [_without_none(item) for item in value]
     return value
+
+
+def _project_user_content_blocks_to_text(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Project structured user content for a text-only message encoder."""
+
+    projected: list[dict[str, Any]] = []
+    for message in messages:
+        content = message.get("content")
+        if message.get("role") != "user" or not isinstance(content, list):
+            projected.append(message)
+            continue
+        text_parts = [
+            text
+            for block in content
+            if isinstance(block, Mapping)
+            and block.get("type") in {"text", "input_text", "output_text"}
+            and isinstance((text := block.get("text")), str)
+        ]
+        projected.append({**message, "content": "\n".join(text_parts)})
+    return projected
 
 
 def _load_deepseek_v4_encoder(

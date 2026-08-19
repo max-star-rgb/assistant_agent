@@ -105,6 +105,36 @@ def progress_response(*, session_id: str | None, chat: MediaChat, delivery_id: s
     )
 
 
+def streaming_chat_response(
+    *,
+    session_id: str | None,
+    chat: MediaChat,
+    delta: str,
+    sequence: int,
+) -> dict[str, Any]:
+    """Project one native assistant text delta onto the legacy media stream."""
+
+    return envelope(
+        message="chatResponse",
+        session_id=session_id,
+        body={
+            "message": {
+                "chatIndex": chat.chat_index,
+                "content": {
+                    "intentResult": {
+                        "description": delta,
+                        "status": "PROCESSING",
+                    }
+                },
+            },
+            "displayOnly": False,
+            "display_only": False,
+            "sequence": sequence,
+            "final": False,
+        },
+    )
+
+
 def success_chat_response(
     *,
     session_id: str | None,
@@ -113,13 +143,16 @@ def success_chat_response(
     delivery_id: str,
     capabilities: Mapping[str, bool] | None = None,
     artifact_dir: Path | None = None,
+    sequence: int = 1,
+    full_text: str | None = None,
 ) -> dict[str, Any]:
     text = str(response.get("message") or "")
+    authoritative_text = text if full_text is None else full_text
     intent_result: dict[str, Any] = {"description": text, "status": "SUCCESS"}
     annotations = response.get("citations")
     if capabilities and capabilities.get("urlCitationAnnotationsV1") and isinstance(annotations, list):
         intent_result["annotations"] = annotations
-        intent_result["fullDescription"] = text
+        intent_result["fullDescription"] = authoritative_text
     output_refs = [
         item
         for item in response.get("output_refs", [])
@@ -140,6 +173,7 @@ def success_chat_response(
             )
     if image_details:
         intent_result["detail"] = image_details
+    display_only = sequence > 1 and not image_details
     return envelope(
         message="chatResponse",
         session_id=session_id,
@@ -152,9 +186,9 @@ def success_chat_response(
                     "intentResult": intent_result
                 },
             },
-            "displayOnly": False,
-            "display_only": False,
-            "sequence": 1,
+            "displayOnly": display_only,
+            "display_only": display_only,
+            "sequence": sequence,
             "final": True,
             "deliveryId": delivery_id,
             **({"outputRefs": output_refs} if output_refs else {}),

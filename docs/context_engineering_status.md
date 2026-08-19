@@ -42,8 +42,9 @@ Memory 每一行以引用文本呈现，并明确为可能过时或错误的背�
 模型调用上限、Tool 调用上限、只读 Tool retry、长对话 summarization 与 planning 模式非 read Tool HITL
 全部使用官方 middleware；fast 模式自动放行。summarization 默认采用输入窗口 75% 触发、保留 15% 的
 token 阈值，两者可由现有环境变量覆盖。DeepSeek V4 Flash 使用其官方 tokenizer 与
-`encoding_dsv4.py` 对标准 messages 做调用前计数；摘要读取被淘汰的完整消息前缀，不再应用默认 4K
-局部裁剪。real 模式必须把 `MULTIMODAL_AGENT_CONTEXT_TOKENIZER_PATH` 配置为本机官方快照中
+`encoding_dsv4.py` 对标准 messages 做调用前计数；结构化 user content 只在文本 encoder 的计数副本中
+提取 text block，原始多模态 message 与媒体引用保持不变。摘要读取被淘汰的完整消息前缀，不再应用默认
+4K 局部裁剪。real 模式必须把 `MULTIMODAL_AGENT_CONTEXT_TOKENIZER_PATH` 配置为本机官方快照中
 `tokenizer.json` 的绝对路径，并在同级目录保留官方 `encoding/encoding_dsv4.py`；快照目录属于本机未跟踪
 运行资产，不进入仓库。切点仍由官方 middleware 选择，只保护 `AIMessage(tool_calls)` 与对应
 `ToolMessage`，不维护项目

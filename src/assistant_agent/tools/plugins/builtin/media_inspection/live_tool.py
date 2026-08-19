@@ -77,12 +77,12 @@ def create_live_view_inspect_tool(
             Field(
                 min_length=1,
                 max_length=500,
-                description="需要根据当前实时画面回答的具体问题。",
+                description="对当前画面的问题",
             ),
         ],
         runtime: ToolRuntime[AssistantRunContext],
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """检查视频握手后由媒体入口冻结的最新实时画面。"""
+        """用户会使用摄像头拍摄画面，当他询问画面内容时，使用VLM理解画面内容"""
 
         def inspect_live_view() -> ToolResult:
             if runtime.context.realtime_media_mode != "video":

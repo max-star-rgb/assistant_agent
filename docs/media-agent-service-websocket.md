@@ -1,6 +1,6 @@
 # Media-Agent WebSocket 接口权威文档
 
-Last updated: 2026-08-18
+Last updated: 2026-08-19
 
 ## Authority contract
 
@@ -82,18 +82,39 @@ Last updated: 2026-08-18
 }
 ```
 
-Graph 完成后发唯一成功终包：
+`stream=true` 时，Graph 原生 `messages/partial` 中新增的 assistant 文本会沿用媒体既有的
+`chatResponse` 增量结构发送：
 
 ```json
 {
   "message": "chatResponse",
-  "body": "{\"number\":\"user-1\",\"message\":{\"type\":\"BRIEF\",\"chatIndex\":\"chat-1\",\"content\":{\"intentResult\":{\"description\":\"回答\",\"status\":\"SUCCESS\"}}},\"displayOnly\":false,\"display_only\":false,\"sequence\":1,\"final\":true,\"deliveryId\":\"delivery-...\"}"
+  "body": "{\"message\":{\"chatIndex\":\"chat-1\",\"content\":{\"intentResult\":{\"description\":\"我先查一下。\",\"status\":\"PROCESSING\"}}},\"displayOnly\":false,\"display_only\":false,\"sequence\":1,\"final\":false}"
+}
+```
+
+Graph 完成后发送成功终包：
+
+```json
+{
+  "message": "chatResponse",
+  "body": "{\"number\":\"user-1\",\"message\":{\"type\":\"BRIEF\",\"chatIndex\":\"chat-1\",\"content\":{\"intentResult\":{\"description\":\"回答\",\"status\":\"SUCCESS\"}}},\"displayOnly\":true,\"display_only\":true,\"sequence\":2,\"final\":true,\"deliveryId\":\"delivery-...\"}"
 }
 ```
 
 `assistantMode` 省略时为 `fast`，也可显式选择 `planning`；旧 `standard|deep_research` 不再接受。媒体适配器
-把请求机械转换为标准 HumanMessage content blocks 和根输入 `execution_mode`。最终正文来自 terminal values
-中的最新标准 `AIMessage`，适配器不得从 delta 拼接或自行生成业务回答。Memory debounce 是所有入口共享的
+把请求机械转换为标准 HumanMessage content blocks 和根输入 `execution_mode`。`stream=true` 只投影
+`messages/metadata.langgraph_node=model` 对应 `AIMessageChunk` 的 string content 或 `text|output_text` block；
+planner 等其他节点的内部文本、tool-call name/arguments、ToolMessage 和 updates 不进入媒体正文。
+Agent Server 的 `messages/partial` 是同一 message 的累计快照，适配器按 message ID
+计算 append-only delta；工具前导文本与工具后的下一条 assistant message 之间若均无换行，适配器在新消息首包
+补一个换行。中间包按 `sequence` 递增且 `final=false`，不携带 `deliveryId`；`stream=false` 不发送中间包。
+
+最终正文仍来自 terminal values 中的最新标准 `AIMessage`，适配器不把 delta 拼接成业务终态。成功终包发送该
+最新消息中尚未流出的后缀，使用最后一个 `sequence`、`final=true`，并独占 `deliveryId`；若最终文本与已流出的
+最新 assistant message 不一致，则完整发送权威终态，避免丢失正文。已发送中间包且终包不含媒体 detail 时，
+终包的 `displayOnly/display_only=true`；citation 的 `fullDescription` 始终保留完整权威终态。
+
+Memory debounce 是所有入口共享的
 主图规则：生成回答后通过官方 Agent Server SDK rollback 同 thread 的旧 pending Memory run，并立即 enqueue
 一个新的 30 分钟 delayed Memory run；pending chat run 不受影响。该 orchestration 不扩展媒体 wire，
 WebSocket 挂断也不承担 Memory 语义。

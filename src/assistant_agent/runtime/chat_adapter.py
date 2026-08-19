@@ -196,6 +196,7 @@ class UnconfiguredChatAdapter:
 
 class OpenAICompatibleChatAdapter:
     """OpenAI-compatible SDK chat adapter for explicit real provider smoke."""
+    enable_thinking: bool | None
 
     def __init__(
         self,

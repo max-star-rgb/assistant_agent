@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from contextlib import asynccontextmanager
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import NAMESPACE_URL, uuid4, uuid5
@@ -25,6 +25,7 @@ from assistant_agent.agent_server.media_protocol import (
     parse_chat,
     parse_envelope,
     progress_response,
+    streaming_chat_response,
     success_chat_response,
     artifact_completed_response,
 )
@@ -83,6 +84,86 @@ class _ProactiveDeliveryConnection:
 @dataclass
 class _VisualPerceptionConnection:
     session: Any | None = None
+
+
+@dataclass
+class _NativeAssistantTextStream:
+    """Convert cumulative native message snapshots into append-only media deltas."""
+
+    snapshots: dict[str, str] = field(default_factory=dict)
+    message_nodes: dict[str, str] = field(default_factory=dict)
+    sequence: int = 0
+    last_streamed_message_id: str | None = None
+    last_wire_message_id: str | None = None
+    wire_ends_with_newline: bool = False
+
+    def consume(self, part: Mapping[str, Any]) -> list[tuple[int, str]]:
+        if part.get("event") == "messages/metadata":
+            self._record_metadata(part.get("data"))
+            return []
+        if part.get("event") != "messages/partial":
+            return []
+        data = part.get("data")
+        if not isinstance(data, (list, tuple)):
+            return []
+
+        deltas: list[tuple[int, str]] = []
+        for message in data:
+            if not isinstance(message, Mapping) or not _is_ai_message_chunk(message):
+                continue
+            message_id = message.get("id")
+            if not isinstance(message_id, str) or not message_id:
+                continue
+            if self.message_nodes.get(message_id) != "model":
+                continue
+            current = _stream_message_content_text(message.get("content"))
+            previous = self.snapshots.get(message_id, "")
+            if current == previous:
+                continue
+            if not current.startswith(previous):
+                continue
+            self.snapshots[message_id] = current
+            delta = current[len(previous) :]
+            if not delta:
+                continue
+            if (
+                self.last_wire_message_id is not None
+                and self.last_wire_message_id != message_id
+                and not self.wire_ends_with_newline
+                and not delta.startswith(("\n", "\r"))
+            ):
+                delta = f"\n{delta}"
+            self.sequence += 1
+            self.last_streamed_message_id = message_id
+            self.last_wire_message_id = message_id
+            self.wire_ends_with_newline = delta.endswith(("\n", "\r"))
+            deltas.append((self.sequence, delta))
+        return deltas
+
+    def _record_metadata(self, data: Any) -> None:
+        if not isinstance(data, Mapping):
+            return
+        for message_id, entry in data.items():
+            if not isinstance(message_id, str) or not isinstance(entry, Mapping):
+                continue
+            metadata = entry.get("metadata")
+            if not isinstance(metadata, Mapping):
+                continue
+            node = metadata.get("langgraph_node")
+            if isinstance(node, str) and node:
+                self.message_nodes[message_id] = node
+
+    def remaining_terminal_text(self, text: str) -> str:
+        if self.last_streamed_message_id is None:
+            return text
+        streamed = self.snapshots.get(self.last_streamed_message_id, "")
+        if not streamed:
+            return text
+        if text.startswith(streamed):
+            return text[len(streamed) :]
+        if text.strip() == streamed.strip():
+            return ""
+        return text
 
 
 @app.get("/health/agent-server-adapter")
@@ -454,6 +535,7 @@ async def _run_chat(
 
     try:
         final_state: dict[str, Any] | None = None
+        text_stream = _NativeAssistantTextStream()
         run_context = {
             "entry_profile": "agent_service",
             "media_capabilities": list(session.media_capabilities),
@@ -480,21 +562,39 @@ async def _run_chat(
             if isinstance(event_id, str):
                 session.last_event_id = event_id
             data = part.get("data")
+            if chat.stream:
+                for sequence, delta in text_stream.consume(part):
+                    await _send_json(
+                        websocket,
+                        send_lock,
+                        streaming_chat_response(
+                            session_id=response_session_id,
+                            chat=chat,
+                            delta=delta,
+                            sequence=sequence,
+                        ),
+                    )
             if part.get("event") == "values" and isinstance(data, dict):
                 final_state = data
             if part.get("event") == "error":
                 raise MediaProtocolError(f"Agent Server run failed: {data}")
         if chat.chat_index in interrupted_chats:
             return
+        response = native_response_from_state(final_state)
+        full_text = str(response.get("message") or "")
+        if chat.stream:
+            response["message"] = text_stream.remaining_terminal_text(full_text)
         await _send_json(
             websocket,
             send_lock,
             success_chat_response(
                 session_id=response_session_id,
                 chat=chat,
-                response=native_response_from_state(final_state),
+                response=response,
                 delivery_id=delivery_id,
                 capabilities=session.client_capabilities,
+                sequence=text_stream.sequence + 1,
+                full_text=full_text,
             ),
         )
     except asyncio.CancelledError:
@@ -536,7 +636,10 @@ async def _bind_proactive_delivery(
     store = (
         store_factory()
         if callable(store_factory)
-        else SQLiteProactiveDeliveryStore(config.proactive_delivery_store_path)
+        else await asyncio.to_thread(
+            SQLiteProactiveDeliveryStore,
+            config.proactive_delivery_store_path,
+        )
     )
     pump_factory = getattr(app.state, "proactive_delivery_pump_factory", None)
     factory = pump_factory if callable(pump_factory) else MediaProactiveDeliveryPump
@@ -668,6 +771,29 @@ def _message_content_text(content: Any) -> str:
         if isinstance(block, Mapping)
         and block.get("type") in {"text", "output_text"}
         and str(block.get("text", "")).strip()
+    )
+
+
+def _is_ai_message_chunk(message: Mapping[str, Any]) -> bool:
+    message_type = message.get("type") or message.get("role")
+    return isinstance(message_type, str) and message_type.lower() in {
+        "aimessagechunk",
+        "ai",
+        "assistant",
+    }
+
+
+def _stream_message_content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, (list, tuple)):
+        return ""
+    return "".join(
+        str(block.get("text", ""))
+        for block in content
+        if isinstance(block, Mapping)
+        and block.get("type") in {"text", "output_text"}
+        and isinstance(block.get("text"), str)
     )
 
 
