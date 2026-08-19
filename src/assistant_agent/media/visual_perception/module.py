@@ -310,14 +310,16 @@ class VisualPerceptionModule:
             embedding_lease.release()
             semantic_lease.release()
 
-        observation_service = RealtimeVisualObservationService(
-            client=create_realtime_vision_understanding_client(self.config)
-        )
+        def observation_service_factory() -> RealtimeVisualObservationService:
+            return RealtimeVisualObservationService(
+                client=create_realtime_vision_understanding_client(self.config)
+            )
+
         try:
             return RealtimeVideoObserver(
                 user_id=user_id,
                 session_id=session_id,
-                observation_service=observation_service,
+                observation_service_factory=observation_service_factory,
                 memory_store=self.realtime_video_memory_store,
                 semantic_store=semantic_lease.store,
                 embedding_coordinator=embedding_lease.coordinator,
@@ -327,7 +329,6 @@ class VisualPerceptionModule:
                 resource_release=release_resources,
             )
         except Exception:
-            observation_service.close()
             release_resources()
             raise
 

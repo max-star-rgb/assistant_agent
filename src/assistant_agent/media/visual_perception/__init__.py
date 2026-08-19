@@ -16,6 +16,7 @@ from assistant_agent.media.visual_perception.observation_service import (
     RealtimeVisualObservationOutcome,
     RealtimeVisualObservationRequest,
     RealtimeVisualObservationService,
+    RealtimeVisualObservationServiceFactory,
 )
 
 __all__ = [
@@ -29,5 +30,6 @@ __all__ = [
     "RealtimeVisualObservationOutcome",
     "RealtimeVisualObservationRequest",
     "RealtimeVisualObservationService",
+    "RealtimeVisualObservationServiceFactory",
     "get_visual_perception_module",
 ]

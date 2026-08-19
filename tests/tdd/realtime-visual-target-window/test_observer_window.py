@@ -82,7 +82,7 @@ def _observer(
     return RealtimeVideoObserver(
         user_id="user-window",
         session_id="session-window",
-        observation_service=service,
+        observation_service_factory=lambda: service,
         memory_store=RealtimeVideoMemoryStore(),
         semantic_store=SessionVisualSemanticStore(
             root=tmp_path / "semantic-store",

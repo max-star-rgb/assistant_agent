@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -134,6 +134,12 @@ class RealtimeVisualObservationService:
             close()
 
 
+RealtimeVisualObservationServiceFactory = Callable[
+    [],
+    RealtimeVisualObservationService,
+]
+
+
 def _client_diagnostics(client: VisionUnderstandingClient) -> dict[str, Any]:
     diagnostics = getattr(client, "last_observation_diagnostics", None)
     if isinstance(diagnostics, Mapping):
@@ -145,4 +151,5 @@ __all__ = [
     "RealtimeVisualObservationOutcome",
     "RealtimeVisualObservationRequest",
     "RealtimeVisualObservationService",
+    "RealtimeVisualObservationServiceFactory",
 ]

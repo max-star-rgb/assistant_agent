@@ -26,6 +26,7 @@ from assistant_agent.media.vision.observability import VisionInferenceTraceLink
 from assistant_agent.media.visual_perception.observation_service import (
     RealtimeVisualObservationRequest,
     RealtimeVisualObservationService,
+    RealtimeVisualObservationServiceFactory,
 )
 from assistant_agent.providers.provider_errors import sanitize_error_message
 from assistant_agent.media.video.realtime_video_memory import (
@@ -109,7 +110,7 @@ class RealtimeVideoObserver:
         *,
         user_id: str,
         session_id: str,
-        observation_service: RealtimeVisualObservationService,
+        observation_service_factory: RealtimeVisualObservationServiceFactory,
         memory_store: RealtimeVideoMemoryStore,
         semantic_store: SessionVisualSemanticStore | None = None,
         embedding_coordinator: SessionEmbeddingCoordinator,
@@ -127,7 +128,7 @@ class RealtimeVideoObserver:
             raise ValueError("close_wait_seconds must be positive")
         self.user_id = user_id
         self.session_id = session_id
-        self.observation_service = observation_service
+        self.observation_service_factory = observation_service_factory
         self.memory_store = memory_store
         self.embedding_coordinator = embedding_coordinator
         self.visual_reminder_registry = visual_reminder_registry
@@ -547,7 +548,6 @@ class RealtimeVideoObserver:
                     active_tasks,
                     timeout=self.close_wait_seconds,
                 )
-            await asyncio.to_thread(self.observation_service.close)
             if self.video_id is not None:
                 self.memory_store.remove_video(self.video_id)
             if self._owns_semantic_store:
@@ -579,7 +579,7 @@ class RealtimeVideoObserver:
             video_id = item_video_id(item.record, self.video_id)
             trace_context = self._trace_context(item.record)
             outcome = await asyncio.to_thread(
-                self.observation_service.observe,
+                self._observe_with_isolated_service,
                 RealtimeVisualObservationRequest(
                     user_id=self.user_id,
                     session_id=self.session_id,
@@ -703,6 +703,18 @@ class RealtimeVideoObserver:
         finally:
             self._first_terminal_snapshot.set()
             self._snapshot_updated.set()
+
+    def _observe_with_isolated_service(
+        self,
+        request: RealtimeVisualObservationRequest,
+        *,
+        trace_context: _BackgroundVisionTraceContext | None,
+    ):
+        service: RealtimeVisualObservationService = self.observation_service_factory()
+        try:
+            return service.observe(request, trace_context=trace_context)
+        finally:
+            service.close()
 
     def _settle_observation_task(
         self,

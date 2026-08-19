@@ -113,10 +113,7 @@ def create_realtime_video_understanding_adapter(
 
     resolved = config or ProviderConfig.from_env()
     if resolved.vision_provider == "qwen":
-        return _create_qwen_realtime_adapter(
-            resolved,
-            close_connection_on_return=False,
-        )
+        return _create_qwen_realtime_adapter(resolved)
     return create_video_understanding_adapter(resolved)
 
 
