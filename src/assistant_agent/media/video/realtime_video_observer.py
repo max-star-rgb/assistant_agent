@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from time import perf_counter_ns, time
 from typing import Any
@@ -278,21 +278,62 @@ class RealtimeVideoObserver:
         target = frames[-1]
         ordered = (target, *frames[:-1])
         outcomes: list[bool] = []
-        for frame in ordered:
-            self._accept_video_id(frame)
-            outcomes.append(
-                await self._enqueue(
-                    frame,
-                    enqueued_ns=self.clock_ns(),
-                    keyframe_selection_latency_ms=0,
-                    visual_window_id=window_id,
-                    window_start_sequence=window_start_sequence,
-                    target_sequence=target_sequence,
-                    window_role=(
-                        "target" if frame.sequence == target_sequence else "context"
-                    ),
-                )
+        async with self._enqueue_lock:
+            for frame in ordered:
+                self._accept_video_id(frame)
+            pending = [
+                frame
+                for frame in ordered
+                if not self._sequence_is_represented(frame.sequence)
+            ]
+            retained_outcomes = await asyncio.gather(
+                *(asyncio.to_thread(self._retain_keyframe, frame) for frame in pending),
+                return_exceptions=True,
             )
+            retained_by_sequence = {
+                frame.sequence: outcome
+                for frame, outcome in zip(pending, retained_outcomes, strict=True)
+                if isinstance(outcome, SemanticKeyframeRecord)
+            }
+            failure = next(
+                (
+                    outcome
+                    for outcome in retained_outcomes
+                    if isinstance(outcome, BaseException)
+                ),
+                None,
+            )
+            try:
+                if failure is not None:
+                    raise failure
+                if self.closed:
+                    raise RuntimeError("realtime video observer is closed")
+                for frame in ordered:
+                    retained = retained_by_sequence.get(frame.sequence)
+                    if retained is None:
+                        outcomes.append(False)
+                        continue
+                    outcomes.append(
+                        await self._enqueue_serialized(
+                            replace(frame, uri=retained.uri),
+                            enqueued_ns=self.clock_ns(),
+                            keyframe_selection_latency_ms=0,
+                            already_retained=True,
+                            visual_window_id=window_id,
+                            window_start_sequence=window_start_sequence,
+                            target_sequence=target_sequence,
+                            window_role=(
+                                "target"
+                                if frame.sequence == target_sequence
+                                else "context"
+                            ),
+                        )
+                    )
+            finally:
+                for retained in retained_by_sequence.values():
+                    path = Path(retained.uri)
+                    if path not in self._owned_paths:
+                        path.unlink(missing_ok=True)
         return WindowPromotionResult(
             enqueued_sequences=tuple(
                 frame.sequence
