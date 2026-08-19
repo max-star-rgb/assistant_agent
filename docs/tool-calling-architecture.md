@@ -1,6 +1,6 @@
 # LangChain-native Tool 与扩展架构
 
-最后更新：2026-08-18
+最后更新：2026-08-19
 
 ## Authority contract
 
@@ -106,14 +106,13 @@ Qwen 等模型原生联网参数属于 `BaseChatModel` 请求能力，不伪装�
 `forced_search=false`，同时设置 `enable_source=true`、`enable_citation=true` 和 `citation_format=[<number>]`。
 只有显式结构化 `provider_search_profile=deep_research` 才使用 max 与 forced search，不从用户文本关键词推断。
 每次模型回复的来源清洗后把审计副本保存在该 `AIMessage.response_metadata.provider_search_sources`；本地 Tool 和
-ToolNode 不另行接管或聚合这些来源。原生 adapter 同时把来源投影为 LangChain 标准 text content block
-的 `Citation` annotations；Provider 未生成角标时只为机械追加的来源标题标注 URL，不伪造正文事实与来源的
-对应关系。流式响应只在 terminal chunk 写入稳定 response metadata、usage 和来源，避免标准 chunk 合并把
-标量 metadata 重复拼接；生产装配显式使用 LangChain 原生 `output_version="v1"`，确保 Agent Server wire
-和 checkpoint 中的 `AIMessage.content` 全部序列化为标准 content block，不混入 legacy 字符串。连续正文
-delta 由 LangChain 使用同一个原生 text block index 合并；terminal 只补充相对完整正文的 Citation annotation，
-或在正文无角标时追加一个独立来源 block，不按 Provider token 人工拆分 block；`finish_reason=tool_calls`
-的中间消息只保留标准正文与 ToolCall，搜索来源仅留在 response metadata，不插入聊天内容。DashScope
+ToolNode 不另行接管或聚合这些来源。Provider 返回的 `message.content` 是唯一正文：adapter 不把
+`search_info.search_results` 投影为 Citation annotations，不追加来源列表，也不改写 Provider 已插入的
+`[1]` 角标。流式响应只在 terminal chunk 写入稳定 response metadata、usage 和来源，避免标准 chunk 合并把
+标量 metadata 重复拼接；每个正文 chunk 始终把 Provider 文本交给 LangChain 原生消息序列化。生产装配显式使用
+LangChain 原生 `output_version="v1"`，由框架把正文和 ToolCall 统一序列化为标准 content block；Studio 只需
+原生显示正文，自定义 UI 或媒体入口可按正文角标与 `provider_search_sources[].index` 自行渲染可点击来源。
+`finish_reason=tool_calls` 的中间消息同样只保留标准正文与 ToolCall，搜索来源仅留在 response metadata，不插入聊天内容。DashScope
 ToolCall 的 Provider-local index 会映射到标准 content block 的全局 index：正文为 0，ToolCall 从 1 开始，
 避免流式合并时把 ToolCall 字段并入正文 block。原生 adapter 按官方
 message/tool_call/tool_call_id 结构与标准
