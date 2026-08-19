@@ -1,6 +1,6 @@
 # LangGraph-native Assistant 运行与流式架构
 
-最后更新：2026-08-18
+最后更新：2026-08-19
 
 ## Authority contract
 
@@ -68,6 +68,12 @@ planning 的 planner、worker 与 finalizer 都读取父图传入的同一份可
 父图不投影或改写生成图片。`image_generation` 直接使用标准 `ToolMessage(content, artifact)`：模型下一次调用
 只读取窄文本 `content`，程序消费者从 `artifact.images[]` 读取受管图片引用。最终 `AIMessage` 保持模型原始
 回答，因此 Studio 当前只显示生成成功文本，不承诺图片预览；媒体 WebSocket 在入口适配层完成自己的 wire 投影。
+
+实时摄像头 chat 仍只通过最新标准 `HumanMessage` 的 `source=live_camera` video block 进入父图。媒体入口可在
+该 block 中投影可信 `window_id`、`window_start_sequence` 与 `target_sequence`；JPEG、Provider client、task
+和 lease 不进入 state。fast Agent 的 `live_view_inspect` 经标准 ToolNode 有界等待 exact target，只消费冻结
+sequence 范围内当时已完成的文本。context 帧未完成不阻塞 target，future sequence 不得进入本轮 Tool 结果；
+晚到结果只更新外围 session visual store，不回写已完成 checkpoint 或 message。
 
 已完成节点直接从 worker result 推导，不保存平行 completed-ID channel，也没有项目自定义 result/artifact
 reducer。Provider/Tool client、Memory backend、投递 Store、身份对象和 callback 不写入 checkpoint。旧
