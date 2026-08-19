@@ -110,6 +110,30 @@ Planner/Worker 的私有 `messages` 不直接并入父图公开会话，避免�
 ToolMessage 暴露为最终聊天历史。父子图通过显式共享 channel 传递能力状态，通过窄输入/输出 schema 投影计划与
 结果。
 
+### 5.1 官方模式依据与组合边界
+
+LangChain/LangGraph 当前没有一份官方示例同时覆盖“`create_agent` Planner 先加载 Skill、输出 DAG、再把同一
+Skill 的不同 Tool 子集和不同 Provider-native 搜索配置并行派发给 `create_agent` Worker”。本设计不把这一组合
+误称为框架内置模板，而是严格组合以下已有官方模式：
+
+1. **Custom workflow**：官方允许在显式 `StateGraph` 的任意节点中调用完整 `create_agent`，以混合确定性步骤与
+   agentic behavior；
+2. **Router + Send**：官方 multi-source router 示例先产生结构化分类，再由普通路由函数把每项分类转换为
+   `Send(target, narrow_state)`，每个 Agent 只收到自己的 query；
+3. **Subgraph state**：`create_agent` 本身是 compiled LangGraph；共享 schema 时可以直接作为子图，schema 不同
+   时使用窄 adapter 节点做输入/输出转换；默认 per-invocation 子图状态支持并行且继承父图 checkpointer；
+4. **Dynamic Tool middleware**：官方 `wrap_model_call` 支持按 state/context 过滤预注册 Tool；
+5. **Dynamic response format**：官方 middleware 可以按阶段覆盖 `ModelRequest.response_format`，使 Planner 在
+   Tool loop 结束时返回结构化计划。
+
+因此 Planner 负责**声明**任务目标、依赖和所需能力，真正调用 `Send` 的是确定性 dispatcher。模型不创建
+`Send`、不提交任意 state payload，也不决定 checkpoint namespace。
+
+官方 supervisor/subagent 模式更适合由主 Agent 通过 Tool 动态委派对话任务；本项目需要本地 DAG admission、
+按依赖分 wave、显式并行 state 和统一 Finalizer，因此采用官方 custom workflow/router 组合，而不引入
+`langgraph-supervisor`。Deep Agents 的自定义 subagent Skill state 默认与父 Agent 隔离，也不满足“Planner
+加载一次、Worker 继承受信 Skill”的目标。
+
 ## 6. Agent 阶段契约
 
 新增受信运行阶段，不从用户文本推断：
@@ -124,7 +148,7 @@ AgentPhase = Literal["fast", "planner", "worker", "finalizer"]
 | --- | --- | --- | --- |
 | `fast` | 保持现有渐进式 Tool exposure | 保持既有 fast 配置 | 普通 `AIMessage` |
 | `planner` | Skill index、`load_skill`；不暴露酒店、高德等业务 Tool | 强制关闭 | `NativePlanProposal` |
-| `worker` | 仅暴露节点继承的 Skill 所治理 Tool | 由节点 `search_profile` 决定 | `WorkerResult` |
+| `worker` | 仅暴露节点继承 Skill 与 `allowed_tool_names` 的交集 | 由节点 `search_profile` 决定 | `WorkerResult` |
 | `finalizer` | 不暴露业务 Tool 和 `load_skill` | 强制关闭 | 最终 `AIMessage` |
 
 阶段控制由 `create_agent` middleware 基于受信 context/state 完成，可动态调整 system prompt、
@@ -178,10 +202,14 @@ class NativePlanNode(BaseModel):
     objective: str
     depends_on: tuple[str, ...] = ()
     required_skill_ids: tuple[str, ...] = ()
+    allowed_tool_names: tuple[str, ...] = ()
     search_profile: ProviderSearchProfile = "none"
 ```
 
 `required_skill_ids` 只允许引用 Planner 本轮已经成功激活的 Skill。Planner 不得通过该字段加载新 Skill。
+`allowed_tool_names` 只能从这些 Skill 当前 manifest 的 `governed_tools` 中选择。Planner 加载 Skill 后获得由
+受信 catalog 生成的规划能力索引（Tool 名、用途和 effect，不含凭据与执行实现），用于为各节点选择最小 Tool
+子集；该索引不等于向 Planner 暴露可调用的业务 Tool schema。
 
 ### 8.3 Planning 与 Worker state
 
@@ -196,17 +224,72 @@ class WorkerState(FastAgentState):
     work_item_id: str
     objective: str
     dependency_results: tuple[WorkerResult, ...]
+    worker_tool_allowlist: tuple[str, ...]
     search_profile: ProviderSearchProfile
 ```
 
 Planning 专用 Skill channel 不进入 Root Graph 的长期 Memory，也不改变 fast 分支的公开输入。`Send` 对每个节点只
-投影 `required_skill_ids` 指定的 Skill 子集；不同 Worker 不会因为其他并行节点需要某项能力而看到无关 Tool。
+投影 `required_skill_ids` 指定的 Skill 子集，并把 admission 后的 `allowed_tool_names` 写入
+`worker_tool_allowlist`。Worker 的最终 Tool 可见集合为：
 
-### 8.4 Admission
+```text
+本轮静态 eligible Tool inventory
+  ∩ active_skill_ids 对应的 governed_tools
+  ∩ worker_tool_allowlist
+  ∩ 既有 media/env/permission 条件
+```
+
+因此搜索节点可以继承旅行 Skill 的规则但看到零个本地旅行 Tool，酒店节点只看到 `lodging_search`，路线节点只看到
+所需高德 Tool。不同 Worker 不会因为其他并行节点需要某项能力而看到无关 Tool。该字段在 Worker 输入中必须存在：
+空列表明确表示禁止全部本地 Tool，不能与“字段缺失，沿用 fast 默认 exposure”混同。
+
+### 8.4 确定性 Worker state 投影
+
+Planner 不直接构造或发送 `WorkerState`。admission 完成后，dispatcher 使用受信父状态和 plan node 生成
+`Send`：
+
+```python
+def dispatch_ready(state: PlanningState) -> list[Send]:
+    sends = []
+    for node in ready_nodes(state):
+        skill_ids = admit_skill_subset(
+            requested=node.required_skill_ids,
+            activated=state["active_skill_ids"],
+        )
+        tool_names = admit_tool_subset(
+            requested=node.allowed_tool_names,
+            governed_by=skill_ids,
+            inventory=trusted_tool_inventory,
+        )
+        sends.append(
+            Send(
+                "worker",
+                {
+                    "messages": [HumanMessage(content=node.objective)],
+                    "work_item_id": node.node_id,
+                    "dependency_results": direct_dependencies(node, state),
+                    "active_skill_ids": list(skill_ids),
+                    "skill_reference_grants": project_reference_grants(
+                        skill_ids, state
+                    ),
+                    "worker_tool_allowlist": list(tool_names),
+                    "search_profile": node.search_profile,
+                    "agent_phase": "worker",
+                },
+            )
+        )
+    return sends
+```
+
+每个 `Send` 获得独立的 per-invocation state；列表、字典和消息按值构造，不在并行 Worker 间共享可变对象。
+Worker 只能读取自己的 state，输出通过 `worker_results` reducer 回到父图。
+
+### 8.5 Admission
 
 除既有 ID、依赖引用和 DAG 无环校验外，admission 必须校验：
 
 - `required_skill_ids` 无重复且全部属于 Planner 已激活集合；
+- `allowed_tool_names` 无重复，且全部属于 `required_skill_ids` 对应 Skill 的当前受信 `governed_tools`；
 - `search_profile` 是受支持枚举；
 - 非 `none` 的旅行 profile 必须由 `travel-tool-orchestration` 治理；
 - profile 对当前 Provider/model/protocol 不可用时，在派发前失败并返回可解释错误；
@@ -262,6 +345,7 @@ planning 中 profile 是显式请求级覆盖：
       "objective": "查询指定日期北京到上海的官方高铁候选和时刻",
       "depends_on": [],
       "required_skill_ids": ["travel-tool-orchestration"],
+      "allowed_tool_names": [],
       "search_profile": "rail_official"
     },
     {
@@ -269,6 +353,7 @@ planning 中 profile 是显式请求级覆盖：
       "objective": "按用户日期和预算比较上海酒店候选",
       "depends_on": [],
       "required_skill_ids": ["travel-tool-orchestration"],
+      "allowed_tool_names": ["lodging_search"],
       "search_profile": "none"
     },
     {
@@ -276,6 +361,7 @@ planning 中 profile 是显式请求级覆盖：
       "objective": "核验候选景点开放、预约和临时公告",
       "depends_on": [],
       "required_skill_ids": ["travel-tool-orchestration"],
+      "allowed_tool_names": [],
       "search_profile": "guide_official"
     },
     {
@@ -283,6 +369,7 @@ planning 中 profile 是显式请求级覆盖：
       "objective": "补充公开可索引的小红书体验和避坑建议",
       "depends_on": [],
       "required_skill_ids": ["travel-tool-orchestration"],
+      "allowed_tool_names": [],
       "search_profile": "guide_xiaohongshu"
     },
     {
@@ -290,6 +377,10 @@ planning 中 profile 是显式请求级覆盖：
       "objective": "根据车次、酒店和景点结果规划关键通勤路线",
       "depends_on": ["rail", "hotel", "official_guide"],
       "required_skill_ids": ["travel-tool-orchestration"],
+      "allowed_tool_names": [
+        "mcp_amap_maps_maps_geo",
+        "mcp_amap_maps_maps_direction_transit_integrated"
+      ],
       "search_profile": "none"
     }
   ]
@@ -435,16 +526,18 @@ Finalizer 不联网、不调用 Tool、不重新生成来源 URL。它必须：
    `load_skill("travel-tool-orchestration")`，再返回结构化计划；
 2. Planner 不执行 `lodging_search`、高德 MCP 或 Provider-native 搜索；
 3. 多个旅行 Worker 继承 Planner 激活的 Skill，不重复调用 `load_skill`；
-4. Planner 只能从六个 profile 枚举中选择，Provider 请求中不出现 LLM 提交的任意域名；
-5. 酒店与路线节点使用 `none`，交通/攻略 Worker 分别使用对应窄 profile；
-6. `rail_official` 严格限定到 12306；`guide_xiaohongshu` 严格限定到小红书公开站点；
-7. profile 限制不受支持时 fail closed，不静默执行开放搜索；
-8. Worker 的搜索来源能够经过 `WorkerResult` 到达 Finalizer，最终链接不因 planning 汇总而丢失；
-9. 酒店链接只来自 Tool，搜索链接只来自 Provider metadata 或受信模板；无来源时不编造 URL；
-10. 用户可以点击 HTTPS 跳转查看，支持的客户端可优先尝试 `app_uri` 并回退 `web_url`；
-11. 输出清楚区分官方事实、攻略建议和待确认项，不承诺实时余票、库存、票价或预订完成；
-12. 高德 MCP 保持不变，项目不新增 `travel_guide_search`、`travel_app_handoff` 或搜索 profile Tool；
-13. mock 测试不调用真实 Provider；real 验证必须通过显式开关并在最终报告说明调用范围。
+4. 不同 Worker 只看到各自 `worker_tool_allowlist` 与 Skill grants 的交集；搜索 Worker 不看到酒店/高德 Tool，
+   酒店和路线 Worker 也不获得无关旅行 Tool；
+5. Planner 只能从六个 profile 枚举中选择，Provider 请求中不出现 LLM 提交的任意域名；
+6. 酒店与路线节点使用 `none`，交通/攻略 Worker 分别使用对应窄 profile；
+7. `rail_official` 严格限定到 12306；`guide_xiaohongshu` 严格限定到小红书公开站点；
+8. profile 限制不受支持时 fail closed，不静默执行开放搜索；
+9. Worker 的搜索来源能够经过 `WorkerResult` 到达 Finalizer，最终链接不因 planning 汇总而丢失；
+10. 酒店链接只来自 Tool，搜索链接只来自 Provider metadata 或受信模板；无来源时不编造 URL；
+11. 用户可以点击 HTTPS 跳转查看，支持的客户端可优先尝试 `app_uri` 并回退 `web_url`；
+12. 输出清楚区分官方事实、攻略建议和待确认项，不承诺实时余票、库存、票价或预订完成；
+13. 高德 MCP 保持不变，项目不新增 `travel_guide_search`、`travel_app_handoff` 或搜索 profile Tool；
+14. mock 测试不调用真实 Provider；real 验证必须通过显式开关并在最终报告说明调用范围。
 
 ## 18. 实施影响范围
 
@@ -467,6 +560,10 @@ Finalizer 不联网、不调用 Tool、不重新生成来源 URL。它必须：
   compiled subgraph，父子图共享同名 state channel；
 - [LangGraph Graph API / Send](https://docs.langchain.com/oss/python/langgraph/use-graph-api)：并行 Worker
   的独立输入 state 与 map-reduce 派发；
+- [LangChain Multi-agent Router](https://docs.langchain.com/oss/python/langchain/multi-agent/router-knowledge-base)：
+  结构化分类、每个 `Send` 的窄 Agent 输入、并行 `create_agent` Worker 与 reducer 汇总；
+- [LangChain Custom Workflow](https://docs.langchain.com/oss/python/langchain/multi-agent/custom-workflow)：
+  在显式 `StateGraph` 节点内复用完整 `create_agent`；
 - [LangChain Middleware](https://docs.langchain.com/oss/python/langchain/middleware/overview)：在更大
   StateGraph 中复用 Agent middleware；
 - [LangChain Structured Output](https://docs.langchain.com/oss/python/langchain/structured-output)：
