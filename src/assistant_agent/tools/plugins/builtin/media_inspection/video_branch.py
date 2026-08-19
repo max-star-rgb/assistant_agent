@@ -28,6 +28,7 @@ from assistant_agent.media.vision.observability import (
 )
 from assistant_agent.media.video.video_context import (
     DEFAULT_VIDEO_CONTEXT_WINDOW_SIZE,
+    REALTIME_VISUAL_TARGET_WINDOW_SIZE,
     VideoContextStore,
 )
 from assistant_agent.media.video.realtime_video_memory import (
@@ -49,7 +50,7 @@ from assistant_agent.tools.ids import (
 from assistant_agent.tools.runtime import ToolContext
 
 
-LIVE_VIEW_SNAPSHOT_WAIT_SECONDS = 10.0
+LIVE_VIEW_SNAPSHOT_WAIT_SECONDS = 4.0
 LIVE_VIEW_TEXT_TIMELINE_LIMIT = 8
 
 
@@ -93,6 +94,7 @@ class VideoUnderstandingBranch:
         status_snapshot = None
         text_observations: list[dict[str, object]] | None = None
         visual_target_sequence = self._live_target_sequence(context)
+        visual_window_start_sequence = self._live_window_start_sequence(context)
         if (
             video_ref
             and agent_service_text_only
@@ -127,30 +129,39 @@ class VideoUnderstandingBranch:
             ):
                 return self._memory_result(
                     snapshot,
+                    window_start_sequence=visual_window_start_sequence,
                     target_sequence=visual_target_sequence,
                     observations=text_observations,
                 )
         if agent_service_text_only:
             status_override = None
+            target_status = None
             if (
                 video_ref
                 and visual_target_sequence is not None
-                and snapshot is None
-                and self.memory_store is not None
             ):
-                status_override = (
-                    "failed"
-                    if self.memory_store.sequence_failed(
+                semantic_store = self._semantic_store(context)
+                target_failed = (
+                    semantic_store.sequence_failed(
+                        video_ref,
+                        sequence=visual_target_sequence,
+                    )
+                    if semantic_store is not None
+                    else self.memory_store is not None
+                    and self.memory_store.sequence_failed(
                         video_ref,
                         target_sequence=visual_target_sequence,
                     )
-                    else "pending"
                 )
+                target_status = "failed" if target_failed else "timeout"
+                status_override = target_status
             return self._memory_unavailable_result(
                 video_ref=video_ref,
                 snapshot=status_snapshot,
+                window_start_sequence=visual_window_start_sequence,
                 target_sequence=visual_target_sequence,
                 status_override=status_override,
+                target_status=target_status,
             )
 
         input = self._with_context_frames(input)
@@ -266,7 +277,7 @@ class VideoUnderstandingBranch:
                     sequence=target_sequence,
                     timeout_seconds=LIVE_VIEW_SNAPSHOT_WAIT_SECONDS,
                 )
-                record = semantic_store.at_or_before(
+                record = semantic_store.exact_sequence(
                     video_ref,
                     sequence=target_sequence,
                 )
@@ -306,13 +317,33 @@ class VideoUnderstandingBranch:
     ) -> list[dict[str, object]]:
         semantic_store = self._semantic_store(context)
         target_sequence = self._live_target_sequence(context)
+        window_start_sequence = self._live_window_start_sequence(context)
         if semantic_store is not None:
             sequence = target_sequence
             if sequence is None and snapshot is not None:
                 sequence = snapshot.last_success_sequence
             if sequence is not None:
+                records = (
+                    semantic_store.records_in_sequence_range(
+                        video_ref,
+                        start_sequence=window_start_sequence,
+                        end_sequence=sequence,
+                    )
+                    if window_start_sequence is not None
+                    else semantic_store.recent_at_or_before(
+                        video_ref,
+                        sequence=sequence,
+                        limit=LIVE_VIEW_TEXT_TIMELINE_LIMIT,
+                    )
+                )
                 return [
                     {
+                        "sequence": record.frame_sequence,
+                        "role": (
+                            "target"
+                            if record.frame_sequence == target_sequence
+                            else "context"
+                        ),
                         "timestamp_ms": (
                             record.captured_at_ms
                             if record.captured_at_ms is not None
@@ -320,11 +351,7 @@ class VideoUnderstandingBranch:
                         ),
                         "text": record.summary,
                     }
-                    for record in semantic_store.recent_at_or_before(
-                        video_ref,
-                        sequence=sequence,
-                        limit=LIVE_VIEW_TEXT_TIMELINE_LIMIT,
-                    )
+                    for record in records
                     if record.summary
                 ]
         if snapshot is None or not snapshot.current_state:
@@ -360,6 +387,20 @@ class VideoUnderstandingBranch:
             and target_sequence >= 0
         ):
             return target_sequence
+        return None
+
+    @classmethod
+    def _live_window_start_sequence(cls, context: ToolContext) -> int | None:
+        target_sequence = cls._live_target_sequence(context)
+        start_sequence = context.metadata.get("visual_window_start_sequence")
+        if (
+            target_sequence is not None
+            and not isinstance(start_sequence, bool)
+            and isinstance(start_sequence, int)
+            and 0 <= start_sequence <= target_sequence
+            and target_sequence - start_sequence < REALTIME_VISUAL_TARGET_WINDOW_SIZE
+        ):
+            return start_sequence
         return None
 
     def _sync_client_video_adapter(self) -> None:
@@ -405,13 +446,33 @@ class VideoUnderstandingBranch:
         self,
         snapshot: RealtimeVideoSnapshot,
         *,
+        window_start_sequence: int | None = None,
         target_sequence: int | None = None,
         observations: list[dict[str, object]] | None = None,
     ) -> ToolResult:
         output_ref = f"memory://realtime-video/{_safe_ref(snapshot.video_id)}"
-        status = _snapshot_status(snapshot, target_sequence=target_sequence)
+        target_ready = (
+            target_sequence is not None
+            and snapshot.last_success_sequence == target_sequence
+        )
+        status = (
+            "ready"
+            if target_ready
+            else _snapshot_status(snapshot, target_sequence=target_sequence)
+        )
         description = _memory_description(snapshot, status=status)
         sequence_gap = _sequence_gap(snapshot, target_sequence=target_sequence)
+        ready_sequences = [
+            int(item["sequence"])
+            for item in observations or []
+            if isinstance(item.get("sequence"), int)
+            and not isinstance(item.get("sequence"), bool)
+        ]
+        missing_sequences = _missing_window_sequences(
+            window_start_sequence,
+            target_sequence,
+            ready_sequences,
+        )
         payload = {
             "status": status,
             "summary": snapshot.current_state,
@@ -438,7 +499,12 @@ class VideoUnderstandingBranch:
             "media_kind": "live_view",
             "media_refs": [snapshot.video_id],
             "snapshot_sequence": snapshot.last_success_sequence,
+            "window_start_sequence": window_start_sequence,
             "target_sequence": target_sequence,
+            "ready_sequences": ready_sequences,
+            "missing_sequences": missing_sequences,
+            "target_ready": target_ready,
+            "target_status": "ready" if target_ready else status,
             "sequence_gap": sequence_gap,
             "fallback_used": sequence_gap > 0,
             "observed_timestamp_ms": snapshot.last_success_timestamp_ms,
@@ -483,8 +549,10 @@ class VideoUnderstandingBranch:
         *,
         video_ref: str | None,
         snapshot: RealtimeVideoSnapshot | None,
+        window_start_sequence: int | None = None,
         target_sequence: int | None = None,
         status_override: str | None = None,
+        target_status: str | None = None,
     ) -> ToolResult:
         output_ref = (
             f"memory://realtime-video/{_safe_ref(video_ref or 'video')}/pending"
@@ -531,7 +599,16 @@ class VideoUnderstandingBranch:
             "snapshot_sequence": (
                 snapshot.last_success_sequence if snapshot is not None else None
             ),
+            "window_start_sequence": window_start_sequence,
             "target_sequence": target_sequence,
+            "ready_sequences": [],
+            "missing_sequences": _missing_window_sequences(
+                window_start_sequence,
+                target_sequence,
+                [],
+            ),
+            "target_ready": False,
+            "target_status": target_status or status,
             "sequence_gap": sequence_gap,
             "fallback_used": sequence_gap > 0,
             "observed_timestamp_ms": (
@@ -934,6 +1011,11 @@ def _video_model_observation(payload: dict[str, Any]) -> dict[str, Any]:
         "colors",
         "materials",
         "target_sequence",
+        "window_start_sequence",
+        "ready_sequences",
+        "missing_sequences",
+        "target_ready",
+        "target_status",
         "sequence_gap",
         "fallback_used",
         "text_in_video",
@@ -990,6 +1072,12 @@ def _live_view_model_observation(payload: dict[str, Any]) -> dict[str, Any]:
             if value not in (None, "", [], {})
         },
         "usable_visual_text": payload.get("usable_visual_text", True),
+        "window_start_sequence": payload.get("window_start_sequence"),
+        "target_sequence": payload.get("target_sequence"),
+        "ready_sequences": payload.get("ready_sequences"),
+        "missing_sequences": payload.get("missing_sequences"),
+        "target_ready": payload.get("target_ready"),
+        "target_status": payload.get("target_status"),
         "error_code": payload.get("error_code"),
     }
     return {
@@ -997,3 +1085,18 @@ def _live_view_model_observation(payload: dict[str, Any]) -> dict[str, Any]:
         for key, value in observation.items()
         if value not in (None, "", [], {})
     }
+
+
+def _missing_window_sequences(
+    start_sequence: int | None,
+    target_sequence: int | None,
+    ready_sequences: list[int],
+) -> list[int]:
+    if start_sequence is None or target_sequence is None:
+        return []
+    ready = set(ready_sequences)
+    return [
+        sequence
+        for sequence in range(start_sequence, target_sequence + 1)
+        if sequence not in ready
+    ]

@@ -347,6 +347,66 @@ class SessionVisualSemanticStore:
                 for record in self._records_for_video_locked(video_id)
             )
 
+    def exact_sequence(
+        self,
+        video_id: str,
+        *,
+        sequence: int,
+    ) -> VisualSemanticRecord | None:
+        """Return a copy of the newest record for one exact frame sequence."""
+
+        if isinstance(sequence, bool) or sequence < 0:
+            return None
+        with self._lock:
+            self._ensure_open()
+            candidates = [
+                record
+                for record in self._records_for_video_locked(video_id)
+                if record.frame_sequence == sequence
+            ]
+            if not candidates:
+                return None
+            return max(candidates, key=lambda item: item.created_at_ms).model_copy(
+                deep=True
+            )
+
+    def records_in_sequence_range(
+        self,
+        video_id: str,
+        *,
+        start_sequence: int,
+        end_sequence: int,
+    ) -> list[VisualSemanticRecord]:
+        """Return chronological successful records inside one inclusive range."""
+
+        if (
+            isinstance(start_sequence, bool)
+            or isinstance(end_sequence, bool)
+            or start_sequence < 0
+            or end_sequence < start_sequence
+        ):
+            raise ValueError("visual semantic sequence range is invalid")
+        with self._lock:
+            self._ensure_open()
+            records = sorted(
+                (
+                    record
+                    for record in self._records_for_video_locked(video_id)
+                    if start_sequence <= record.frame_sequence <= end_sequence
+                ),
+                key=lambda item: (item.frame_sequence, item.created_at_ms),
+            )
+            return [record.model_copy(deep=True) for record in records]
+
+    def sequence_failed(self, video_id: str, *, sequence: int) -> bool:
+        """Return whether one exact sequence reached a terminal failure."""
+
+        if isinstance(sequence, bool) or sequence < 0:
+            return False
+        with self._lock:
+            self._ensure_open()
+            return sequence in self._failed_sequences.get(video_id, set())
+
     def text_timeline(
         self,
         *,
