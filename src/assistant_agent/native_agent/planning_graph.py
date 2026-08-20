@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from html import escape
 from typing import Any
+from urllib.parse import urlsplit
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
@@ -13,6 +15,7 @@ from langgraph.types import RetryPolicy, Send
 
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.models import (
+    EvidenceLink,
     NativePlanProposal,
     WorkerResult,
 )
@@ -34,6 +37,10 @@ def admit_native_plan(proposal: NativePlanProposal) -> NativePlanProposal:
     for node in proposal.nodes:
         if node.node_id == "plan":
             raise NativePlanAdmissionError("reserved node id: plan")
+        if len(node.allowed_tool_names) != len(set(node.allowed_tool_names)):
+            raise NativePlanAdmissionError("worker Tool names must be unique")
+        if len(node.required_skill_ids) != len(set(node.required_skill_ids)):
+            raise NativePlanAdmissionError("worker Skill ids must be unique")
         for dependency in node.depends_on:
             if dependency == node.node_id:
                 raise NativePlanAdmissionError("self dependency")
@@ -97,13 +104,40 @@ def build_planning_graph(
                 "memory_status": state.get("memory_status", "empty"),
                 "execution_mode": state["execution_mode"],
                 "trusted_runtime_facts": state.get("trusted_runtime_facts"),
+                "agent_phase": state.get("agent_phase", "worker"),
+                "provider_search_profile": state.get(
+                    "provider_search_profile", "none"
+                ),
+                "worker_tool_allowlist": state.get("worker_tool_allowlist", ()),
             },
             context=runtime.context,
         )
         content = _last_ai_text(result)
+        terminal = next(
+            (
+                message
+                for message in reversed(result.get("messages", ()))
+                if isinstance(message, AIMessage)
+            ),
+            None,
+        )
+        metadata = terminal.response_metadata if terminal is not None else {}
+        sources = extract_worker_sources(metadata)
+        profile = metadata.get("provider_search_profile", "none")
+        verification = (
+            "unverified"
+            if not sources
+            and isinstance(profile, str)
+            and profile != "none"
+            else "verified"
+            if sources
+            else "advisory"
+        )
         worker_result = WorkerResult(
             work_item_id=state["work_item_id"],
             content=content or "worker completed without textual output",
+            verification_status=verification,  # type: ignore[arg-type]
+            sources=sources,
         )
         return {"worker_results": [worker_result]}
 
@@ -186,6 +220,9 @@ def _ready_worker_sends(state: PlanningState) -> list[Send]:
                     "dependency_results": tuple(
                         results_by_id[dependency] for dependency in node.depends_on
                     ),
+                    "agent_phase": "worker",
+                    "provider_search_profile": node.search_profile,
+                    "worker_tool_allowlist": node.allowed_tool_names,
                 },
             )
         )
@@ -226,6 +263,53 @@ def _last_ai_text(state: Any) -> str:
         if isinstance(message, AIMessage) and str(message.content).strip():
             return str(message.content).strip()
     return ""
+
+
+def extract_worker_sources(
+    response_metadata: Mapping[str, Any],
+) -> tuple[EvidenceLink, ...]:
+    """Mechanically rebuild bounded https citations from provider metadata."""
+    raw = response_metadata.get("provider_search_sources")
+    if not isinstance(raw, list):
+        return ()
+    links: list[EvidenceLink] = []
+    for position, item in enumerate(raw, start=1):
+        if not isinstance(item, Mapping):
+            continue
+        title = item.get("title")
+        url = item.get("url")
+        if not (isinstance(title, str) and isinstance(url, str)):
+            continue
+        title = title.strip()
+        url = url.strip()
+        if not title or not url or len(url) > 2000 or len(title) > 300:
+            continue
+        try:
+            parsed = urlsplit(url)
+        except ValueError:
+            continue
+        if parsed.scheme != "https" or not parsed.hostname:
+            continue
+        if parsed.username or parsed.password:
+            continue
+        hostname = parsed.hostname.lower()
+        if len(hostname) > 253:
+            continue
+        raw_index = item.get("index", position)
+        index = (
+            raw_index if isinstance(raw_index, int) and 1 <= raw_index else position
+        )
+        links.append(
+            EvidenceLink(
+                index=index,
+                title=title,
+                url=url,
+                domain=hostname,
+            )
+        )
+        if len(links) >= 20:
+            break
+    return tuple(links)
 
 
 _PLANNER_PROMPT = (

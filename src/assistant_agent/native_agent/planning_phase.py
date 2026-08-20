@@ -65,10 +65,17 @@ class PlanningPhaseMiddleware(AgentMiddleware):
             model_settings["provider_search_profile"] = request.state.get(
                 "provider_search_profile", "none"
             )
+            tools = (
+                request.tools
+                if not allowed_names
+                else [
+                    tool
+                    for tool in request.tools
+                    if _tool_name(tool) in allowed_names
+                ]
+            )
             return request.override(
-                tools=[
-                    tool for tool in request.tools if _tool_name(tool) in allowed_names
-                ],
+                tools=tools,
                 response_format=None,
                 model_settings=model_settings,
             )
