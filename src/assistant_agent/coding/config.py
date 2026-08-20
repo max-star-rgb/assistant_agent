@@ -67,11 +67,45 @@ class CodingRepositoryConfig(BaseModel):
     target_branch: str = Field(min_length=1, max_length=160)
     commands: dict[str, CodingCommandConfig] = Field(default_factory=dict)
     verification_sequence: tuple[str, ...] = ()
+    integration_enabled: bool = False
+    commit_author_name: str = Field(default="Assistant Agent", min_length=1, max_length=160)
+    commit_author_email: str = Field(
+        default="assistant-agent@localhost",
+        min_length=3,
+        max_length=254,
+    )
 
     @field_validator("verification_sequence", mode="before")
     @classmethod
     def _tuple_sequence(cls, value: object) -> object:
         return tuple(value) if isinstance(value, list) else value
+
+    @field_validator("target_branch")
+    @classmethod
+    def _validate_target_branch(cls, value: str) -> str:
+        if value.startswith("-") or any(character in value for character in ("\x00", "\n", "\r")):
+            raise ValueError("coding target branch must be a literal branch name")
+        try:
+            completed = subprocess.run(
+                ["git", "check-ref-format", "--branch", value],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ValueError("coding target branch validation failed") from exc
+        if completed.returncode != 0:
+            raise ValueError("coding target branch must be a literal branch name")
+        return value
+
+    @field_validator("commit_author_name", "commit_author_email")
+    @classmethod
+    def _single_line_identity(cls, value: str) -> str:
+        if any(character in value for character in ("\x00", "\n", "\r")):
+            raise ValueError("coding commit identity must be a single line")
+        return value
 
     @model_validator(mode="after")
     def _validate_commands(self) -> "CodingRepositoryConfig":
@@ -83,6 +117,8 @@ class CodingRepositoryConfig(BaseModel):
         missing = set(self.verification_sequence).difference(self.commands)
         if missing:
             raise ValueError("coding verification sequence references an unknown command")
+        if self.integration_enabled and not self.verification_sequence:
+            raise ValueError("coding integration requires a verification sequence")
         return self
 
 

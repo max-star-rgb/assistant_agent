@@ -13,6 +13,9 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 from assistant_agent.coding.models import (
     CodingCommandEvidence,
+    CodingCommitResult,
+    CodingMergePreview,
+    CodingMergeResult,
     CodingPatchApplyResult,
     CodingPatchProposal,
     CodingPatchValidation,
@@ -122,10 +125,15 @@ class CodingState(AgentState):
     approval_status: NotRequired[Literal["pending", "approved", "rejected"] | None]
     approval_origin: NotRequired[Literal["model", "formatter"]]
     applied_result: NotRequired[CodingPatchApplyResult | None]
+    approved_changed_paths: NotRequired[Annotated[list[str], _merge_unique_strings]]
     format_round: NotRequired[int]
     verification_evidence: NotRequired[
         Annotated[list[CodingCommandEvidence], operator.add]
     ]
+    integration_required: NotRequired[bool]
+    commit_result: NotRequired[CodingCommitResult | None]
+    merge_preview: NotRequired[CodingMergePreview | None]
+    merge_result: NotRequired[CodingMergeResult | None]
     coding_result: NotRequired[CodingTerminalResult]
 
 

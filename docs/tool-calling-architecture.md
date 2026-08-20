@@ -111,6 +111,11 @@ protected glob、UTF-8、大小、base commit、file digest 和 patch digest 均
 增量 diff 只有重新通过 patch validator 和独立 HITL 后才写入 worktree。命令执行资源生命周期归 Agent Server
 authority；本阶段不宣称容器级网络或恶意代码隔离。
 
+阶段 3 的 controlled commit、merge preview 与 merge apply 同样不是模型 Tool。模型和客户端不能提交 target
+branch、commit message、author、Git argv、strategy 或 result commit；这些事实只来自 repository 配置和受信
+integration service。merge approval 是 Graph 自有 interrupt，不把 commit/merge 暴露进任何 Tool inventory。
+push、PR、fetch/pull、远程凭据和自动冲突修复没有注册或隐式执行路径。
+
 ## Provider-native 能力
 
 Qwen 等模型原生联网参数属于 `BaseChatModel` 请求能力，不伪装成本地 Tool。real 模式选择 qwen 且

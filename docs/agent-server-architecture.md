@@ -15,15 +15,16 @@
 
 ## 生产 Graph 入口
 
-Agent Server process owner 静态持有一份 `CodingWorkspaceService` 和一份 `CodingValidationService`。coding 默认 disabled；显式启用后，
+Agent Server process owner 静态持有一份 `CodingWorkspaceService`、一份 `CodingValidationService` 和一份
+`CodingIntegrationService`。coding 默认 disabled；显式启用后，
 source repository 只能从服务端 JSON allowlist 通过 opaque `coding_repo_id` 选择。每个
 `user.identity + thread_id + repo_id` 解析到独立临时 Git worktree，workspace ref 使用服务端 HMAC 派生，
 metadata、锁和 TTL 位于受管 workspace root，不进入 Graph state。
 
 Graph checkpoint 只保存 opaque workspace ref、base commit、proposal/validation 和结构化结果，不保存
 宿主路径、Git client、文件句柄或进程对象。interrupt 恢复时 backend 重新校验唯一认证身份、thread、
-base commit、目标文件 digest 和 patch digest。终态保留 worktree 到 TTL；不自动 commit、merge、
-push 或写回 source repository。
+base commit、目标文件 digest 和 patch digest。integration 默认关闭；关闭时终态保留 worktree 到 TTL，
+不 commit、merge、push 或写回 source repository。
 
 每个 repository 可在同一服务端 allowlist 中配置有序 `verification_sequence`，其中 command ID 只映射到
 受信固定 argv、command kind 和资源上限。验证进程不在 source repo、Agent Server cwd 或受管 worktree 中
@@ -31,6 +32,15 @@ push 或写回 source repository。
 终止、POSIX CPU/内存/进程/文件限制和总磁盘扫描；stdout/stderr 只保留有界投影和 digest。scratch 与进程
 对象不进入 checkpoint，命令结束后无条件清理。此宿主限制不是容器级恶意代码或网络隔离；强 sandbox、
 依赖安装和 egress 控制仍属于后续阶段。
+
+repository 只有显式 `integration_enabled=true` 且 verification sequence 非空时，才允许在验证通过后进入受控
+Git integration。controlled commit 只在 thread-scoped detached worktree 中通过临时 index 与 `commit-tree`
+创建，author/committer 由服务端配置，Git hooks、signing、credential prompt 与 system config 禁用。目标
+preflight 要求配置 path 当前 checkout 精确等于 target branch、HEAD 冻结且 worktree/index clean。非 FF 情况
+先用 `merge-tree --write-tree` 和 `commit-tree` 在 object database 中预生成双亲 result commit；preview 与
+source/target/result commit 进入 checkpoint，但宿主 path、Git process 和 stderr 不进入。独立 merge HITL 后
+最终目标写入只执行 `merge --ff-only <result_commit>`；HEAD 漂移、dirty、冲突或 preview 不匹配均停止且不
+重算。阶段 3 不 fetch/pull/push、不创建 PR、不使用远程凭据，也不自动修复冲突。
 
 `langgraph.json` 只注册当前两张原生 Graph：
 

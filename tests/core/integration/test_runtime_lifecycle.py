@@ -124,7 +124,15 @@ def test_parent_graph_has_fast_planning_and_coding_native_branches(monkeypatch) 
         assert graph.nodes["planning_graph"].data.name == "AssistantPlanningGraph"
         assert graph.nodes["coding_graph"].data.name == "AssistantCodingGraph"
         coding_nodes = set(graph.nodes["coding_graph"].data.get_graph().nodes)
-        assert {"approval", "apply_patch", "run_validation"}.issubset(coding_nodes)
+        assert {
+            "approval",
+            "apply_patch",
+            "run_validation",
+            "create_commit",
+            "prepare_merge",
+            "merge_approval",
+            "apply_merge",
+        }.issubset(coding_nodes)
         assert owner.graph.checkpointer is None
     finally:
         asyncio.run(owner.aclose())

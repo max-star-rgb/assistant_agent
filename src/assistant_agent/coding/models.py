@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class CodingWorkspace(BaseModel):
@@ -105,10 +105,76 @@ class CodingPatchApplyResult(BaseModel):
         return tuple(value) if isinstance(value, list) else value
 
 
+class CodingCommitResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    status: Literal["committed"] = "committed"
+    workspace_ref: str = Field(min_length=16, max_length=128)
+    base_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    parent_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    source_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    source_tree: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    changed_paths: tuple[str, ...] = Field(min_length=1)
+    verification_evidence_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("changed_paths", mode="before")
+    @classmethod
+    def _tuple_paths(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+
+class CodingMergePreview(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    source_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    expected_target_head: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    target_branch: str = Field(min_length=1, max_length=160)
+    strategy: Literal["fast_forward", "merge_commit"]
+    result_tree: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    result_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    merge_preview_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class CodingMergeApprovalDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    decision: Literal["approve", "reject"]
+    source_commit: str | None = Field(default=None, pattern=r"^[0-9a-f]{40,64}$")
+    expected_target_head: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{40,64}$",
+    )
+    merge_preview_digest: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+
+    @model_validator(mode="after")
+    def _approve_requires_binding(self) -> "CodingMergeApprovalDecision":
+        if self.decision == "approve" and not all(
+            (self.source_commit, self.expected_target_head, self.merge_preview_digest)
+        ):
+            raise ValueError("coding merge approval requires frozen preview facts")
+        return self
+
+
+class CodingMergeResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    status: Literal["merged"] = "merged"
+    source_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    previous_target_head: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    result_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    result_tree: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    target_branch: str = Field(min_length=1, max_length=160)
+    strategy: Literal["fast_forward", "merge_commit"]
+    merge_preview_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class CodingTerminalResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    status: Literal["applied", "rejected", "failed", "unconfigured"]
+    status: Literal["applied", "merged", "rejected", "failed", "unconfigured"]
     workspace_ref: str | None = None
     base_commit: str | None = None
     patch_digest: str | None = None
@@ -116,6 +182,16 @@ class CodingTerminalResult(BaseModel):
     error_code: str | None = None
     verification_status: Literal["passed", "failed"] | None = None
     verification_evidence: tuple[CodingCommandEvidence, ...] = ()
+    source_commit: str | None = Field(default=None, pattern=r"^[0-9a-f]{40,64}$")
+    expected_target_head: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{40,64}$",
+    )
+    result_commit: str | None = Field(default=None, pattern=r"^[0-9a-f]{40,64}$")
+    merge_preview_digest: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
 
     @field_validator("changed_paths", mode="before")
     @classmethod
@@ -188,12 +264,16 @@ class CodingDiffResult(BaseModel):
 __all__ = [
     "CodingApprovalDecision",
     "CodingCommandEvidence",
+    "CodingCommitResult",
     "CodingPatchApplyResult",
     "CodingPatchProposal",
     "CodingPatchValidation",
     "CodingDiffResult",
     "CodingListEntry",
     "CodingListResult",
+    "CodingMergeApprovalDecision",
+    "CodingMergePreview",
+    "CodingMergeResult",
     "CodingReadResult",
     "CodingSearchMatch",
     "CodingSearchResult",
