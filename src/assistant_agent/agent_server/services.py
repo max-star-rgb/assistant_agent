@@ -13,6 +13,7 @@ from langgraph.store.base import BaseStore
 
 from assistant_agent.coding.config import CodingConfig
 from assistant_agent.coding.tools import create_coding_tools
+from assistant_agent.coding.validation import CodingValidationService
 from assistant_agent.coding.workspace import CodingWorkspaceService
 from assistant_agent.config import ProviderConfig
 from assistant_agent.context.token_counter import create_context_token_counter
@@ -39,6 +40,7 @@ class AgentServerExecutionOwner:
     tools: list[BaseTool]
     coding_tools: list[BaseTool]
     coding_workspace_service: CodingWorkspaceService
+    coding_validation_service: CodingValidationService
     memory_backend: MemoryBackend
     graph: Any
     memory_graph: Any
@@ -82,12 +84,15 @@ class AgentServerExecutionOwner:
             visual_history_probe=tool_resources.visual_history_probe,
         )
         planning_graph = build_planning_graph(model, fast_agent)
-        coding_workspace_service = CodingWorkspaceService(CodingConfig.from_env())
+        coding_config = CodingConfig.from_env()
+        coding_workspace_service = CodingWorkspaceService(coding_config)
+        coding_validation_service = CodingValidationService(coding_workspace_service)
         coding_tools = create_coding_tools(coding_workspace_service)
         coding_graph = build_coding_graph(
             model,
             coding_tools,
             coding_workspace_service,
+            validation_service=coding_validation_service,
             model_call_limit=config.max_tool_iterations,
             tool_call_limit=config.max_tool_iterations,
         )
@@ -104,6 +109,7 @@ class AgentServerExecutionOwner:
             tools=tools,
             coding_tools=coding_tools,
             coding_workspace_service=coding_workspace_service,
+            coding_validation_service=coding_validation_service,
             memory_backend=memory_backend,
             graph=graph,
             memory_graph=memory_graph,
@@ -114,6 +120,7 @@ class AgentServerExecutionOwner:
         for target in (
             self.memory_backend,
             self.coding_workspace_service,
+            self.coding_validation_service,
             self.model,
             *self.tools,
             *self.coding_tools,
