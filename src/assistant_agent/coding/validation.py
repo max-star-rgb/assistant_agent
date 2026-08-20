@@ -21,7 +21,10 @@ from assistant_agent.coding.models import (
     CodingWorkspace,
     CodingDependencyPlan,
 )
-from assistant_agent.coding.dependencies import temporary_wheelhouse
+from assistant_agent.coding.dependencies import (
+    build_dependency_plan,
+    temporary_wheelhouse,
+)
 from assistant_agent.coding.dependency_egress import CodingDependencyFetcher
 from assistant_agent.coding.sandbox import CodingSandboxBackend
 from assistant_agent.coding.workspace import CodingWorkspaceError, CodingWorkspaceService
@@ -56,25 +59,58 @@ class CodingValidationService:
                     status="failed",
                     error_code="dependency_egress_unconfigured",
                 )
+            sequence_result: CodingVerificationResult | None = None
+            manifest_digest: str | None = None
             try:
+                fresh_plan = build_dependency_plan(
+                    repository,
+                    workspace.root,
+                    changed_paths=(dependency_plan.lockfile_path,),
+                )
+                if (
+                    fresh_plan is None
+                    or fresh_plan.plan_digest != dependency_plan.plan_digest
+                ):
+                    raise ValueError("dependency_approval_mismatch")
                 with temporary_wheelhouse(self._root) as dependency_root:
                     manifest = self.dependency_fetcher.fetch(
                         profile,
-                        dependency_plan,
+                        fresh_plan,
                         workspace.root,
                         dependency_root,
                     )
-                    return self._run_sequence(
+                    manifest_digest = manifest.manifest_digest
+                    sequence_result = self._run_sequence(
                         workspace,
                         repository,
                         format_round=format_round,
                         dependency_root=dependency_root,
-                        dependency_plan=dependency_plan,
+                        dependency_plan=fresh_plan,
                         dependency_manifest_digest=manifest.manifest_digest,
                     )
+                return sequence_result
             except ValueError as exc:
+                if sequence_result is not None:
+                    return sequence_result.model_copy(
+                        update={"status": "failed", "error_code": str(exc)}
+                    )
+                evidence = CodingCommandEvidence(
+                    command_id="dependency-fetch",
+                    kind="build",
+                    status="failed",
+                    duration_ms=0,
+                    output_digest=hashlib.sha256(b"").hexdigest(),
+                    stdout="",
+                    stderr="",
+                    error_code=str(exc),
+                    dependency_plan_digest=dependency_plan.plan_digest,
+                    dependency_manifest_digest=manifest_digest,
+                    dependency_install_status="failed",
+                    dependency_install_error=str(exc),
+                )
                 return CodingVerificationResult(
                     status="failed",
+                    evidence=(evidence,),
                     error_code=str(exc),
                 )
         return self._run_sequence(
