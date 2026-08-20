@@ -44,6 +44,13 @@ merge_approval -> apply_merge`。merge approval 是独立原生 interrupt，绑�
 target HEAD 和 preview digest；apply 不调用模型，目标漂移或审批不匹配不会重新生成 preview。integration
 关闭时保持阶段 2 applied terminal。coding 不复用 planning 并行 worker，所有 mutation 通过单一顺序节点完成。
 
+repository 配置 Stage 4B1 dependency profile 时，`apply_patch` 后先由确定性 `plan_dependencies` 检查
+approved changed paths 与严格 lockfile，只有 lockfile 变化才生成 dependency plan。独立
+`coding_dependency_install` interrupt 绑定 profile、lockfile、egress policy 与 plan digest；approve resume
+重新解析 worktree lockfile，任何漂移均 fail closed。Graph state 只保存 JSON-safe plan 与 approval status，
+不保存 wheelhouse path、Docker network/container、proxy client 或文件句柄；获批 plan 只在同一次
+`run_validation` 节点调用内 fetch、离线消费并清理。
+
 `capture_trusted_runtime_facts` 在 `memory_recall` 前采集带时区的当前时间与部署默认地点，写入结构化
 `trusted_runtime_facts`。当前默认地点为“上海市青浦区华为练秋湖研发中心”，并显式标记
 `source=deployment_default`、`is_fallback=true`；模型可见临时消息使用“用户默认地点”中文字段，并明确不得把该默认地点

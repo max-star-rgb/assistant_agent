@@ -119,7 +119,10 @@ authority。repository 显式启用阶段 4A sandbox 后，这些固定命令迁
 协议合规镜像内的固定 trusted runner 执行；runner 只承担只读输入复制、离线命令执行和有界结构化结果返回。
 sandbox backend、Docker CLI、image、container ID、network、mount、environment 和资源参数都不是
 `BaseTool`，也不进入模型 schema。sandbox 默认断网且不注入宿主秘密，任何失败禁止回退宿主执行。联网、
-依赖安装、secret 注入和外部资源审批仍不存在。
+Stage 4B1 的 dependency intent、审批、proxy/downloader 与离线 install 同样不是 Tool：模型、客户端和消息不能
+提交 lockfile、package、registry、host、port、image、argv、proxy、network 或环境变量。intent 只来自 patch
+changed paths 与 repository 静态 profile；验证容器仍断网。secret 注入、私有 registry、其他 ecosystem 和通用
+artifact 外部资源能力仍不存在。
 
 阶段 3 的 controlled commit、merge preview 与 merge apply 同样不是模型 Tool。模型和客户端不能提交 target
 branch、commit message、author、Git argv、strategy 或 result commit；这些事实只来自 repository 配置和受信
