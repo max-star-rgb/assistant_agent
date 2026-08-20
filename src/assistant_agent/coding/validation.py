@@ -21,6 +21,7 @@ from assistant_agent.coding.models import (
     CodingWorkspace,
     CodingDependencyPlan,
     CodingCredentialRequest,
+    CodingArtifactIngressPlan,
 )
 from assistant_agent.coding.dependencies import (
     build_dependency_plan,
@@ -56,6 +57,7 @@ class CodingValidationService:
         format_round: int,
         dependency_plan: CodingDependencyPlan | None = None,
         credential_request: CodingCredentialRequest | None = None,
+        artifact_ingress_plan: CodingArtifactIngressPlan | None = None,
     ) -> CodingVerificationResult:
         if dependency_plan is not None:
             profile = repository.dependency_profile
