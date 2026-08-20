@@ -105,14 +105,74 @@ class CodingToolScope(BaseModel):
     repo_id: str = Field(min_length=1, max_length=80)
 
 
+class CodingListEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    path: str
+    kind: Literal["file", "directory"]
+    size_bytes: int | None = Field(default=None, ge=0)
+
+
+class CodingListResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    entries: tuple[CodingListEntry, ...]
+    next_cursor: int | None = Field(default=None, ge=0)
+
+
+class CodingSearchMatch(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    path: str
+    line_number: int = Field(ge=1)
+    line: str = Field(max_length=2_000)
+
+
+class CodingSearchResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    matches: tuple[CodingSearchMatch, ...]
+    next_cursor: int | None = Field(default=None, ge=0)
+
+
+class CodingReadResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    path: str
+    content: str
+    start_line: int = Field(ge=1)
+    end_line: int = Field(ge=0)
+    total_lines: int = Field(ge=0)
+    next_line: int | None = Field(default=None, ge=1)
+
+
+class CodingStatusResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    entries: tuple[str, ...]
+
+
+class CodingDiffResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    diff: str
+    truncated: bool = False
+
+
 __all__ = [
     "CodingApprovalDecision",
     "CodingPatchApplyResult",
     "CodingPatchProposal",
     "CodingPatchValidation",
+    "CodingDiffResult",
+    "CodingListEntry",
+    "CodingListResult",
+    "CodingReadResult",
+    "CodingSearchMatch",
+    "CodingSearchResult",
+    "CodingStatusResult",
     "CodingTerminalResult",
     "CodingToolScope",
     "CodingWorkspace",
     "CodingWorkspaceMetadata",
 ]
-
