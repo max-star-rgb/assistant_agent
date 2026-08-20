@@ -231,9 +231,9 @@ class DockerDependencyFetcher:
             )
             resources.append(["container", proxy, False])
             if private:
-                self._ok(("create", "--name", proxy, "--hostname", "dependency-gateway", "--network", internal, "--label", "assistant_agent.coding.role=credential-gateway", *security, "--tmpfs", f"/tmp:rw,noexec,nosuid,nodev,size=16777216,uid={self.uid},gid={self.gid}", "--tmpfs", f"/run/assistant-agent-credentials:rw,noexec,nosuid,nodev,size=65536,mode=0700,uid={self.uid},gid={self.gid}", "--log-driver", "none", "--entrypoint", "/usr/local/bin/assistant-agent-registry-gateway", credential_profile.gateway_image, "--policy", "/policy.json", "--credential", "/run/assistant-agent-credentials/credential"), 20)
+                self._ok(("create", "--name", proxy, "--hostname", "dependency-gateway", "--network", internal, "--label", f"assistant_agent.coding.owner={self.owner}", "--label", "assistant_agent.coding.role=credential-gateway", *security, "--tmpfs", f"/tmp:rw,noexec,nosuid,nodev,size=16777216,uid={self.uid},gid={self.gid}", "--tmpfs", f"/run/assistant-agent-credentials:rw,noexec,nosuid,nodev,size=65536,mode=0700,uid={self.uid},gid={self.gid}", "--log-driver", "none", "--entrypoint", "/usr/local/bin/assistant-agent-registry-gateway", credential_profile.gateway_image, "--policy", "/policy.json", "--credential", "/run/assistant-agent-credentials/credential"), 20)
             else:
-                self._ok(("create", "--name", proxy, "--hostname", "dependency-proxy", "--network", internal, *security, "--tmpfs", f"/tmp:rw,noexec,nosuid,nodev,size=16777216,uid={self.uid},gid={self.gid}", "--log-driver", "none", "--entrypoint", "/usr/local/bin/assistant-agent-dependency-proxy", profile.proxy_image, "--policy", "/policy.json"), 20)
+                self._ok(("create", "--name", proxy, "--hostname", "dependency-proxy", "--network", internal, "--label", f"assistant_agent.coding.owner={self.owner}", *security, "--tmpfs", f"/tmp:rw,noexec,nosuid,nodev,size=16777216,uid={self.uid},gid={self.gid}", "--log-driver", "none", "--entrypoint", "/usr/local/bin/assistant-agent-dependency-proxy", profile.proxy_image, "--policy", "/policy.json"), 20)
             resources[-1][2] = True
             self._ok(("network", "connect", external, proxy), 20)
             resources.append(["container", downloader, False])
@@ -242,7 +242,7 @@ class DockerDependencyFetcher:
                 if private
                 else "HTTPS_PROXY=http://dependency-proxy:8080"
             )
-            self._ok(("create", "--name", downloader, "--hostname", "dependency-fetch", "--network", internal, *security, "--tmpfs", f"/wheelhouse:rw,nosuid,nodev,size={plan.max_download_bytes},nr_inodes={plan.max_files + 32},uid={self.uid},gid={self.gid}", "--tmpfs", f"/tmp:rw,noexec,nosuid,nodev,size=67108864,uid={self.uid},gid={self.gid}", "--env", route_env, "--log-driver", "none", "--entrypoint", "/usr/local/bin/assistant-agent-dependency-fetch", profile.downloader_image, "--lockfile", "/input/requirements.lock", "--output", "/wheelhouse"), 20)
+            self._ok(("create", "--name", downloader, "--hostname", "dependency-fetch", "--network", internal, "--label", f"assistant_agent.coding.owner={self.owner}", *security, "--tmpfs", f"/wheelhouse:rw,nosuid,nodev,size={plan.max_download_bytes},nr_inodes={plan.max_files + 32},uid={self.uid},gid={self.gid}", "--tmpfs", f"/tmp:rw,noexec,nosuid,nodev,size=67108864,uid={self.uid},gid={self.gid}", "--env", route_env, "--log-driver", "none", "--entrypoint", "/usr/local/bin/assistant-agent-dependency-fetch", profile.downloader_image, "--lockfile", "/input/requirements.lock", "--output", "/wheelhouse"), 20)
             resources[-1][2] = True
             policy = {"hosts": list(plan.allowed_hosts), "ports": list(plan.allowed_ports), "max_bytes": plan.max_download_bytes}
             if private:
@@ -360,7 +360,7 @@ class DockerDependencyFetcher:
                 else:
                     credential_audit["credential_cleanup_status"] = "failed"
                     cleanup_failed = True
-                    self._kill_gateway(proxy)
+                    self._contain_gateway(proxy)
             for kind, name, confirmed in reversed(resources):
                 argv = ("rm", "--force", name) if kind == "container" else ("network", "rm", name)
                 try:
@@ -368,25 +368,13 @@ class DockerDependencyFetcher:
                 except (OSError, subprocess.SubprocessError):
                     cleanup_failed = True
                     if kind == "container" and name == proxy and private:
-                        self._kill_gateway(proxy)
-                        try:
-                            self.runner.run(
-                                (self.docker, "rm", "--force", proxy), timeout=20
-                            )
-                        except (OSError, subprocess.SubprocessError):
-                            pass
+                        self._contain_gateway(proxy)
                 else:
                     if completed.returncode != 0:
                         absent = "no such" in completed.stderr.lower()
                         cleanup_failed |= bool(confirmed) or not absent
                         if kind == "container" and name == proxy and private:
-                            self._kill_gateway(proxy)
-                            try:
-                                self.runner.run(
-                                    (self.docker, "rm", "--force", proxy), timeout=20
-                                )
-                            except (OSError, subprocess.SubprocessError):
-                                pass
+                            self._contain_gateway(proxy)
         if cleanup_failed:
             if private:
                 raise CredentialFetchError("dependency_cleanup_failed", credential_audit)
@@ -427,11 +415,23 @@ class DockerDependencyFetcher:
             return False
         return completed.returncode == 0
 
-    def _kill_gateway(self, name: str) -> None:
+    def _kill_gateway(self, name: str) -> bool:
         try:
-            self.runner.run((self.docker, "kill", name), timeout=10)
+            completed = self.runner.run((self.docker, "kill", name), timeout=10)
         except (OSError, subprocess.SubprocessError):
-            pass
+            return False
+        return completed.returncode == 0 or "no such" in completed.stderr.lower()
+
+    def _contain_gateway(self, name: str) -> bool:
+        self._revoke_gateway(name)
+        killed = self._kill_gateway(name)
+        try:
+            removed = self.runner.run(
+                (self.docker, "rm", "--force", name), timeout=20
+            )
+        except (OSError, subprocess.SubprocessError):
+            return killed
+        return killed or removed.returncode == 0 or "no such" in removed.stderr.lower()
 
     def _image(self, image: str, label: str) -> None:
         completed = self.runner.run(
@@ -503,14 +503,7 @@ class DockerDependencyFetcher:
             for name in gateways.stdout.splitlines():
                 if not name.strip():
                     continue
-                self._revoke_gateway(name.strip())
-                self._kill_gateway(name.strip())
-                try:
-                    self.runner.run(
-                        (self.docker, "rm", "--force", name.strip()), timeout=20
-                    )
-                except (OSError, subprocess.SubprocessError):
-                    pass
+                self._contain_gateway(name.strip())
         for kind, list_argv, remove_prefix in (
             (
                 "container",
