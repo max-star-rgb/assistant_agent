@@ -151,10 +151,7 @@ def create_chat_model(config: ProviderConfig | None = None) -> BaseChatModel:
         raise ProviderConfigurationError(
             f"{settings.provider} chat provider is missing {', '.join(missing)}"
         )
-    if (
-        settings.provider == "qwen"
-        and resolved.qwen_chat_api_protocol == "dashscope"
-    ):
+    if settings.provider == "qwen" and resolved.qwen_chat_api_protocol == "dashscope":
         from assistant_agent.providers.dashscope_langchain import (
             DashScopeNativeChatModel,
         )

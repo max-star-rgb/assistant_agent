@@ -17,7 +17,11 @@ from assistant_agent.native_agent.fast_agent import build_fast_agent
 from assistant_agent.native_agent.planning_graph import build_planning_graph
 from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.native_agent.root_graph import build_assistant_root_graph
-from assistant_agent.native_agent.state import CodingState, FastAgentState, PlanningState
+from assistant_agent.native_agent.state import (
+    CodingState,
+    FastAgentState,
+    PlanningState,
+)
 from assistant_agent.skills.loading import SkillCatalog
 from assistant_agent.tools.native_boundary import configure_builtin_tool
 from scripts import run_server
@@ -68,9 +72,7 @@ class _Runs:
         ]
 
     async def cancel(self, thread_id: str, run_id: str, **kwargs: Any) -> None:
-        self.cancellations.append(
-            {"thread_id": thread_id, "run_id": run_id, **kwargs}
-        )
+        self.cancellations.append({"thread_id": thread_id, "run_id": run_id, **kwargs})
 
     async def create(self, **kwargs: Any) -> None:
         self.requests.append(kwargs)
@@ -169,7 +171,9 @@ def _model_tool_names(raw_tools: object) -> set[str]:
 
 
 @pytest.mark.core_invariant("MEMORY-001")
-def test_chat_runs_recall_once_and_schedule_extraction_for_each_mode(monkeypatch) -> None:
+def test_chat_runs_recall_once_and_schedule_extraction_for_each_mode(
+    monkeypatch,
+) -> None:
     client = _Client()
     monkeypatch.setattr(root_graph_module, "get_client", lambda: client, raising=False)
 
@@ -204,7 +208,9 @@ def test_chat_runs_recall_once_and_schedule_extraction_for_each_mode(monkeypatch
     results = asyncio.run(run_all())
 
     assert all(events == ["recall"] for events, _result in results)
-    assert all(result["memory_context"] == ("memory-sentinel",) for _events, result in results)
+    assert all(
+        result["memory_context"] == ("memory-sentinel",) for _events, result in results
+    )
     assert sorted(client.runs.cancellations, key=lambda item: item["thread_id"]) == [
         {
             "thread_id": "thread-fast-sentinel",
@@ -222,8 +228,7 @@ def test_chat_runs_recall_once_and_schedule_extraction_for_each_mode(monkeypatch
     assert len(client.runs.requests) == 2
     assert all(
         request["assistant_id"] == "assistant-memory-v1"
-        and request["metadata"]
-        == {"assistant_agent_run_kind": "memory_extraction"}
+        and request["metadata"] == {"assistant_agent_run_kind": "memory_extraction"}
         and request["after_seconds"] == 1800
         and request["multitask_strategy"] == "enqueue"
         for request in client.runs.requests

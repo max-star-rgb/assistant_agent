@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 import httpx
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
-from langgraph.errors import NodeCancelledError, NodeError
+from langgraph.errors import GraphBubbleUp, NodeCancelledError, NodeError
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 from langgraph.types import Command, RetryPolicy, Send
@@ -520,6 +520,7 @@ def _is_worker_operational_failure(error: BaseException) -> bool:
             current,
             (
                 asyncio.CancelledError,
+                GraphBubbleUp,
                 PermissionError,
                 NodeCancelledError,
                 NativePlanAdmissionError,
@@ -534,19 +535,24 @@ def _is_worker_operational_failure(error: BaseException) -> bool:
             ),
         ):
             return False
+        recognized_operational = False
         if isinstance(current, (TimeoutError, ConnectionError, httpx.TransportError)):
             operational = True
+            recognized_operational = True
         status_code = _exception_status_code(current)
         if status_code is not None:
             if status_code in {408, 409, 425, 429} or status_code >= 500:
                 operational = True
+                recognized_operational = True
             else:
                 return False
-        if isinstance(current, URLError) and isinstance(
-            current.reason,
-            BaseException,
-        ):
-            pending.append(current.reason)
+        if isinstance(current, URLError):
+            operational = True
+            recognized_operational = True
+            if isinstance(current.reason, BaseException):
+                pending.append(current.reason)
+        if not recognized_operational:
+            return False
         if isinstance(current.__cause__, BaseException):
             pending.append(current.__cause__)
         if isinstance(current.__context__, BaseException):

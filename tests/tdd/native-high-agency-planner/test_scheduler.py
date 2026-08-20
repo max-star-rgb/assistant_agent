@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
+from langgraph.errors import GraphInterrupt
 
 from assistant_agent.native_agent import planning_graph
 from assistant_agent.native_agent.context import AssistantRunContext
@@ -246,6 +247,9 @@ def _deep_operational_chain_with_cause(cause: Exception) -> TimeoutError:
         TypeError("bug"),
         _operational_wrapper_with_cause(PermissionError("wrapped-denied")),
         _operational_wrapper_with_cause(TypeError("wrapped-bug")),
+        _operational_wrapper_with_cause(AttributeError("wrapped-attribute-bug")),
+        _operational_wrapper_with_cause(RuntimeError("wrapped-runtime-bug")),
+        _operational_wrapper_with_cause(GraphInterrupt()),
         _deep_operational_chain_with_cause(PermissionError("deep-wrapped-denied")),
     ],
     ids=[
@@ -253,6 +257,9 @@ def _deep_operational_chain_with_cause(cause: Exception) -> TimeoutError:
         "type",
         "wrapped-permission",
         "wrapped-type",
+        "wrapped-attribute",
+        "wrapped-runtime",
+        "wrapped-graph-interrupt",
         "deep-wrapped-permission",
     ],
 )
