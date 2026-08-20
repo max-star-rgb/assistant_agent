@@ -31,6 +31,7 @@ class NativeToolResources:
     visual_reminder_registry: Any | None = None
     visual_memory_text_index: Any | None = None
     visual_history_probe: Any | None = None
+    live_view_resolver: Callable[[str, str], Any] | None = None
 
 
 def _create_builtin_tools(
@@ -51,6 +52,7 @@ def _create_builtin_tools(
         visual_semantic_store_pool=resources.visual_semantic_store_pool,
         visual_reminder_registry=resources.visual_reminder_registry,
         visual_memory_text_index=resources.visual_memory_text_index,
+        live_view_resolver=resources.live_view_resolver,
     )
     concrete_tools: list[BaseTool] = []
     for plugin in _builtin_plugins():

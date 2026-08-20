@@ -388,6 +388,14 @@ async def _handle_frame(
             visual_window = await visual_perception.session.prepare_strict_window(
                 session.video_ids
             )
+        record_live_view = getattr(visual_module, "record_live_view", None)
+        if callable(record_live_view):
+            record_live_view(
+                session.user_id,
+                session.thread_id,
+                video_ids=session.video_ids,
+                window=visual_window,
+            )
         task = asyncio.create_task(
             _run_chat(
                 websocket,
@@ -694,7 +702,7 @@ def _native_thread_id(*, protocol_session_id: str | None, user_id: str) -> str |
 def media_graph_input(
     chat: Any,
     *,
-    video_ids: list[str],
+    video_ids: list[str] = (),
     visual_window_id: str | None = None,
     visual_window_start_sequence: int | None = None,
     visual_target_sequence: int | None = None,
@@ -702,27 +710,10 @@ def media_graph_input(
 ) -> dict[str, Any]:
     """Mechanically project one vendor chat to the native public graph input."""
 
+    # The live camera is intentionally NOT injected into the user message: the
+    # main LLM must not "know there is a camera". Live-view facts live on the
+    # VLM side and are resolved by the Tool from the process-owned module.
     content: list[dict[str, Any]] = [{"type": "text", "text": chat.text}]
-    for video_id in video_ids:
-        block: dict[str, Any] = {
-            "type": "video",
-            "id": video_id,
-            "source": "live_camera",
-        }
-        if (
-            video_id == visual_target_video_id
-            and visual_window_id is not None
-            and visual_window_start_sequence is not None
-            and visual_target_sequence is not None
-        ):
-            block.update(
-                {
-                    "window_id": visual_window_id,
-                    "window_start_sequence": visual_window_start_sequence,
-                    "target_sequence": visual_target_sequence,
-                }
-            )
-        content.append(block)
     return {
         "messages": [{"role": "user", "content": content}],
         "execution_mode": chat.execution_mode,

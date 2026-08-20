@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable
 from time import time
 from typing import Annotated, Any, Literal
 
@@ -19,7 +19,6 @@ from assistant_agent.media.embedding.observability import (
     EmbeddingObserver,
     emit_visual_semantic_observation,
 )
-from assistant_agent.media.runtime_media import latest_runtime_media
 from assistant_agent.media.video.semantic_store_pool import (
     SessionVisualSemanticStorePool,
 )
@@ -239,6 +238,7 @@ def create_visual_memory_search_tool(
     text_index: VisualMemoryTextIndex,
     limit: int = 12,
     timeline_context_service: VisualTimelineContextService | None = None,
+    live_view_resolver: Callable[[str, str], Any] | None = None,
 ) -> BaseTool:
     """Create the native read Tool for previously generated visual text."""
 
@@ -270,7 +270,6 @@ def create_visual_memory_search_tool(
                 raise ToolException(
                     "video_handshake_required: 当前连接尚未完成 VIDEO 握手"
                 )
-            state = runtime.state if isinstance(runtime.state, Mapping) else {}
             execution = runtime.execution_info
             session_id = getattr(execution, "thread_id", None)
             if not isinstance(session_id, str) or not session_id:
@@ -284,7 +283,11 @@ def create_visual_memory_search_tool(
                 search_mode=search_mode,
                 session_id=session_id,
             )
-            media = latest_runtime_media(state)
+            live = (
+                live_view_resolver(user_id, session_id)
+                if live_view_resolver is not None
+                else None
+            )
             context = ToolContext(
                 user_id=user_id,
                 session_id=session_id,
@@ -293,7 +296,7 @@ def create_visual_memory_search_tool(
                     "entry_profile": runtime.context.entry_profile,
                     "request_metadata": {
                         "_trusted_visual_memory_as_of_sequence": (
-                            media.visual_target_sequence
+                            live.target_sequence if live is not None else None
                         )
                     },
                 },

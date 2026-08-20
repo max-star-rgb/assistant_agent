@@ -78,7 +78,7 @@ def parse_chat(envelope: MediaEnvelope) -> MediaChat:
         chat_index=chat_index,
         user_id=user_id,
         text=latest_speech,
-        stream=body.get("stream") is True,
+        stream=body.get("stream", True) is True,
         execution_mode=_execution_mode(body.get("assistantMode")),
     )
 

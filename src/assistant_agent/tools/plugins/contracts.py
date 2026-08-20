@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from assistant_agent.config import ProviderConfig
 
@@ -41,6 +42,7 @@ class ToolPluginContext:
     visual_semantic_store_pool: SessionVisualSemanticStorePool | None = None
     visual_reminder_registry: VisualReminderRegistry | None = None
     visual_memory_text_index: VisualMemoryTextIndex | None = None
+    live_view_resolver: Callable[[str, str], Any] | None = None
 
     @property
     def mock_mode(self) -> bool:

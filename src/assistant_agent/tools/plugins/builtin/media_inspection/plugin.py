@@ -44,6 +44,7 @@ class MediaInspectionPlugin:
                         context_store=context.video_context_store,
                         memory_store=context.realtime_video_memory_store,
                         semantic_store_pool=context.visual_semantic_store_pool,
+                        live_view_resolver=context.live_view_resolver,
                     ),
                 ]
             )
@@ -56,6 +57,7 @@ class MediaInspectionPlugin:
                     semantic_store_pool=context.visual_semantic_store_pool,
                     text_index=context.visual_memory_text_index,
                     limit=context.config.visual_memory_result_limit,
+                    live_view_resolver=context.live_view_resolver,
                 )
             )
         return tools

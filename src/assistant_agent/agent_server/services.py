@@ -118,6 +118,7 @@ def _compose_sync(
         visual_semantic_store_pool=(visual_resources.visual_semantic_store_pool),
         visual_memory_text_index=visual_resources.visual_memory_text_index,
         visual_history_probe=visual_resources.visual_history_probe,
+        live_view_resolver=visual_perception.resolve_live_view,
     )
     memory_backend = create_memory_backend(
         config,

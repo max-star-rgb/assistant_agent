@@ -203,7 +203,7 @@ class SemanticFramePipeline:
             else:
                 self._closed = True
                 if self._pending is not None:
-                    self._delete_owned(self._pending.frame)
+                    await self._delete_owned(self._pending.frame)
                     self._pending = None
                 self._notify_state()
                 self._wake.set()
@@ -220,14 +220,14 @@ class SemanticFramePipeline:
                 except TimeoutError:
                     pass
         for path in list(self._owned_paths):
-            path.unlink(missing_ok=True)
+            await asyncio.to_thread(path.unlink, missing_ok=True)
             self._owned_paths.discard(path)
         self._idle.set()
 
     async def _put(self, job: _SemanticFrameJob) -> SemanticAdmission:
         async with self._lock:
             if self._closed:
-                self._delete_owned(job.frame)
+                await self._delete_owned(job.frame)
                 raise RuntimeError("semantic frame pipeline is closed")
             if (
                 job.pinned
@@ -235,7 +235,7 @@ class SemanticFramePipeline:
                 and self._inflight.frame.sequence == job.frame.sequence
             ):
                 self._interactive_sequences.add(job.frame.sequence)
-                self._delete_owned(job.frame)
+                await self._delete_owned(job.frame)
                 self._emit(
                     "semantic_frame.admitted",
                     job.frame.sequence,
@@ -249,7 +249,7 @@ class SemanticFramePipeline:
             replaced_sequence: int | None = None
             if self._pending is not None:
                 if self._pending.pinned:
-                    self._delete_owned(job.frame)
+                    await self._delete_owned(job.frame)
                     self._emit(
                         "semantic_frame.skipped",
                         job.frame.sequence,
@@ -261,7 +261,7 @@ class SemanticFramePipeline:
                         sequence=job.frame.sequence,
                     )
                 replaced_sequence = self._pending.frame.sequence
-                self._delete_owned(self._pending.frame)
+                await self._delete_owned(self._pending.frame)
             self._pending = job
             self._idle.clear()
             self._wake.set()
@@ -334,7 +334,7 @@ class SemanticFramePipeline:
                 priority=job.priority,
             )
             if self._closed:
-                self._delete_owned(job.frame)
+                await self._delete_owned(job.frame)
                 return
             if isinstance(outcome, EmbeddingFailureEvent):
                 await self._process_failure(
@@ -364,9 +364,9 @@ class SemanticFramePipeline:
                     job.frame.sequence,
                     decision.reason,
                 )
-                self._delete_owned(job.frame)
+                await self._delete_owned(job.frame)
         except asyncio.CancelledError:
-            self._delete_owned(job.frame)
+            await self._delete_owned(job.frame)
             raise
         except Exception:
             self._emit(
@@ -374,7 +374,7 @@ class SemanticFramePipeline:
                 job.frame.sequence,
                 "processing_error",
             )
-            self._delete_owned(job.frame)
+            await self._delete_owned(job.frame)
         finally:
             self._interactive_sequences.discard(job.frame.sequence)
 
@@ -395,7 +395,7 @@ class SemanticFramePipeline:
                 job.frame.sequence,
                 "embedding_failed",
             )
-            self._delete_owned(job.frame)
+            await self._delete_owned(job.frame)
 
     async def _transfer_selected(
         self,
@@ -406,7 +406,7 @@ class SemanticFramePipeline:
         try:
             await self.on_selected(frame, event, reason)
         except Exception:
-            self._delete_owned(frame)
+            await self._delete_owned(frame)
             raise
         self._owned_paths.discard(Path(frame.uri))
         self._emit("semantic_frame.selected", frame.sequence, reason)
@@ -428,9 +428,9 @@ class SemanticFramePipeline:
         self._owned_paths.add(resolved)
         return replace(frame, uri=str(resolved))
 
-    def _delete_owned(self, frame: VideoFrame) -> None:
+    async def _delete_owned(self, frame: VideoFrame) -> None:
         path = Path(frame.uri)
-        path.unlink(missing_ok=True)
+        await asyncio.to_thread(path.unlink, missing_ok=True)
         self._owned_paths.discard(path)
 
     def _notify_state(self) -> None:

@@ -338,7 +338,7 @@ class RealtimeVideoObserver:
                 for retained in retained_by_sequence.values():
                     path = Path(retained.uri)
                     if path not in self._owned_paths:
-                        path.unlink(missing_ok=True)
+                        await asyncio.to_thread(path.unlink, missing_ok=True)
         return WindowPromotionResult(
             enqueued_sequences=tuple(
                 frame.sequence
@@ -435,7 +435,7 @@ class RealtimeVideoObserver:
                 self.session_id,
                 event,
             )
-        self._delete_transferred_duplicate(frame)
+        await asyncio.to_thread(self._delete_transferred_duplicate, frame)
 
     async def _enqueue(
         self,
@@ -477,7 +477,7 @@ class RealtimeVideoObserver:
             raise RuntimeError("realtime video observer is closed")
         if self._sequence_is_represented(frame.sequence):
             if already_retained:
-                self._delete_transferred_duplicate(frame)
+                await asyncio.to_thread(self._delete_transferred_duplicate, frame)
             return False
         sequence = frame.sequence
         retained: SemanticKeyframeRecord | None = None
@@ -495,13 +495,13 @@ class RealtimeVideoObserver:
             )
             self._owned_paths.add(Path(retained.uri))
             if self.closed:
-                self._delete_record(retained)
+                await self._delete_record(retained)
                 raise RuntimeError("realtime video observer is closed")
             if self.semantic_store.has_exact_sequence(
                 frame.video_id,
                 sequence=sequence,
             ):
-                self._delete_record(retained)
+                await self._delete_record(retained)
                 return False
             snapshot = self.memory_store.snapshot(frame.video_id)
             if snapshot is None or snapshot.last_success_sequence is None:
@@ -537,7 +537,7 @@ class RealtimeVideoObserver:
             return True
         except BaseException:
             if retained is not None and sequence not in self._observation_tasks:
-                self._delete_record(retained)
+                await self._delete_record(retained)
             raise
         finally:
             self._reserved_sequences.discard(sequence)
@@ -647,9 +647,9 @@ class RealtimeVideoObserver:
                 Path(item.record.uri) for item in self._observation_items.values()
             }
             for path in self._owned_paths - active_paths:
-                path.unlink(missing_ok=True)
+                await asyncio.to_thread(path.unlink, missing_ok=True)
                 self._owned_paths.discard(path)
-            _remove_empty_tree(self.keyframe_root)
+            await asyncio.to_thread(_remove_empty_tree, self.keyframe_root)
             self._idle.set()
             self._snapshot_updated.set()
         finally:
@@ -694,7 +694,7 @@ class RealtimeVideoObserver:
                 error=outcome.error,
             )
             if self.closed:
-                self._delete_record(item)
+                await self._delete_record(item)
                 return
             observation = outcome.result if outcome.succeeded else None
             if observation is not None:
@@ -746,7 +746,7 @@ class RealtimeVideoObserver:
                     ),
                 )
                 for record in evicted:
-                    self._delete_record(record)
+                    await self._delete_record(record)
             else:
                 error = outcome.error or {
                     "code": "realtime_video_snapshot_not_publishable",
@@ -774,7 +774,7 @@ class RealtimeVideoObserver:
                         succeeded=False,
                     ),
                 )
-                self._delete_record(item)
+                await self._delete_record(item)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - background boundary.
@@ -795,7 +795,7 @@ class RealtimeVideoObserver:
                     item.record,
                     error,
                 )
-            self._delete_record(item)
+            await self._delete_record(item)
         finally:
             self._first_terminal_snapshot.set()
             self._snapshot_updated.set()
@@ -1040,11 +1040,13 @@ class RealtimeVideoObserver:
             timestamp_ms=frame.timestamp_ms,
         )
 
-    def _delete_record(self, record: SemanticKeyframeRecord | _ObservationItem) -> None:
+    async def _delete_record(
+        self, record: SemanticKeyframeRecord | _ObservationItem
+    ) -> None:
         if isinstance(record, _ObservationItem):
             record = record.record
         path = Path(record.uri)
-        path.unlink(missing_ok=True)
+        await asyncio.to_thread(path.unlink, missing_ok=True)
         self._owned_paths.discard(path)
 
     def _update_pending_state(self) -> None:
