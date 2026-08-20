@@ -13,6 +13,8 @@ source_globs = [
   "src/assistant_agent/agent_server/**",
   "src/assistant_agent/coding/config.py",
   "src/assistant_agent/coding/integration.py",
+  "src/assistant_agent/coding/sandbox.py",
+  "src/assistant_agent/coding/sandbox_runner.py",
   "src/assistant_agent/coding/validation.py",
   "src/assistant_agent/coding/workspace.py",
   "src/assistant_agent/proactive_delivery.py",
@@ -26,6 +28,7 @@ verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_gateway_contract.py tests/core/integration/test_runtime_lifecycle.py",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/ai-coding-validation",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/ai-coding-integration",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/ai-coding-sandbox",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python scripts/agent_cli.py --help",
 ]
 exclusive_literals = []

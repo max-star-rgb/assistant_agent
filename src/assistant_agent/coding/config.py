@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 from collections.abc import Mapping
@@ -38,8 +39,10 @@ class CodingCommandConfig(BaseModel):
     argv: tuple[str, ...] = Field(min_length=1, max_length=64)
     timeout_seconds: int = Field(default=300, ge=1, le=1_800)
     cpu_seconds: int = Field(default=120, ge=1, le=1_800)
+    cpu_cores: float = Field(default=1.0, ge=0.1, le=16.0)
     memory_bytes: int = Field(default=1_073_741_824, ge=67_108_864, le=17_179_869_184)
-    max_processes: int = Field(default=64, ge=1, le=512)
+    max_processes: int = Field(default=64, ge=4, le=512)
+    max_files: int = Field(default=100_000, ge=16, le=1_000_000)
     max_output_bytes: int = Field(default=1_048_576, ge=1_024, le=16_777_216)
     max_disk_bytes: int = Field(default=1_073_741_824, ge=1_048_576, le=17_179_869_184)
 
@@ -68,6 +71,8 @@ class CodingRepositoryConfig(BaseModel):
     commands: dict[str, CodingCommandConfig] = Field(default_factory=dict)
     verification_sequence: tuple[str, ...] = ()
     integration_enabled: bool = False
+    sandbox_enabled: bool = False
+    sandbox_image: str | None = Field(default=None, min_length=1, max_length=512)
     commit_author_name: str = Field(default="Assistant Agent", min_length=1, max_length=160)
     commit_author_email: str = Field(
         default="assistant-agent@localhost",
@@ -107,6 +112,18 @@ class CodingRepositoryConfig(BaseModel):
             raise ValueError("coding commit identity must be a single line")
         return value
 
+    @field_validator("sandbox_image")
+    @classmethod
+    def _digest_pinned_sandbox_image(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if re.fullmatch(
+            r"[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}",
+            value,
+        ) is None:
+            raise ValueError("coding sandbox image must be pinned by sha256 digest")
+        return value
+
     @model_validator(mode="after")
     def _validate_commands(self) -> "CodingRepositoryConfig":
         for command_id, command in self.commands.items():
@@ -119,6 +136,10 @@ class CodingRepositoryConfig(BaseModel):
             raise ValueError("coding verification sequence references an unknown command")
         if self.integration_enabled and not self.verification_sequence:
             raise ValueError("coding integration requires a verification sequence")
+        if self.sandbox_enabled and not self.verification_sequence:
+            raise ValueError("coding sandbox requires a verification sequence")
+        if self.sandbox_enabled and self.sandbox_image is None:
+            raise ValueError("coding sandbox requires a digest-pinned image")
         return self
 
 

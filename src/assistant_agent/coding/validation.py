@@ -15,17 +15,25 @@ from pathlib import Path
 from assistant_agent.coding.config import CodingCommandConfig, CodingRepositoryConfig
 from assistant_agent.coding.models import (
     CodingCommandEvidence,
+    CodingSandboxRequest,
+    CodingSandboxResult,
     CodingVerificationResult,
     CodingWorkspace,
 )
+from assistant_agent.coding.sandbox import CodingSandboxBackend
 from assistant_agent.coding.workspace import CodingWorkspaceError, CodingWorkspaceService
 
 
 class CodingValidationService:
     """Execute only trusted fixed argv in disposable repository copies."""
 
-    def __init__(self, workspace_service: CodingWorkspaceService) -> None:
+    def __init__(
+        self,
+        workspace_service: CodingWorkspaceService,
+        sandbox_backend: CodingSandboxBackend | None = None,
+    ) -> None:
         self.workspace_service = workspace_service
+        self.sandbox_backend = sandbox_backend
         self._root = workspace_service.config.workspace_root / "validation"
 
     def run(
@@ -38,7 +46,7 @@ class CodingValidationService:
         evidence: list[CodingCommandEvidence] = []
         for command_id in repository.verification_sequence:
             command = repository.commands[command_id]
-            item, patch = self._run_one(workspace, command)
+            item, patch = self._run_one(workspace, repository, command)
             evidence.append(item)
             if item.status != "passed":
                 return CodingVerificationResult(
@@ -78,6 +86,7 @@ class CodingValidationService:
     def _run_one(
         self,
         workspace: CodingWorkspace,
+        repository: CodingRepositoryConfig,
         command: CodingCommandConfig,
     ) -> tuple[CodingCommandEvidence, str]:
         self._root.mkdir(parents=True, exist_ok=True)
@@ -100,7 +109,10 @@ class CodingValidationService:
                     ),
                     "",
                 )
-            evidence = _execute(command, scratch, temporary)
+            if repository.sandbox_enabled:
+                evidence = self._execute_sandbox(repository, command, scratch)
+            else:
+                evidence = _execute(command, scratch, temporary)
             if _tree_bytes(temporary) >= command.max_disk_bytes:
                 return (
                     evidence.model_copy(
@@ -116,6 +128,67 @@ class CodingValidationService:
             if command.kind != "format":
                 return evidence, ""
             return evidence, _formatter_diff(scratch)
+
+    def _execute_sandbox(
+        self,
+        repository: CodingRepositoryConfig,
+        command: CodingCommandConfig,
+        scratch: Path,
+    ) -> CodingCommandEvidence:
+        if self.sandbox_backend is None or repository.sandbox_image is None:
+            return _empty_evidence(
+                command,
+                status="failed",
+                error_code="sandbox_unavailable",
+            )
+        request = CodingSandboxRequest(
+            image=repository.sandbox_image,
+            argv=command.argv,
+            scratch_root=scratch,
+            command_id=command.command_id,
+            kind=command.kind,
+            timeout_seconds=command.timeout_seconds,
+            cpu_seconds=command.cpu_seconds,
+            cpu_cores=command.cpu_cores,
+            memory_bytes=command.memory_bytes,
+            max_processes=command.max_processes,
+            max_output_bytes=command.max_output_bytes,
+            max_file_bytes=self.workspace_service.config.max_file_bytes,
+            max_disk_bytes=command.max_disk_bytes,
+            max_files=command.max_files,
+            max_changed_files=self.workspace_service.config.max_changed_files,
+            max_patch_bytes=self.workspace_service.config.max_patch_bytes,
+        )
+        result = self.sandbox_backend.execute(request)
+        if result.status == "passed" and (
+            result.formatter_files
+            or result.formatter_deletions
+            or result.formatter_modes
+        ):
+            try:
+                _materialize_formatter_changes(
+                    scratch,
+                    result.formatter_files,
+                    result.formatter_deletions,
+                    result.formatter_modes,
+                )
+            except OSError:
+                return CodingCommandEvidence(
+                    command_id=command.command_id,
+                    kind=command.kind,
+                    status="failed",
+                    exit_code=result.exit_code,
+                    duration_ms=result.duration_ms,
+                    output_digest=result.output_digest,
+                    stdout=result.stdout,
+                    stderr=result.stderr,
+                    truncated=result.truncated,
+                    error_code="sandbox_output_invalid",
+                    cleanup_status=result.cleanup_status,
+                    timed_out=result.timed_out,
+                    oom_killed=result.oom_killed,
+                )
+        return _sandbox_evidence(command, result)
 
 
 def _copy_workspace(source: Path, destination: Path) -> None:
@@ -266,6 +339,62 @@ def _empty_evidence(
         stderr="",
         error_code=error_code,
     )
+
+
+def _sandbox_evidence(
+    command: CodingCommandConfig,
+    result: CodingSandboxResult,
+) -> CodingCommandEvidence:
+    return CodingCommandEvidence(
+        command_id=command.command_id,
+        kind=command.kind,
+        status=result.status,
+        exit_code=result.exit_code,
+        duration_ms=result.duration_ms,
+        output_digest=result.output_digest,
+        stdout=result.stdout,
+        stderr=result.stderr,
+        truncated=result.truncated,
+        error_code=result.error_code,
+        cleanup_status=result.cleanup_status,
+        timed_out=result.timed_out,
+        oom_killed=result.oom_killed,
+    )
+
+
+def _materialize_formatter_changes(
+    root: Path,
+    files: dict[str, str],
+    deletions: tuple[str, ...],
+    modes: dict[str, int],
+) -> None:
+    resolved_root = root.resolve()
+    paths = set(files) | set(deletions) | set(modes)
+    targets: dict[str, Path] = {}
+    for relative in paths:
+        parts = relative.split("/")
+        if not parts or any(part in {"", ".", ".."} for part in parts):
+            raise OSError("invalid formatter output path")
+        current = root
+        for part in parts[:-1]:
+            current /= part
+            if current.is_symlink():
+                raise OSError("formatter output traverses a symlink")
+        target = root.joinpath(*parts)
+        if not target.resolve(strict=False).is_relative_to(resolved_root):
+            raise OSError("formatter output escapes scratch root")
+        targets[relative] = target
+    for relative in deletions:
+        target = targets[relative]
+        if target.is_dir():
+            raise OSError("formatter output cannot delete a directory")
+        target.unlink(missing_ok=True)
+    for relative, content in files.items():
+        target = targets[relative]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    for relative, mode in modes.items():
+        targets[relative].chmod(mode)
 
 
 def _formatter_diff(scratch: Path) -> str:
