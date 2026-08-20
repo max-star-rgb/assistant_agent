@@ -113,6 +113,35 @@ class CodingDependencyApprovalDecision(BaseModel):
         return self
 
 
+class CodingCredentialRequest(BaseModel):
+    """Checkpoint-safe request for a bounded private registry lease."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    credential_profile_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$")
+    dependency_profile_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$")
+    registry_host: str = Field(min_length=3, max_length=253)
+    registry_base_path: str = Field(min_length=1, max_length=240)
+    lease_ttl_seconds: int = Field(ge=30, le=900)
+    dependency_plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    dependency_policy_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    credential_policy_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class CodingCredentialApprovalDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    decision: Literal["approve", "reject"]
+    request_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def _approval_requires_digest(self) -> "CodingCredentialApprovalDecision":
+        if self.decision == "approve" and self.request_digest is None:
+            raise ValueError("credential approval requires request digest")
+        return self
+
+
 class CodingDependencyWheel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -132,11 +161,49 @@ class CodingDependencyManifest(BaseModel):
     wheels: tuple[CodingDependencyWheel, ...] = Field(min_length=1, max_length=4_096)
     total_bytes: int = Field(ge=0)
     manifest_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    credential_profile_id: str | None = Field(
+        default=None, pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$"
+    )
+    credential_policy_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    credential_request_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    credential_lease_id_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    credential_lease_issued_at: datetime | None = None
+    credential_lease_expires_at: datetime | None = None
+    credential_acquire_status: Literal["acquired"] | None = None
+    credential_inject_status: Literal["injected"] | None = None
+    credential_cleanup_status: Literal["revoked"] | None = None
+    credential_lease_status: Literal["used"] | None = None
 
     @field_validator("wheels", mode="before")
     @classmethod
     def _tuple_wheels(cls, value: object) -> object:
         return tuple(value) if isinstance(value, list) else value
+
+    @model_validator(mode="after")
+    def _credential_evidence_is_atomic(self) -> "CodingDependencyManifest":
+        values = (
+            self.credential_profile_id,
+            self.credential_policy_digest,
+            self.credential_request_digest,
+            self.credential_lease_id_digest,
+            self.credential_lease_issued_at,
+            self.credential_lease_expires_at,
+            self.credential_acquire_status,
+            self.credential_inject_status,
+            self.credential_cleanup_status,
+            self.credential_lease_status,
+        )
+        if any(value is not None for value in values) and not all(
+            value is not None for value in values
+        ):
+            raise ValueError("credential lease evidence must be supplied together")
+        return self
 
 
 class CodingSandboxRequest(BaseModel):
@@ -248,6 +315,24 @@ class CodingCommandEvidence(BaseModel):
     )
     dependency_install_status: Literal["passed", "failed"] | None = None
     dependency_install_error: str | None = None
+    credential_profile_id: str | None = Field(
+        default=None, pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$"
+    )
+    credential_policy_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    credential_request_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    credential_lease_id_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    credential_lease_issued_at: datetime | None = None
+    credential_lease_expires_at: datetime | None = None
+    credential_acquire_status: Literal["not_attempted", "failed", "acquired"] | None = None
+    credential_inject_status: Literal["not_attempted", "failed", "injected"] | None = None
+    credential_cleanup_status: Literal["not_required", "failed", "revoked"] | None = None
+    credential_lease_status: Literal["used", "failed"] | None = None
 
 
 class CodingVerificationResult(BaseModel):
@@ -443,6 +528,11 @@ __all__ = [
     "CodingApprovalDecision",
     "CodingCommandEvidence",
     "CodingCommitResult",
+    "CodingCredentialApprovalDecision",
+    "CodingCredentialRequest",
+    "CodingDependencyApprovalDecision",
+    "CodingDependencyManifest",
+    "CodingDependencyPlan",
     "CodingPatchApplyResult",
     "CodingPatchProposal",
     "CodingPatchValidation",

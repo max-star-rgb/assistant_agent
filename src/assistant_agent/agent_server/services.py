@@ -14,6 +14,7 @@ from langgraph.store.base import BaseStore
 from assistant_agent.coding.config import CodingConfig
 from assistant_agent.coding.integration import CodingIntegrationService
 from assistant_agent.coding.dependency_egress import DockerDependencyFetcher
+from assistant_agent.coding.credentials import EnvironmentCredentialBroker
 from assistant_agent.coding.sandbox import (
     CodingSandboxBackend,
     DockerCodingSandboxBackend,
@@ -107,7 +108,13 @@ class AgentServerExecutionOwner:
             repository.dependency_profile is not None
             for repository in coding_config.repositories.values()
         ):
-            coding_dependency_fetcher = DockerDependencyFetcher()
+            coding_dependency_fetcher = DockerDependencyFetcher(
+                credential_broker=(
+                    EnvironmentCredentialBroker(coding_config.credential_profiles)
+                    if coding_config.credential_profiles
+                    else None
+                )
+            )
         coding_validation_service = CodingValidationService(
             coding_workspace_service,
             sandbox_backend=coding_sandbox_backend,

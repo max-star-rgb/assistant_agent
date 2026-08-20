@@ -28,6 +28,11 @@ from assistant_agent.coding.dependencies import (
     dependency_interrupt_payload,
     validate_dependency_approval,
 )
+from assistant_agent.coding.credentials import (
+    build_credential_request,
+    credential_interrupt_payload,
+    validate_credential_approval,
+)
 from assistant_agent.coding.integration import CodingIntegrationService
 from assistant_agent.coding.validation import CodingValidationService
 from assistant_agent.coding.workspace import CodingWorkspaceError, CodingWorkspaceService
@@ -288,7 +293,7 @@ def build_coding_graph(
         state: CodingState,
         runtime: Runtime[AssistantRunContext],
         config: RunnableConfig,
-    ) -> Command[Literal["run_validation", "summarize"]]:
+    ) -> Command[Literal["plan_credentials", "summarize"]]:
         plan = state.get("dependency_plan")
         applied = state.get("applied_result")
         if plan is None or applied is None:
@@ -353,6 +358,110 @@ def build_coding_graph(
                 "dependency_plan": fresh_plan,
                 "dependency_approval_status": "approved",
             },
+            goto="plan_credentials",
+        )
+
+    def plan_credentials_node(
+        state: CodingState,
+        runtime: Runtime[AssistantRunContext],
+        config: RunnableConfig,
+    ) -> dict[str, object]:
+        plan = state.get("dependency_plan")
+        if plan is None:
+            return {
+                "credential_request": None,
+                "credential_approval_status": "not_required",
+            }
+        if state.get("dependency_approval_status") != "approved":
+            return {
+                "coding_result": _failed(state, "dependency_approval_required")
+            }
+        try:
+            workspace = _resolve_workspace(state, runtime, config, workspace_service)
+            repository = workspace_service.config.repositories.get(workspace.repo_id)
+            dependency = repository.dependency_profile if repository is not None else None
+            credential_id = dependency.credential_profile_id if dependency else None
+            if credential_id is None:
+                return {
+                    "credential_request": None,
+                    "credential_approval_status": "not_required",
+                }
+            credential = workspace_service.config.credential_profiles.get(credential_id)
+            if credential is None:
+                raise ValueError("credential_broker_unconfigured")
+            request = build_credential_request(dependency, credential, plan)
+        except CodingWorkspaceError as exc:
+            return {"coding_result": _failed(state, exc.code)}
+        except ValueError as exc:
+            return {"coding_result": _failed(state, str(exc))}
+        return {
+            "credential_request": request,
+            "credential_approval_status": "pending",
+        }
+
+    def credential_approval_node(
+        state: CodingState,
+        runtime: Runtime[AssistantRunContext],
+        config: RunnableConfig,
+    ) -> Command[Literal["run_validation", "summarize"]]:
+        request = state.get("credential_request")
+        plan = state.get("dependency_plan")
+        applied = state.get("applied_result")
+        if request is None or plan is None or applied is None:
+            return Command(
+                update={"coding_result": _failed(state, "credential_approval_required")},
+                goto="summarize",
+            )
+        raw = interrupt(credential_interrupt_payload(request))
+        try:
+            decision = validate_credential_approval(request, raw)
+        except ValueError:
+            return Command(
+                update={"coding_result": _failed(state, "credential_approval_mismatch")},
+                goto="summarize",
+            )
+        if decision == "reject":
+            return Command(
+                update={
+                    "credential_approval_status": "rejected",
+                    "coding_result": CodingTerminalResult(
+                        status="rejected",
+                        workspace_ref=state.get("workspace_ref"),
+                        base_commit=state.get("base_commit"),
+                        patch_digest=applied.patch_digest,
+                        changed_paths=applied.changed_paths,
+                        error_code="credential_lease_rejected",
+                    ),
+                },
+                goto="summarize",
+            )
+        try:
+            workspace = _resolve_workspace(state, runtime, config, workspace_service)
+            repository = workspace_service.config.repositories.get(workspace.repo_id)
+            dependency = repository.dependency_profile if repository is not None else None
+            credential_id = dependency.credential_profile_id if dependency else None
+            credential = workspace_service.config.credential_profiles.get(credential_id)
+            fresh_plan = build_dependency_plan(
+                repository,
+                workspace.root,
+                changed_paths=applied.changed_paths,
+            )
+            if fresh_plan is None or credential is None or dependency is None:
+                raise ValueError("credential_approval_mismatch")
+            fresh_request = build_credential_request(dependency, credential, fresh_plan)
+        except (CodingWorkspaceError, ValueError, AttributeError):
+            fresh_request = None
+        if fresh_request is None or fresh_request.request_digest != request.request_digest:
+            return Command(
+                update={"coding_result": _failed(state, "credential_approval_mismatch")},
+                goto="summarize",
+            )
+        return Command(
+            update={
+                "dependency_plan": fresh_plan,
+                "credential_request": fresh_request,
+                "credential_approval_status": "approved",
+            },
             goto="run_validation",
         )
 
@@ -371,16 +480,29 @@ def build_coding_graph(
             return {
                 "coding_result": _failed(state, "dependency_approval_required")
             }
+        if (
+            state.get("credential_request") is not None
+            and state.get("credential_approval_status") != "approved"
+        ):
+            return {
+                "coding_result": _failed(state, "credential_approval_required")
+            }
         try:
             workspace = _resolve_workspace(state, runtime, config, workspace_service)
             repository = workspace_service.config.repositories.get(workspace.repo_id)
             if repository is None:
                 raise CodingWorkspaceError("workspace_not_allowed")
+            validation_options: dict[str, object] = {
+                "format_round": int(state.get("format_round", 0))
+            }
+            if state.get("dependency_plan") is not None:
+                validation_options["dependency_plan"] = state["dependency_plan"]
+            if state.get("credential_request") is not None:
+                validation_options["credential_request"] = state["credential_request"]
             result = validation_service.run(
                 workspace,
                 repository,
-                format_round=int(state.get("format_round", 0)),
-                dependency_plan=state.get("dependency_plan"),
+                **validation_options,
             )
         except CodingWorkspaceError as exc:
             return {"coding_result": _failed(state, exc.code)}
@@ -590,6 +712,13 @@ def build_coding_graph(
             return "dependency_approval"
         return "run_validation"
 
+    def after_credential_plan(state: CodingState) -> str:
+        if state.get("coding_result") is not None:
+            return "summarize"
+        if state.get("credential_request") is not None:
+            return "credential_approval"
+        return "run_validation"
+
     def after_integration_step(state: CodingState) -> str:
         return "summarize" if state.get("coding_result") is not None else "prepare_merge"
 
@@ -604,6 +733,8 @@ def build_coding_graph(
     builder.add_node("apply_patch", apply_patch_node)
     builder.add_node("plan_dependencies", plan_dependencies_node)
     builder.add_node("dependency_approval", dependency_approval_node)
+    builder.add_node("plan_credentials", plan_credentials_node)
+    builder.add_node("credential_approval", credential_approval_node)
     builder.add_node("run_validation", run_validation_node)
     builder.add_node("create_commit", create_commit_node)
     builder.add_node("prepare_merge", prepare_merge_node)
@@ -616,6 +747,7 @@ def build_coding_graph(
     builder.add_conditional_edges("validate_proposal", after_validation)
     builder.add_edge("apply_patch", "plan_dependencies")
     builder.add_conditional_edges("plan_dependencies", after_dependency_plan)
+    builder.add_conditional_edges("plan_credentials", after_credential_plan)
     builder.add_conditional_edges("run_validation", after_run_validation)
     builder.add_conditional_edges("create_commit", after_integration_step)
     builder.add_conditional_edges("prepare_merge", after_merge_preview)

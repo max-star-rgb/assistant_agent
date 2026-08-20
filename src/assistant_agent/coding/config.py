@@ -48,6 +48,10 @@ class CodingDependencyProfile(BaseModel):
     allowed_ports: tuple[int, ...] = (443,)
     downloader_image: str = Field(min_length=73, max_length=512)
     proxy_image: str = Field(min_length=73, max_length=512)
+    credential_profile_id: str | None = Field(
+        default=None,
+        pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$",
+    )
     timeout_seconds: int = Field(default=300, ge=10, le=1_800)
     max_download_bytes: int = Field(
         default=536_870_912,
@@ -124,6 +128,63 @@ class CodingDependencyProfile(BaseModel):
             raise ValueError("dependency image must be pinned by sha256 digest")
         return value
 
+
+class CodingCredentialProfile(BaseModel):
+    """Operator-owned metadata for one private registry credential."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    credential_profile_id: str = Field(
+        pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$"
+    )
+    registry_host: str
+    registry_base_path: str = Field(min_length=1, max_length=240)
+    auth_scheme: Literal["bearer"] = "bearer"
+    secret_env: str = Field(
+        pattern=r"^MULTIMODAL_AGENT_CODING_CREDENTIAL_[A-Z0-9_]{1,96}$"
+    )
+    lease_ttl_seconds: int = Field(default=120, ge=30, le=900)
+    gateway_image: str = Field(min_length=73, max_length=512)
+
+    @field_validator("registry_host")
+    @classmethod
+    def _exact_registry_host(cls, value: str) -> str:
+        try:
+            host = value.encode("idna").decode("ascii").lower()
+            ipaddress.ip_address(host)
+        except ValueError:
+            pass
+        else:
+            raise ValueError("credential registry host cannot be an IP literal")
+        labels = host.split(".")
+        if (
+            value != host
+            or len(labels) < 2
+            or any(_DNS_LABEL.fullmatch(label) is None for label in labels)
+        ):
+            raise ValueError("credential registry host must be an exact FQDN")
+        return host
+
+    @field_validator("registry_base_path")
+    @classmethod
+    def _safe_registry_path(cls, value: str) -> str:
+        if any(character in value for character in ("\\", "\x00", "\n", "\r", "?", "#")):
+            raise ValueError("credential registry base path is invalid")
+        path = PurePosixPath(value)
+        if (
+            not path.is_absolute()
+            or not value.startswith("/")
+            or any(part in {".", ".."} for part in path.parts)
+        ):
+            raise ValueError("credential registry base path is invalid")
+        return value
+
+    @field_validator("gateway_image")
+    @classmethod
+    def _digest_pinned_gateway(cls, value: str) -> str:
+        if _DIGEST_IMAGE.fullmatch(value) is None:
+            raise ValueError("credential gateway image must be pinned by sha256 digest")
+        return value
 
 class CodingCommandConfig(BaseModel):
     """One server-owned command ID mapped to immutable process arguments."""
@@ -249,6 +310,7 @@ class CodingConfig(BaseModel):
         / "coding_workspaces"
     )
     repositories: dict[str, CodingRepositoryConfig] = Field(default_factory=dict)
+    credential_profiles: dict[str, CodingCredentialProfile] = Field(default_factory=dict)
     ttl_seconds: int = Field(default=86_400, ge=300, le=604_800)
     max_patch_bytes: int = Field(default=262_144, ge=1_024, le=1_048_576)
     max_changed_files: int = Field(default=32, ge=1, le=256)
@@ -269,6 +331,17 @@ class CodingConfig(BaseModel):
             repo_path = repository.path.resolve()
             if workspace_root == repo_path or workspace_root.is_relative_to(repo_path):
                 raise ValueError("coding workspace root must be outside source repositories")
+            dependency = repository.dependency_profile
+            credential_id = dependency.credential_profile_id if dependency else None
+            if credential_id is not None:
+                credential = self.credential_profiles.get(credential_id)
+                if credential is None:
+                    raise ValueError("coding credential profile is not configured")
+                if credential.registry_host not in dependency.allowed_hosts:
+                    raise ValueError("coding credential registry host is not allowed")
+        for profile_id, profile in self.credential_profiles.items():
+            if profile_id != profile.credential_profile_id:
+                raise ValueError("coding credential profile key must match profile id")
         return self
 
     @classmethod
@@ -279,6 +352,9 @@ class CodingConfig(BaseModel):
         source = os.environ if env is None else env
         repositories = _repositories(
             source.get("MULTIMODAL_AGENT_CODING_REPOSITORIES_JSON", "{}")
+        )
+        credential_profiles = _credential_profiles(
+            source.get("MULTIMODAL_AGENT_CODING_CREDENTIAL_PROFILES_JSON", "{}")
         )
         workspace_value = source.get("MULTIMODAL_AGENT_CODING_WORKSPACE_ROOT", "")
         workspace_root = (
@@ -294,6 +370,7 @@ class CodingConfig(BaseModel):
             ),
             workspace_root=workspace_root,
             repositories=repositories,
+            credential_profiles=credential_profiles,
             ttl_seconds=_int_value(
                 source,
                 "MULTIMODAL_AGENT_CODING_TTL_SECONDS",
@@ -339,6 +416,23 @@ def _repositories(raw: str) -> dict[str, CodingRepositoryConfig]:
     return repositories
 
 
+def _credential_profiles(raw: str) -> dict[str, CodingCredentialProfile]:
+    try:
+        parsed = json.loads(raw or "{}")
+    except json.JSONDecodeError as exc:
+        raise ValueError("coding credential profiles must be valid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("coding credential profiles must be a JSON object")
+    profiles: dict[str, CodingCredentialProfile] = {}
+    for profile_id, value in parsed.items():
+        if not isinstance(profile_id, str) or not isinstance(value, dict):
+            raise ValueError("coding credential profile entries must be objects")
+        item = dict(value)
+        item["credential_profile_id"] = profile_id
+        profiles[profile_id] = CodingCredentialProfile.model_validate(item)
+    return profiles
+
+
 def _require_git_worktree(path: Path) -> None:
     if not path.is_dir():
         raise ValueError("coding repository path must exist")
@@ -376,6 +470,7 @@ def _int_value(source: Mapping[str, str], name: str, default: int) -> int:
 __all__ = [
     "CodingCommandConfig",
     "CodingConfig",
+    "CodingCredentialProfile",
     "CodingDependencyProfile",
     "CodingRepositoryConfig",
 ]

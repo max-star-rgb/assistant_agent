@@ -12,6 +12,7 @@ source_globs = [
   "langgraph.json",
   "src/assistant_agent/agent_server/**",
   "src/assistant_agent/coding/config.py",
+  "src/assistant_agent/coding/credentials.py",
   "src/assistant_agent/coding/dependencies.py",
   "src/assistant_agent/coding/dependency_egress.py",
   "src/assistant_agent/coding/integration.py",

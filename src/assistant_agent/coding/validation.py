@@ -20,12 +20,16 @@ from assistant_agent.coding.models import (
     CodingVerificationResult,
     CodingWorkspace,
     CodingDependencyPlan,
+    CodingCredentialRequest,
 )
 from assistant_agent.coding.dependencies import (
     build_dependency_plan,
     temporary_wheelhouse,
 )
-from assistant_agent.coding.dependency_egress import CodingDependencyFetcher
+from assistant_agent.coding.dependency_egress import (
+    CodingDependencyFetcher,
+    CredentialFetchError,
+)
 from assistant_agent.coding.sandbox import CodingSandboxBackend
 from assistant_agent.coding.workspace import CodingWorkspaceError, CodingWorkspaceService
 
@@ -51,6 +55,7 @@ class CodingValidationService:
         *,
         format_round: int,
         dependency_plan: CodingDependencyPlan | None = None,
+        credential_request: CodingCredentialRequest | None = None,
     ) -> CodingVerificationResult:
         if dependency_plan is not None:
             profile = repository.dependency_profile
@@ -58,6 +63,28 @@ class CodingValidationService:
                 return CodingVerificationResult(
                     status="failed",
                     error_code="dependency_egress_unconfigured",
+                )
+            credential_profile = None
+            if profile.credential_profile_id is not None:
+                if credential_request is None:
+                    return CodingVerificationResult(
+                        status="failed",
+                        error_code="credential_approval_required",
+                    )
+                credential_profile = getattr(
+                    self.workspace_service.config,
+                    "credential_profiles",
+                    {},
+                ).get(profile.credential_profile_id)
+                if credential_profile is None:
+                    return CodingVerificationResult(
+                        status="failed",
+                        error_code="credential_broker_unconfigured",
+                    )
+            elif credential_request is not None:
+                return CodingVerificationResult(
+                    status="failed",
+                    error_code="credential_approval_mismatch",
                 )
             sequence_result: CodingVerificationResult | None = None
             manifest_digest: str | None = None
@@ -73,12 +100,22 @@ class CodingValidationService:
                 ):
                     raise ValueError("dependency_approval_mismatch")
                 with temporary_wheelhouse(self._root) as dependency_root:
-                    manifest = self.dependency_fetcher.fetch(
-                        profile,
-                        fresh_plan,
-                        workspace.root,
-                        dependency_root,
-                    )
+                    if credential_request is None:
+                        manifest = self.dependency_fetcher.fetch(
+                            profile,
+                            fresh_plan,
+                            workspace.root,
+                            dependency_root,
+                        )
+                    else:
+                        manifest = self.dependency_fetcher.fetch(
+                            profile,
+                            fresh_plan,
+                            workspace.root,
+                            dependency_root,
+                            credential_profile=credential_profile,
+                            credential_request=credential_request,
+                        )
                     manifest_digest = manifest.manifest_digest
                     sequence_result = self._run_sequence(
                         workspace,
@@ -88,12 +125,36 @@ class CodingValidationService:
                         dependency_plan=fresh_plan,
                         dependency_manifest_digest=manifest.manifest_digest,
                     )
+                    if manifest.credential_profile_id is not None:
+                        credential_evidence = {
+                            "credential_profile_id": manifest.credential_profile_id,
+                            "credential_policy_digest": manifest.credential_policy_digest,
+                            "credential_request_digest": manifest.credential_request_digest,
+                            "credential_lease_id_digest": manifest.credential_lease_id_digest,
+                            "credential_lease_issued_at": manifest.credential_lease_issued_at,
+                            "credential_lease_expires_at": manifest.credential_lease_expires_at,
+                            "credential_acquire_status": manifest.credential_acquire_status,
+                            "credential_inject_status": manifest.credential_inject_status,
+                            "credential_cleanup_status": manifest.credential_cleanup_status,
+                            "credential_lease_status": manifest.credential_lease_status,
+                        }
+                        sequence_result = sequence_result.model_copy(
+                            update={
+                                "evidence": tuple(
+                                    item.model_copy(update=credential_evidence)
+                                    for item in sequence_result.evidence
+                                )
+                            }
+                        )
                 return sequence_result
             except ValueError as exc:
                 if sequence_result is not None:
                     return sequence_result.model_copy(
                         update={"status": "failed", "error_code": str(exc)}
                     )
+                credential_evidence = (
+                    exc.evidence if isinstance(exc, CredentialFetchError) else {}
+                )
                 evidence = CodingCommandEvidence(
                     command_id="dependency-fetch",
                     kind="build",
@@ -107,6 +168,7 @@ class CodingValidationService:
                     dependency_manifest_digest=manifest_digest,
                     dependency_install_status="failed",
                     dependency_install_error=str(exc),
+                    **credential_evidence,
                 )
                 return CodingVerificationResult(
                     status="failed",

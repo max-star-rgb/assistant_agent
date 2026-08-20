@@ -48,6 +48,24 @@ operator 预置、RepoDigest pinned 且声明对应协议。下载结果只允�
 trusted runner 固定离线安装。container、network、artifact 和 cleanup 对象不进入 checkpoint；任何不确定状态
 都阻止 validation、controlled commit 与 merge，禁止回退宿主 pip 或普通联网容器。
 
+Stage 4B2 只为上述 Python hash-pinned wheel 路径增加 operator-owned 私有 registry profile。当前 tokenless
+developer identity 不用于选择凭据；repository 只能引用服务端已配置的 opaque credential profile。依赖审批后还需
+独立 `coding_credential_lease` HITL，审批绑定 registry scope、TTL、dependency plan/policy 与 credential policy
+digest，恢复时全部重新计算。Graph state、checkpoint、interrupt 和 evidence 均不保存 secret、secret env 名、
+Authorization header 或原始 lease ID。
+
+进程内 `EnvironmentCredentialBroker` 仅在审批通过后读取专用
+`MULTIMODAL_AGENT_CODING_CREDENTIAL_*` 环境变量，产生不可序列化、显式归零的短时 lease。私有下载不使用普通
+CONNECT proxy 注入 TLS header，而使用 operator 预置、RepoDigest pinned 且声明
+`org.assistant-agent.coding-registry-gateway-protocol=1` 的反向 gateway。secret 只通过
+`docker exec -i` stdin 以有界二进制 envelope 发送给固定 credential loader；envelope 绑定 request/policy digest、
+registry scope、lease ID digest 和 deadline，并写入 gateway 独占 tmpfs。明文输入在注入后立即归零，不得进入 argv、container env、
+bind mount、`docker cp`、日志或 downloader。gateway readiness 成功后 downloader 才能启动，downloader 仅访问
+internal network 上的 gateway；整个下载受 monotonic lease deadline 限制。下载结束或异常退出时先调用固定 loader
+revoke，删除失败再 kill/retry；acquire、inject、revoke 的脱敏状态进入 evidence。lease、gateway、network、
+container 或 cleanup 任一状态不确定即 fail closed。
+当前 broker 对静态 operator token 只提供进程内最小暴露与 TTL 使用边界，不宣称具备上游可撤销的真实临时凭据语义。
+
 每个 repository 可在同一服务端 allowlist 中配置有序 `verification_sequence`，其中 command ID 只映射到
 受信固定 argv、command kind 和资源上限。验证进程不在 source repo、Agent Server cwd 或受管 worktree 中
 直接启动，而在 workspace root 下的一次性 scratch 副本中使用固定 cwd、净化环境、wall timeout、进程组
