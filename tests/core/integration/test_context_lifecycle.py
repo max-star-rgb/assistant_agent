@@ -18,6 +18,7 @@ from assistant_agent.native_agent.fast_agent import (
 from assistant_agent.native_agent.models import (
     NativePlanNode,
     NativePlanProposal,
+    PlannerEvidence,
     WorkerResult,
 )
 from assistant_agent.native_agent.planning_graph import build_planning_graph
@@ -29,6 +30,22 @@ from assistant_agent.skills.loading import SkillCatalog
 class _HitlPlanningModel(MockAssistantChatModel):
     def _response_message(self, messages, **kwargs):
         if "NativePlanProposal" in _tool_names(kwargs.get("tools")):
+            if not any(
+                isinstance(message, ToolMessage)
+                and message.tool_call_id == "call-planner-write-sentinel"
+                for message in messages
+            ):
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "write_probe",
+                            "args": {"value": "planner-write-sentinel"},
+                            "id": "call-planner-write-sentinel",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
             return AIMessage(
                 content="",
                 tool_calls=[
@@ -39,15 +56,20 @@ class _HitlPlanningModel(MockAssistantChatModel):
                             "nodes": [
                                 {
                                     "node_id": "worker-1",
-                                    "objective": "write-sentinel",
+                                    "objective": "worker-write-sentinel",
                                     "allowed_tool_names": ["write_probe"],
+                                },
+                                {
+                                    "node_id": "worker-2",
+                                    "objective": "dependent-sentinel",
+                                    "depends_on": ["worker-1"],
                                 }
                             ],
                             "deliverables": [
                                 {
                                     "deliverable_id": "answer",
                                     "description": "write the sentinel",
-                                    "producer_node_ids": ["worker-1"],
+                                    "producer_node_ids": ["worker-2"],
                                 }
                             ],
                         },
@@ -56,20 +78,22 @@ class _HitlPlanningModel(MockAssistantChatModel):
                     }
                 ],
             )
-        if _last_human_text(messages) == "write-sentinel":
+        if _last_human_text(messages).startswith("worker-write-sentinel"):
             if any(isinstance(message, ToolMessage) for message in messages):
-                return AIMessage(content="completed:write-sentinel")
+                return AIMessage(content="completed:worker-write-sentinel")
             return AIMessage(
                 content="",
                 tool_calls=[
                     {
                         "name": "write_probe",
-                        "args": {"value": "write-sentinel"},
-                        "id": "call-write-sentinel",
+                        "args": {"value": "worker-write-sentinel"},
+                        "id": "call-worker-write-sentinel",
                         "type": "tool_call",
                     }
                 ],
             )
+        if _last_human_text(messages).startswith("dependent-sentinel"):
+            return AIMessage(content="completed:dependent-sentinel")
         return super()._response_message(messages, **kwargs)
 
 
@@ -156,7 +180,7 @@ def test_create_agent_owns_limits_summary_and_hitl_middleware() -> None:
 
 
 @pytest.mark.core_invariant("CTX-001")
-def test_planning_worker_write_tool_interrupts_and_resumes() -> None:
+def test_planning_write_tools_interrupt_and_resume_without_replaying_completed_work() -> None:
     executed: list[str] = []
 
     def write_probe(value: str) -> str:
@@ -188,6 +212,7 @@ def test_planning_worker_write_tool_interrupts_and_resumes() -> None:
                 allowed_msgpack_modules=[
                     NativePlanNode,
                     NativePlanProposal,
+                    PlannerEvidence,
                     WorkerResult,
                 ]
             )
@@ -205,21 +230,99 @@ def test_planning_worker_write_tool_interrupts_and_resumes() -> None:
             config=config,
             context=AssistantRunContext(),
         )
-        executed_before_resume = tuple(executed)
+        executed_before_planner_resume = tuple(executed)
+        worker_interrupted = await graph.ainvoke(
+            Command(resume={"decisions": [{"type": "approve"}]}),
+            config=config,
+            context=AssistantRunContext(),
+        )
+        executed_before_worker_resume = tuple(executed)
         resumed = await graph.ainvoke(
             Command(resume={"decisions": [{"type": "approve"}]}),
             config=config,
             context=AssistantRunContext(),
         )
-        return interrupted, resumed, executed_before_resume
+        return (
+            interrupted,
+            worker_interrupted,
+            resumed,
+            executed_before_planner_resume,
+            executed_before_worker_resume,
+        )
 
-    interrupted, resumed, executed_before_resume = asyncio.run(run_and_resume())
+    (
+        planner_interrupted,
+        worker_interrupted,
+        resumed,
+        executed_before_planner_resume,
+        executed_before_worker_resume,
+    ) = asyncio.run(run_and_resume())
 
-    assert executed_before_resume == ()
-    assert executed == ["write-sentinel"]
-    assert interrupted["__interrupt__"][0].value["action_requests"][0]["name"] == (
-        "write_probe"
-    )
+    assert executed_before_planner_resume == ()
+    assert executed_before_worker_resume == ("planner-write-sentinel",)
+    assert executed == ["planner-write-sentinel", "worker-write-sentinel"]
+    assert planner_interrupted["__interrupt__"][0].value["action_requests"][0][
+        "name"
+    ] == "write_probe"
+    assert worker_interrupted["__interrupt__"][0].value["action_requests"][0][
+        "name"
+    ] == "write_probe"
     assert resumed["worker_results"] == [
-        WorkerResult(work_item_id="worker-1", content="completed:write-sentinel")
+        WorkerResult(
+            work_item_id="worker-1",
+            content="completed:worker-write-sentinel",
+        ),
+        WorkerResult(
+            work_item_id="worker-2",
+            content="completed:dependent-sentinel",
+        ),
     ]
+
+
+@pytest.mark.core_invariant("CTX-001")
+def test_fast_mode_write_tool_does_not_interrupt() -> None:
+    executed: list[str] = []
+
+    def write_probe(value: str) -> str:
+        """Record one fast-mode write operation."""
+
+        executed.append(value)
+        return "write-complete"
+
+    tool = StructuredTool.from_function(
+        write_probe,
+        name="write_probe",
+        metadata={"effect": "write"},
+    )
+    graph = build_fast_agent(_FastWriteModel(), [tool])
+
+    result = graph.invoke(
+        {
+            "messages": [HumanMessage(content="fast-write-sentinel")],
+            "memory_context": (),
+            "memory_status": "empty",
+            "execution_mode": "fast",
+        },
+        context=AssistantRunContext(),
+    )
+
+    assert "__interrupt__" not in result
+    assert executed == ["fast-write-sentinel"]
+
+
+class _FastWriteModel(MockAssistantChatModel):
+    def _response_message(self, messages, **kwargs):
+        del kwargs
+        if any(isinstance(message, ToolMessage) for message in messages):
+            return AIMessage(content="completed:fast-write-sentinel")
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_probe",
+                    "args": {"value": "fast-write-sentinel"},
+                    "id": "call-fast-write-sentinel",
+                    "type": "tool_call",
+                }
+            ],
+        )

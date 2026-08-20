@@ -215,6 +215,7 @@ def test_parent_graph_has_fast_planning_and_coding_native_branches(monkeypatch) 
         assert planning_edges == {
             ("__start__", "planner"),
             ("planner", "admit_plan"),
+            ("admit_plan", "planner"),
             ("admit_plan", "scheduler"),
             ("scheduler", "worker"),
             ("scheduler", "finalize"),

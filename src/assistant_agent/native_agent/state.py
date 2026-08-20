@@ -125,7 +125,7 @@ class PlanningState(AgentState):
     planner_evidence: NotRequired[
         Annotated[list[PlannerEvidence], _merge_planner_evidence]
     ]
-    admission_error: NotRequired[str]
+    admission_error: NotRequired[str | None]
     revision_count: NotRequired[int]
     worker_results: NotRequired[Annotated[list[WorkerResult], operator.add]]
 
