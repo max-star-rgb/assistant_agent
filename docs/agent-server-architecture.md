@@ -26,6 +26,15 @@ Graph checkpoint 只保存 opaque workspace ref、base commit、proposal/validat
 base commit、目标文件 digest 和 patch digest。integration 默认关闭；关闭时终态保留 worktree 到 TTL，
 不 commit、merge、push 或写回 source repository。
 
+repository 可独立显式启用本地 Docker sandbox。Agent Server process owner 只构造一份
+`DockerCodingSandboxBackend` 并注入唯一 validation service；backend 与 container ID 不进入 Graph state 或
+checkpoint。sandbox image 必须由 operator 预置并固定到完整 RepoDigest，runtime 只执行本地 inspect，不 pull、
+build 或更新镜像。每条固定 validation command 使用独立短生命周期容器，默认 `network none`、非 root、只读
+rootfs、drop all capabilities、no-new-privileges、默认 seccomp，并限制 memory、CPU、PID、file/output、scratch
+总量和 wall time。容器只读写一次性 scratch 与有界 tmpfs，不挂载 source repository、coding worktree、Agent
+Server cwd、Docker socket 或宿主秘密。sandbox 启用后任何 daemon、image、resource 或 cleanup 错误都 fail
+closed，禁止回退宿主 subprocess；owner 关闭时只清理由自身 label 标记的遗留容器。
+
 每个 repository 可在同一服务端 allowlist 中配置有序 `verification_sequence`，其中 command ID 只映射到
 受信固定 argv、command kind 和资源上限。验证进程不在 source repo、Agent Server cwd 或受管 worktree 中
 直接启动，而在 workspace root 下的一次性 scratch 副本中使用固定 cwd、净化环境、wall timeout、进程组

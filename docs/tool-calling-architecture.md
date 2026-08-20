@@ -109,7 +109,10 @@ protected glob、UTF-8、大小、base commit、file digest 和 patch digest 均
 固定 argv、kind 和资源上限，并由 Graph 在已批准 patch apply 后按固定 sequence 调用；模型、客户端和消息都
 不能提交 argv、cwd、env、shell syntax 或 command ID。test/lint/build 的 scratch 写入全部丢弃；format 的
 增量 diff 只有重新通过 patch validator 和独立 HITL 后才写入 worktree。命令执行资源生命周期归 Agent Server
-authority；本阶段不宣称容器级网络或恶意代码隔离。
+authority。repository 显式启用阶段 4A sandbox 后，这些固定命令迁入本地 digest-pinned Docker image；sandbox
+backend、Docker CLI、image、container ID、network、mount、environment 和资源参数都不是 `BaseTool`，也不
+进入模型 schema。sandbox 默认断网且不注入宿主秘密，任何失败禁止回退宿主执行。联网、依赖安装、secret
+注入和外部资源审批仍不存在。
 
 阶段 3 的 controlled commit、merge preview 与 merge apply 同样不是模型 Tool。模型和客户端不能提交 target
 branch、commit message、author、Git argv、strategy 或 result commit；这些事实只来自 repository 配置和受信
