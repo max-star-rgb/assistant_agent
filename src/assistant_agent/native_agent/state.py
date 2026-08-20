@@ -12,6 +12,7 @@ from langgraph.graph import MessagesState
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from assistant_agent.coding.models import (
+    CodingCommandEvidence,
     CodingPatchApplyResult,
     CodingPatchProposal,
     CodingPatchValidation,
@@ -119,7 +120,12 @@ class CodingState(AgentState):
     proposal: NotRequired[CodingPatchProposal | None]
     validation: NotRequired[CodingPatchValidation | None]
     approval_status: NotRequired[Literal["pending", "approved", "rejected"] | None]
+    approval_origin: NotRequired[Literal["model", "formatter"]]
     applied_result: NotRequired[CodingPatchApplyResult | None]
+    format_round: NotRequired[int]
+    verification_evidence: NotRequired[
+        Annotated[list[CodingCommandEvidence], operator.add]
+    ]
     coding_result: NotRequired[CodingTerminalResult]
 
 

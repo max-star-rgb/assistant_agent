@@ -22,6 +22,7 @@ from assistant_agent.coding.models import (
     CodingPatchValidation,
     CodingTerminalResult,
 )
+from assistant_agent.coding.validation import CodingValidationService
 from assistant_agent.coding.workspace import CodingWorkspaceError, CodingWorkspaceService
 from assistant_agent.native_agent.context import (
     AssistantRunContext,
@@ -41,6 +42,7 @@ def build_coding_graph(
     model: Any,
     tools: list[BaseTool],
     workspace_service: CodingWorkspaceService,
+    validation_service: CodingValidationService | None = None,
     *,
     model_call_limit: int = 8,
     tool_call_limit: int = 8,
@@ -49,6 +51,7 @@ def build_coding_graph(
 ):
     """Build the deterministic inspect, approve, and apply sequence."""
 
+    validation_service = validation_service or CodingValidationService(workspace_service)
     if inspect_agent is None:
         read_names = [
             item.name for item in tools if (item.metadata or {}).get("effect") == "read"
@@ -144,6 +147,8 @@ def build_coding_graph(
             "proposal": validation.proposal,
             "validation": validation,
             "approval_status": "pending",
+            "approval_origin": "model",
+            "format_round": 0,
         }
 
     def approval_node(
@@ -162,6 +167,7 @@ def build_coding_graph(
                 "changed_paths": list(proposal.changed_paths),
                 "summary": proposal.summary,
                 "diff_preview": validation.diff_preview,
+                "origin": state.get("approval_origin", "model"),
             }
         )
         try:
@@ -193,6 +199,7 @@ def build_coding_graph(
                     "proposal": None,
                     "validation": None,
                     "approval_status": None,
+                    "approval_origin": "model",
                 },
                 goto="inspect_and_draft",
             )
@@ -227,14 +234,69 @@ def build_coding_graph(
             return {"coding_result": _failed(state, exc.code)}
         return {
             "applied_result": applied,
-            "coding_result": CodingTerminalResult(
-                status="applied",
-                workspace_ref=applied.workspace_ref,
-                base_commit=applied.base_commit,
-                patch_digest=applied.patch_digest,
-                changed_paths=applied.changed_paths,
+            "format_round": (
+                int(state.get("format_round", 0)) + 1
+                if state.get("approval_origin") == "formatter"
+                else int(state.get("format_round", 0))
             ),
         }
+
+    def run_validation_node(
+        state: CodingState,
+        runtime: Runtime[AssistantRunContext],
+        config: RunnableConfig,
+    ) -> dict[str, object]:
+        applied = state.get("applied_result")
+        if applied is None:
+            return {"coding_result": _failed(state, "patch_apply_failed")}
+        try:
+            workspace = _resolve_workspace(state, runtime, config, workspace_service)
+            repository = workspace_service.config.repositories.get(workspace.repo_id)
+            if repository is None:
+                raise CodingWorkspaceError("workspace_not_allowed")
+            result = validation_service.run(
+                workspace,
+                repository,
+                format_round=int(state.get("format_round", 0)),
+            )
+        except CodingWorkspaceError as exc:
+            return {"coding_result": _failed(state, exc.code)}
+        update: dict[str, object] = {"verification_evidence": list(result.evidence)}
+        if result.status == "format_approval_required":
+            validation = result.formatter_validation
+            if validation is None:
+                update["coding_result"] = _failed(state, "patch_invalid")
+                return update
+            update.update(
+                proposal=validation.proposal,
+                validation=validation,
+                approval_status="pending",
+                approval_origin="formatter",
+            )
+            return update
+        all_evidence = (*state.get("verification_evidence", ()), *result.evidence)
+        if result.status == "failed":
+            update["coding_result"] = CodingTerminalResult(
+                status="failed",
+                workspace_ref=state.get("workspace_ref"),
+                base_commit=state.get("base_commit"),
+                patch_digest=applied.patch_digest,
+                changed_paths=applied.changed_paths,
+                error_code=result.error_code or "verification_command_failed",
+                verification_status="failed",
+                verification_evidence=all_evidence,
+            )
+            return update
+        update["coding_result"] = CodingTerminalResult(
+            status="applied",
+            workspace_ref=applied.workspace_ref,
+            base_commit=applied.base_commit,
+            patch_digest=applied.patch_digest,
+            changed_paths=applied.changed_paths,
+            verification_status="passed",
+            verification_evidence=all_evidence,
+        )
+        return update
 
     def summarize_node(state: CodingState) -> dict[str, object]:
         result = state.get("coding_result") or _failed(state, "patch_invalid")
@@ -256,18 +318,23 @@ def build_coding_graph(
     def after_validation(state: CodingState) -> str:
         return "summarize" if state.get("coding_result") is not None else "approval"
 
+    def after_run_validation(state: CodingState) -> str:
+        return "summarize" if state.get("coding_result") is not None else "approval"
+
     builder = StateGraph(CodingState, context_schema=AssistantRunContext)
     builder.add_node("resolve_workspace", resolve_workspace_node)
     builder.add_node("inspect_and_draft", inspect_and_draft_node)
     builder.add_node("validate_proposal", validate_proposal_node)
     builder.add_node("approval", approval_node)
     builder.add_node("apply_patch", apply_patch_node)
+    builder.add_node("run_validation", run_validation_node)
     builder.add_node("summarize", summarize_node)
     builder.add_edge(START, "resolve_workspace")
     builder.add_conditional_edges("resolve_workspace", after_resolve)
     builder.add_edge("inspect_and_draft", "validate_proposal")
     builder.add_conditional_edges("validate_proposal", after_validation)
-    builder.add_edge("apply_patch", "summarize")
+    builder.add_edge("apply_patch", "run_validation")
+    builder.add_conditional_edges("run_validation", after_run_validation)
     builder.add_edge("summarize", END)
     return builder.compile(name="AssistantCodingGraph", checkpointer=checkpointer)
 
