@@ -13,7 +13,7 @@ from assistant_agent.native_agent import root_graph as root_graph_module
 from assistant_agent.native_agent.planning_graph import build_planning_graph
 from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.native_agent.root_graph import build_assistant_root_graph
-from assistant_agent.native_agent.state import FastAgentState, PlanningState
+from assistant_agent.native_agent.state import CodingState, FastAgentState, PlanningState
 
 
 class _User(dict):
@@ -111,6 +111,7 @@ def test_chat_runs_recall_once_and_schedule_extraction_for_each_mode(monkeypatch
             memory_backend=backend,
             fast_agent=_branch(FastAgentState, "AssistantFastAgent"),
             planning_graph=_branch(PlanningState, "AssistantPlanningGraph"),
+            coding_graph=_branch(CodingState, "AssistantCodingGraph"),
         )
         result = await graph.ainvoke(
             {
