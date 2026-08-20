@@ -6,12 +6,14 @@ import hashlib
 import json
 import re
 from pathlib import Path
+from typing import Literal
 
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 
 from assistant_agent.coding.config import CodingRepositoryConfig
 from assistant_agent.coding.models import (
+    CodingDependencyApprovalDecision,
     CodingDependencyPlan,
     CodingLockedDependency,
 )
@@ -66,6 +68,38 @@ def build_dependency_plan(
     return CodingDependencyPlan.model_validate(
         {**values, "plan_digest": _digest(values)}
     )
+
+
+def dependency_interrupt_payload(plan: CodingDependencyPlan) -> dict[str, object]:
+    return {
+        "action": "coding_dependency_install",
+        "profile_id": plan.profile_id,
+        "ecosystem": plan.ecosystem,
+        "lockfile_path": plan.lockfile_path,
+        "lockfile_digest": plan.lockfile_digest,
+        "package_count": plan.package_count,
+        "allowed_hosts": list(plan.allowed_hosts),
+        "allowed_ports": list(plan.allowed_ports),
+        "timeout_seconds": plan.timeout_seconds,
+        "max_download_bytes": plan.max_download_bytes,
+        "max_files": plan.max_files,
+        "max_file_bytes": plan.max_file_bytes,
+        "policy_digest": plan.policy_digest,
+        "plan_digest": plan.plan_digest,
+    }
+
+
+def validate_dependency_approval(
+    plan: CodingDependencyPlan,
+    raw: object,
+) -> Literal["approve", "reject"]:
+    try:
+        decision = CodingDependencyApprovalDecision.model_validate(raw)
+    except Exception as exc:
+        raise ValueError("dependency_approval_mismatch") from exc
+    if decision.decision == "approve" and decision.plan_digest != plan.plan_digest:
+        raise ValueError("dependency_approval_mismatch")
+    return decision.decision
 
 
 def _parse_lockfile(
@@ -145,4 +179,8 @@ def _digest(value: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-__all__ = ["build_dependency_plan"]
+__all__ = [
+    "build_dependency_plan",
+    "dependency_interrupt_payload",
+    "validate_dependency_approval",
+]
