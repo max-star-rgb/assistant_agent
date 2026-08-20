@@ -113,6 +113,35 @@ class CodingDependencyApprovalDecision(BaseModel):
         return self
 
 
+class CodingCredentialRequest(BaseModel):
+    """Checkpoint-safe request for a bounded private registry lease."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    credential_profile_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$")
+    dependency_profile_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$")
+    registry_host: str = Field(min_length=3, max_length=253)
+    registry_base_path: str = Field(min_length=1, max_length=240)
+    lease_ttl_seconds: int = Field(ge=30, le=900)
+    dependency_plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    dependency_policy_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    credential_policy_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class CodingCredentialApprovalDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    decision: Literal["approve", "reject"]
+    request_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def _approval_requires_digest(self) -> "CodingCredentialApprovalDecision":
+        if self.decision == "approve" and self.request_digest is None:
+            raise ValueError("credential approval requires request digest")
+        return self
+
+
 class CodingDependencyWheel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -443,6 +472,11 @@ __all__ = [
     "CodingApprovalDecision",
     "CodingCommandEvidence",
     "CodingCommitResult",
+    "CodingCredentialApprovalDecision",
+    "CodingCredentialRequest",
+    "CodingDependencyApprovalDecision",
+    "CodingDependencyManifest",
+    "CodingDependencyPlan",
     "CodingPatchApplyResult",
     "CodingPatchProposal",
     "CodingPatchValidation",
