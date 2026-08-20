@@ -288,6 +288,49 @@ def test_admission_accepts_governed_tool_with_matching_active_and_required_skill
     assert admitted is proposal
 
 
+@pytest.mark.parametrize("required_skill_id", ["skill-a", "skill-b"])
+def test_admission_accepts_any_one_of_multiple_governing_skills(
+    required_skill_id: str,
+) -> None:
+    """Catches multi-governed Tools accidentally requiring every governing Skill."""
+
+    catalog = SkillCatalog(
+        descriptors=[
+            SkillDescriptor(
+                name=skill_id,
+                description=f"Govern via {skill_id}.",
+                body=f"Use {skill_id}.",
+                governed_tools=[GOVERNED_TOOL_NAME],
+            )
+            for skill_id in ("skill-a", "skill-b")
+        ]
+    )
+    policy = PlanningAdmissionPolicy.from_inventory(
+        [_probe_tool(DEFAULT_TOOL_NAME), _probe_tool(GOVERNED_TOOL_NAME)],
+        catalog,
+    )
+    proposal = _proposal(
+        nodes=(
+            NativePlanNode(
+                node_id="worker-1",
+                objective="authorized by one governing Skill",
+                required_skill_ids=(required_skill_id,),
+                allowed_tool_names=(GOVERNED_TOOL_NAME,),
+            ),
+        )
+    )
+
+    assert (
+        admit_native_plan(
+            proposal,
+            policy=policy,
+            evidence=_evidence(),
+            active_skill_ids=(required_skill_id,),
+        )
+        is proposal
+    )
+
+
 def test_admission_rejects_active_skill_omitted_from_governed_node_requirements() -> (
     None
 ):
@@ -337,6 +380,145 @@ def test_admission_enforces_node_count_and_dependency_depth_limits() -> None:
             evidence=_evidence(),
             active_skill_ids=(),
         )
+
+
+@pytest.mark.parametrize(
+    ("nodes", "max_depth", "expected_code"),
+    [
+        (
+            (
+                NativePlanNode(node_id="worker-1", objective="root"),
+                NativePlanNode(
+                    node_id="worker-2",
+                    objective="middle",
+                    depends_on=("worker-1",),
+                ),
+                NativePlanNode(
+                    node_id="worker-3",
+                    objective="leaf",
+                    depends_on=("worker-2",),
+                ),
+            ),
+            3,
+            None,
+        ),
+        (
+            (
+                NativePlanNode(node_id="worker-1", objective="root"),
+                NativePlanNode(
+                    node_id="worker-2",
+                    objective="middle-1",
+                    depends_on=("worker-1",),
+                ),
+                NativePlanNode(
+                    node_id="worker-3",
+                    objective="middle-2",
+                    depends_on=("worker-2",),
+                ),
+                NativePlanNode(
+                    node_id="worker-4",
+                    objective="leaf",
+                    depends_on=("worker-3",),
+                ),
+            ),
+            3,
+            "dependency_depth_exceeded",
+        ),
+        (
+            (
+                NativePlanNode(node_id="worker-1", objective="root"),
+                NativePlanNode(
+                    node_id="worker-2",
+                    objective="left",
+                    depends_on=("worker-1",),
+                ),
+                NativePlanNode(
+                    node_id="worker-3",
+                    objective="right",
+                    depends_on=("worker-1",),
+                ),
+                NativePlanNode(
+                    node_id="worker-4",
+                    objective="join",
+                    depends_on=("worker-2", "worker-3"),
+                ),
+            ),
+            3,
+            None,
+        ),
+    ],
+    ids=["exact-depth", "over-depth", "diamond-depth"],
+)
+def test_admission_dependency_depth_table(
+    nodes: tuple[NativePlanNode, ...],
+    max_depth: int,
+    expected_code: str | None,
+) -> None:
+    proposal = _proposal(
+        nodes=nodes,
+        producer_node_ids=(nodes[-1].node_id,),
+    )
+    if expected_code is None:
+        assert (
+            admit_native_plan(
+                proposal,
+                policy=replace(_policy(), max_dependency_depth=max_depth),
+                evidence=_evidence(),
+                active_skill_ids=(),
+            )
+            is proposal
+        )
+        return
+    with pytest.raises(NativePlanAdmissionError) as raised:
+        admit_native_plan(
+            proposal,
+            policy=replace(_policy(), max_dependency_depth=max_depth),
+            evidence=_evidence(),
+            active_skill_ids=(),
+        )
+    assert raised.value.code == expected_code
+
+
+@pytest.mark.parametrize(
+    ("proposal", "evidence", "expected_code"),
+    [
+        (
+            _proposal(producer_node_ids=("worker-1", "worker-1")),
+            _evidence(),
+            "duplicate_deliverable_producer",
+        ),
+        (
+            _proposal(
+                deliverable_evidence_refs=(EVIDENCE_ID, EVIDENCE_ID),
+            ),
+            _evidence(),
+            "duplicate_deliverable_evidence_ref",
+        ),
+        (
+            _proposal(),
+            (*_evidence(), *_evidence()),
+            "duplicate_evidence_id",
+        ),
+    ],
+    ids=[
+        "duplicate-deliverable-producers",
+        "duplicate-deliverable-evidence-refs",
+        "duplicate-evidence-ids",
+    ],
+)
+def test_admission_duplicate_reference_table(
+    proposal: NativePlanProposal,
+    evidence: tuple[PlannerEvidence, ...],
+    expected_code: str,
+) -> None:
+    with pytest.raises(NativePlanAdmissionError) as raised:
+        admit_native_plan(
+            proposal,
+            policy=_policy(),
+            evidence=evidence,
+            active_skill_ids=(),
+        )
+    assert raised.value.code == expected_code
 
 
 def test_policy_inventory_is_immutable() -> None:
@@ -433,3 +615,32 @@ def test_production_composition_loads_and_shares_one_skill_catalog(
     assert skill_loading_plugin_catalogs[0] is service_loaded_catalogs[0]
     assert fast_catalogs[0] is service_loaded_catalogs[0]
     assert planning_catalogs[0] is service_loaded_catalogs[0]
+
+
+def test_native_tool_inventory_requires_catalog_before_skill_plugin_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prevents the Skill plugin fallback from becoming a second production load."""
+
+    plugin_load_roots: list[Any] = []
+
+    def recording_plugin_load(root) -> SkillCatalog:
+        plugin_load_roots.append(root)
+        return SkillCatalog(descriptors=[])
+
+    monkeypatch.setattr(
+        skill_loading_plugin,
+        "load_repo_skill_descriptors",
+        recording_plugin_load,
+    )
+
+    with pytest.raises(TypeError, match="skill_catalog"):
+        asyncio.run(
+            services.create_native_tool_inventory(
+                services.ProviderConfig(provider_mode="mock"),
+                resources=services.NativeToolResources(),
+                mcp_server_configs=[],
+            )
+        )
+
+    assert plugin_load_roots == []

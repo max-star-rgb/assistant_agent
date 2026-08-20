@@ -15,6 +15,7 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
+from assistant_agent.native_agent import planning_graph
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.fast_agent import build_fast_agent
 from assistant_agent.native_agent.models import (
@@ -185,6 +186,36 @@ def test_third_invalid_candidate_raises_bounded_admission_error() -> None:
         str(raised.value)
         == "plan admission failed after bounded revisions: unknown_tool"
     )
+
+
+def test_missing_candidate_uses_the_bounded_revision_update_path() -> None:
+    """Catches missing candidates bypassing the native revision edge and budget."""
+
+    graph = build_planning_graph(
+        object(),
+        _RevisionFastAgent(),
+        tools=[_probe_tool("weather_probe")],
+        skill_catalog=SkillCatalog(),
+    )
+    admission_node = graph.get_graph().nodes["admit_plan"].data
+    state = _planning_input()
+
+    first = admission_node.invoke(state)
+    second = admission_node.invoke({**state, **first})
+
+    assert first == {"admission_error": "missing_candidate", "revision_count": 1}
+    assert second == {"admission_error": "missing_candidate", "revision_count": 2}
+    assert planning_graph.route_after_admission(first) == "planner"
+    correction = planning_graph._bounded_admission_correction(
+        first["admission_error"],
+        evidence=(),
+    )
+    assert correction is not None
+    assert len(correction) <= 48_000
+    assert _revision_payload(correction)["admission_error_code"] == "missing_candidate"
+    with pytest.raises(NativePlanAdmissionError) as raised:
+        admission_node.invoke({**state, **second})
+    assert raised.value.code == "missing_candidate"
 
 
 def test_revision_context_escapes_untrusted_evidence_delimiters() -> None:

@@ -40,7 +40,7 @@ def _create_builtin_tools(
     config: ProviderConfig,
     *,
     resources: NativeToolResources,
-    skill_catalog: SkillCatalog | None = None,
+    skill_catalog: SkillCatalog,
 ) -> list[BaseTool]:
     """Build the trusted in-process inventory without Registry or discovery."""
 
@@ -144,7 +144,7 @@ async def create_native_tool_inventory(
     resources: NativeToolResources,
     mcp_server_configs: Sequence[MCPServerConfig],
     mcp_client_factory: Callable[..., Any] | None = None,
-    skill_catalog: SkillCatalog | None = None,
+    skill_catalog: SkillCatalog,
 ) -> list[BaseTool]:
     """Compose the one production inventory from built-ins and official MCP tools."""
 
@@ -167,7 +167,7 @@ async def create_native_tool_inventory(
 
 def _builtin_plugins(
     *,
-    skill_catalog: SkillCatalog | None = None,
+    skill_catalog: SkillCatalog,
 ) -> tuple[Any, ...]:
     """Return an explicit list; no filesystem or configured-module discovery."""
 

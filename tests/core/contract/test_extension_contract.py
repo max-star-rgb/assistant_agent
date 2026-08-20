@@ -11,6 +11,7 @@ from assistant_agent.native_agent.tools import (
     NativeToolResources,
     create_native_tool_inventory,
 )
+from assistant_agent.skills.loading import SkillCatalog
 
 
 class _MCPClient:
@@ -33,6 +34,7 @@ def test_native_extensions_are_static_standard_tools() -> None:
             ProviderConfig(provider_mode="mock"),
             resources=NativeToolResources(),
             mcp_server_configs=[],
+            skill_catalog=SkillCatalog(descriptors=[]),
         )
     )
 
@@ -62,6 +64,7 @@ def test_mcp_extension_uses_allowlist_and_namespace() -> None:
             resources=NativeToolResources(),
             mcp_server_configs=[config],
             mcp_client_factory=_MCPClient,
+            skill_catalog=SkillCatalog(descriptors=[]),
         )
     )
 

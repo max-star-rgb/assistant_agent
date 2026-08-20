@@ -79,12 +79,22 @@ reducer，只有候选计划被覆盖。成功 admission 清除错误并进入 s
 `WorkerResult` 组装为运行时 `dependency_results`，worker 将其作为明确的只读数据输入交给同一个 fast graph；
 该字段不是 planner 输出 schema。其原生拓扑是
 `planner -> admit_plan -> scheduler -> Send(worker) -> join -> scheduler`；scheduler 每轮只派发当前 ready wave，
-依赖失败会生成稳定的 failed `WorkerResult` 并向下游传播。零节点 plan 不派发 worker，scheduler 直接进入
-finalizer。worker 只能继承节点 required Skill 与 Planner 实际快照的交集；admission 禁止节点把
+依赖失败会生成稳定的 failed `WorkerResult` 并向下游传播。worker 节点使用原生 `RetryPolicy` 和 node
+`error_handler`；只有明确可重试的超时、连接或临时 HTTP 执行失败在有界重试耗尽后转为不含异常正文的
+failed `WorkerResult`。`GraphBubbleUp` / interrupt / cancel、准入、鉴权与程序契约错误不进入该降级边界，
+仍保持 LangGraph 原生传播。零节点 plan 不派发 worker，scheduler 直接进入 finalizer。worker 只能继承节点 required Skill 与
+Planner 实际快照的交集；admission 禁止节点把
 `load_skill` 放入 worker Tool allowlist，worker phase 也确定性过滤该 Tool。显式允许 `load_skill_reference` 时，Tool
 只能读取 scheduler 投影的既有 `skill_reference_grants`，不能扩大 Skill 或 reference grant。全部节点完成后，
 finalizer 仍调用共享 `AssistantFastAgent`，但 `agent_phase="finalizer"` 确定性清空 Tool 与 structured response，
 根据原始请求、deliverables、planner evidence 和按 plan 排序的 worker results 返回标准 `AIMessage`，不机械拼接输出。
+worker 的直接依赖与所引用 PlannerEvidence 使用最终转义字符计数的 48,000 字符单消息预算；
+finalizer 的最新请求、deliverables、全部 PlannerEvidence 和按 plan 排序的 WorkerResult 使用 96,000 字符单消息预算。
+两者先保留 ID、状态、来源与 artifact ref，再确定性公平分配 content 字符并在 JSON 中标记裁剪；
+始终生成完整 JSON，不依赖 `SummarizationMiddleware` 压缩巨型单条 `HumanMessage`。Planner Tool artifact
+在捕获时按深度 8、最多 512 个 mapping/sequence item 增量遍历，检测循环并在遍历中过滤 raw/unsafe key；
+`structured_content` 最终 JSON 不超过 50,000 bytes，超限或未知对象只产生 JSON-safe truncation marker，
+在边界内遇到的受信 `output_ref` / `artifact_ref` 仍单独保留。
 planning 不创建第二套 Runtime，也不重复父图 Memory 节点。当前不维护
 verifier、repair ledger、acceptance contract 或 artifact provenance；deliverable 当前只做 producer/evidence
 引用准入，不建立运行期 artifact binding。只有真实产品需求出现后才增加。
@@ -167,5 +177,5 @@ runner 因绑定旧 state/evidence 合同而删除，后续行为评测必须基
 ```bash
 MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
   tests/core/integration/test_runtime_lifecycle.py \
-  tests/tdd/native-agent-parent-graph
+  tests/tdd/native-high-agency-planner
 ```

@@ -197,7 +197,11 @@ def test_parent_graph_has_fast_planning_and_coding_native_branches(monkeypatch) 
         assert graph.nodes["fast_agent"].data.name == "AssistantFastAgent"
         assert graph.nodes["planning_graph"].data.name == "AssistantPlanningGraph"
         assert graph.nodes["coding_graph"].data.name == "AssistantCodingGraph"
-        planning_nodes = set(graph.nodes["planning_graph"].data.get_graph().nodes)
+        planning_nodes = {
+            name
+            for name in graph.nodes["planning_graph"].data.get_graph().nodes
+            if not name.startswith("__error_handler__")
+        }
         assert planning_nodes == {
             "__start__",
             "planner",

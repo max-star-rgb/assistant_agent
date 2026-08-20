@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
 
@@ -167,6 +168,126 @@ def test_zero_node_plan_routes_directly_to_shared_agent_finalizer() -> None:
     }
 
 
+def test_compiled_worker_exhaustion_blocks_dependents_before_finalizing() -> None:
+    """Catches a root worker failure aborting the graph before DAG propagation."""
+
+    model = _FailingRootWorkerModel()
+    shared_agent = build_fast_agent(model, [], skill_catalog=SkillCatalog())
+    graph = planning_graph.build_planning_graph(
+        model,
+        shared_agent,
+        skill_catalog=SkillCatalog(),
+    )
+
+    async def run_with_updates():
+        updates: list[dict[str, Any]] = []
+        final: dict[str, Any] | None = None
+        async for mode, chunk in graph.astream(
+            {
+                "messages": [HumanMessage(content="failure-request-sentinel")],
+                "memory_context": (),
+                "memory_status": "empty",
+            },
+            context=AssistantRunContext(),
+            stream_mode=["updates", "values"],
+        ):
+            if mode == "updates":
+                updates.append(chunk)
+            else:
+                final = chunk
+        assert final is not None
+        return updates, final
+
+    updates, result = asyncio.run(run_with_updates())
+
+    assert model.root_attempts == 3
+    assert model.dependent_attempts == 0
+    assert model.finalizer_payload is not None
+    worker_results = model.finalizer_payload["worker_results"]
+    assert [item["work_item_id"] for item in worker_results] == ["root", "child"]
+    assert [item["verification_status"] for item in worker_results] == [
+        "failed",
+        "failed",
+    ]
+    assert "provider-secret-sentinel" not in json.dumps(worker_results)
+    assert worker_results[0]["content"] == (
+        "worker execution failed after bounded operational retries"
+    )
+    assert worker_results[1]["content"] == (
+        "work item blocked because a direct dependency failed: root"
+    )
+    result_updates = [
+        item for update in updates for item in _worker_result_updates(update)
+    ]
+    assert [item["work_item_id"] for item in result_updates] == ["root", "child"]
+    assert len(result["worker_results"]) == 2
+    assert sum(isinstance(message, AIMessage) for message in result["messages"]) == 1
+    assert result["messages"][-1].content == "finalized-failure-sentinel"
+
+
+def _operational_wrapper_with_cause(cause: Exception) -> TimeoutError:
+    failure = TimeoutError("operational-wrapper")
+    failure.__cause__ = cause
+    return failure
+
+
+def _deep_operational_chain_with_cause(cause: Exception) -> TimeoutError:
+    current = cause
+    for _ in range(8):
+        current = _operational_wrapper_with_cause(current)
+    assert isinstance(current, TimeoutError)
+    return current
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        PermissionError("denied"),
+        TypeError("bug"),
+        _operational_wrapper_with_cause(PermissionError("wrapped-denied")),
+        _operational_wrapper_with_cause(TypeError("wrapped-bug")),
+        _deep_operational_chain_with_cause(PermissionError("deep-wrapped-denied")),
+    ],
+    ids=[
+        "permission",
+        "type",
+        "wrapped-permission",
+        "wrapped-type",
+        "deep-wrapped-permission",
+    ],
+)
+def test_worker_failure_boundary_does_not_convert_non_operational_errors(
+    failure: Exception,
+) -> None:
+    """Catches permission or programmer errors becoming advisory worker output."""
+
+    agent = _DirectFailureFastAgent(failure)
+    graph = planning_graph.build_planning_graph(
+        object(),
+        agent,
+        skill_catalog=SkillCatalog(),
+    )
+
+    with pytest.raises(type(failure), match=str(failure)):
+        asyncio.run(
+            graph.ainvoke(
+                {
+                    "messages": [HumanMessage(content="failure-request-sentinel")],
+                    "memory_context": (),
+                    "memory_status": "empty",
+                },
+                context=AssistantRunContext(),
+            )
+        )
+
+
+def test_worker_failure_classifier_never_converts_cancellation() -> None:
+    failure = asyncio.CancelledError("cancelled")
+    failure.__cause__ = TimeoutError("transport-timeout")
+
+    assert planning_graph._is_worker_operational_failure(failure) is False
+
+
 def test_worker_reference_tool_uses_only_scheduler_projected_grants(
     tmp_path: Path,
 ) -> None:
@@ -230,6 +351,88 @@ class _RecordingFastAgent:
                 AIMessage(content="final-answer-sentinel"),
             ]
         }
+
+
+class _FailingRootWorkerModel(MockAssistantChatModel):
+    root_attempts: int = 0
+    dependent_attempts: int = 0
+    finalizer_payload: dict[str, Any] | None = None
+
+    def _response_message(self, messages, **kwargs):
+        if "NativePlanProposal" in _model_tool_names(kwargs.get("tools")):
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "NativePlanProposal",
+                        "args": {
+                            "schema_version": "native_plan_v1",
+                            "nodes": [
+                                {
+                                    "node_id": "root",
+                                    "objective": "root-failure-sentinel",
+                                },
+                                {
+                                    "node_id": "child",
+                                    "objective": "dependent-must-not-run-sentinel",
+                                    "depends_on": ["root"],
+                                },
+                            ],
+                            "deliverables": [
+                                {
+                                    "deliverable_id": "answer",
+                                    "description": "include failures and limitations",
+                                    "producer_node_ids": ["root", "child"],
+                                }
+                            ],
+                        },
+                        "id": "failure-plan-proposal",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        current = _last_human_message_text(messages)
+        if current.startswith("root-failure-sentinel"):
+            self.root_attempts += 1
+            raise TimeoutError("provider-secret-sentinel")
+        if current.startswith("dependent-must-not-run-sentinel"):
+            self.dependent_attempts += 1
+            return AIMessage(content="dependent-ran-unexpectedly")
+        self.finalizer_payload = json.loads(current)
+        return AIMessage(content="finalized-failure-sentinel")
+
+
+class _DirectFailureFastAgent:
+    name = "AssistantFastAgent"
+
+    def __init__(self, failure: Exception) -> None:
+        self.failure = failure
+
+    async def ainvoke(self, input: dict[str, Any], *, context: Any):
+        del context
+        if input["agent_phase"] == "planner":
+            return {
+                "messages": list(input["messages"]),
+                "structured_response": NativePlanProposal(
+                    schema_version="native_plan_v1",
+                    nodes=(
+                        NativePlanNode(
+                            node_id="root",
+                            objective="root-failure-sentinel",
+                        ),
+                    ),
+                    deliverables=(
+                        PlanDeliverable(
+                            deliverable_id="answer",
+                            description="answer sentinel",
+                            producer_node_ids=("root",),
+                        ),
+                    ),
+                ),
+            }
+        if input["agent_phase"] == "worker":
+            raise self.failure
+        return {"messages": [AIMessage(content="must-not-finalize")]}
 
 
 class _ReferenceCallModel(MockAssistantChatModel):
@@ -351,6 +554,38 @@ def _only_tool_message(result: dict[str, Any]) -> ToolMessage:
     ]
     assert len(messages) == 1
     return messages[0]
+
+
+def _model_tool_names(raw_tools: object) -> set[str]:
+    if not isinstance(raw_tools, list):
+        return set()
+    return {
+        function["name"]
+        for item in raw_tools
+        if isinstance(item, dict)
+        and isinstance((function := item.get("function")), dict)
+        and isinstance(function.get("name"), str)
+    }
+
+
+def _last_human_message_text(messages: list[Any]) -> str:
+    for message in reversed(messages):
+        if isinstance(message, HumanMessage):
+            return str(message.content)
+    return ""
+
+
+def _worker_result_updates(update: dict[str, Any]) -> list[dict[str, Any]]:
+    projected: list[dict[str, Any]] = []
+    for value in update.values():
+        if not isinstance(value, dict):
+            continue
+        for result in value.get("worker_results", ()):
+            if isinstance(result, WorkerResult):
+                projected.append(result.model_dump(mode="json"))
+            elif isinstance(result, dict):
+                projected.append(result)
+    return projected
 
 
 class _AuthenticatedUser(dict):

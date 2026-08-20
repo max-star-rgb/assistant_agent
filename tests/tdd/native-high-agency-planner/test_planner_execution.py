@@ -278,7 +278,10 @@ def test_evidence_capture_rejects_unreferenceable_ids_and_bounds_artifacts() -> 
 
     assert len(evidence) == 1
     assert evidence[0].evidence_id == "valid-call-1"
-    assert evidence[0].structured_content is None
+    assert evidence[0].structured_content == {
+        "payload": {"_truncated": True, "reason": "string_byte_limit"},
+        "nested": {"output_ref": "artifact://bounded-sentinel"},
+    }
     assert evidence[0].artifact_ref == "artifact://bounded-sentinel"
 
 
@@ -313,7 +316,10 @@ def test_evidence_capture_keeps_json_safe_data_without_provider_raw_payload() ->
     assert evidence[0].status == "failed"
     assert len(evidence[0].content) == 20_000
     assert evidence[0].structured_content == {"value": 7}
-    assert evidence[1].structured_content is None
+    assert evidence[1].structured_content == {
+        "opaque": {"_truncated": True, "reason": "unsupported_type"},
+        "output_ref": "artifact://opaque-sentinel",
+    }
     assert evidence[1].artifact_ref == "artifact://opaque-sentinel"
 
 
