@@ -13,6 +13,9 @@ _TOOL_OBSERVATION_POLICY = ProviderSafetyPolicy(
     max_message_chars=4_000,
     max_detail_chars=4_000,
 )
+_CAMEL_ACRONYM_BOUNDARY_RE = re.compile(r"([A-Z]+)([A-Z][a-z])")
+_CAMEL_WORD_BOUNDARY_RE = re.compile(r"([a-z0-9])([A-Z])")
+_NON_KEY_CHARACTER_RE = re.compile(r"[^a-z0-9]+")
 _UNSAFE_KEYS = {
     "access_token",
     "api_key",
@@ -53,7 +56,7 @@ def is_unsafe_tool_observation_key(key: object) -> bool:
 
     if not isinstance(key, str):
         return True
-    normalized = re.sub(r"[^a-z0-9]+", "_", key.strip().lower()).strip("_")
+    normalized = _normalize_observation_key(key)
     if not normalized or normalized in _UNSAFE_KEYS:
         return True
     if normalized.startswith("raw_"):
@@ -79,6 +82,12 @@ def is_unsafe_tool_observation_key(key: object) -> bool:
     return "base64" in normalized or normalized.endswith(
         ("_base64", "_bytes", "_blob", "_data_uri")
     )
+
+
+def _normalize_observation_key(key: str) -> str:
+    separated = _CAMEL_ACRONYM_BOUNDARY_RE.sub(r"\1_\2", key.strip())
+    separated = _CAMEL_WORD_BOUNDARY_RE.sub(r"\1_\2", separated)
+    return _NON_KEY_CHARACTER_RE.sub("_", separated.lower()).strip("_")
 
 
 def sanitize_tool_observation_detail(value: Any) -> Any:

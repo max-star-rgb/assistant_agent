@@ -309,6 +309,14 @@ def test_evidence_capture_removes_all_raw_provider_shapes() -> None:
         "raw_provider_payload": {"secret": "raw-provider-payload"},
         "raw_provider": {"secret": "raw-provider"},
         "raw_result": {"secret": "raw-result"},
+        "providerResponse": {"secret": "camel-provider-response"},
+        "providerRawPayload": {"secret": "camel-provider-raw-payload"},
+        "rawProviderPayload": {"secret": "camel-raw-provider-payload"},
+        "rawResult": {"secret": "camel-raw-result"},
+        "providerSearchResponseEnvelope": {
+            "secret": "camel-provider-response-structure"
+        },
+        "rawBinaryOutput": {"secret": "camel-raw-output-structure"},
     }
     messages = [
         ToolMessage(
