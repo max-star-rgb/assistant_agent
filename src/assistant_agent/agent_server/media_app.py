@@ -17,6 +17,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
+from httpx import AsyncClient
 from langchain_core.messages import AIMessage
 
 from assistant_agent.agent_server.client import SdkAgentServerClient
@@ -65,9 +66,17 @@ async def agent_server_lifespan(application: FastAPI):
 
     visual_module = get_visual_perception_module()
     application.state.visual_perception_module = visual_module
+    graph_warmup_task = asyncio.create_task(
+        _warm_native_graph(),
+        name="native-graph-warmup",
+    )
+    application.state.native_graph_warmup_task = graph_warmup_task
     try:
         yield
     finally:
+        if not graph_warmup_task.done():
+            graph_warmup_task.cancel()
+        await asyncio.gather(graph_warmup_task, return_exceptions=True)
         await close_native_assistant_graph()
         await visual_module.aclose()
         if (
@@ -75,6 +84,62 @@ async def agent_server_lifespan(application: FastAPI):
             is visual_module
         ):
             del application.state.visual_perception_module
+
+
+async def _warm_native_graph(
+    *,
+    graph_url: str | None = None,
+    request_graph: Callable[[str], Awaitable[None]] | None = None,
+    retry_delay_seconds: float = 0.1,
+    max_attempts: int = 50,
+    total_timeout_seconds: float = 30.0,
+) -> bool:
+    """Move process composition off the first user turn after server startup."""
+
+    resolved_url = graph_url or _native_graph_warmup_url()
+    request = request_graph or _request_native_graph
+    last_error: Exception | None = None
+    try:
+        async with asyncio.timeout(total_timeout_seconds):
+            for attempt in range(max_attempts):
+                try:
+                    await request(resolved_url)
+                except Exception as exc:  # noqa: BLE001 - readiness retry boundary.
+                    last_error = exc
+                    if attempt + 1 < max_attempts:
+                        await asyncio.sleep(retry_delay_seconds)
+                    continue
+                logger.info("native_graph_warmup_succeeded")
+                return True
+    except TimeoutError as exc:
+        last_error = exc
+    logger.warning(
+        "native_graph_warmup_failed attempts=%s error=%s",
+        max_attempts,
+        type(last_error).__name__ if last_error is not None else "unknown",
+    )
+    return False
+
+
+async def _request_native_graph(url: str) -> None:
+    async with AsyncClient(timeout=30.0, trust_env=False) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+
+
+def _native_graph_warmup_url() -> str:
+    raw_port = os.environ.get("ASSISTANT_AGENT_SERVER_PORT") or os.environ.get(
+        "PORT",
+        "8000",
+    )
+    port = int(raw_port) if raw_port.isdigit() else 8000
+    return f"http://127.0.0.1:{port}/assistants/assistant-native-v1/graph"
+
+
+async def _await_native_graph_warmup(application: FastAPI) -> None:
+    task = getattr(application.state, "native_graph_warmup_task", None)
+    if isinstance(task, asyncio.Task):
+        await asyncio.shield(task)
 
 
 app = FastAPI(
@@ -252,6 +317,7 @@ async def generated_artifact(request: Request, filename: str) -> FileResponse:
 
 @app.websocket("/agent-service/{version}")
 async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
+    await _await_native_graph_warmup(websocket.app)
     await websocket.accept()
     session = MediaConnectionSession(connection_id=f"media-{uuid4()}")
     send_lock = asyncio.Lock()
@@ -364,8 +430,8 @@ async def _handle_frame(
     if frame.message in {"assistantControl", "assistantControlStart"}:
         user_id = _control_user_id(frame.message, frame.body)
         authenticated_user = websocket.scope.get("user")
+        authenticated_identity = _agent_server_identity(websocket)
         if authenticated_user is not None:
-            authenticated_identity = str(authenticated_user.identity)
             permissions = set(getattr(authenticated_user, "permissions", ()) or ())
             if (
                 "assistant:developer" not in permissions
@@ -396,7 +462,7 @@ async def _handle_frame(
         )
         if call_type == "VIDEO":
             visual_perception.session = visual_module.open_session(
-                user_id=user_id,
+                user_id=authenticated_identity,
                 session_id=thread_id,
             )
         await artifact_hub.register(
@@ -463,7 +529,7 @@ async def _handle_frame(
         record_live_view = getattr(visual_module, "record_live_view", None)
         if callable(record_live_view):
             record_live_view(
-                session.user_id,
+                _agent_server_identity(websocket),
                 session.thread_id,
                 video_ids=session.video_ids,
                 window=visual_window,
@@ -1129,9 +1195,22 @@ def _default_agent_server_client(websocket: WebSocket) -> SdkAgentServerClient:
 
     configured_url = os.environ.get("ASSISTANT_AGENT_SERVER_URL")
     url = configured_url or str(websocket.base_url).rstrip("/")
-    identity = websocket.headers.get("x-assistant-user")
-    headers = {"x-assistant-user": identity} if identity is not None else None
+    headers = {"x-assistant-user": _agent_server_identity(websocket)}
     return SdkAgentServerClient(url=url, headers=headers)
+
+
+def _agent_server_identity(websocket: WebSocket) -> str:
+    authenticated_user = websocket.scope.get("user")
+    if authenticated_user is not None:
+        identity = str(getattr(authenticated_user, "identity", "")).strip()
+        if identity:
+            return identity
+    headers = getattr(websocket, "headers", None)
+    if headers is not None:
+        identity = str(headers.get("x-assistant-user") or "").strip()
+        if identity:
+            return identity
+    return "local-developer"
 
 
 def _create_video_ingestion() -> H264VideoIngestionService:

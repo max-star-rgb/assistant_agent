@@ -167,6 +167,7 @@ def build_server_env(
     *,
     env_file: str,
     use_env_file: bool,
+    server_port: int,
 ) -> dict[str, str]:
     """Build a CLI-safe environment without relying on IDE source-root injection."""
 
@@ -180,6 +181,7 @@ def build_server_env(
     )
     if use_env_file:
         env["LANGGRAPH_ENV"] = str((REPO_ROOT / env_file).resolve())
+    env["ASSISTANT_AGENT_SERVER_PORT"] = str(server_port)
     return env
 
 
@@ -257,6 +259,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         os.environ.copy(),
         env_file=args.env_file,
         use_env_file=not args.no_env_file,
+        server_port=args.port,
     )
     log_path = resolve_log_path(
         args.log_file,

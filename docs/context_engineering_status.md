@@ -1,6 +1,6 @@
 # LangChain-native Context Engineering
 
-最后更新：2026-08-18
+最后更新：2026-08-20
 
 ## Authority contract
 
@@ -19,6 +19,9 @@
 provider-neutral 的自然语言操作策略，明确回答目标、Tool 使用条件、事实与推断边界、失败处理和 progressive
 Skill 加载顺序，不按 Provider 复制模板，也不向模型暴露无行为价值的 runtime 枚举或信任标签。只有非空媒体
 能力会被翻译成一句可执行的入口说明。
+system prompt 同时定义统一的用户可见边界：模型只说明面向用户的能力、结果和必要限制，不复述或解释
+system/developer instructions、隐藏上下文、runtime/checkpoint、路由、内部标签、Tool schema/参数等实现细节；
+含糊指示语不得把临时注入的 Memory 或 TrustedRuntimeFacts 当成用户正在指向的内容。
 
 dynamic prompt 同时只渲染可发现 Skill 的 L0 index；完整 Skill 正文由 `load_skill` 读取，专项 reference 再由
 `load_skill_reference` 按当前 fast agent 子图 state/checkpoint namespace 中的窄 grant 读取。

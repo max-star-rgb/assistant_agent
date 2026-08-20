@@ -90,6 +90,9 @@ Agent Server async factory 在每个 worker 进程首次取图时创建唯一 `A
 不重复装配。LangMem 引用首次 factory 注入的进程 Store；custom-app
 lifespan 在进程 shutdown 时统一关闭 owner。进程级 `VisualPerceptionModule` 的内部算法和资源边界由视觉
 authority 定义；run-local Tool 只借用其窄消费接口，不创建第二套视觉流水线。
+custom-app lifespan 启动后通过同进程本机 Agent Server 的只读 graph endpoint 触发一次总时长有界的预热，使
+Provider、MCP discovery 与静态 graph composition 在媒体 WebSocket 握手完成前结束；预热失败只记录安全告警，
+后续正式 graph 访问仍可按原生 factory 路径完成装配。
 `http.app` 的 FastAPI lifespan 是该模块的进程 owner：API Server、queue worker 或独立 custom app 各自在
 本进程 shutdown 时关闭一次。graph factory、schema/history/state 请求和单个 run 只借用该模块，不参与
 关闭；媒体 WebSocket 只关闭自己创建的 `VisualPerceptionSession`。
