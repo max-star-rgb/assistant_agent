@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage
-from langchain_core.runnables import RunnableLambda
 from langgraph.store.memory import InMemoryStore
 from langgraph_sdk.auth.types import StudioUser
 from pydantic import PrivateAttr, ValidationError
@@ -13,11 +11,6 @@ import pytest
 from assistant_agent.agent_server.services import AgentServerExecutionOwner
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.fast_agent import build_fast_agent
-from assistant_agent.native_agent.models import (
-    NativePlanNode,
-    NativePlanProposal,
-    PlanDeliverable,
-)
 from assistant_agent.native_agent.planning_graph import build_planning_graph
 from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.native_agent.state import AssistantRootInput
@@ -43,24 +36,38 @@ class _PlanningProbeModel(MockAssistantChatModel):
     _active_workers: int = PrivateAttr(default=0)
     _max_active_workers: int = PrivateAttr(default=0)
 
-    def with_structured_output(self, _schema: Any, **_kwargs: Any):
-        async def propose(_messages):
-            return NativePlanProposal(
-                schema_version="native_plan_v1",
-                nodes=tuple(
-                    NativePlanNode(node_id=f"worker-{index}", objective=objective)
-                    for index, objective in enumerate(self.objectives, start=1)
-                ),
-                deliverables=(
-                    PlanDeliverable(
-                        deliverable_id="answer",
-                        description="return the planning probe answer",
-                        producer_node_ids=("worker-1",),
-                    ),
-                ),
+    def _response_message(self, messages, **kwargs):
+        if "NativePlanProposal" in _probe_tool_names(kwargs.get("tools")):
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "NativePlanProposal",
+                        "args": {
+                            "schema_version": "native_plan_v1",
+                            "nodes": [
+                                {
+                                    "node_id": f"worker-{index}",
+                                    "objective": objective,
+                                }
+                                for index, objective in enumerate(
+                                    self.objectives, start=1
+                                )
+                            ],
+                            "deliverables": [
+                                {
+                                    "deliverable_id": "answer",
+                                    "description": ("return the planning probe answer"),
+                                    "producer_node_ids": ["worker-1"],
+                                }
+                            ],
+                        },
+                        "id": "planning-probe-proposal",
+                        "type": "tool_call",
+                    }
+                ],
             )
-
-        return RunnableLambda(propose)
+        return super()._response_message(messages, **kwargs)
 
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
         objective = _probe_last_human_text(messages)
@@ -93,6 +100,18 @@ def _probe_last_human_text(messages) -> str:
         if isinstance(message, HumanMessage):
             return str(message.content)
     return ""
+
+
+def _probe_tool_names(raw_tools: object) -> set[str]:
+    if not isinstance(raw_tools, list):
+        return set()
+    return {
+        function["name"]
+        for item in raw_tools
+        if isinstance(item, dict)
+        and isinstance((function := item.get("function")), dict)
+        and isinstance(function.get("name"), str)
+    }
 
 
 @pytest.mark.core_invariant("BOOT-001")

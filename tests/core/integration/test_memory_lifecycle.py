@@ -4,17 +4,22 @@ import asyncio
 from contextlib import nullcontext
 from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.tools import tool
 from langgraph.graph import END, START, StateGraph
+from langgraph.prebuilt import ToolRuntime
 import pytest
 
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent import memory_graph as memory_graph_module
 from assistant_agent.native_agent import root_graph as root_graph_module
+from assistant_agent.native_agent.fast_agent import build_fast_agent
 from assistant_agent.native_agent.planning_graph import build_planning_graph
 from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.native_agent.root_graph import build_assistant_root_graph
 from assistant_agent.native_agent.state import CodingState, FastAgentState, PlanningState
+from assistant_agent.skills.loading import SkillCatalog
+from assistant_agent.tools.native_boundary import configure_builtin_tool
 from scripts import run_server
 
 
@@ -87,19 +92,84 @@ def _branch(schema, name):
     return builder.compile(name=name)
 
 
-def _memory_status_echo_agent():
-    def answer(state):
-        return {
-            "messages": [
-                AIMessage(content=str(state.get("memory_status", "missing")))
-            ]
-        }
+class _MemoryStatusPlanningModel(MockAssistantChatModel):
+    def _response_message(self, messages, **kwargs):
+        tool_names = _model_tool_names(kwargs.get("tools"))
+        if "NativePlanProposal" in tool_names:
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "NativePlanProposal",
+                        "args": {
+                            "schema_version": "native_plan_v1",
+                            "nodes": [
+                                {
+                                    "node_id": "worker-1",
+                                    "objective": "echo-memory-status",
+                                    "allowed_tool_names": ["memory_status_probe"],
+                                }
+                            ],
+                            "deliverables": [
+                                {
+                                    "deliverable_id": "answer",
+                                    "description": "return the memory status",
+                                    "producer_node_ids": ["worker-1"],
+                                }
+                            ],
+                        },
+                        "id": "memory-status-plan-proposal",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        for message in reversed(messages):
+            if (
+                isinstance(message, ToolMessage)
+                and message.name == "memory_status_probe"
+            ):
+                return AIMessage(content=str(message.content))
+        if "memory_status_probe" in tool_names:
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "memory_status_probe",
+                        "args": {},
+                        "id": "memory-status-tool-call",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        return super()._response_message(messages, **kwargs)
 
-    builder = StateGraph(FastAgentState, context_schema=AssistantRunContext)
-    builder.add_node("answer", answer)
-    builder.add_edge(START, "answer")
-    builder.add_edge("answer", END)
-    return builder.compile(name="AssistantFastAgent")
+
+def _memory_status_echo_agent(model: MockAssistantChatModel):
+    @tool("memory_status_probe")
+    def memory_status_probe(
+        runtime: ToolRuntime[AssistantRunContext],
+    ) -> str:
+        """Return the current worker memory status."""
+
+        return str(runtime.state.get("memory_status", "missing"))
+
+    return build_fast_agent(
+        model,
+        [configure_builtin_tool(memory_status_probe, "read")],
+        skill_catalog=SkillCatalog(),
+    )
+
+
+def _model_tool_names(raw_tools: object) -> set[str]:
+    if not isinstance(raw_tools, list):
+        return set()
+    return {
+        function["name"]
+        for item in raw_tools
+        if isinstance(item, dict)
+        and isinstance((function := item.get("function")), dict)
+        and isinstance(function.get("name"), str)
+    }
 
 
 @pytest.mark.core_invariant("MEMORY-001")
@@ -166,8 +236,8 @@ def test_chat_runs_recall_once_and_schedule_extraction_for_each_mode(monkeypatch
 
 @pytest.mark.core_invariant("MEMORY-001")
 def test_planning_worker_preserves_parent_memory_status() -> None:
-    model = MockAssistantChatModel()
-    graph = build_planning_graph(model, _memory_status_echo_agent())
+    model = _MemoryStatusPlanningModel()
+    graph = build_planning_graph(model, _memory_status_echo_agent(model))
 
     result = asyncio.run(
         graph.ainvoke(

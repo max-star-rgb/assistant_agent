@@ -4,7 +4,6 @@ import asyncio
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import StructuredTool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
@@ -19,7 +18,6 @@ from assistant_agent.native_agent.fast_agent import (
 from assistant_agent.native_agent.models import (
     NativePlanNode,
     NativePlanProposal,
-    PlanDeliverable,
     WorkerResult,
 )
 from assistant_agent.native_agent.planning_graph import build_planning_graph
@@ -29,28 +27,35 @@ from assistant_agent.skills.loading import SkillCatalog
 
 
 class _HitlPlanningModel(MockAssistantChatModel):
-    def with_structured_output(self, _schema: Any, **_kwargs: Any):
-        async def propose(_messages):
-            return NativePlanProposal(
-                schema_version="native_plan_v1",
-                nodes=(
-                    NativePlanNode(
-                        node_id="worker-1",
-                        objective="write-sentinel",
-                    ),
-                ),
-                deliverables=(
-                    PlanDeliverable(
-                        deliverable_id="answer",
-                        description="write the sentinel",
-                        producer_node_ids=("worker-1",),
-                    ),
-                ),
-            )
-
-        return RunnableLambda(propose)
-
     def _response_message(self, messages, **kwargs):
+        if "NativePlanProposal" in _tool_names(kwargs.get("tools")):
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "NativePlanProposal",
+                        "args": {
+                            "schema_version": "native_plan_v1",
+                            "nodes": [
+                                {
+                                    "node_id": "worker-1",
+                                    "objective": "write-sentinel",
+                                    "allowed_tool_names": ["write_probe"],
+                                }
+                            ],
+                            "deliverables": [
+                                {
+                                    "deliverable_id": "answer",
+                                    "description": "write the sentinel",
+                                    "producer_node_ids": ["worker-1"],
+                                }
+                            ],
+                        },
+                        "id": "hitl-plan-proposal",
+                        "type": "tool_call",
+                    }
+                ],
+            )
         if _last_human_text(messages) == "write-sentinel":
             if any(isinstance(message, ToolMessage) for message in messages):
                 return AIMessage(content="completed:write-sentinel")
@@ -81,6 +86,18 @@ def _last_human_text(messages) -> str:
         if isinstance(message, HumanMessage):
             return str(message.content)
     return ""
+
+
+def _tool_names(raw_tools: object) -> set[str]:
+    if not isinstance(raw_tools, list):
+        return set()
+    return {
+        function["name"]
+        for item in raw_tools
+        if isinstance(item, dict)
+        and isinstance((function := item.get("function")), dict)
+        and isinstance(function.get("name"), str)
+    }
 
 
 @pytest.mark.core_invariant("CTX-001")

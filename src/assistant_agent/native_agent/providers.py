@@ -228,30 +228,33 @@ def _last_human_text(messages: list[AnyMessage]) -> str:
 
 
 def _mock_structured_tool_call(tools: Any) -> tuple[str, dict[str, Any]] | None:
-    if not isinstance(tools, list) or not tools or not isinstance(tools[0], dict):
+    if not isinstance(tools, list):
         return None
-    function = tools[0].get("function")
-    if not isinstance(function, dict):
-        return None
-    name = function.get("name")
-    if name == "NativePlanProposal":
-        return name, {
-            "schema_version": "native_plan_v1",
-            "nodes": [
-                {
-                    "node_id": "answer",
-                    "objective": "完成用户目标并给出可靠答案",
-                    "depends_on": [],
-                }
-            ],
-            "deliverables": [
-                {
-                    "deliverable_id": "answer",
-                    "description": "形成最终回答",
-                    "producer_node_ids": ["answer"],
-                }
-            ],
-        }
+    for item in tools:
+        if not isinstance(item, dict):
+            continue
+        function = item.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        if name == "NativePlanProposal":
+            return name, {
+                "schema_version": "native_plan_v1",
+                "nodes": [
+                    {
+                        "node_id": "answer",
+                        "objective": "完成用户目标并给出可靠答案",
+                        "depends_on": [],
+                    }
+                ],
+                "deliverables": [
+                    {
+                        "deliverable_id": "answer",
+                        "description": "形成最终回答",
+                        "producer_node_ids": ["answer"],
+                    }
+                ],
+            }
     return None
 
 
