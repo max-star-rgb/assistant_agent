@@ -100,7 +100,7 @@ def test_mock_composition_opens_without_real_provider(monkeypatch) -> None:
 
 
 @pytest.mark.core_invariant("LOOP-001")
-def test_parent_graph_has_fast_and_planning_native_branches(monkeypatch) -> None:
+def test_parent_graph_has_fast_planning_and_coding_native_branches(monkeypatch) -> None:
     monkeypatch.setenv("MULTIMODAL_AGENT_PROVIDER_MODE", "mock")
     owner = asyncio.run(_open_owner())
     try:
@@ -116,11 +116,15 @@ def test_parent_graph_has_fast_and_planning_native_branches(monkeypatch) -> None
             "execution_router",
             "fast_agent",
             "planning_graph",
+            "coding_graph",
             "refresh_memory_extraction",
             "__end__",
         }
         assert graph.nodes["fast_agent"].data.name == "AssistantFastAgent"
         assert graph.nodes["planning_graph"].data.name == "AssistantPlanningGraph"
+        assert graph.nodes["coding_graph"].data.name == "AssistantCodingGraph"
+        coding_nodes = set(graph.nodes["coding_graph"].data.get_graph().nodes)
+        assert {"approval", "apply_patch"}.issubset(coding_nodes)
         assert owner.graph.checkpointer is None
     finally:
         asyncio.run(owner.aclose())
@@ -217,6 +221,17 @@ def test_public_input_separates_mode_from_non_identity_runtime_context() -> None
         {"messages": [HumanMessage(content="request-sentinel")], "execution_mode": "fast"}
     )
     context = AssistantRunContext.model_validate({})
+
+    coding = AssistantRootInput.model_validate(
+        {
+            "messages": [HumanMessage(content="coding-request-sentinel")],
+            "execution_mode": "coding",
+            "coding_repo_id": "repo-sentinel",
+        }
+    )
+
+    assert coding.execution_mode == "coding"
+    assert coding.coding_repo_id == "repo-sentinel"
 
     assert value.execution_mode == "fast"
     assert "run_type" not in type(value).model_fields
