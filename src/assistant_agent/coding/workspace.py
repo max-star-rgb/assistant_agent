@@ -9,7 +9,8 @@ import os
 import secrets
 import shutil
 import subprocess
-from collections.abc import Callable, Iterator
+import tempfile
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from fnmatch import fnmatchcase
@@ -24,6 +25,7 @@ from assistant_agent.coding.models import (
     CodingPatchProposal,
     CodingPatchValidation,
     CodingReadResult,
+    CodingRepairApprovalContext,
     CodingSearchMatch,
     CodingSearchResult,
     CodingStatusResult,
@@ -377,6 +379,85 @@ class CodingWorkspaceService:
             diff_summary=summary,
         )
 
+    def preview_repair_patch(
+        self,
+        workspace: CodingWorkspace,
+        validation: CodingPatchValidation,
+        repair_round: int,
+    ) -> CodingRepairApprovalContext:
+        proposal = validation.proposal
+        actual_digest = hashlib.sha256(proposal.patch.encode("utf-8")).hexdigest()
+        if actual_digest != proposal.patch_digest:
+            raise CodingWorkspaceError("approval_digest_mismatch")
+        if proposal.base_commit != workspace.base_commit:
+            raise CodingWorkspaceError("base_commit_changed")
+        with self._lock(workspace.workspace_ref):
+            self._require_base_commit(workspace)
+            current_digests = self._base_file_digests(workspace, proposal.changed_paths)
+            if current_digests != proposal.base_file_digests:
+                raise CodingWorkspaceError("file_digest_changed")
+            index_path = self._new_temporary_index(workspace.workspace_ref)
+            git_env = {"GIT_INDEX_FILE": str(index_path)}
+            try:
+                self._run_git(
+                    workspace.root,
+                    "read-tree",
+                    "HEAD",
+                    error_code="repair_preview_failed",
+                    extra_env=git_env,
+                )
+                self._run_git(
+                    workspace.root,
+                    "add",
+                    "-A",
+                    "--",
+                    error_code="repair_preview_failed",
+                    extra_env=git_env,
+                )
+                current_diff = self._run_git(
+                    workspace.root,
+                    "diff",
+                    "--cached",
+                    "--no-ext-diff",
+                    "--no-color",
+                    "HEAD",
+                    "--",
+                    error_code="repair_preview_failed",
+                    extra_env=git_env,
+                    max_output_chars=None,
+                )
+                self._run_git(
+                    workspace.root,
+                    "apply",
+                    "--cached",
+                    "--whitespace=nowarn",
+                    "-",
+                    error_code="repair_preview_failed",
+                    input_text=proposal.patch,
+                    extra_env=git_env,
+                )
+                candidate_diff = self._run_git(
+                    workspace.root,
+                    "diff",
+                    "--cached",
+                    "--no-ext-diff",
+                    "--no-color",
+                    "HEAD",
+                    "--",
+                    error_code="repair_preview_failed",
+                    extra_env=git_env,
+                    max_output_chars=None,
+                )
+            finally:
+                self._remove_temporary_index(index_path)
+        return CodingRepairApprovalContext(
+            repair_round=repair_round,
+            patch_digest=proposal.patch_digest,
+            workspace_diff_digest=_digest(current_diff),
+            candidate_diff_digest=_digest(candidate_diff),
+            cumulative_diff_preview=candidate_diff[:32_000],
+        )
+
     def _require_base_commit(self, workspace: CodingWorkspace) -> None:
         if self.git_head(workspace.root) != workspace.base_commit:
             raise CodingWorkspaceError("base_commit_changed")
@@ -435,6 +516,40 @@ class CodingWorkspaceService:
         path = self._management_root(workspace_ref) / _METADATA_FILE
         metadata = self._load_metadata(path)
         self._write_metadata(path, metadata.model_copy(update={"frozen": True}))
+
+    def _new_temporary_index(self, workspace_ref: str) -> Path:
+        management_root = self._management_root(workspace_ref)
+        descriptor = -1
+        path: Path | None = None
+        try:
+            descriptor, raw_path = tempfile.mkstemp(
+                prefix=".repair-index-",
+                dir=management_root,
+            )
+            path = Path(raw_path)
+            os.close(descriptor)
+            descriptor = -1
+            path.unlink()
+        except OSError as exc:
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+            if path is not None:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            raise CodingWorkspaceError("repair_preview_cleanup_failed") from exc
+        return path
+
+    def _remove_temporary_index(self, index_path: Path) -> None:
+        try:
+            index_path.unlink(missing_ok=True)
+            Path(f"{index_path}.lock").unlink(missing_ok=True)
+        except OSError as exc:
+            raise CodingWorkspaceError("repair_preview_cleanup_failed") from exc
 
     def cleanup_expired(self) -> None:
         root = self.config.workspace_root
@@ -572,6 +687,8 @@ class CodingWorkspaceService:
         *args: str,
         error_code: str,
         input_text: str | None = None,
+        extra_env: Mapping[str, str] | None = None,
+        max_output_chars: int | None = _MAX_GIT_OUTPUT,
     ) -> str:
         env = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
@@ -580,6 +697,8 @@ class CodingWorkspaceService:
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_TERMINAL_PROMPT": "0",
         }
+        if extra_env is not None:
+            env.update(extra_env)
         try:
             completed = subprocess.run(
                 ["git", "-C", str(repo), *args],
@@ -594,7 +713,7 @@ class CodingWorkspaceService:
             raise CodingWorkspaceError(error_code) from exc
         if completed.returncode != 0:
             raise CodingWorkspaceError(error_code)
-        if len(completed.stdout) > _MAX_GIT_OUTPUT:
+        if max_output_chars is not None and len(completed.stdout) > max_output_chars:
             raise CodingWorkspaceError("workspace_output_too_large")
         return completed.stdout
 

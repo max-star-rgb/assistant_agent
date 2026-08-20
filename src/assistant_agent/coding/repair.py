@@ -2,20 +2,36 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Literal
 
 from pydantic import ValidationError
 
 from assistant_agent.coding.models import (
+    CodingPatchProposal,
     CodingRepairApprovalContext,
     CodingRepairApprovalDecision,
+    CodingRepairAttempt,
     CodingRepairFailureEvidence,
     CodingVerificationResult,
 )
 
 
 MAX_REPAIR_ROUNDS = 2
+
+
+def ensure_repair_progress(
+    context: CodingRepairApprovalContext,
+    proposal: CodingPatchProposal,
+    history: Sequence[CodingRepairAttempt],
+) -> None:
+    """Reject repeated patches, unchanged cumulative diffs, and stale rounds."""
+    if (
+        any(attempt.patch_digest == proposal.patch_digest for attempt in history)
+        or context.workspace_diff_digest == context.candidate_diff_digest
+        or context.repair_round != len(history) + 1
+    ):
+        raise ValueError("coding_repair_no_progress")
 
 
 def select_repairable_failure(
@@ -111,6 +127,7 @@ def validate_repair_approval(
 
 __all__ = [
     "MAX_REPAIR_ROUNDS",
+    "ensure_repair_progress",
     "repair_interrupt_payload",
     "render_repair_context",
     "select_repairable_failure",
