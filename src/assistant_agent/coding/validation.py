@@ -155,8 +155,40 @@ class CodingValidationService:
             max_output_bytes=command.max_output_bytes,
             max_file_bytes=self.workspace_service.config.max_file_bytes,
             max_disk_bytes=command.max_disk_bytes,
+            max_files=command.max_files,
+            max_changed_files=self.workspace_service.config.max_changed_files,
+            max_patch_bytes=self.workspace_service.config.max_patch_bytes,
         )
-        return _sandbox_evidence(command, self.sandbox_backend.execute(request))
+        result = self.sandbox_backend.execute(request)
+        if result.status == "passed" and (
+            result.formatter_files
+            or result.formatter_deletions
+            or result.formatter_modes
+        ):
+            try:
+                _materialize_formatter_changes(
+                    scratch,
+                    result.formatter_files,
+                    result.formatter_deletions,
+                    result.formatter_modes,
+                )
+            except OSError:
+                return CodingCommandEvidence(
+                    command_id=command.command_id,
+                    kind=command.kind,
+                    status="failed",
+                    exit_code=result.exit_code,
+                    duration_ms=result.duration_ms,
+                    output_digest=result.output_digest,
+                    stdout=result.stdout,
+                    stderr=result.stderr,
+                    truncated=result.truncated,
+                    error_code="sandbox_output_invalid",
+                    cleanup_status=result.cleanup_status,
+                    timed_out=result.timed_out,
+                    oom_killed=result.oom_killed,
+                )
+        return _sandbox_evidence(command, result)
 
 
 def _copy_workspace(source: Path, destination: Path) -> None:
@@ -324,7 +356,45 @@ def _sandbox_evidence(
         stderr=result.stderr,
         truncated=result.truncated,
         error_code=result.error_code,
+        cleanup_status=result.cleanup_status,
+        timed_out=result.timed_out,
+        oom_killed=result.oom_killed,
     )
+
+
+def _materialize_formatter_changes(
+    root: Path,
+    files: dict[str, str],
+    deletions: tuple[str, ...],
+    modes: dict[str, int],
+) -> None:
+    resolved_root = root.resolve()
+    paths = set(files) | set(deletions) | set(modes)
+    targets: dict[str, Path] = {}
+    for relative in paths:
+        parts = relative.split("/")
+        if not parts or any(part in {"", ".", ".."} for part in parts):
+            raise OSError("invalid formatter output path")
+        current = root
+        for part in parts[:-1]:
+            current /= part
+            if current.is_symlink():
+                raise OSError("formatter output traverses a symlink")
+        target = root.joinpath(*parts)
+        if not target.resolve(strict=False).is_relative_to(resolved_root):
+            raise OSError("formatter output escapes scratch root")
+        targets[relative] = target
+    for relative in deletions:
+        target = targets[relative]
+        if target.is_dir():
+            raise OSError("formatter output cannot delete a directory")
+        target.unlink(missing_ok=True)
+    for relative, content in files.items():
+        target = targets[relative]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    for relative, mode in modes.items():
+        targets[relative].chmod(mode)
 
 
 def _formatter_diff(scratch: Path) -> str:

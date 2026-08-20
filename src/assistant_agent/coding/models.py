@@ -73,10 +73,13 @@ class CodingSandboxRequest(BaseModel):
     cpu_seconds: int = Field(ge=1, le=1_800)
     cpu_cores: float = Field(ge=0.1, le=16.0)
     memory_bytes: int = Field(ge=67_108_864, le=17_179_869_184)
-    max_processes: int = Field(ge=1, le=512)
+    max_processes: int = Field(ge=4, le=512)
     max_output_bytes: int = Field(ge=1_024, le=16_777_216)
     max_file_bytes: int = Field(ge=1_024, le=10_485_760)
     max_disk_bytes: int = Field(ge=1_048_576, le=17_179_869_184)
+    max_files: int = Field(ge=16, le=1_000_000)
+    max_changed_files: int = Field(ge=1, le=256)
+    max_patch_bytes: int = Field(ge=1_024, le=1_048_576)
 
 
 class CodingSandboxResult(BaseModel):
@@ -93,6 +96,9 @@ class CodingSandboxResult(BaseModel):
     oom_killed: bool = False
     error_code: str | None = None
     cleanup_status: Literal["not_created", "removed", "failed"]
+    formatter_files: dict[str, str] = Field(default_factory=dict)
+    formatter_deletions: tuple[str, ...] = ()
+    formatter_modes: dict[str, int] = Field(default_factory=dict)
 
 
 class CodingCommandEvidence(BaseModel):
@@ -108,6 +114,9 @@ class CodingCommandEvidence(BaseModel):
     stderr: str
     truncated: bool = False
     error_code: str | None = None
+    cleanup_status: Literal["not_created", "removed", "failed"] | None = None
+    timed_out: bool = False
+    oom_killed: bool = False
 
 
 class CodingVerificationResult(BaseModel):

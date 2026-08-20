@@ -41,7 +41,8 @@ class CodingCommandConfig(BaseModel):
     cpu_seconds: int = Field(default=120, ge=1, le=1_800)
     cpu_cores: float = Field(default=1.0, ge=0.1, le=16.0)
     memory_bytes: int = Field(default=1_073_741_824, ge=67_108_864, le=17_179_869_184)
-    max_processes: int = Field(default=64, ge=1, le=512)
+    max_processes: int = Field(default=64, ge=4, le=512)
+    max_files: int = Field(default=100_000, ge=16, le=1_000_000)
     max_output_bytes: int = Field(default=1_048_576, ge=1_024, le=16_777_216)
     max_disk_bytes: int = Field(default=1_073_741_824, ge=1_048_576, le=17_179_869_184)
 
