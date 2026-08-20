@@ -14,6 +14,8 @@ from assistant_agent.coding.config import CodingRepositoryConfig
 from assistant_agent.coding.models import (
     CodingCommandEvidence,
     CodingCommitResult,
+    CodingMergePreview,
+    CodingMergeResult,
     CodingWorkspace,
 )
 from assistant_agent.coding.workspace import CodingWorkspaceError, CodingWorkspaceService
@@ -108,8 +110,215 @@ class CodingIntegrationService:
                 verification_evidence_digest=evidence_digest,
             )
 
+    def prepare_merge(
+        self,
+        workspace: CodingWorkspace,
+        repository: CodingRepositoryConfig,
+        commit: CodingCommitResult,
+    ) -> CodingMergePreview:
+        if not repository.integration_enabled:
+            raise CodingWorkspaceError("integration_not_enabled")
+        with self._repo_lock(repository.repo_id):
+            self._validate_source_commit(workspace, commit)
+            target_head = self._target_preflight(repository)
+            ancestor = _git_exit_code(
+                repository.path,
+                "merge-base",
+                "--is-ancestor",
+                target_head,
+                commit.source_commit,
+                error_code="merge_preflight_failed",
+            )
+            if ancestor == 0:
+                strategy = "fast_forward"
+                result_tree = commit.source_tree
+                result_commit = commit.source_commit
+            elif ancestor == 1:
+                completed = _git_completed(
+                    repository.path,
+                    "merge-tree",
+                    "--write-tree",
+                    target_head,
+                    commit.source_commit,
+                )
+                if completed.returncode != 0:
+                    raise CodingWorkspaceError("merge_conflict")
+                try:
+                    result_tree = completed.stdout.decode("utf-8").splitlines()[0].strip()
+                except (UnicodeDecodeError, IndexError) as exc:
+                    raise CodingWorkspaceError("merge_preflight_failed") from exc
+                if not _is_object_id(result_tree):
+                    raise CodingWorkspaceError("merge_preflight_failed")
+                result_commit = _run_git(
+                    repository.path,
+                    "commit-tree",
+                    result_tree,
+                    "-p",
+                    target_head,
+                    "-p",
+                    commit.source_commit,
+                    input_text=_merge_message(workspace.workspace_ref),
+                    env_overrides=_identity_env(repository),
+                    error_code="merge_preview_failed",
+                ).strip()
+                strategy = "merge_commit"
+            else:
+                raise CodingWorkspaceError("merge_preflight_failed")
+            facts = {
+                "source_commit": commit.source_commit,
+                "expected_target_head": target_head,
+                "target_branch": repository.target_branch,
+                "strategy": strategy,
+                "result_tree": result_tree,
+                "result_commit": result_commit,
+            }
+            return CodingMergePreview(
+                **facts,
+                merge_preview_digest=_canonical_digest(facts),
+            )
+
+    def apply_merge(
+        self,
+        workspace: CodingWorkspace,
+        repository: CodingRepositoryConfig,
+        preview: CodingMergePreview,
+    ) -> CodingMergeResult:
+        if not repository.integration_enabled:
+            raise CodingWorkspaceError("integration_not_enabled")
+        facts = preview.model_dump(exclude={"merge_preview_digest"})
+        if _canonical_digest(facts) != preview.merge_preview_digest:
+            raise CodingWorkspaceError("merge_preview_mismatch")
+        with self._repo_lock(repository.repo_id):
+            self._validate_preview_objects(repository, preview)
+            current_head = self._target_preflight(repository)
+            if current_head == preview.result_commit:
+                return _merge_result(preview)
+            if current_head != preview.expected_target_head:
+                raise CodingWorkspaceError("target_head_changed")
+            try:
+                _run_git(
+                    repository.path,
+                    "merge",
+                    "--ff-only",
+                    "--no-edit",
+                    preview.result_commit,
+                    error_code="merge_apply_failed",
+                )
+            except CodingWorkspaceError:
+                if (
+                    self.workspace_service.git_head(repository.path) != current_head
+                    or _status_paths(repository.path)
+                ):
+                    raise CodingWorkspaceError("merge_rollback_failed")
+                raise
+            if (
+                self.workspace_service.git_head(repository.path) != preview.result_commit
+                or _status_paths(repository.path)
+            ):
+                raise CodingWorkspaceError("merge_apply_failed")
+            return _merge_result(preview)
+
     async def aclose(self) -> None:
         return None
+
+    def _validate_source_commit(
+        self,
+        workspace: CodingWorkspace,
+        commit: CodingCommitResult,
+    ) -> None:
+        if (
+            commit.workspace_ref != workspace.workspace_ref
+            or commit.base_commit != workspace.base_commit
+            or commit.parent_commit != workspace.base_commit
+            or self.workspace_service.git_head(workspace.root) != commit.source_commit
+            or _status_paths(workspace.root)
+        ):
+            raise CodingWorkspaceError("source_commit_changed")
+        tree = _run_git(
+            workspace.root,
+            "rev-parse",
+            f"{commit.source_commit}^{{tree}}",
+            error_code="source_commit_changed",
+        ).strip()
+        if tree != commit.source_tree:
+            raise CodingWorkspaceError("source_commit_changed")
+
+    def _target_preflight(self, repository: CodingRepositoryConfig) -> str:
+        root = _run_git(
+            repository.path,
+            "rev-parse",
+            "--show-toplevel",
+            error_code="target_repository_invalid",
+        ).strip()
+        if Path(root).resolve() != repository.path.resolve():
+            raise CodingWorkspaceError("target_repository_invalid")
+        branch = _run_git(
+            repository.path,
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "HEAD",
+            error_code="target_branch_mismatch",
+        ).strip()
+        if branch != repository.target_branch:
+            raise CodingWorkspaceError("target_branch_mismatch")
+        if _status_paths(repository.path):
+            raise CodingWorkspaceError("target_worktree_dirty")
+        return _run_git(
+            repository.path,
+            "rev-parse",
+            "--verify",
+            f"refs/heads/{repository.target_branch}^{{commit}}",
+            error_code="target_branch_mismatch",
+        ).strip()
+
+    def _validate_preview_objects(
+        self,
+        repository: CodingRepositoryConfig,
+        preview: CodingMergePreview,
+    ) -> None:
+        if preview.target_branch != repository.target_branch:
+            raise CodingWorkspaceError("merge_preview_mismatch")
+        result_tree = _run_git(
+            repository.path,
+            "rev-parse",
+            f"{preview.result_commit}^{{tree}}",
+            error_code="merge_preview_mismatch",
+        ).strip()
+        source_tree = _run_git(
+            repository.path,
+            "rev-parse",
+            f"{preview.source_commit}^{{tree}}",
+            error_code="merge_preview_mismatch",
+        ).strip()
+        if result_tree != preview.result_tree:
+            raise CodingWorkspaceError("merge_preview_mismatch")
+        if preview.strategy == "fast_forward":
+            if (
+                preview.result_commit != preview.source_commit
+                or result_tree != source_tree
+                or _git_exit_code(
+                    repository.path,
+                    "merge-base",
+                    "--is-ancestor",
+                    preview.expected_target_head,
+                    preview.result_commit,
+                    error_code="merge_preview_mismatch",
+                )
+                != 0
+            ):
+                raise CodingWorkspaceError("merge_preview_mismatch")
+            return
+        parents = _run_git(
+            repository.path,
+            "show",
+            "-s",
+            "--format=%P",
+            preview.result_commit,
+            error_code="merge_preview_mismatch",
+        ).strip().split()
+        if parents != [preview.expected_target_head, preview.source_commit]:
+            raise CodingWorkspaceError("merge_preview_mismatch")
 
     def _build_tree(
         self,
@@ -260,6 +469,34 @@ def _commit_message(workspace_ref: str, evidence_digest: str) -> str:
     )
 
 
+def _merge_message(workspace_ref: str) -> str:
+    return (
+        "assistant-agent: merge approved coding changes\n\n"
+        f"Coding-Workspace: {workspace_ref}\n"
+    )
+
+
+def _canonical_digest(facts: dict[str, object]) -> str:
+    encoded = json.dumps(facts, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _merge_result(preview: CodingMergePreview) -> CodingMergeResult:
+    return CodingMergeResult(
+        source_commit=preview.source_commit,
+        previous_target_head=preview.expected_target_head,
+        result_commit=preview.result_commit,
+        result_tree=preview.result_tree,
+        target_branch=preview.target_branch,
+        strategy=preview.strategy,
+        merge_preview_digest=preview.merge_preview_digest,
+    )
+
+
+def _is_object_id(value: str) -> bool:
+    return 40 <= len(value) <= 64 and all(character in "0123456789abcdef" for character in value)
+
+
 def _identity_env(repository: CodingRepositoryConfig) -> dict[str, str]:
     return {
         "GIT_AUTHOR_NAME": repository.commit_author_name,
@@ -292,6 +529,34 @@ def _run_git_bytes(
     input_bytes: bytes | None = None,
     env_overrides: dict[str, str] | None = None,
 ) -> bytes:
+    completed = _git_completed(
+        repo,
+        *args,
+        input_bytes=input_bytes,
+        env_overrides=env_overrides,
+    )
+    if completed.returncode != 0 or len(completed.stdout) > _MAX_GIT_OUTPUT:
+        raise CodingWorkspaceError(error_code)
+    return completed.stdout
+
+
+def _git_exit_code(
+    repo: Path,
+    *args: str,
+    error_code: str,
+) -> int:
+    completed = _git_completed(repo, *args)
+    if completed.returncode < 0 or completed.returncode > 1:
+        raise CodingWorkspaceError(error_code)
+    return completed.returncode
+
+
+def _git_completed(
+    repo: Path,
+    *args: str,
+    input_bytes: bytes | None = None,
+    env_overrides: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[bytes]:
     env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "LANG": "C.UTF-8",
@@ -306,7 +571,7 @@ def _run_git_bytes(
         **(env_overrides or {}),
     }
     try:
-        completed = subprocess.run(
+        return subprocess.run(
             ["git", "-C", str(repo), *args],
             input=input_bytes,
             capture_output=True,
@@ -315,10 +580,7 @@ def _run_git_bytes(
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise CodingWorkspaceError(error_code) from exc
-    if completed.returncode != 0 or len(completed.stdout) > _MAX_GIT_OUTPUT:
-        raise CodingWorkspaceError(error_code)
-    return completed.stdout
+        raise CodingWorkspaceError("workspace_git_failed") from exc
 
 
 __all__ = ["CodingIntegrationService"]
