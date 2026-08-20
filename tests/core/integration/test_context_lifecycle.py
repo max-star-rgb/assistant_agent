@@ -172,7 +172,12 @@ def test_planning_worker_write_tool_interrupts_and_resumes() -> None:
     )
     model = _HitlPlanningModel()
     shared_agent = build_fast_agent(model, [tool])
-    planning_graph = build_planning_graph(model, shared_agent)
+    planning_graph = build_planning_graph(
+        model,
+        shared_agent,
+        tools=[tool],
+        skill_catalog=SkillCatalog(),
+    )
     builder = StateGraph(PlanningState, context_schema=AssistantRunContext)
     builder.add_node("planning", planning_graph)
     builder.add_edge(START, "planning")

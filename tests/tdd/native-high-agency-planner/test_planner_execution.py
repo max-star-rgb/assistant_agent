@@ -120,7 +120,12 @@ def test_planner_calls_default_tool_and_captures_real_evidence() -> None:
         [weather_probe],
         skill_catalog=SkillCatalog(),
     )
-    graph = build_planning_graph(model, shared_agent)
+    graph = build_planning_graph(
+        model,
+        shared_agent,
+        tools=[weather_probe],
+        skill_catalog=SkillCatalog(),
+    )
 
     result = asyncio.run(
         graph.ainvoke(
@@ -153,12 +158,19 @@ def test_planner_loads_skill_then_calls_governed_tool(tmp_path: Path) -> None:
         content="route-sentinel",
         artifact={"route": "north", "artifact_ref": "artifact://route-sentinel"},
     )
+    load_skill_tool = create_load_skill_tool(root=tmp_path)
+    tools = [load_skill_tool, route_probe]
     shared_agent = build_fast_agent(
         model,
-        [create_load_skill_tool(root=tmp_path), route_probe],
+        tools,
         skill_catalog=catalog,
     )
-    graph = build_planning_graph(model, shared_agent)
+    graph = build_planning_graph(
+        model,
+        shared_agent,
+        tools=tools,
+        skill_catalog=catalog,
+    )
 
     result = asyncio.run(
         graph.ainvoke(
@@ -187,7 +199,12 @@ def test_planner_captures_new_evidence_after_history_replacement() -> None:
         [weather_probe],
         skill_catalog=SkillCatalog(),
     )
-    graph = build_planning_graph(model, _CompactingFastAgent(compiled_agent))
+    graph = build_planning_graph(
+        model,
+        _CompactingFastAgent(compiled_agent),
+        tools=[weather_probe],
+        skill_catalog=SkillCatalog(),
+    )
     history = [
         HumanMessage(content="history-0-sentinel"),
         _tool_call("weather_probe", "historical-weather-call"),

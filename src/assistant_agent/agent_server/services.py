@@ -36,6 +36,10 @@ from assistant_agent.native_agent.tools import (
     NativeToolResources,
     create_native_tool_inventory,
 )
+from assistant_agent.skills.loading import (
+    default_repo_root,
+    load_repo_skill_descriptors,
+)
 
 
 @dataclass
@@ -77,6 +81,10 @@ class AgentServerExecutionOwner:
             create_context_token_counter,
             config,
         )
+        skill_catalog = await asyncio.to_thread(
+            load_repo_skill_descriptors,
+            default_repo_root(),
+        )
         fast_agent = build_fast_agent(
             model,
             tools,
@@ -92,8 +100,14 @@ class AgentServerExecutionOwner:
             ),
             visual_history_probe=tool_resources.visual_history_probe,
             live_view_resolver=tool_resources.live_view_resolver,
+            skill_catalog=skill_catalog,
         )
-        planning_graph = build_planning_graph(model, fast_agent)
+        planning_graph = build_planning_graph(
+            model,
+            fast_agent,
+            tools=tools,
+            skill_catalog=skill_catalog,
+        )
         coding_config = CodingConfig.from_env()
         coding_workspace_service = CodingWorkspaceService(coding_config)
         coding_sandbox_backend: CodingSandboxBackend | None = None

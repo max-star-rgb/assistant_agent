@@ -144,7 +144,7 @@ class _MemoryStatusPlanningModel(MockAssistantChatModel):
         return super()._response_message(messages, **kwargs)
 
 
-def _memory_status_echo_agent(model: MockAssistantChatModel):
+def _memory_status_tool():
     @tool("memory_status_probe")
     def memory_status_probe(
         runtime: ToolRuntime[AssistantRunContext],
@@ -153,11 +153,7 @@ def _memory_status_echo_agent(model: MockAssistantChatModel):
 
         return str(runtime.state.get("memory_status", "missing"))
 
-    return build_fast_agent(
-        model,
-        [configure_builtin_tool(memory_status_probe, "read")],
-        skill_catalog=SkillCatalog(),
-    )
+    return configure_builtin_tool(memory_status_probe, "read")
 
 
 def _model_tool_names(raw_tools: object) -> set[str]:
@@ -237,7 +233,18 @@ def test_chat_runs_recall_once_and_schedule_extraction_for_each_mode(monkeypatch
 @pytest.mark.core_invariant("MEMORY-001")
 def test_planning_worker_preserves_parent_memory_status() -> None:
     model = _MemoryStatusPlanningModel()
-    graph = build_planning_graph(model, _memory_status_echo_agent(model))
+    memory_status_tool = _memory_status_tool()
+    fast_agent = build_fast_agent(
+        model,
+        [memory_status_tool],
+        skill_catalog=SkillCatalog(),
+    )
+    graph = build_planning_graph(
+        model,
+        fast_agent,
+        tools=[memory_status_tool],
+        skill_catalog=SkillCatalog(),
+    )
 
     result = asyncio.run(
         graph.ainvoke(

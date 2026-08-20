@@ -5,11 +5,14 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass
 from html import escape
+from types import MappingProxyType
 from typing import Any
 from urllib.parse import urlsplit
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 from langgraph.types import RetryPolicy, Send
@@ -24,6 +27,7 @@ from assistant_agent.native_agent.models import (
 )
 from assistant_agent.native_agent.runtime_facts import trusted_runtime_facts_message
 from assistant_agent.native_agent.state import PlanningState, WorkerState
+from assistant_agent.skills.loading import SkillCatalog
 from assistant_agent.tools.ids import (
     LOAD_SKILL_REFERENCE_TOOL_NAME,
     LOAD_SKILL_TOOL_NAME,
@@ -50,11 +54,55 @@ class NativePlanAdmissionError(ValueError):
     """A structured proposal violates deterministic local DAG rules."""
 
 
-def admit_native_plan(proposal: NativePlanProposal) -> NativePlanProposal:
-    """Validate graph references and acyclicity."""
+@dataclass(frozen=True)
+class PlanningAdmissionPolicy:
+    """Immutable trusted inventory used for deterministic plan admission."""
+
+    inventory_tool_names: frozenset[str]
+    governed_tool_skills: Mapping[str, frozenset[str]]
+    max_nodes: int = 128
+    max_dependency_depth: int = 32
+
+    @classmethod
+    def from_inventory(
+        cls,
+        tools: Sequence[BaseTool],
+        skill_catalog: SkillCatalog,
+    ) -> "PlanningAdmissionPolicy":
+        governed: dict[str, set[str]] = {}
+        for descriptor in skill_catalog.descriptors:
+            for tool_name in descriptor.governed_tools:
+                governed.setdefault(tool_name, set()).add(descriptor.name)
+        return cls(
+            inventory_tool_names=frozenset(tool.name for tool in tools),
+            governed_tool_skills=MappingProxyType(
+                {name: frozenset(skill_ids) for name, skill_ids in governed.items()}
+            ),
+        )
+
+
+def admit_native_plan(
+    proposal: NativePlanProposal,
+    *,
+    policy: PlanningAdmissionPolicy,
+    evidence: Sequence[PlannerEvidence],
+    active_skill_ids: Collection[str],
+) -> NativePlanProposal:
+    """Validate a proposal against trusted inventory and captured evidence."""
 
     node_ids = [node.node_id for node in proposal.nodes]
     known = set(node_ids)
+    if len(node_ids) > policy.max_nodes:
+        raise NativePlanAdmissionError("workflow plan exceeds the node limit")
+
+    evidence_ids = [item.evidence_id for item in evidence]
+    if len(evidence_ids) != len(set(evidence_ids)):
+        raise NativePlanAdmissionError("planner evidence ids must be unique")
+    if any(item.tool_name not in policy.inventory_tool_names for item in evidence):
+        raise NativePlanAdmissionError("planner evidence uses an unknown Tool")
+    known_evidence = set(evidence_ids)
+    active_skills = frozenset(active_skill_ids)
+
     incoming = {node_id: 0 for node_id in known}
     outgoing = {node_id: [] for node_id in known}
     for node in proposal.nodes:
@@ -64,6 +112,20 @@ def admit_native_plan(proposal: NativePlanProposal) -> NativePlanProposal:
             raise NativePlanAdmissionError("worker Tool names must be unique")
         if len(node.required_skill_ids) != len(set(node.required_skill_ids)):
             raise NativePlanAdmissionError("worker Skill ids must be unique")
+        if not set(node.required_skill_ids).issubset(active_skills):
+            raise NativePlanAdmissionError("worker requires an inactive Skill")
+        if not set(node.evidence_refs).issubset(known_evidence):
+            raise NativePlanAdmissionError("worker references unknown evidence")
+        for tool_name in node.allowed_tool_names:
+            if tool_name not in policy.inventory_tool_names:
+                raise NativePlanAdmissionError("worker references an unknown Tool")
+            governing_skills = policy.governed_tool_skills.get(tool_name)
+            if governing_skills and not (
+                governing_skills & active_skills & frozenset(node.required_skill_ids)
+            ):
+                raise NativePlanAdmissionError(
+                    "governed Tool lacks an active node Skill grant"
+                )
         for dependency in node.depends_on:
             if dependency == node.node_id:
                 raise NativePlanAdmissionError("self dependency")
@@ -71,12 +133,34 @@ def admit_native_plan(proposal: NativePlanProposal) -> NativePlanProposal:
                 raise NativePlanAdmissionError("unknown dependency")
             incoming[node.node_id] += 1
             outgoing[dependency].append(node.node_id)
+    deliverable_ids = [item.deliverable_id for item in proposal.deliverables]
+    if len(deliverable_ids) != len(set(deliverable_ids)):
+        raise NativePlanAdmissionError("deliverable ids must be unique")
+    for deliverable in proposal.deliverables:
+        if len(deliverable.producer_node_ids) != len(
+            set(deliverable.producer_node_ids)
+        ):
+            raise NativePlanAdmissionError("deliverable producers must be unique")
+        if len(deliverable.evidence_refs) != len(set(deliverable.evidence_refs)):
+            raise NativePlanAdmissionError("deliverable evidence refs must be unique")
+        if not set(deliverable.producer_node_ids).issubset(known):
+            raise NativePlanAdmissionError("deliverable references an unknown producer")
+        if not set(deliverable.evidence_refs).issubset(known_evidence):
+            raise NativePlanAdmissionError("deliverable references unknown evidence")
+
     pending = [node_id for node_id, count in incoming.items() if count == 0]
+    dependency_depth = {node_id: 1 for node_id in pending}
     visited = 0
     while pending:
         current = pending.pop()
         visited += 1
+        if dependency_depth[current] > policy.max_dependency_depth:
+            raise NativePlanAdmissionError("workflow plan exceeds dependency depth")
         for child in outgoing[current]:
+            dependency_depth[child] = max(
+                dependency_depth.get(child, 1),
+                dependency_depth[current] + 1,
+            )
             incoming[child] -= 1
             if incoming[child] == 0:
                 pending.append(child)
@@ -88,12 +172,19 @@ def admit_native_plan(proposal: NativePlanProposal) -> NativePlanProposal:
 def build_planning_graph(
     model: Any,
     fast_agent: Any,
+    *,
+    tools: Sequence[BaseTool] = (),
+    skill_catalog: SkillCatalog | None = None,
 ):
     """Build a minimal planner/wave-worker/finalize graph around one fast graph."""
 
     if getattr(fast_agent, "name", None) != "AssistantFastAgent":
         raise ValueError("planning workers require the shared AssistantFastAgent")
-    inventory_names = _fast_agent_inventory_names(fast_agent)
+    admission_policy = PlanningAdmissionPolicy.from_inventory(
+        tools,
+        skill_catalog or SkillCatalog(),
+    )
+    inventory_names = admission_policy.inventory_tool_names
 
     async def planner_node(
         state: PlanningState,
@@ -121,22 +212,27 @@ def build_planning_graph(
         proposal = NativePlanProposal.model_validate(
             planner_result["structured_response"]
         )
-        admitted = admit_native_plan(proposal)
         result_messages = list(planner_result.get("messages", ()))
-        evidence = capture_planner_evidence(
+        new_evidence = capture_planner_evidence(
             _new_planner_tool_messages(planner_messages, result_messages),
             inventory_names=inventory_names,
+        )
+        evidence = (*state.get("planner_evidence", ()), *new_evidence)
+        active_skill_ids = _string_list(planner_result.get("active_skill_ids"))
+        admitted = admit_native_plan(
+            proposal,
+            policy=admission_policy,
+            evidence=evidence,
+            active_skill_ids=active_skill_ids,
         )
         return {
             "plan": admitted,
             "plan_candidate": proposal,
-            "planner_active_skill_ids": _string_list(
-                planner_result.get("active_skill_ids")
-            ),
+            "planner_active_skill_ids": active_skill_ids,
             "planner_skill_reference_grants": _reference_grants(
                 planner_result.get("skill_reference_grants")
             ),
-            "planner_evidence": list(evidence),
+            "planner_evidence": list(new_evidence),
             "worker_results": [],
         }
 
@@ -401,19 +497,6 @@ def capture_planner_evidence(
     return tuple(evidence)
 
 
-def _fast_agent_inventory_names(fast_agent: Any) -> frozenset[str]:
-    """Read the registered ToolNode inventory from the shared compiled graph."""
-
-    try:
-        tool_node = fast_agent.get_graph().nodes["tools"].data
-        tools_by_name = tool_node.tools_by_name
-    except (AttributeError, KeyError, TypeError):
-        return frozenset()
-    if not isinstance(tools_by_name, Mapping):
-        return frozenset()
-    return frozenset(name for name in tools_by_name if isinstance(name, str) and name)
-
-
 def _new_planner_tool_messages(
     input_messages: Sequence[Any],
     result_messages: Sequence[Any],
@@ -423,8 +506,7 @@ def _new_planner_tool_messages(
     known_message_ids = {
         message_id
         for message in input_messages
-        if isinstance((message_id := getattr(message, "id", None)), str)
-        and message_id
+        if isinstance((message_id := getattr(message, "id", None)), str) and message_id
     }
     known_tool_call_ids = _message_tool_call_ids(input_messages)
     new_tool_call_ids = _message_tool_call_ids(
@@ -597,6 +679,7 @@ def _reference_grants(value: object) -> dict[str, list[str]]:
 
 __all__ = [
     "NativePlanAdmissionError",
+    "PlanningAdmissionPolicy",
     "admit_native_plan",
     "build_planning_graph",
     "capture_planner_evidence",

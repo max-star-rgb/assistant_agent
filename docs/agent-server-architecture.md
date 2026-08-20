@@ -119,8 +119,9 @@ Provider、MCP discovery 与静态 graph composition 在媒体 WebSocket 握手�
 本进程 shutdown 时关闭一次。graph factory、schema/history/state 请求和单个 run 只借用该模块，不参与
 关闭；媒体 WebSocket 只关闭自己创建的 `VisualPerceptionSession`。
 
-composition 只构造标准模型、Tool、Memory backend 与两张静态原生 Graph，不构造平行 Graph
-Runtime、产品状态投影器或 Workflow host。
+composition 只加载一次 repo Skill catalog，并把它与同一份静态 Tool inventory 同时注入 fast agent 和 planning
+admission；composition 构造标准模型、该 Tool inventory、Memory backend 与两张静态原生 Graph，不构造平行
+Graph Runtime、产品状态投影器或 Workflow host。
 
 ## 本地部署与持久化
 
