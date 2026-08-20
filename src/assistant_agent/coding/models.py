@@ -57,6 +57,62 @@ class CodingPatchValidation(BaseModel):
     diff_preview: str = Field(max_length=32_000)
 
 
+class CodingLockedDependency(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    name: str = Field(pattern=r"^[a-z0-9](?:[a-z0-9-]{0,126}[a-z0-9])?$")
+    version: str = Field(min_length=1, max_length=128)
+    sha256: tuple[str, ...] = Field(min_length=1, max_length=32)
+
+    @field_validator("sha256", mode="before")
+    @classmethod
+    def _tuple_hashes(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+
+class CodingDependencyPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    profile_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$")
+    ecosystem: Literal["python-pip-wheel"]
+    lockfile_path: str = Field(min_length=1, max_length=240)
+    lockfile_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    packages: tuple[CodingLockedDependency, ...] = Field(min_length=1, max_length=4_096)
+    package_count: int = Field(ge=1, le=4_096)
+    allowed_hosts: tuple[str, ...] = Field(min_length=1, max_length=32)
+    allowed_ports: tuple[int, ...] = Field(min_length=1, max_length=8)
+    timeout_seconds: int = Field(ge=10, le=1_800)
+    max_download_bytes: int = Field(ge=1_048_576, le=4_294_967_296)
+    max_files: int = Field(ge=1, le=4_096)
+    max_file_bytes: int = Field(ge=1_048_576, le=1_073_741_824)
+    policy_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("packages", "allowed_hosts", "allowed_ports", mode="before")
+    @classmethod
+    def _tuple_values(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @model_validator(mode="after")
+    def _count_matches_packages(self) -> "CodingDependencyPlan":
+        if self.package_count != len(self.packages):
+            raise ValueError("dependency package count mismatch")
+        return self
+
+
+class CodingDependencyApprovalDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    decision: Literal["approve", "reject"]
+    plan_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def _approval_requires_digest(self) -> "CodingDependencyApprovalDecision":
+        if self.decision == "approve" and self.plan_digest is None:
+            raise ValueError("dependency approval requires plan digest")
+        return self
+
+
 class CodingSandboxRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 

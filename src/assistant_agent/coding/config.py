@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import os
 import re
 import subprocess
 import tempfile
 from collections.abc import Mapping
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -27,6 +28,101 @@ _SHELL_EXECUTABLES = {
     "sh",
     "zsh",
 }
+
+_DIGEST_IMAGE = re.compile(
+    r"[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}"
+)
+_DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+
+
+class CodingDependencyProfile(BaseModel):
+    """Server-owned public Python dependency download policy."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    profile_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$")
+    ecosystem: Literal["python-pip-wheel"]
+    lockfile_path: str = Field(min_length=1, max_length=240)
+    trigger: Literal["lockfile_changed"] = "lockfile_changed"
+    allowed_hosts: tuple[str, ...] = Field(min_length=1, max_length=32)
+    allowed_ports: tuple[int, ...] = (443,)
+    downloader_image: str = Field(min_length=73, max_length=512)
+    proxy_image: str = Field(min_length=73, max_length=512)
+    timeout_seconds: int = Field(default=300, ge=10, le=1_800)
+    max_download_bytes: int = Field(
+        default=536_870_912,
+        ge=1_048_576,
+        le=4_294_967_296,
+    )
+    max_files: int = Field(default=512, ge=1, le=4_096)
+    max_file_bytes: int = Field(
+        default=134_217_728,
+        ge=1_048_576,
+        le=1_073_741_824,
+    )
+    max_lockfile_bytes: int = Field(default=262_144, ge=1_024, le=1_048_576)
+
+    @field_validator("allowed_hosts", "allowed_ports", mode="before")
+    @classmethod
+    def _tuple_values(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @field_validator("lockfile_path")
+    @classmethod
+    def _safe_lockfile_path(cls, value: str) -> str:
+        if (
+            "\\" in value
+            or any(character in value for character in ("\x00", "\n", "\r"))
+        ):
+            raise ValueError("dependency lockfile path is invalid")
+        path = PurePosixPath(value)
+        if (
+            path.is_absolute()
+            or str(path) != value
+            or any(part in {"", ".", "..", ".git"} for part in path.parts)
+        ):
+            raise ValueError("dependency lockfile path is invalid")
+        return value
+
+    @field_validator("allowed_hosts")
+    @classmethod
+    def _exact_public_hosts(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        normalized: list[str] = []
+        for raw_host in value:
+            if not isinstance(raw_host, str):
+                raise ValueError("dependency egress host is invalid")
+            try:
+                host = raw_host.encode("idna").decode("ascii").lower()
+                ipaddress.ip_address(host)
+            except ValueError:
+                pass
+            else:
+                raise ValueError("dependency egress host cannot be an IP literal")
+            labels = host.split(".")
+            if (
+                raw_host != host
+                or len(labels) < 2
+                or any(_DNS_LABEL.fullmatch(label) is None for label in labels)
+            ):
+                raise ValueError("dependency egress host must be an exact FQDN")
+            normalized.append(host)
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("dependency egress hosts cannot contain duplicates")
+        return tuple(sorted(normalized))
+
+    @field_validator("allowed_ports")
+    @classmethod
+    def _https_only(cls, value: tuple[int, ...]) -> tuple[int, ...]:
+        if value != (443,):
+            raise ValueError("dependency egress only supports HTTPS port 443")
+        return value
+
+    @field_validator("downloader_image", "proxy_image")
+    @classmethod
+    def _digest_pinned_image(cls, value: str) -> str:
+        if _DIGEST_IMAGE.fullmatch(value) is None:
+            raise ValueError("dependency image must be pinned by sha256 digest")
+        return value
 
 
 class CodingCommandConfig(BaseModel):
@@ -73,6 +169,7 @@ class CodingRepositoryConfig(BaseModel):
     integration_enabled: bool = False
     sandbox_enabled: bool = False
     sandbox_image: str | None = Field(default=None, min_length=1, max_length=512)
+    dependency_profile: CodingDependencyProfile | None = None
     commit_author_name: str = Field(default="Assistant Agent", min_length=1, max_length=160)
     commit_author_email: str = Field(
         default="assistant-agent@localhost",
@@ -117,10 +214,7 @@ class CodingRepositoryConfig(BaseModel):
     def _digest_pinned_sandbox_image(cls, value: str | None) -> str | None:
         if value is None:
             return None
-        if re.fullmatch(
-            r"[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}",
-            value,
-        ) is None:
+        if _DIGEST_IMAGE.fullmatch(value) is None:
             raise ValueError("coding sandbox image must be pinned by sha256 digest")
         return value
 
@@ -140,6 +234,8 @@ class CodingRepositoryConfig(BaseModel):
             raise ValueError("coding sandbox requires a verification sequence")
         if self.sandbox_enabled and self.sandbox_image is None:
             raise ValueError("coding sandbox requires a digest-pinned image")
+        if self.dependency_profile is not None and not self.sandbox_enabled:
+            raise ValueError("coding dependencies require the Stage 4A sandbox")
         return self
 
 
@@ -277,4 +373,9 @@ def _int_value(source: Mapping[str, str], name: str, default: int) -> int:
         raise ValueError(f"{name} must be an integer") from exc
 
 
-__all__ = ["CodingCommandConfig", "CodingConfig", "CodingRepositoryConfig"]
+__all__ = [
+    "CodingCommandConfig",
+    "CodingConfig",
+    "CodingDependencyProfile",
+    "CodingRepositoryConfig",
+]
