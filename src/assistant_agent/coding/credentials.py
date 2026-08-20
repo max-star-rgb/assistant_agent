@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import struct
+import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -44,6 +46,7 @@ def _credential_policy_digest(credential: CodingCredentialProfile) -> str:
             "auth_scheme": credential.auth_scheme,
             "lease_ttl_seconds": credential.lease_ttl_seconds,
             "gateway_image": credential.gateway_image,
+            "secret_env": credential.secret_env,
         }
     )
 
@@ -105,13 +108,24 @@ class CredentialLease:
     registry_base_path: str
     issued_at: datetime
     expires_at: datetime
+    deadline_monotonic: float
     secret: bytearray
+    monotonic: Callable[[], float]
     closed: bool = False
 
     def close(self) -> None:
         for index in range(len(self.secret)):
             self.secret[index] = 0
         self.closed = True
+
+    def remaining_seconds(self) -> float:
+        if self.closed:
+            return 0.0
+        return max(0.0, self.deadline_monotonic - self.monotonic())
+
+    def require_active(self) -> None:
+        if self.remaining_seconds() <= 0:
+            raise ValueError("credential_lease_expired")
 
 
 class CredentialBroker(Protocol):
@@ -128,11 +142,13 @@ class EnvironmentCredentialBroker:
         env: Mapping[str, str] | None = None,
         now: Callable[[], datetime] | None = None,
         lease_id_factory: Callable[[], str] | None = None,
+        monotonic: Callable[[], float] | None = None,
     ) -> None:
         self._profiles = dict(profiles)
         self._env = os.environ if env is None else env
         self._now = now or (lambda: datetime.now(timezone.utc))
         self._lease_id_factory = lease_id_factory or (lambda: uuid.uuid4().hex)
+        self._monotonic = monotonic or time.monotonic
 
     def acquire(self, request: CodingCredentialRequest) -> CredentialLease:
         profile = self._profiles.get(request.credential_profile_id)
@@ -154,6 +170,7 @@ class EnvironmentCredentialBroker:
             raise ValueError("credential_broker_unconfigured")
         secret = bytearray(raw, "utf-8")
         issued_at = self._now()
+        issued_monotonic = self._monotonic()
         if issued_at.tzinfo is None:
             for index in range(len(secret)):
                 secret[index] = 0
@@ -166,8 +183,49 @@ class EnvironmentCredentialBroker:
             registry_base_path=profile.registry_base_path,
             issued_at=issued_at,
             expires_at=issued_at + timedelta(seconds=profile.lease_ttl_seconds),
+            deadline_monotonic=issued_monotonic + profile.lease_ttl_seconds,
             secret=secret,
+            monotonic=self._monotonic,
         )
+
+
+def build_credential_envelope(
+    lease: CredentialLease,
+    request: CodingCredentialRequest,
+    profile: CodingCredentialProfile,
+) -> bytearray:
+    lease.require_active()
+    if (
+        lease.request_digest != request.request_digest
+        or lease.credential_profile_id != profile.credential_profile_id
+        or lease.registry_host != request.registry_host
+        or lease.registry_base_path != request.registry_base_path
+    ):
+        raise ValueError("credential_approval_mismatch")
+    header = json.dumps(
+        {
+            "protocol": "assistant_agent_credential_envelope_v1",
+            "request_digest": request.request_digest,
+            "credential_policy_digest": request.credential_policy_digest,
+            "credential_profile_id": request.credential_profile_id,
+            "registry_host": request.registry_host,
+            "registry_base_path": request.registry_base_path,
+            "auth_scheme": profile.auth_scheme,
+            "lease_id_digest": hashlib.sha256(lease.lease_id.encode("utf-8")).hexdigest(),
+            "expires_at": lease.expires_at.isoformat(),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    envelope = bytearray(b"AACRED1\x00")
+    envelope.extend(struct.pack(">II", len(header), len(lease.secret)))
+    envelope.extend(header)
+    envelope.extend(lease.secret)
+    if len(envelope) > 32_768:
+        for index in range(len(envelope)):
+            envelope[index] = 0
+        raise ValueError("credential_broker_unconfigured")
+    return envelope
 
 
 @contextmanager
@@ -184,6 +242,7 @@ def credential_lease(
 
 __all__ = [
     "build_credential_request",
+    "build_credential_envelope",
     "CredentialBroker",
     "CredentialLease",
     "EnvironmentCredentialBroker",

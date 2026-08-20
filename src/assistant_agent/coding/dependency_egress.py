@@ -17,6 +17,7 @@ from typing import Protocol
 from assistant_agent.coding.config import CodingCredentialProfile, CodingDependencyProfile
 from assistant_agent.coding.credentials import (
     CredentialBroker,
+    build_credential_envelope,
     credential_lease,
 )
 from assistant_agent.coding.dependencies import validate_wheelhouse
@@ -54,6 +55,15 @@ class CodingDependencyFetcher(Protocol):
     async def aclose(self) -> None: ...
 
 
+class CredentialFetchError(ValueError):
+    """Sanitized private-registry failure with non-secret audit bindings."""
+
+    def __init__(self, code: str, evidence: dict[str, object]) -> None:
+        super().__init__(code)
+        self.code = code
+        self.evidence = dict(evidence)
+
+
 class SubprocessDockerRunner:
     def run(self, argv: tuple[str, ...], *, timeout: float):
         return self._run(argv, timeout=timeout, input_bytes=None)
@@ -65,7 +75,7 @@ class SubprocessDockerRunner:
         input_bytes: bytearray,
         timeout: float,
     ):
-        if not input_bytes or len(input_bytes) > 16_384:
+        if not input_bytes or len(input_bytes) > 32_768:
             raise subprocess.SubprocessError("Docker CLI input is invalid")
         return self._run(argv, timeout=timeout, input_bytes=input_bytes)
 
@@ -183,8 +193,21 @@ class DockerDependencyFetcher:
         downloader = self.names("downloader")
         resources: list[list[object]] = []
         cleanup_failed = False
+        credential_injected = False
+        credential_revoked = False
         result: CodingDependencyManifest | None = None
         error = "dependency_fetch_failed"
+        credential_audit: dict[str, object] | None = None
+        if private:
+            credential_audit = {
+                "credential_profile_id": credential_request.credential_profile_id,
+                "credential_policy_digest": credential_request.credential_policy_digest,
+                "credential_request_digest": credential_request.request_digest,
+                "credential_acquire_status": "not_attempted",
+                "credential_inject_status": "not_attempted",
+                "credential_cleanup_status": "not_required",
+                "credential_lease_status": "failed",
+            }
         try:
             if private:
                 self._image(
@@ -208,7 +231,7 @@ class DockerDependencyFetcher:
             )
             resources.append(["container", proxy, False])
             if private:
-                self._ok(("create", "--name", proxy, "--hostname", "dependency-gateway", "--network", internal, *security, "--tmpfs", f"/tmp:rw,noexec,nosuid,nodev,size=16777216,uid={self.uid},gid={self.gid}", "--tmpfs", f"/run/assistant-agent-credentials:rw,noexec,nosuid,nodev,size=65536,mode=0700,uid={self.uid},gid={self.gid}", "--log-driver", "none", "--entrypoint", "/usr/local/bin/assistant-agent-registry-gateway", credential_profile.gateway_image, "--policy", "/policy.json", "--credential", "/run/assistant-agent-credentials/credential"), 20)
+                self._ok(("create", "--name", proxy, "--hostname", "dependency-gateway", "--network", internal, "--label", "assistant_agent.coding.role=credential-gateway", *security, "--tmpfs", f"/tmp:rw,noexec,nosuid,nodev,size=16777216,uid={self.uid},gid={self.gid}", "--tmpfs", f"/run/assistant-agent-credentials:rw,noexec,nosuid,nodev,size=65536,mode=0700,uid={self.uid},gid={self.gid}", "--log-driver", "none", "--entrypoint", "/usr/local/bin/assistant-agent-registry-gateway", credential_profile.gateway_image, "--policy", "/policy.json", "--credential", "/run/assistant-agent-credentials/credential"), 20)
             else:
                 self._ok(("create", "--name", proxy, "--hostname", "dependency-proxy", "--network", internal, *security, "--tmpfs", f"/tmp:rw,noexec,nosuid,nodev,size=16777216,uid={self.uid},gid={self.gid}", "--log-driver", "none", "--entrypoint", "/usr/local/bin/assistant-agent-dependency-proxy", profile.proxy_image, "--policy", "/policy.json"), 20)
             resources[-1][2] = True
@@ -237,22 +260,52 @@ class DockerDependencyFetcher:
             self._state(proxy, running=True, exit_code=0)
             with ExitStack() as stack:
                 if private:
-                    lease = stack.enter_context(
-                        credential_lease(self.credential_broker, credential_request)
+                    try:
+                        lease = stack.enter_context(
+                            credential_lease(self.credential_broker, credential_request)
+                        )
+                    except ValueError:
+                        credential_audit["credential_acquire_status"] = "failed"
+                        raise
+                    credential_audit.update(
+                        credential_acquire_status="acquired",
+                        credential_lease_id_digest=hashlib.sha256(
+                            lease.lease_id.encode("utf-8")
+                        ).hexdigest(),
+                        credential_lease_issued_at=lease.issued_at,
+                        credential_lease_expires_at=lease.expires_at,
                     )
-                    completed = self.runner.run_input(
-                        (
-                            self.docker,
-                            "exec",
-                            "-i",
-                            proxy,
-                            "/usr/local/bin/assistant-agent-credential-loader",
-                        ),
-                        input_bytes=lease.secret,
-                        timeout=10,
+                    envelope = build_credential_envelope(
+                        lease,
+                        credential_request,
+                        credential_profile,
                     )
+                    try:
+                        completed = self.runner.run_input(
+                            (
+                                self.docker,
+                                "exec",
+                                "-i",
+                                proxy,
+                                "/usr/local/bin/assistant-agent-credential-loader",
+                            ),
+                            input_bytes=envelope,
+                            timeout=min(10, lease.remaining_seconds()),
+                        )
+                    except (OSError, subprocess.SubprocessError):
+                        credential_audit["credential_inject_status"] = "failed"
+                        raise
+                    finally:
+                        for index in range(len(envelope)):
+                            envelope[index] = 0
+                        for index in range(len(lease.secret)):
+                            lease.secret[index] = 0
                     if completed.returncode != 0:
+                        credential_audit["credential_inject_status"] = "failed"
                         raise ValueError("credential_gateway_unavailable")
+                    credential_injected = True
+                    credential_audit["credential_inject_status"] = "injected"
+                    lease.require_active()
                     ready = self.runner.run(
                         (
                             self.docker,
@@ -260,62 +313,125 @@ class DockerDependencyFetcher:
                             proxy,
                             "/usr/local/bin/assistant-agent-registry-ready",
                         ),
-                        timeout=10,
+                        timeout=min(10, lease.remaining_seconds()),
                     )
                     if ready.returncode != 0:
                         raise ValueError("credential_gateway_unavailable")
+                    lease.require_active()
                 self._ok(("start", downloader), 20)
-                self._ok(("wait", downloader), profile.timeout_seconds)
+                if private:
+                    wait_timeout = min(
+                        float(profile.timeout_seconds),
+                        lease.remaining_seconds(),
+                    )
+                    if wait_timeout <= 0:
+                        raise ValueError("credential_lease_expired")
+                    try:
+                        waited = self.runner.run(
+                            (self.docker, "wait", downloader),
+                            timeout=wait_timeout,
+                        )
+                    except subprocess.TimeoutExpired as exc:
+                        raise ValueError("credential_lease_expired") from exc
+                    if waited.returncode != 0:
+                        raise ValueError("dependency_fetch_failed")
+                    lease.require_active()
+                else:
+                    self._ok(("wait", downloader), profile.timeout_seconds)
                 self._state(downloader, running=False, exit_code=0)
+                if private:
+                    if not self._revoke_gateway(proxy):
+                        credential_audit["credential_cleanup_status"] = "failed"
+                        raise ValueError("credential_cleanup_failed")
+                    credential_revoked = True
+                    credential_audit["credential_cleanup_status"] = "revoked"
                 output_root.mkdir(parents=True, exist_ok=True)
                 self._ok(("cp", "--archive", f"{downloader}:/wheelhouse/.", str(output_root)), 30)
                 result = validate_wheelhouse(plan, output_root)
-                if private:
-                    evidence = {
-                        "credential_profile_id": credential_profile.credential_profile_id,
-                        "credential_policy_digest": credential_request.credential_policy_digest,
-                        "credential_request_digest": credential_request.request_digest,
-                        "credential_lease_id_digest": hashlib.sha256(
-                            lease.lease_id.encode("utf-8")
-                        ).hexdigest(),
-                        "credential_lease_issued_at": lease.issued_at,
-                        "credential_lease_expires_at": lease.expires_at,
-                        "credential_lease_status": "used",
-                    }
-                    candidate = result.model_copy(update=evidence)
-                    manifest_values = candidate.model_dump(
-                        mode="json", exclude={"manifest_digest"}
-                    )
-                    manifest_digest = hashlib.sha256(
-                        json.dumps(
-                            manifest_values,
-                            sort_keys=True,
-                            separators=(",", ":"),
-                        ).encode("utf-8")
-                    ).hexdigest()
-                    result = candidate.model_copy(
-                        update={"manifest_digest": manifest_digest}
-                    )
         except ValueError as exc:
             error = str(exc)
         except (OSError, subprocess.SubprocessError):
             error = "dependency_fetch_failed"
         finally:
+            if private and credential_injected and not credential_revoked:
+                if self._revoke_gateway(proxy):
+                    credential_revoked = True
+                    credential_audit["credential_cleanup_status"] = "revoked"
+                else:
+                    credential_audit["credential_cleanup_status"] = "failed"
+                    cleanup_failed = True
+                    self._kill_gateway(proxy)
             for kind, name, confirmed in reversed(resources):
                 argv = ("rm", "--force", name) if kind == "container" else ("network", "rm", name)
                 try:
                     completed = self.runner.run((self.docker, *argv), timeout=20)
                 except (OSError, subprocess.SubprocessError):
                     cleanup_failed = True
+                    if kind == "container" and name == proxy and private:
+                        self._kill_gateway(proxy)
+                        try:
+                            self.runner.run(
+                                (self.docker, "rm", "--force", proxy), timeout=20
+                            )
+                        except (OSError, subprocess.SubprocessError):
+                            pass
                 else:
                     if completed.returncode != 0:
                         absent = "no such" in completed.stderr.lower()
                         cleanup_failed |= bool(confirmed) or not absent
+                        if kind == "container" and name == proxy and private:
+                            self._kill_gateway(proxy)
+                            try:
+                                self.runner.run(
+                                    (self.docker, "rm", "--force", proxy), timeout=20
+                                )
+                            except (OSError, subprocess.SubprocessError):
+                                pass
         if cleanup_failed:
+            if private:
+                raise CredentialFetchError("dependency_cleanup_failed", credential_audit)
             raise ValueError("dependency_cleanup_failed")
         if result is None:
+            if private:
+                raise CredentialFetchError(error, credential_audit)
             raise ValueError(error)
+        if private:
+            credential_audit["credential_lease_status"] = "used"
+            candidate = result.model_copy(update=credential_audit)
+            manifest_values = candidate.model_dump(
+                mode="json", exclude={"manifest_digest"}
+            )
+            manifest_digest = hashlib.sha256(
+                json.dumps(
+                    manifest_values,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            result = candidate.model_copy(update={"manifest_digest": manifest_digest})
         return result
+
+    def _revoke_gateway(self, name: str) -> bool:
+        try:
+            completed = self.runner.run(
+                (
+                    self.docker,
+                    "exec",
+                    name,
+                    "/usr/local/bin/assistant-agent-credential-loader",
+                    "--revoke",
+                ),
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return completed.returncode == 0
+
+    def _kill_gateway(self, name: str) -> None:
+        try:
+            self.runner.run((self.docker, "kill", name), timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            pass
 
     def _image(self, image: str, label: str) -> None:
         completed = self.runner.run(
@@ -368,6 +484,33 @@ class DockerDependencyFetcher:
             raise ValueError("dependency_fetch_failed")
 
     async def aclose(self) -> None:
+        try:
+            gateways = self.runner.run(
+                (
+                    self.docker,
+                    "ps",
+                    "-aq",
+                    "--filter",
+                    f"label=assistant_agent.coding.owner={self.owner}",
+                    "--filter",
+                    "label=assistant_agent.coding.role=credential-gateway",
+                ),
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            gateways = None
+        if gateways is not None and gateways.returncode == 0:
+            for name in gateways.stdout.splitlines():
+                if not name.strip():
+                    continue
+                self._revoke_gateway(name.strip())
+                self._kill_gateway(name.strip())
+                try:
+                    self.runner.run(
+                        (self.docker, "rm", "--force", name.strip()), timeout=20
+                    )
+                except (OSError, subprocess.SubprocessError):
+                    pass
         for kind, list_argv, remove_prefix in (
             (
                 "container",
@@ -397,4 +540,8 @@ class DockerDependencyFetcher:
                         continue
 
 
-__all__ = ["CodingDependencyFetcher", "DockerDependencyFetcher"]
+__all__ = [
+    "CodingDependencyFetcher",
+    "CredentialFetchError",
+    "DockerDependencyFetcher",
+]

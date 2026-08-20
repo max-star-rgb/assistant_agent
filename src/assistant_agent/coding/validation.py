@@ -26,7 +26,10 @@ from assistant_agent.coding.dependencies import (
     build_dependency_plan,
     temporary_wheelhouse,
 )
-from assistant_agent.coding.dependency_egress import CodingDependencyFetcher
+from assistant_agent.coding.dependency_egress import (
+    CodingDependencyFetcher,
+    CredentialFetchError,
+)
 from assistant_agent.coding.sandbox import CodingSandboxBackend
 from assistant_agent.coding.workspace import CodingWorkspaceError, CodingWorkspaceService
 
@@ -130,6 +133,9 @@ class CodingValidationService:
                             "credential_lease_id_digest": manifest.credential_lease_id_digest,
                             "credential_lease_issued_at": manifest.credential_lease_issued_at,
                             "credential_lease_expires_at": manifest.credential_lease_expires_at,
+                            "credential_acquire_status": manifest.credential_acquire_status,
+                            "credential_inject_status": manifest.credential_inject_status,
+                            "credential_cleanup_status": manifest.credential_cleanup_status,
                             "credential_lease_status": manifest.credential_lease_status,
                         }
                         sequence_result = sequence_result.model_copy(
@@ -146,6 +152,9 @@ class CodingValidationService:
                     return sequence_result.model_copy(
                         update={"status": "failed", "error_code": str(exc)}
                     )
+                credential_evidence = (
+                    exc.evidence if isinstance(exc, CredentialFetchError) else {}
+                )
                 evidence = CodingCommandEvidence(
                     command_id="dependency-fetch",
                     kind="build",
@@ -159,6 +168,7 @@ class CodingValidationService:
                     dependency_manifest_digest=manifest_digest,
                     dependency_install_status="failed",
                     dependency_install_error=str(exc),
+                    **credential_evidence,
                 )
                 return CodingVerificationResult(
                     status="failed",

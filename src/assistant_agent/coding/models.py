@@ -175,6 +175,9 @@ class CodingDependencyManifest(BaseModel):
     )
     credential_lease_issued_at: datetime | None = None
     credential_lease_expires_at: datetime | None = None
+    credential_acquire_status: Literal["acquired"] | None = None
+    credential_inject_status: Literal["injected"] | None = None
+    credential_cleanup_status: Literal["revoked"] | None = None
     credential_lease_status: Literal["used"] | None = None
 
     @field_validator("wheels", mode="before")
@@ -191,6 +194,9 @@ class CodingDependencyManifest(BaseModel):
             self.credential_lease_id_digest,
             self.credential_lease_issued_at,
             self.credential_lease_expires_at,
+            self.credential_acquire_status,
+            self.credential_inject_status,
+            self.credential_cleanup_status,
             self.credential_lease_status,
         )
         if any(value is not None for value in values) and not all(
@@ -323,7 +329,10 @@ class CodingCommandEvidence(BaseModel):
     )
     credential_lease_issued_at: datetime | None = None
     credential_lease_expires_at: datetime | None = None
-    credential_lease_status: Literal["used"] | None = None
+    credential_acquire_status: Literal["not_attempted", "failed", "acquired"] | None = None
+    credential_inject_status: Literal["not_attempted", "failed", "injected"] | None = None
+    credential_cleanup_status: Literal["not_required", "failed", "revoked"] | None = None
+    credential_lease_status: Literal["used", "failed"] | None = None
 
 
 class CodingVerificationResult(BaseModel):

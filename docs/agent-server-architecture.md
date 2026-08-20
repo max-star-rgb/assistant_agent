@@ -58,9 +58,12 @@ Authorization header 或原始 lease ID。
 `MULTIMODAL_AGENT_CODING_CREDENTIAL_*` 环境变量，产生不可序列化、显式归零的短时 lease。私有下载不使用普通
 CONNECT proxy 注入 TLS header，而使用 operator 预置、RepoDigest pinned 且声明
 `org.assistant-agent.coding-registry-gateway-protocol=1` 的反向 gateway。secret 只通过
-`docker exec -i` stdin 发送给固定 credential loader，并写入 gateway 独占 tmpfs；不得进入 argv、container env、
+`docker exec -i` stdin 以有界二进制 envelope 发送给固定 credential loader；envelope 绑定 request/policy digest、
+registry scope、lease ID digest 和 deadline，并写入 gateway 独占 tmpfs。明文输入在注入后立即归零，不得进入 argv、container env、
 bind mount、`docker cp`、日志或 downloader。gateway readiness 成功后 downloader 才能启动，downloader 仅访问
-internal network 上的 gateway。lease、gateway、network、container 或 cleanup 任一状态不确定即 fail closed。
+internal network 上的 gateway；整个下载受 monotonic lease deadline 限制。下载结束或异常退出时先调用固定 loader
+revoke，删除失败再 kill/retry；acquire、inject、revoke 的脱敏状态进入 evidence。lease、gateway、network、
+container 或 cleanup 任一状态不确定即 fail closed。
 当前 broker 对静态 operator token 只提供进程内最小暴露与 TTL 使用边界，不宣称具备上游可撤销的真实临时凭据语义。
 
 每个 repository 可在同一服务端 allowlist 中配置有序 `verification_sequence`，其中 command ID 只映射到
