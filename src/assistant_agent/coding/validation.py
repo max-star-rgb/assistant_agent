@@ -61,6 +61,28 @@ class CodingValidationService:
                     status="failed",
                     error_code="dependency_egress_unconfigured",
                 )
+            credential_profile = None
+            if profile.credential_profile_id is not None:
+                if credential_request is None:
+                    return CodingVerificationResult(
+                        status="failed",
+                        error_code="credential_approval_required",
+                    )
+                credential_profile = getattr(
+                    self.workspace_service.config,
+                    "credential_profiles",
+                    {},
+                ).get(profile.credential_profile_id)
+                if credential_profile is None:
+                    return CodingVerificationResult(
+                        status="failed",
+                        error_code="credential_broker_unconfigured",
+                    )
+            elif credential_request is not None:
+                return CodingVerificationResult(
+                    status="failed",
+                    error_code="credential_approval_mismatch",
+                )
             sequence_result: CodingVerificationResult | None = None
             manifest_digest: str | None = None
             try:
@@ -75,12 +97,22 @@ class CodingValidationService:
                 ):
                     raise ValueError("dependency_approval_mismatch")
                 with temporary_wheelhouse(self._root) as dependency_root:
-                    manifest = self.dependency_fetcher.fetch(
-                        profile,
-                        fresh_plan,
-                        workspace.root,
-                        dependency_root,
-                    )
+                    if credential_request is None:
+                        manifest = self.dependency_fetcher.fetch(
+                            profile,
+                            fresh_plan,
+                            workspace.root,
+                            dependency_root,
+                        )
+                    else:
+                        manifest = self.dependency_fetcher.fetch(
+                            profile,
+                            fresh_plan,
+                            workspace.root,
+                            dependency_root,
+                            credential_profile=credential_profile,
+                            credential_request=credential_request,
+                        )
                     manifest_digest = manifest.manifest_digest
                     sequence_result = self._run_sequence(
                         workspace,
