@@ -83,6 +83,13 @@ class _RunnerPayload(BaseModel):
     )
     dependency_install_status: Literal["passed", "failed"] | None = None
     dependency_install_error: str | None = None
+    artifact_plan_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    artifact_manifest_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    artifact_ingress_status: Literal["passed", "failed"] | None = None
 
     @field_validator("formatter_deletions", mode="before")
     @classmethod
@@ -181,6 +188,12 @@ class DockerCodingSandboxBackend:
             or not request.dependency_root.is_dir()
         ):
             return self._failure("dependency_artifact_invalid", started, "not_created")
+        if request.artifact_root is not None and (
+            not request.artifact_root.is_absolute()
+            or request.artifact_root.is_symlink()
+            or not request.artifact_root.is_dir()
+        ):
+            return self._failure("artifact_fetch_failed", started, "not_created")
         image_error = self._require_local_image(request.image)
         if image_error is not None:
             return self._failure(image_error, started, "not_created")
@@ -224,11 +237,27 @@ class DockerCodingSandboxBackend:
                         dependency_copy is not None
                         and dependency_copy.returncode == 0
                     )
+                artifacts_copied = True
+                if request.artifact_root is not None:
+                    artifact_copy = self._run(
+                        (
+                            self._docker,
+                            "cp",
+                            "--archive",
+                            f"{request.artifact_root}/.",
+                            f"{container_name}:/artifacts/input",
+                        ),
+                        timeout=min(30.0, float(request.timeout_seconds)),
+                    )
+                    artifacts_copied = (
+                        artifact_copy is not None and artifact_copy.returncode == 0
+                    )
                 container_id = self._inspect_id(container_name)
                 if (
                     copied is None
                     or copied.returncode != 0
                     or not dependencies_copied
+                    or not artifacts_copied
                 ):
                     execution = self._failure(
                         "sandbox_input_copy_failed",
@@ -313,6 +342,14 @@ class DockerCodingSandboxBackend:
                 "--dependency-manifest-digest",
                 str(request.dependency_manifest_digest),
             )
+        artifact_args: tuple[str, ...] = ()
+        if request.artifact_root is not None:
+            artifact_args = (
+                "--artifact-plan-digest",
+                str(request.artifact_plan_digest),
+                "--artifact-manifest-digest",
+                str(request.artifact_manifest_digest),
+            )
         return (
             self._docker, "create", "--name", container_name, "--hostname", "sandbox",
             "--network", "none", "--cgroupns", "private", "--read-only",
@@ -339,6 +376,7 @@ class DockerCodingSandboxBackend:
             "--max-changed-files", str(request.max_changed_files),
             "--max-patch-bytes", str(request.max_patch_bytes),
             *dependency_args,
+            *artifact_args,
             "--",
             *request.argv,
         )
@@ -435,6 +473,23 @@ class DockerCodingSandboxBackend:
             )
         ):
             return self._failure("sandbox_output_invalid", started, "removed")
+        if request.artifact_root is not None:
+            if (
+                payload.artifact_plan_digest != request.artifact_plan_digest
+                or payload.artifact_manifest_digest
+                != request.artifact_manifest_digest
+                or payload.artifact_ingress_status != "passed"
+            ):
+                return self._failure("sandbox_output_invalid", started, "removed")
+        elif any(
+            item is not None
+            for item in (
+                payload.artifact_plan_digest,
+                payload.artifact_manifest_digest,
+                payload.artifact_ingress_status,
+            )
+        ):
+            return self._failure("sandbox_output_invalid", started, "removed")
         return CodingSandboxResult(
             status=payload.status, exit_code=payload.exit_code,
             duration_ms=payload.duration_ms, output_digest=payload.output_digest,
@@ -459,6 +514,9 @@ class DockerCodingSandboxBackend:
             dependency_manifest_digest=payload.dependency_manifest_digest,
             dependency_install_status=payload.dependency_install_status,
             dependency_install_error=payload.dependency_install_error,
+            artifact_plan_digest=payload.artifact_plan_digest,
+            artifact_manifest_digest=payload.artifact_manifest_digest,
+            artifact_ingress_status=payload.artifact_ingress_status,
         )
 
     def _validate_formatter_changes(

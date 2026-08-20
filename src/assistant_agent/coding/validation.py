@@ -32,6 +32,8 @@ from assistant_agent.coding.dependency_egress import (
     CredentialFetchError,
 )
 from assistant_agent.coding.sandbox import CodingSandboxBackend
+from assistant_agent.coding.artifact_egress import ArtifactIngressBackend
+from assistant_agent.coding.artifacts import build_artifact_ingress_plan
 from assistant_agent.coding.workspace import CodingWorkspaceError, CodingWorkspaceService
 
 
@@ -43,10 +45,12 @@ class CodingValidationService:
         workspace_service: CodingWorkspaceService,
         sandbox_backend: CodingSandboxBackend | None = None,
         dependency_fetcher: CodingDependencyFetcher | None = None,
+        artifact_backend: ArtifactIngressBackend | None = None,
     ) -> None:
         self.workspace_service = workspace_service
         self.sandbox_backend = sandbox_backend
         self.dependency_fetcher = dependency_fetcher
+        self.artifact_backend = artifact_backend
         self._root = workspace_service.config.workspace_root / "validation"
 
     def run(
@@ -119,10 +123,11 @@ class CodingValidationService:
                             credential_request=credential_request,
                         )
                     manifest_digest = manifest.manifest_digest
-                    sequence_result = self._run_sequence(
+                    sequence_result = self._run_with_artifacts(
                         workspace,
                         repository,
                         format_round=format_round,
+                        artifact_ingress_plan=artifact_ingress_plan,
                         dependency_root=dependency_root,
                         dependency_plan=fresh_plan,
                         dependency_manifest_digest=manifest.manifest_digest,
@@ -177,11 +182,87 @@ class CodingValidationService:
                     evidence=(evidence,),
                     error_code=str(exc),
                 )
-        return self._run_sequence(
+        return self._run_with_artifacts(
             workspace,
             repository,
             format_round=format_round,
+            artifact_ingress_plan=artifact_ingress_plan,
         )
+
+    def _run_with_artifacts(
+        self,
+        workspace: CodingWorkspace,
+        repository: CodingRepositoryConfig,
+        *,
+        format_round: int,
+        artifact_ingress_plan: CodingArtifactIngressPlan | None,
+        dependency_root: Path | None = None,
+        dependency_plan: CodingDependencyPlan | None = None,
+        dependency_manifest_digest: str | None = None,
+    ) -> CodingVerificationResult:
+        if artifact_ingress_plan is None:
+            return self._run_sequence(
+                workspace,
+                repository,
+                format_round=format_round,
+                dependency_root=dependency_root,
+                dependency_plan=dependency_plan,
+                dependency_manifest_digest=dependency_manifest_digest,
+            )
+        profile = repository.artifact_profile
+        if profile is None or self.artifact_backend is None:
+            return CodingVerificationResult(
+                status="failed", error_code="artifact_unconfigured"
+            )
+        try:
+            fresh_plan = build_artifact_ingress_plan(
+                repository,
+                workspace.root,
+                changed_paths=(artifact_ingress_plan.manifest_path,),
+            )
+            if (
+                fresh_plan is None
+                or fresh_plan.plan_digest != artifact_ingress_plan.plan_digest
+            ):
+                raise ValueError("artifact_approval_mismatch")
+            self._root.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(
+                prefix="artifact-ingress-", dir=self._root
+            ) as temporary:
+                artifact_root = Path(temporary) / "bundle"
+                manifest = self.artifact_backend.fetch_scan(
+                    profile,
+                    fresh_plan,
+                    workspace.root,
+                    artifact_root,
+                )
+                return self._run_sequence(
+                    workspace,
+                    repository,
+                    format_round=format_round,
+                    dependency_root=dependency_root,
+                    dependency_plan=dependency_plan,
+                    dependency_manifest_digest=dependency_manifest_digest,
+                    artifact_root=artifact_root,
+                    artifact_plan=fresh_plan,
+                    artifact_manifest=manifest,
+                )
+        except ValueError as exc:
+            evidence = CodingCommandEvidence(
+                command_id="artifact-ingress",
+                kind="build",
+                status="failed",
+                duration_ms=0,
+                output_digest=hashlib.sha256(b"").hexdigest(),
+                stdout="",
+                stderr="",
+                error_code=str(exc),
+                artifact_plan_digest=artifact_ingress_plan.plan_digest,
+                artifact_ingress_status="failed",
+            )
+            return CodingVerificationResult(
+                status="failed", evidence=(evidence,), error_code=str(exc)
+            )
 
     def _run_sequence(
         self,
@@ -192,6 +273,9 @@ class CodingValidationService:
         dependency_root: Path | None = None,
         dependency_plan: CodingDependencyPlan | None = None,
         dependency_manifest_digest: str | None = None,
+        artifact_root: Path | None = None,
+        artifact_plan: CodingArtifactIngressPlan | None = None,
+        artifact_manifest=None,
     ) -> CodingVerificationResult:
         evidence: list[CodingCommandEvidence] = []
         for command_id in repository.verification_sequence:
@@ -203,6 +287,9 @@ class CodingValidationService:
                 dependency_root=dependency_root,
                 dependency_plan=dependency_plan,
                 dependency_manifest_digest=dependency_manifest_digest,
+                artifact_root=artifact_root,
+                artifact_plan=artifact_plan,
+                artifact_manifest=artifact_manifest,
             )
             evidence.append(item)
             if item.status != "passed":
@@ -249,6 +336,9 @@ class CodingValidationService:
         dependency_root: Path | None = None,
         dependency_plan: CodingDependencyPlan | None = None,
         dependency_manifest_digest: str | None = None,
+        artifact_root: Path | None = None,
+        artifact_plan: CodingArtifactIngressPlan | None = None,
+        artifact_manifest=None,
     ) -> tuple[CodingCommandEvidence, str]:
         self._root.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(
@@ -278,6 +368,9 @@ class CodingValidationService:
                     dependency_root=dependency_root,
                     dependency_plan=dependency_plan,
                     dependency_manifest_digest=dependency_manifest_digest,
+                    artifact_root=artifact_root,
+                    artifact_plan=artifact_plan,
+                    artifact_manifest=artifact_manifest,
                 )
             else:
                 evidence = _execute(command, scratch, temporary)
@@ -306,6 +399,9 @@ class CodingValidationService:
         dependency_root: Path | None,
         dependency_plan: CodingDependencyPlan | None,
         dependency_manifest_digest: str | None,
+        artifact_root: Path | None,
+        artifact_plan: CodingArtifactIngressPlan | None,
+        artifact_manifest,
     ) -> CodingCommandEvidence:
         if self.sandbox_backend is None or repository.sandbox_image is None:
             return _empty_evidence(
@@ -338,6 +434,15 @@ class CodingValidationService:
                 dependency_plan.plan_digest if dependency_plan is not None else None
             ),
             dependency_manifest_digest=dependency_manifest_digest,
+            artifact_root=artifact_root,
+            artifact_plan_digest=(
+                artifact_plan.plan_digest if artifact_plan is not None else None
+            ),
+            artifact_manifest_digest=(
+                artifact_manifest.manifest_digest
+                if artifact_manifest is not None
+                else None
+            ),
         )
         result = self.sandbox_backend.execute(request)
         if result.status == "passed" and (
@@ -543,6 +648,9 @@ def _sandbox_evidence(
         dependency_manifest_digest=result.dependency_manifest_digest,
         dependency_install_status=result.dependency_install_status,
         dependency_install_error=result.dependency_install_error,
+        artifact_plan_digest=result.artifact_plan_digest,
+        artifact_manifest_digest=result.artifact_manifest_digest,
+        artifact_ingress_status=result.artifact_ingress_status,
     )
 
 

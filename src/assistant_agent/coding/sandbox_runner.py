@@ -34,6 +34,8 @@ class SandboxRunnerRequest:
     dependency_lockfile_path: str | None = None
     dependency_plan_digest: str | None = None
     dependency_manifest_digest: str | None = None
+    artifact_plan_digest: str | None = None
+    artifact_manifest_digest: str | None = None
 
 
 class _OutputBudget:
@@ -185,6 +187,11 @@ def run_sandbox_command(request: SandboxRunnerRequest) -> dict[str, object]:
         dependency_manifest_digest=request.dependency_manifest_digest,
         dependency_install_status=(
             "passed" if request.dependency_lockfile_path is not None else None
+        ),
+        artifact_plan_digest=request.artifact_plan_digest,
+        artifact_manifest_digest=request.artifact_manifest_digest,
+        artifact_ingress_status=(
+            "passed" if request.artifact_plan_digest is not None else None
         ),
     )
 
@@ -348,6 +355,8 @@ def _command_env() -> dict[str, str]:
     dependency_target = Path("/workspace/.assistant_deps")
     if dependency_target.is_dir():
         environment["PYTHONPATH"] = str(dependency_target)
+    if Path("/artifacts/input").is_dir():
+        environment["ASSISTANT_AGENT_ARTIFACT_ROOT"] = "/artifacts/input"
     return environment
 
 
@@ -412,6 +421,9 @@ def _result(
     dependency_manifest_digest: str | None = None,
     dependency_install_status: str | None = None,
     dependency_install_error: str | None = None,
+    artifact_plan_digest: str | None = None,
+    artifact_manifest_digest: str | None = None,
+    artifact_ingress_status: str | None = None,
 ) -> dict[str, object]:
     return {
         "protocol_version": 1,
@@ -430,6 +442,9 @@ def _result(
         "dependency_manifest_digest": dependency_manifest_digest,
         "dependency_install_status": dependency_install_status,
         "dependency_install_error": dependency_install_error,
+        "artifact_plan_digest": artifact_plan_digest,
+        "artifact_manifest_digest": artifact_manifest_digest,
+        "artifact_ingress_status": artifact_ingress_status,
     }
 
 
@@ -445,6 +460,8 @@ def _parse_args() -> SandboxRunnerRequest:
     parser.add_argument("--dependency-lockfile")
     parser.add_argument("--dependency-plan-digest")
     parser.add_argument("--dependency-manifest-digest")
+    parser.add_argument("--artifact-plan-digest")
+    parser.add_argument("--artifact-manifest-digest")
     parser.add_argument("argv", nargs=argparse.REMAINDER)
     values = parser.parse_args()
     argv = tuple(values.argv[1:] if values.argv[:1] == ["--"] else values.argv)
@@ -464,6 +481,8 @@ def _parse_args() -> SandboxRunnerRequest:
         dependency_lockfile_path=values.dependency_lockfile,
         dependency_plan_digest=values.dependency_plan_digest,
         dependency_manifest_digest=values.dependency_manifest_digest,
+        artifact_plan_digest=values.artifact_plan_digest,
+        artifact_manifest_digest=values.artifact_manifest_digest,
     )
 
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import os
+import stat
 from pathlib import Path, PurePosixPath
 from typing import Literal
 from urllib.parse import unquote, urlsplit
@@ -16,6 +18,8 @@ from assistant_agent.coding.models import (
     CodingArtifactApprovalDecision,
     CodingArtifactDescriptor,
     CodingArtifactIngressPlan,
+    CodingArtifactIngressManifest,
+    CodingScannedArtifact,
 )
 
 
@@ -184,8 +188,88 @@ def validate_artifact_approval(
     return decision.decision
 
 
+def validate_artifact_bundle(
+    plan: CodingArtifactIngressPlan,
+    root: Path,
+    *,
+    scanner_policy_digest: str,
+) -> CodingArtifactIngressManifest:
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("artifact_fetch_failed")
+    expected = {item.filename: item for item in plan.artifacts}
+    scanned: list[CodingScannedArtifact] = []
+    total = 0
+    try:
+        entries = sorted(os.scandir(root), key=lambda item: item.name)
+    except OSError as exc:
+        raise ValueError("artifact_fetch_failed") from exc
+    if len(entries) != len(expected):
+        raise ValueError("artifact_fetch_failed")
+    for entry in entries:
+        try:
+            metadata = entry.stat(follow_symlinks=False)
+        except OSError as exc:
+            raise ValueError("artifact_fetch_failed") from exc
+        descriptor = expected.get(entry.name)
+        if (
+            descriptor is None
+            or not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_size != descriptor.size_bytes
+            or metadata.st_size > plan.max_file_bytes
+        ):
+            raise ValueError("artifact_fetch_failed")
+        digest = _file_digest(Path(entry.path), plan.max_file_bytes)
+        if digest != descriptor.sha256:
+            raise ValueError("artifact_fetch_failed")
+        total += metadata.st_size
+        if total > plan.max_total_bytes:
+            raise ValueError("artifact_fetch_failed")
+        scanned.append(
+            CodingScannedArtifact(
+                artifact_id=descriptor.artifact_id,
+                filename=descriptor.filename,
+                media_type=descriptor.media_type,
+                size_bytes=metadata.st_size,
+                sha256=digest,
+            )
+        )
+    values: dict[str, object] = {
+        "plan_digest": plan.plan_digest,
+        "policy_digest": plan.policy_digest,
+        "scanner_policy_digest": scanner_policy_digest,
+        "artifacts": tuple(sorted(scanned, key=lambda item: item.artifact_id)),
+        "total_bytes": total,
+    }
+    digest_values = {
+        **values,
+        "artifacts": [
+            item.model_dump(mode="json") for item in values["artifacts"]
+        ],
+    }
+    return CodingArtifactIngressManifest.model_validate(
+        {**values, "manifest_digest": _digest(digest_values)}
+    )
+
+
+def _file_digest(path: Path, limit: int) -> str:
+    digest = hashlib.sha256()
+    total = 0
+    try:
+        with path.open("rb") as source:
+            while chunk := source.read(65_536):
+                total += len(chunk)
+                if total > limit:
+                    raise ValueError("artifact_fetch_failed")
+                digest.update(chunk)
+    except OSError as exc:
+        raise ValueError("artifact_fetch_failed") from exc
+    return digest.hexdigest()
+
+
 __all__ = [
     "artifact_interrupt_payload",
     "build_artifact_ingress_plan",
+    "validate_artifact_bundle",
     "validate_artifact_approval",
 ]

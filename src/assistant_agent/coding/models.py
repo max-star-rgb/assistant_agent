@@ -194,6 +194,33 @@ class CodingArtifactApprovalDecision(BaseModel):
         return self
 
 
+class CodingScannedArtifact(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    artifact_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$")
+    filename: str = Field(min_length=1, max_length=255)
+    media_type: str = Field(min_length=3, max_length=192)
+    size_bytes: int = Field(ge=1, le=1_073_741_824)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    scan_status: Literal["clean"] = "clean"
+
+
+class CodingArtifactIngressManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    policy_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    scanner_policy_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    artifacts: tuple[CodingScannedArtifact, ...] = Field(min_length=1, max_length=512)
+    total_bytes: int = Field(ge=1)
+    manifest_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("artifacts", mode="before")
+    @classmethod
+    def _tuple_artifacts(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+
 class CodingDependencyWheel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -289,6 +316,13 @@ class CodingSandboxRequest(BaseModel):
     dependency_manifest_digest: str | None = Field(
         default=None, pattern=r"^[0-9a-f]{64}$"
     )
+    artifact_root: Path | None = None
+    artifact_plan_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    artifact_manifest_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
 
     @model_validator(mode="after")
     def _dependency_fields_are_atomic(self) -> "CodingSandboxRequest":
@@ -313,6 +347,19 @@ class CodingSandboxRequest(BaseModel):
                 )
             ):
                 raise ValueError("sandbox dependency lockfile path is invalid")
+        return self
+
+    @model_validator(mode="after")
+    def _artifact_fields_are_atomic(self) -> "CodingSandboxRequest":
+        values = (
+            self.artifact_root,
+            self.artifact_plan_digest,
+            self.artifact_manifest_digest,
+        )
+        if any(item is not None for item in values) and not all(
+            item is not None for item in values
+        ):
+            raise ValueError("sandbox artifact fields must be supplied together")
         return self
 
 
@@ -341,6 +388,13 @@ class CodingSandboxResult(BaseModel):
     )
     dependency_install_status: Literal["passed", "failed"] | None = None
     dependency_install_error: str | None = None
+    artifact_plan_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    artifact_manifest_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    artifact_ingress_status: Literal["passed", "failed"] | None = None
 
 
 class CodingCommandEvidence(BaseModel):
@@ -385,6 +439,16 @@ class CodingCommandEvidence(BaseModel):
     credential_inject_status: Literal["not_attempted", "failed", "injected"] | None = None
     credential_cleanup_status: Literal["not_required", "failed", "revoked"] | None = None
     credential_lease_status: Literal["used", "failed"] | None = None
+    artifact_plan_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    artifact_manifest_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    artifact_scanner_policy_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    artifact_ingress_status: Literal["passed", "failed"] | None = None
 
 
 class CodingVerificationResult(BaseModel):
@@ -581,6 +645,8 @@ __all__ = [
     "CodingArtifactApprovalDecision",
     "CodingArtifactDescriptor",
     "CodingArtifactIngressPlan",
+    "CodingArtifactIngressManifest",
+    "CodingScannedArtifact",
     "CodingCommandEvidence",
     "CodingCommitResult",
     "CodingCredentialApprovalDecision",
