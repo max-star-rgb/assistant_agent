@@ -10,6 +10,7 @@ from assistant_agent.native_agent.models import (
     NativePlanProposal,
     PlanDeliverable,
     PlannerEvidence,
+    WorkerResult,
 )
 from assistant_agent.native_agent.state import _merge_planner_evidence
 
@@ -70,3 +71,17 @@ def test_planner_evidence_reducer_preserves_first_item_for_each_id() -> None:
     )
 
     assert _merge_planner_evidence([existing], [duplicate, new]) == [existing, new]
+
+
+def test_worker_result_accepts_json_list_at_checkpoint_boundary() -> None:
+    """Catches JsonPlus restoration bypassing strict WorkerResult validation."""
+
+    result = WorkerResult.model_validate(
+        {
+            "work_item_id": "worker-sentinel",
+            "content": "result-sentinel",
+            "sources": [],
+        }
+    )
+
+    assert result.sources == ()

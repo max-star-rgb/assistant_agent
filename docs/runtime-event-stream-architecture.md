@@ -65,8 +65,10 @@ composition 注入的静态 Tool inventory 与同一份 Skill catalog 确定性�
 节点 Skill grant、真实 planner evidence 引用、deliverable producer/evidence 引用、节点上限、DAG 无环和依赖深度；
 未知或未授权事实一律 fail closed，且不读取用户文本或内置领域规则。admission 失败时把有界错误码写入
 planning state，并由原生 conditional edge 回到同一个 planner；最多允许两次 proposal revision，第三次失败以
-有界 `NativePlanAdmissionError` 终止 run。revision 输入只增加既有 `PlannerEvidence` 的有界只读投影和错误码，
-不注入旧 planner transcript、Tool schema 或原始异常；evidence、已激活 Skill 与 reference grant 沿用原生 state
+有界 `NativePlanAdmissionError` 终止 run。revision 输入只增加既有 `PlannerEvidence` 的只读投影和错误码；
+该投影以 `trust=tool-output` 标记，JSON 在嵌入标签前转义 `<>&`，并以最终渲染字符数硬限制为 48,000。
+预算先保留稳定顺序的 evidence ID、Tool 名与状态，再有界保留 content/artifact ref，不输出半个 JSON。
+它不注入旧 planner transcript、Tool schema 或原始异常；evidence、已激活 Skill 与 reference grant 沿用原生 state
 reducer，只有候选计划被覆盖。成功 admission 清除错误并进入 scheduler。`Send` 按依赖分 wave 并行派发 worker。调度器根据 `depends_on` 自动把直接上游
 `WorkerResult` 组装为运行时 `dependency_results`，worker 将其作为明确的只读数据输入交给同一个 fast graph；
 该字段不是 planner 输出 schema。worker 只能继承节点 required Skill 与 Planner 实际快照的交集；admission 禁止节点把
@@ -92,7 +94,8 @@ fast agent 子图才增加由成功 `load_skill` 标准 Tool 结果产生的 `ac
 并在 `Send` 派发时从直接依赖结果派生窄 `dependency_results` worker 输入。
 其 `plan_candidate`、`admission_error` 与 `revision_count` 只服务原生 revision edge；不建立 repair ledger、数据库、
 队列、checkpoint adapter 或 shadow state。恢复后 scheduler 只从 checkpointed plan 与已累积 worker results 重算
-下一 wave，不保存平行 ready/completed channel。
+下一 wave，不保存平行 ready/completed channel。`WorkerResult.sources` 在 JsonPlus/msgpack 的 JSON list 边界
+规范化回 tuple，避免 strict Pydantic checkpoint 恢复退化为未校验构造。
 planning 的 planner、worker 与 finalizer 都读取父图传入的同一份可信事实快照，不在子图内重新采集。
 `trusted_runtime_facts` 写入 checkpoint 时保存为 JSON-safe 字典（时间为 ISO 8601 字符串），模型调用边界再校验为
 严格 Pydantic 值；它不依赖 checkpoint 对项目自定义类型的宽松 msgpack 反序列化。

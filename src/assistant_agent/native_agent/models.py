@@ -47,6 +47,11 @@ class WorkerResult(BaseModel):
     )
     sources: tuple[EvidenceLink, ...] = Field(default=(), max_length=20)
 
+    @field_validator("sources", mode="before")
+    @classmethod
+    def _tuple_sources(cls, value):
+        return tuple(value) if isinstance(value, list) else value
+
 
 class PlannerEvidence(BaseModel):
     """Bounded evidence captured from a planner Tool invocation."""

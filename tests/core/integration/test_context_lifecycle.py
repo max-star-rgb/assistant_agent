@@ -105,6 +105,71 @@ class _CaptureMessagesModel(MockAssistantChatModel):
         return super()._response_message(messages, **kwargs)
 
 
+class _CompletedWorkerResumeModel(MockAssistantChatModel):
+    first_worker_runs: int = 0
+
+    def _response_message(self, messages, **kwargs):
+        if "NativePlanProposal" in _tool_names(kwargs.get("tools")):
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "NativePlanProposal",
+                        "args": {
+                            "schema_version": "native_plan_v1",
+                            "nodes": [
+                                {
+                                    "node_id": "completed-worker",
+                                    "objective": "completed-worker-sentinel",
+                                },
+                                {
+                                    "node_id": "write-worker",
+                                    "objective": "dependent-write-sentinel",
+                                    "depends_on": ["completed-worker"],
+                                    "allowed_tool_names": ["write_probe"],
+                                },
+                                {
+                                    "node_id": "after-resume-worker",
+                                    "objective": "after-resume-sentinel",
+                                    "depends_on": ["write-worker"],
+                                },
+                            ],
+                            "deliverables": [
+                                {
+                                    "deliverable_id": "answer",
+                                    "description": "return the final worker",
+                                    "producer_node_ids": ["after-resume-worker"],
+                                }
+                            ],
+                        },
+                        "id": "completed-worker-plan",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        current = _last_human_text(messages)
+        if current.startswith("completed-worker-sentinel"):
+            self.first_worker_runs += 1
+            return AIMessage(content="completed-worker-result")
+        if current.startswith("dependent-write-sentinel"):
+            if any(isinstance(message, ToolMessage) for message in messages):
+                return AIMessage(content="write-worker-result")
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "write_probe",
+                        "args": {"value": "dependent-write"},
+                        "id": "dependent-write-call",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        if current.startswith("after-resume-sentinel"):
+            return AIMessage(content="after-resume-result")
+        return AIMessage(content="final-answer-sentinel")
+
+
 def _last_human_text(messages) -> str:
     for message in reversed(messages):
         if isinstance(message, HumanMessage):
@@ -276,6 +341,79 @@ def test_planning_write_tools_interrupt_and_resume_without_replaying_completed_w
             work_item_id="worker-2",
             content="completed:dependent-sentinel",
         ),
+    ]
+
+
+@pytest.mark.core_invariant("CTX-001")
+def test_checkpoint_resume_does_not_replay_a_completed_worker() -> None:
+    executed: list[str] = []
+
+    def write_probe(value: str) -> str:
+        """Record the dependent approved write."""
+
+        executed.append(value)
+        return "write-complete"
+
+    tool = StructuredTool.from_function(
+        write_probe,
+        name="write_probe",
+        metadata={"effect": "write"},
+    )
+    model = _CompletedWorkerResumeModel()
+    shared_agent = build_fast_agent(model, [tool])
+    planning_graph = build_planning_graph(
+        model,
+        shared_agent,
+        tools=[tool],
+        skill_catalog=SkillCatalog(),
+    )
+    builder = StateGraph(PlanningState, context_schema=AssistantRunContext)
+    builder.add_node("planning", planning_graph)
+    builder.add_edge(START, "planning")
+    builder.add_edge("planning", END)
+    graph = builder.compile(
+        checkpointer=InMemorySaver(
+            serde=JsonPlusSerializer(
+                allowed_msgpack_modules=[
+                    NativePlanNode,
+                    NativePlanProposal,
+                    WorkerResult,
+                ]
+            )
+        )
+    )
+    config = {"configurable": {"thread_id": "completed-worker-resume-thread"}}
+
+    async def run_and_resume():
+        interrupted = await graph.ainvoke(
+            {
+                "messages": [HumanMessage(content="request-sentinel")],
+                "memory_context": (),
+                "memory_status": "empty",
+            },
+            config=config,
+            context=AssistantRunContext(),
+        )
+        first_runs_before_resume = model.first_worker_runs
+        resumed = await graph.ainvoke(
+            Command(resume={"decisions": [{"type": "approve"}]}),
+            config=config,
+            context=AssistantRunContext(),
+        )
+        return interrupted, resumed, first_runs_before_resume
+
+    interrupted, resumed, first_runs_before_resume = asyncio.run(run_and_resume())
+
+    assert interrupted["__interrupt__"][0].value["action_requests"][0]["name"] == (
+        "write_probe"
+    )
+    assert first_runs_before_resume == 1
+    assert model.first_worker_runs == 1
+    assert executed == ["dependent-write"]
+    assert [item.work_item_id for item in resumed["worker_results"]] == [
+        "completed-worker",
+        "write-worker",
+        "after-resume-worker",
     ]
 
 
