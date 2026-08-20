@@ -14,6 +14,7 @@ source_globs = [
   "src/assistant_agent/coding/config.py",
   "src/assistant_agent/coding/integration.py",
   "src/assistant_agent/coding/sandbox.py",
+  "src/assistant_agent/coding/sandbox_runner.py",
   "src/assistant_agent/coding/validation.py",
   "src/assistant_agent/coding/workspace.py",
   "src/assistant_agent/proactive_delivery.py",

@@ -28,12 +28,17 @@ base commit、目标文件 digest 和 patch digest。integration 默认关闭；
 
 repository 可独立显式启用本地 Docker sandbox。Agent Server process owner 只构造一份
 `DockerCodingSandboxBackend` 并注入唯一 validation service；backend 与 container ID 不进入 Graph state 或
-checkpoint。sandbox image 必须由 operator 预置并固定到完整 RepoDigest，runtime 只执行本地 inspect，不 pull、
-build 或更新镜像。每条固定 validation command 使用独立短生命周期容器，默认 `network none`、非 root、只读
-rootfs、drop all capabilities、no-new-privileges、默认 seccomp，并限制 memory、CPU、PID、file/output、scratch
-总量和 wall time。容器只读写一次性 scratch 与有界 tmpfs，不挂载 source repository、coding worktree、Agent
-Server cwd、Docker socket 或宿主秘密。sandbox 启用后任何 daemon、image、resource 或 cleanup 错误都 fail
-closed，禁止回退宿主 subprocess；owner 关闭时只清理由自身 label 标记的遗留容器。
+checkpoint。sandbox image 必须由 operator 预置并固定到完整 RepoDigest，声明
+`org.assistant-agent.coding-sandbox-protocol=1`，并提供固定 trusted runner；runtime 只执行本地 inspect，不
+pull、build 或更新镜像。每条固定 validation command 使用预生成 name 的独立短生命周期容器，hostname 固定为
+`sandbox`，默认 `network none`、非 root、只读 rootfs、drop all capabilities、no-new-privileges、默认
+seccomp，并限制 memory、CPU、PID、file/output 和 wall time。容器启动前，宿主 scratch 通过受控
+`docker cp --archive` 复制到镜像内 `/input`；运行时只读 rootfs 使输入不可写，且不向容器暴露宿主路径。
+执行目录 `/workspace` 是具有 size 与 inode 硬限制的 tmpfs；runner 通过有界 JSON pipe 返回命令输出与 formatter 文件，
+宿主再将合规 formatter 结果物化到未被容器写入的 scratch。容器不挂载 source repository、coding worktree、
+Agent Server cwd、Docker socket 或宿主秘密。sandbox 启用后任何 daemon、image、protocol、attach state、
+resource 或 cleanup 错误都 fail closed，禁止回退宿主 subprocess；owner 关闭时只清理由自身 label 标记的
+遗留容器。
 
 每个 repository 可在同一服务端 allowlist 中配置有序 `verification_sequence`，其中 command ID 只映射到
 受信固定 argv、command kind 和资源上限。验证进程不在 source repo、Agent Server cwd 或受管 worktree 中
