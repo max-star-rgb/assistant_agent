@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Literal, Mapping
+import os
+import uuid
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Literal, Protocol
 
 from pydantic import ValidationError
 
@@ -29,6 +35,19 @@ def _digest(value: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _credential_policy_digest(credential: CodingCredentialProfile) -> str:
+    return _digest(
+        {
+            "credential_profile_id": credential.credential_profile_id,
+            "registry_host": credential.registry_host,
+            "registry_base_path": credential.registry_base_path,
+            "auth_scheme": credential.auth_scheme,
+            "lease_ttl_seconds": credential.lease_ttl_seconds,
+            "gateway_image": credential.gateway_image,
+        }
+    )
+
+
 def build_credential_request(
     dependency: CodingDependencyProfile,
     credential: CodingCredentialProfile,
@@ -40,14 +59,6 @@ def build_credential_request(
         or credential.registry_host not in plan.allowed_hosts
     ):
         raise ValueError("credential_approval_mismatch")
-    credential_policy = {
-        "credential_profile_id": credential.credential_profile_id,
-        "registry_host": credential.registry_host,
-        "registry_base_path": credential.registry_base_path,
-        "auth_scheme": credential.auth_scheme,
-        "lease_ttl_seconds": credential.lease_ttl_seconds,
-        "gateway_image": credential.gateway_image,
-    }
     values = {
         "credential_profile_id": credential.credential_profile_id,
         "dependency_profile_id": dependency.profile_id,
@@ -56,7 +67,7 @@ def build_credential_request(
         "lease_ttl_seconds": credential.lease_ttl_seconds,
         "dependency_plan_digest": plan.plan_digest,
         "dependency_policy_digest": plan.policy_digest,
-        "credential_policy_digest": _digest(credential_policy),
+        "credential_policy_digest": _credential_policy_digest(credential),
     }
     return CodingCredentialRequest(**values, request_digest=_digest(values))
 
@@ -83,8 +94,100 @@ def validate_credential_approval(
     return decision.decision
 
 
+@dataclass(slots=True)
+class CredentialLease:
+    """Non-serializable, process-local credential material with explicit zeroization."""
+
+    lease_id: str
+    credential_profile_id: str
+    request_digest: str
+    registry_host: str
+    registry_base_path: str
+    issued_at: datetime
+    expires_at: datetime
+    secret: bytearray
+    closed: bool = False
+
+    def close(self) -> None:
+        for index in range(len(self.secret)):
+            self.secret[index] = 0
+        self.closed = True
+
+
+class CredentialBroker(Protocol):
+    def acquire(self, request: CodingCredentialRequest) -> CredentialLease: ...
+
+
+class EnvironmentCredentialBroker:
+    """Resolve operator-owned secret env names only after HITL approval."""
+
+    def __init__(
+        self,
+        profiles: Mapping[str, CodingCredentialProfile],
+        *,
+        env: Mapping[str, str] | None = None,
+        now: Callable[[], datetime] | None = None,
+        lease_id_factory: Callable[[], str] | None = None,
+    ) -> None:
+        self._profiles = dict(profiles)
+        self._env = os.environ if env is None else env
+        self._now = now or (lambda: datetime.now(timezone.utc))
+        self._lease_id_factory = lease_id_factory or (lambda: uuid.uuid4().hex)
+
+    def acquire(self, request: CodingCredentialRequest) -> CredentialLease:
+        profile = self._profiles.get(request.credential_profile_id)
+        if profile is None:
+            raise ValueError("credential_broker_unconfigured")
+        if (
+            request.registry_host != profile.registry_host
+            or request.registry_base_path != profile.registry_base_path
+            or request.lease_ttl_seconds != profile.lease_ttl_seconds
+            or request.credential_policy_digest != _credential_policy_digest(profile)
+        ):
+            raise ValueError("credential_approval_mismatch")
+        raw = self._env.get(profile.secret_env, "")
+        if (
+            not raw
+            or len(raw.encode("utf-8")) > 16_384
+            or any(character in raw for character in ("\x00", "\n", "\r"))
+        ):
+            raise ValueError("credential_broker_unconfigured")
+        secret = bytearray(raw, "utf-8")
+        issued_at = self._now()
+        if issued_at.tzinfo is None:
+            for index in range(len(secret)):
+                secret[index] = 0
+            raise ValueError("credential_broker_unconfigured")
+        return CredentialLease(
+            lease_id=self._lease_id_factory(),
+            credential_profile_id=profile.credential_profile_id,
+            request_digest=request.request_digest,
+            registry_host=profile.registry_host,
+            registry_base_path=profile.registry_base_path,
+            issued_at=issued_at,
+            expires_at=issued_at + timedelta(seconds=profile.lease_ttl_seconds),
+            secret=secret,
+        )
+
+
+@contextmanager
+def credential_lease(
+    broker: CredentialBroker,
+    request: CodingCredentialRequest,
+) -> Iterator[CredentialLease]:
+    lease = broker.acquire(request)
+    try:
+        yield lease
+    finally:
+        lease.close()
+
+
 __all__ = [
     "build_credential_request",
+    "CredentialBroker",
+    "CredentialLease",
+    "EnvironmentCredentialBroker",
+    "credential_lease",
     "credential_interrupt_payload",
     "validate_credential_approval",
 ]
