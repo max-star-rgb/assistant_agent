@@ -29,6 +29,10 @@ from langchain_core.tools import BaseTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import ConfigDict, Field, SecretStr
 
+from assistant_agent.native_agent.search_profiles import (
+    SearchProfilePolicy,
+    resolve_search_profile,
+)
 from assistant_agent.providers.dashscope_chat import (
     UrllibDashScopeTransport,
     dashscope_generation_url,
@@ -37,6 +41,23 @@ from assistant_agent.providers.dashscope_chat import (
 
 _MAX_SEARCH_SOURCES = 20
 _STREAM_END = object()
+
+
+def _search_options_from_policy(policy: SearchProfilePolicy) -> dict[str, Any]:
+    """Emit DashScope search options only from an admitted trusted profile."""
+    options: dict[str, Any] = {
+        "search_strategy": policy.search_strategy or "turbo",
+        "forced_search": policy.forced_search,
+        "enable_search_extension": True,
+        "enable_source": True,
+        "enable_citation": True,
+        "citation_format": "[<number>]",
+    }
+    if policy.assigned_site_list:
+        options["assigned_site_list"] = list(policy.assigned_site_list)
+    if policy.prompt_intervene:
+        options["intention_options"] = {"prompt_intervene": policy.prompt_intervene}
+    return options
 
 
 class DashScopeProviderError(RuntimeError):
@@ -229,7 +250,15 @@ class DashScopeNativeChatModel(BaseChatModel):
         stream: bool,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        deep_research = kwargs.get("provider_search_profile") == "deep_research"
+        profile = kwargs.get("provider_search_profile")
+        deep_research = profile == "deep_research"
+        policy = (
+            resolve_search_profile(
+                profile, protocol="dashscope", model_name=self.model_name
+            )
+            if isinstance(profile, str) and not deep_research
+            else None
+        )
         parameters: dict[str, Any] = {
             "result_format": "message",
             "max_tokens": self.max_tokens,
@@ -239,17 +268,33 @@ class DashScopeNativeChatModel(BaseChatModel):
             parameters["incremental_output"] = True
         if stop:
             parameters["stop"] = stop
-        if self.enable_search or deep_research:
+
+        if policy is not None:
+            if policy.enable_search:
+                parameters["enable_search"] = True
+                parameters["search_options"] = _search_options_from_policy(policy)
+        elif deep_research:
             parameters["enable_search"] = True
             parameters["search_options"] = {
-                "search_strategy": "max" if deep_research else "turbo",
-                "forced_search": deep_research,
+                "search_strategy": "max",
+                "forced_search": True,
                 "enable_search_extension": True,
                 "enable_source": True,
                 "enable_citation": True,
                 "citation_format": "[<number>]",
-                **({} if deep_research else {"freshness": 7}),
             }
+        elif self.enable_search:
+            parameters["enable_search"] = True
+            parameters["search_options"] = {
+                "search_strategy": "turbo",
+                "forced_search": False,
+                "enable_search_extension": True,
+                "enable_source": True,
+                "enable_citation": True,
+                "citation_format": "[<number>]",
+                "freshness": 7,
+            }
+
         tools = kwargs.get("tools")
         if isinstance(tools, list):
             parameters["tools"] = tools

@@ -13,12 +13,14 @@ from pydantic import BaseModel, ConfigDict
 
 from assistant_agent.native_agent.models import (
     NativePlanProposal,
+    ProviderSearchProfile,
     WorkerResult,
 )
 from assistant_agent.native_agent.runtime_facts import TrustedRuntimeFacts
 
 ExecutionMode = Literal["fast", "planning"]
 MemoryStatus = Literal["ready", "empty", "degraded"]
+AgentPhase = Literal["fast", "planner", "worker", "finalizer"]
 
 
 class AssistantRootInput(BaseModel):
@@ -54,6 +56,9 @@ class FastAgentState(AgentState):
     memory_status: NotRequired[MemoryStatus]
     execution_mode: NotRequired[ExecutionMode]
     trusted_runtime_facts: NotRequired[TrustedRuntimeFacts]
+    agent_phase: NotRequired[AgentPhase]
+    worker_tool_allowlist: NotRequired[tuple[str, ...]]
+    provider_search_profile: NotRequired[ProviderSearchProfile]
     active_skill_ids: NotRequired[Annotated[list[str], _merge_unique_strings]]
     skill_reference_grants: NotRequired[
         Annotated[dict[str, list[str]], _merge_reference_grants]
@@ -107,6 +112,7 @@ def _merge_reference_grants(
 
 
 __all__ = [
+    "AgentPhase",
     "AssistantRootInput",
     "AssistantRootState",
     "ExecutionMode",

@@ -7,6 +7,27 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
+ProviderSearchProfile = Literal[
+    "none",
+    "rail_official",
+    "flight_official",
+    "guide_official",
+    "guide_xiaohongshu",
+    "travel_general",
+]
+
+
+class EvidenceLink(BaseModel):
+    """A sanitized https citation produced by the provider, not by the model."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    index: int = Field(ge=1, le=1000)
+    title: str = Field(min_length=1, max_length=300)
+    url: str = Field(min_length=1, max_length=2000)
+    domain: str = Field(min_length=1, max_length=253)
+
+
 class WorkerResult(BaseModel):
     """One work-item result emitted by a planning worker."""
 
@@ -14,6 +35,10 @@ class WorkerResult(BaseModel):
 
     work_item_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,119}$")
     content: str = Field(min_length=1, max_length=100_000)
+    verification_status: Literal["verified", "advisory", "unverified", "failed"] = (
+        "advisory"
+    )
+    sources: tuple[EvidenceLink, ...] = Field(default=(), max_length=20)
 
 
 class NativePlanNode(BaseModel):
@@ -22,10 +47,15 @@ class NativePlanNode(BaseModel):
     node_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,119}$")
     objective: str = Field(min_length=1, max_length=4_000)
     depends_on: tuple[str, ...] = Field(default=(), max_length=64)
+    required_skill_ids: tuple[str, ...] = Field(default=(), max_length=16)
+    allowed_tool_names: tuple[str, ...] = Field(default=(), max_length=64)
+    search_profile: ProviderSearchProfile = "none"
 
-    @field_validator("depends_on", mode="before")
+    @field_validator(
+        "depends_on", "required_skill_ids", "allowed_tool_names", mode="before"
+    )
     @classmethod
-    def _tuple_dependencies(cls, value):
+    def _tuple_collections(cls, value):
         return tuple(value) if isinstance(value, list) else value
 
     @model_validator(mode="after")
@@ -55,7 +85,9 @@ class NativePlanProposal(BaseModel):
 
 
 __all__ = [
+    "EvidenceLink",
     "NativePlanNode",
     "NativePlanProposal",
+    "ProviderSearchProfile",
     "WorkerResult",
 ]

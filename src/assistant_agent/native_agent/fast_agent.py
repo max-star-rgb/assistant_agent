@@ -39,6 +39,10 @@ from assistant_agent.native_agent.runtime_facts import (
 from assistant_agent.native_agent.conditional_tool_exposure import (
     ConditionalToolExposureMiddleware,
 )
+from assistant_agent.native_agent.planning_phase import (
+    PlanningPhaseMiddleware,
+    planner_response_format,
+)
 from assistant_agent.native_agent.tool_exposure import (
     ProgressiveToolExposureMiddleware,
     discoverable_skill_descriptors,
@@ -63,6 +67,8 @@ def build_fast_agent(
     token_counter: Callable[[Iterable[MessageLikeRepresentation]], int] | None = None,
     skill_catalog: SkillCatalog | None = None,
     visual_history_probe: VisualObservationHistoryProbe | None = None,
+    additional_middleware: Sequence[AgentMiddleware] = (),
+    state_schema: type[FastAgentState] = FastAgentState,
 ):
     """Build the shared create_agent unit without binding saver or Store."""
 
@@ -100,6 +106,7 @@ def build_fast_agent(
     middleware = [
         assistant_prompt,
         ProgressiveToolExposureMiddleware(resolved_skill_catalog),
+        PlanningPhaseMiddleware(),
         ConditionalToolExposureMiddleware(visual_history_probe),
         ModelCallLimitMiddleware(
             run_limit=model_call_limit,
@@ -139,13 +146,15 @@ def build_fast_agent(
     middleware.append(TrustedRuntimeFactsMiddleware())
     if interrupt_policy:
         middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_policy))
+    middleware.extend(additional_middleware)
 
     return create_agent(
         model=model,
         tools=list(tools),
-        state_schema=FastAgentState,
+        state_schema=state_schema,
         context_schema=AssistantRunContext,
         middleware=middleware,
+        response_format=planner_response_format(),
         name="AssistantFastAgent",
     )
 
