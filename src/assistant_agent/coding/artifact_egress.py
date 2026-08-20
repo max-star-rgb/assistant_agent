@@ -9,6 +9,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import threading
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -81,6 +82,8 @@ class DockerArtifactIngressBackend:
         name_factory: Callable[[str], str] | None = None,
         uid: int | None = None,
         gid: int | None = None,
+        managed_bundle_root: Path | None = None,
+        janitor_max_interval_seconds: float = 60.0,
     ) -> None:
         self.docker = docker_binary
         self.runner = command_runner or SubprocessDockerRunner()
@@ -90,7 +93,16 @@ class DockerArtifactIngressBackend:
         )
         self.uid = os.getuid() if uid is None else uid
         self.gid = os.getgid() if gid is None else gid
-        self._bundle_roots: set[Path] = set()
+        self._bundle_roots: set[Path] = (
+            {managed_bundle_root} if managed_bundle_root is not None else set()
+        )
+        self._janitor_max_interval = max(1.0, janitor_max_interval_seconds)
+        self._janitor_stop = threading.Event()
+        self._janitor_wake = threading.Event()
+        self._janitor_lock = threading.Lock()
+        self._janitor: threading.Thread | None = None
+        if managed_bundle_root is not None:
+            self._start_janitor()
 
     def fetch_scan(
         self,
@@ -506,7 +518,9 @@ class DockerArtifactIngressBackend:
             raise ValueError("artifact_export_failed")
         now = datetime.now(UTC)
         self._prune_expired_bundles(bundle_root, now)
-        self._bundle_roots.add(bundle_root)
+        with self._janitor_lock:
+            self._bundle_roots.add(bundle_root)
+        self._start_janitor()
         bundle_ref = f"artifact_bundle_{uuid.uuid4().hex}"
         destination = bundle_root / bundle_ref
         staging = bundle_root / f".{bundle_ref}.tmp"
@@ -550,13 +564,28 @@ class DockerArtifactIngressBackend:
         except OSError as exc:
             shutil.rmtree(staging, ignore_errors=True)
             raise ValueError("artifact_export_failed") from exc
+        self._janitor_wake.set()
         return CodingArtifactExportManifest.model_validate(manifest_values)
 
-    def _prune_expired_bundles(self, bundle_root: Path, now: datetime) -> None:
+    def _prune_expired_bundles(
+        self, bundle_root: Path, now: datetime
+    ) -> datetime | None:
+        if not bundle_root.exists():
+            return None
+        next_due: datetime | None = None
         try:
             entries = tuple(bundle_root.iterdir())
             for entry in entries:
                 if entry.name.startswith("."):
+                    due = datetime.fromtimestamp(
+                        entry.stat().st_mtime + 300, tz=UTC
+                    )
+                    if due <= now:
+                        if entry.is_symlink() or not entry.is_dir():
+                            raise ValueError("artifact_cleanup_failed")
+                        shutil.rmtree(entry)
+                    elif next_due is None or due < next_due:
+                        next_due = due
                     continue
                 if (
                     entry.is_symlink()
@@ -576,8 +605,46 @@ class DockerArtifactIngressBackend:
                     raise ValueError("artifact_cleanup_failed")
                 if expires_at <= now:
                     shutil.rmtree(entry)
+                elif next_due is None or expires_at < next_due:
+                    next_due = expires_at
         except (KeyError, TypeError, json.JSONDecodeError, OSError) as exc:
             raise ValueError("artifact_cleanup_failed") from exc
+        return next_due
+
+    def _start_janitor(self) -> None:
+        with self._janitor_lock:
+            if self._janitor is not None:
+                return
+            self._janitor = threading.Thread(
+                target=self._janitor_loop,
+                name=f"artifact-janitor-{self.owner[:16]}",
+                daemon=True,
+            )
+            self._janitor.start()
+
+    def _janitor_loop(self) -> None:
+        while not self._janitor_stop.is_set():
+            now = datetime.now(UTC)
+            next_due: datetime | None = None
+            with self._janitor_lock:
+                roots = tuple(self._bundle_roots)
+            for bundle_root in roots:
+                try:
+                    candidate = self._prune_expired_bundles(bundle_root, now)
+                except ValueError:
+                    continue
+                if candidate is not None and (
+                    next_due is None or candidate < next_due
+                ):
+                    next_due = candidate
+            wait_seconds = self._janitor_max_interval
+            if next_due is not None:
+                wait_seconds = min(
+                    wait_seconds,
+                    max(0.1, (next_due - datetime.now(UTC)).total_seconds()),
+                )
+            self._janitor_wake.wait(wait_seconds)
+            self._janitor_wake.clear()
 
     def _image(self, image: str, label: str) -> None:
         completed = self.runner.run(
@@ -629,9 +696,19 @@ class DockerArtifactIngressBackend:
             raise ValueError("artifact_fetch_failed")
 
     async def aclose(self) -> None:
+        self._janitor_stop.set()
+        self._janitor_wake.set()
+        janitor = self._janitor
+        if janitor is not None:
+            janitor.join(timeout=5)
         now = datetime.now(UTC)
-        for bundle_root in tuple(self._bundle_roots):
-            self._prune_expired_bundles(bundle_root, now)
+        with self._janitor_lock:
+            bundle_roots = tuple(self._bundle_roots)
+        for bundle_root in bundle_roots:
+            try:
+                self._prune_expired_bundles(bundle_root, now)
+            except ValueError:
+                pass
         for list_argv, remove_prefix in (
             (
                 (

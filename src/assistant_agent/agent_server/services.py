@@ -125,7 +125,13 @@ class AgentServerExecutionOwner:
             repository.artifact_profile is not None
             for repository in coding_config.repositories.values()
         ):
-            coding_artifact_backend = DockerArtifactIngressBackend()
+            coding_artifact_backend = DockerArtifactIngressBackend(
+                managed_bundle_root=(
+                    coding_config.workspace_root
+                    / "validation"
+                    / "artifact-bundles"
+                )
+            )
         coding_validation_service = CodingValidationService(
             coding_workspace_service,
             sandbox_backend=coding_sandbox_backend,
