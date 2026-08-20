@@ -42,7 +42,7 @@ class ToolPluginContext:
     visual_semantic_store_pool: SessionVisualSemanticStorePool | None = None
     visual_reminder_registry: VisualReminderRegistry | None = None
     visual_memory_text_index: VisualMemoryTextIndex | None = None
-    live_view_resolver: Callable[[str, str], Any] | None = None
+    live_view_resolver: Callable[[str, str, str], Any] | None = None
 
     @property
     def mock_mode(self) -> bool:

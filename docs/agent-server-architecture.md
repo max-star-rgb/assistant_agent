@@ -81,9 +81,9 @@ Memory Graph 的严格输入只有标准
 messages；它由 Assistant Graph 通过 Agent Server SDK 调度，不向普通用户入口暴露 run type。
 认证用户唯一来自 Agent Server 原生
 `Runtime.server_info.user.identity`；`AssistantRunContext` 不复制用户或租户身份，只保存有默认值的
-`entry_profile` 与 `media_capabilities`。执行模式不放入 context。
-媒体入口可在标准 video content block 中绑定视觉模块生成的可信目标边界，模型不能提交；目标边界与实时等待
-语义由视觉 authority 定义，父图只接收稳定字段。
+入口 profile、媒体能力以及媒体入口在 chat 开始时签发的 opaque 视觉 capability token。执行模式不放入
+context；窗口内容不进入标准 messages/context，也不由模型或普通 Graph 输入提交。middleware 和 Tool 必须以
+认证身份、thread 与 token 回到进程视觉模块解析冻结投影，伪造或过期 token 均 fail closed。
 
 ## 资源模型与 composition
 

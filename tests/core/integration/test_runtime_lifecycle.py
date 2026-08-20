@@ -247,6 +247,7 @@ def test_public_input_separates_mode_from_non_identity_runtime_context() -> None
         "entry_profile",
         "media_capabilities",
         "realtime_media_mode",
+        "visual_capability_token",
     }
     with pytest.raises(ValidationError):
         AssistantRootInput.model_validate(

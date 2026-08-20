@@ -556,7 +556,6 @@ class SessionVisualSemanticStore:
             return any(
                 (as_of_sequence is None or record.frame_sequence <= as_of_sequence)
                 and record.index_status == "ready"
-                and record.search_embedding is not None
                 for record in self._records.values()
             )
 

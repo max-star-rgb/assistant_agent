@@ -249,6 +249,9 @@ class VisualPerceptionModule:
         self._observer_factory = observer_factory or self._create_observer
         self._sessions: set[VisualPerceptionSession] = set()
         self._live_views: dict[tuple[str, str], LiveViewProjection] = {}
+        self._frozen_live_views: dict[
+            tuple[str, str, str], LiveViewProjection
+        ] = {}
         self._live_views_lock = Lock()
         self._closed = False
 
@@ -311,6 +314,48 @@ class VisualPerceptionModule:
         with self._live_views_lock:
             return self._live_views.get((user_id, session_id))
 
+    def freeze_live_view(self, user_id: str, session_id: str) -> str | None:
+        """Issue an opaque capability for the session's current projection."""
+
+        if self._closed or not user_id or not session_id:
+            return None
+        with self._live_views_lock:
+            projection = self._live_views.get((user_id, session_id))
+            if projection is None:
+                return None
+            token = uuid4().hex
+            self._frozen_live_views[(user_id, session_id, token)] = projection
+            return token
+
+    def resolve_frozen_live_view(
+        self,
+        user_id: str,
+        session_id: str,
+        capability_token: str,
+    ) -> LiveViewProjection | None:
+        """Resolve one server-issued run projection after ownership checks."""
+
+        if not user_id or not session_id or not capability_token:
+            return None
+        with self._live_views_lock:
+            return self._frozen_live_views.get(
+                (user_id, session_id, capability_token)
+            )
+
+    def release_frozen_live_view(
+        self,
+        user_id: str,
+        session_id: str,
+        capability_token: str,
+    ) -> None:
+        """Revoke one completed run's visual capability."""
+
+        with self._live_views_lock:
+            self._frozen_live_views.pop(
+                (user_id, session_id, capability_token),
+                None,
+            )
+
     def understand(
         self,
         request: VisionUnderstandingRequest,
@@ -338,6 +383,9 @@ class VisualPerceptionModule:
         if self._closed:
             return
         self._closed = True
+        with self._live_views_lock:
+            self._live_views.clear()
+            self._frozen_live_views.clear()
         sessions = tuple(self._sessions)
         if sessions:
             await asyncio.gather(

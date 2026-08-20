@@ -32,7 +32,7 @@ class NativeToolResources:
     visual_reminder_registry: Any | None = None
     visual_memory_text_index: Any | None = None
     visual_history_probe: Any | None = None
-    live_view_resolver: Callable[[str, str], Any] | None = None
+    live_view_resolver: Callable[[str, str, str], Any] | None = None
 
 
 def _create_builtin_tools(

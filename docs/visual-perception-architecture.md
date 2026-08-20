@@ -262,6 +262,12 @@ hard gate。
 `user/session/as-of sequence` 已有可检索视觉文本时对模型可见；视频断线后不会继续暴露。生产 composition
 在进程级视觉资源可用时静态构造该 `BaseTool`，再由统一条件 middleware 缩小每轮可见集合，不按请求关键词
 建立动态 catalog。`live_view_inspect` 在 VIDEO 握手成功后立即可见，不等待第一帧；
+`visual_memory_search` 的可检索历史判定以 backend-neutral 的 `index_status=ready` 为准；Qdrant 持有文本向量时，
+不得再要求进程内 `VisualSemanticRecord.search_embedding` 非空。
+媒体入口在创建 run 时冻结当前视觉投影，并通过 `Runtime.context` 只传递 server-issued opaque capability token；
+条件 Tool 暴露和 Tool 执行必须以身份、thread、token 解析同一份投影，不得信任客户端提交的 video ID/sequence，
+也不得在执行期重读可能已被后续聊天更新的 session 投影。冻结投影没有 target sequence 时历史 Tool fail closed，
+不能把 `None` 当作无上界。
 其描述把实时视频会话中的“这是什么/这个呢/它在做什么”等指示性问题视为视觉请求，不要求用户必须说出
 “摄像头”或“画面”，但问候和无关纯文本任务不调用；同一用户问题失败后不以相同参数重试。
 `uploaded_media_inspect` 只在最新用户消息含明确 `source=uploaded` 的图片或视频时可见。这三条条件与 Skill

@@ -84,6 +84,7 @@ def test_native_run_context_contains_capabilities_not_identity() -> None:
         "entry_profile",
         "media_capabilities",
         "realtime_media_mode",
+        "visual_capability_token",
     }
     assert context.realtime_media_mode == "none"
     assert context.media_capabilities == ("audio",)

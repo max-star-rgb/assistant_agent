@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Iterable, Sequence
+from typing import Any
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
@@ -68,6 +69,7 @@ def build_fast_agent(
     token_counter: Callable[[Iterable[MessageLikeRepresentation]], int] | None = None,
     skill_catalog: SkillCatalog | None = None,
     visual_history_probe: VisualObservationHistoryProbe | None = None,
+    live_view_resolver: Callable[[str, str, str], Any] | None = None,
     additional_middleware: Sequence[AgentMiddleware] = (),
     state_schema: type[FastAgentState] = FastAgentState,
 ):
@@ -106,7 +108,10 @@ def build_fast_agent(
         assistant_prompt,
         ProgressiveToolExposureMiddleware(resolved_skill_catalog),
         PlanningPhaseMiddleware(),
-        ConditionalToolExposureMiddleware(visual_history_probe),
+        ConditionalToolExposureMiddleware(
+            visual_history_probe,
+            live_view_resolver,
+        ),
         ModelCallLimitMiddleware(
             run_limit=model_call_limit,
             exit_behavior="error",

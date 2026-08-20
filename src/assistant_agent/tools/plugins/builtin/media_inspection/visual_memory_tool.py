@@ -238,7 +238,7 @@ def create_visual_memory_search_tool(
     text_index: VisualMemoryTextIndex,
     limit: int = 12,
     timeline_context_service: VisualTimelineContextService | None = None,
-    live_view_resolver: Callable[[str, str], Any] | None = None,
+    live_view_resolver: Callable[[str, str, str], Any] | None = None,
 ) -> BaseTool:
     """Create the native read Tool for previously generated visual text."""
 
@@ -283,20 +283,30 @@ def create_visual_memory_search_tool(
                 search_mode=search_mode,
                 session_id=session_id,
             )
+            run_id = getattr(execution, "run_id", None)
+            capability_token = runtime.context.visual_capability_token
             live = (
-                live_view_resolver(user_id, session_id)
-                if live_view_resolver is not None
+                live_view_resolver(user_id, session_id, capability_token)
+                if live_view_resolver is not None and capability_token is not None
                 else None
             )
+            if live is None:
+                raise ToolException(
+                    "visual_capability_required: 当前视觉会话凭据不可用"
+                )
+            if live.target_sequence is None:
+                raise ToolException(
+                    "visual_target_required: 当前视觉窗口尚未就绪"
+                )
             context = ToolContext(
                 user_id=user_id,
                 session_id=session_id,
-                run_id=getattr(execution, "run_id", None),
+                run_id=run_id,
                 metadata={
                     "entry_profile": runtime.context.entry_profile,
                     "request_metadata": {
                         "_trusted_visual_memory_as_of_sequence": (
-                            live.target_sequence if live is not None else None
+                            live.target_sequence
                         )
                     },
                 },

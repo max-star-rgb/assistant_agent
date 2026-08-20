@@ -52,6 +52,10 @@ Last updated: 2026-08-20
 “完成 VIDEO 握手”的结构化定义是：服务端已成功校验并绑定首个 control 消息、创建该连接对应的 native
 `thread_id`，且绑定的 `callType` 等于 `VIDEO`。它不要求已经收到第一帧。后续 chat run 由媒体入口把该事实
 投影为 `AssistantRunContext.realtime_media_mode="video"`；AUDIO 握手和未完成 control 的连接均为 `none`。
+每次 chat 开始时，媒体入口还会在进程视觉模块中冻结当时的 video IDs 与严格窗口，并只把服务端签发的 opaque
+capability token 放入 run context；token 按认证身份与 thread 校验，run 结束即撤销。窗口不进入用户 message，
+后续并发 chat 更新 session 投影也不能改变已创建 run 的视觉检索上界。撤销同时绑定 task done callback，覆盖
+协程首次执行前即被取消的路径。
 
 ## 3. 文本 chat
 

@@ -55,7 +55,7 @@ def create_live_view_inspect_tool(
     context_store: VideoContextStore | None = None,
     memory_store: RealtimeVideoMemoryStore | None = None,
     semantic_store_pool: SessionVisualSemanticStorePool | None = None,
-    live_view_resolver: Callable[[str, str], Any] | None = None,
+    live_view_resolver: Callable[[str, str, str], Any] | None = None,
 ) -> BaseTool:
     """Create a native live-view Tool over the process-owned visual resources."""
 
@@ -102,9 +102,10 @@ def create_live_view_inspect_tool(
             execution = runtime.execution_info
             user_id = authenticated_user_identity(runtime)
             session_id = getattr(execution, "thread_id", None)
+            capability_token = runtime.context.visual_capability_token
             live = (
-                live_view_resolver(user_id, session_id)
-                if live_view_resolver is not None
+                live_view_resolver(user_id, session_id, capability_token)
+                if live_view_resolver is not None and capability_token is not None
                 else None
             )
             if live is None or not live.live_video_ids:
@@ -113,7 +114,7 @@ def create_live_view_inspect_tool(
                 )
             state = runtime.state if isinstance(runtime.state, Mapping) else {}
             request = VideoUnderstandingRequest(
-                video_ref=live.live_video_ids[-1],
+                video_ref=live.target_video_id or live.live_video_ids[-1],
                 video_ids=list(live.live_video_ids),
                 user_query=question,
                 user_id=user_id,

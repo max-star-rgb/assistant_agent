@@ -89,6 +89,7 @@ class AgentServerExecutionOwner:
                 else None
             ),
             visual_history_probe=tool_resources.visual_history_probe,
+            live_view_resolver=tool_resources.live_view_resolver,
         )
         planning_graph = build_planning_graph(model, fast_agent)
         coding_config = CodingConfig.from_env()
@@ -167,7 +168,7 @@ def _compose_sync(
         visual_semantic_store_pool=(visual_resources.visual_semantic_store_pool),
         visual_memory_text_index=visual_resources.visual_memory_text_index,
         visual_history_probe=visual_resources.visual_history_probe,
-        live_view_resolver=visual_perception.resolve_live_view,
+        live_view_resolver=visual_perception.resolve_frozen_live_view,
     )
     memory_backend = create_memory_backend(
         config,

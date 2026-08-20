@@ -527,13 +527,21 @@ async def _handle_frame(
             )
         visual_prepared_ns = perf_counter_ns()
         record_live_view = getattr(visual_module, "record_live_view", None)
+        visual_identity = _agent_server_identity(websocket)
+        visual_capability_token = None
         if callable(record_live_view):
             record_live_view(
-                _agent_server_identity(websocket),
+                visual_identity,
                 session.thread_id,
                 video_ids=session.video_ids,
                 window=visual_window,
             )
+            freeze_live_view = getattr(visual_module, "freeze_live_view", None)
+            if callable(freeze_live_view):
+                visual_capability_token = freeze_live_view(
+                    visual_identity,
+                    session.thread_id,
+                )
         task = asyncio.create_task(
             _run_chat(
                 websocket,
@@ -556,6 +564,9 @@ async def _handle_frame(
                 visual_target_video_id=(
                     visual_window.video_id if visual_window is not None else None
                 ),
+                visual_module=visual_module,
+                visual_identity=visual_identity,
+                visual_capability_token=visual_capability_token,
                 received_ns=chat_received_ns,
                 dispatched_ns=visual_prepared_ns,
             ),
@@ -569,6 +580,13 @@ async def _handle_frame(
             _elapsed_ms(visual_prepare_started_ns, visual_prepared_ns),
         )
         chat_tasks[chat.chat_index] = task
+        _attach_visual_capability_cleanup(
+            task,
+            visual_module=visual_module,
+            visual_identity=visual_identity,
+            session_id=session.thread_id,
+            capability_token=visual_capability_token,
+        )
         task.add_done_callback(
             lambda _completed, index=chat.chat_index: chat_tasks.pop(index, None)
         )
@@ -680,6 +698,9 @@ async def _run_chat(
     visual_window_start_sequence: int | None = None,
     visual_target_sequence: int | None = None,
     visual_target_video_id: str | None = None,
+    visual_module: Any | None = None,
+    visual_identity: str | None = None,
+    visual_capability_token: str | None = None,
     received_ns: int | None = None,
     dispatched_ns: int | None = None,
 ) -> None:
@@ -705,6 +726,7 @@ async def _run_chat(
             "realtime_media_mode": (
                 "video" if session.video_handshake_completed else "none"
             ),
+            "visual_capability_token": visual_capability_token,
         }
         async for part in client.stream_run(
             thread_id=session.thread_id,
@@ -810,7 +832,57 @@ async def _run_chat(
                 ),
             )
     finally:
+        _release_visual_capability(
+            visual_module=visual_module,
+            visual_identity=visual_identity,
+            session_id=session.thread_id,
+            capability_token=visual_capability_token,
+        )
         session.finish_run(chat_index=chat.chat_index)
+
+
+def _attach_visual_capability_cleanup(
+    task: asyncio.Task[Any],
+    *,
+    visual_module: Any,
+    visual_identity: str | None,
+    session_id: str,
+    capability_token: str | None,
+) -> None:
+    """Revoke a capability even when a task is cancelled before first execution."""
+
+    task.add_done_callback(
+        lambda _completed: _release_visual_capability(
+            visual_module=visual_module,
+            visual_identity=visual_identity,
+            session_id=session_id,
+            capability_token=capability_token,
+        )
+    )
+
+
+def _release_visual_capability(
+    *,
+    visual_module: Any,
+    visual_identity: str | None,
+    session_id: str,
+    capability_token: str | None,
+) -> None:
+    release_frozen_live_view = getattr(
+        visual_module,
+        "release_frozen_live_view",
+        None,
+    )
+    if (
+        callable(release_frozen_live_view)
+        and visual_identity
+        and capability_token
+    ):
+        release_frozen_live_view(
+            visual_identity,
+            session_id,
+            capability_token,
+        )
 
 
 async def _ingest_video_packets(

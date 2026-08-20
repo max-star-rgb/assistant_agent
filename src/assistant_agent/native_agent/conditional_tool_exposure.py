@@ -27,9 +27,11 @@ class ConditionalToolExposureMiddleware(AgentMiddleware):
     def __init__(
         self,
         history_probe: VisualObservationHistoryProbe | None = None,
+        live_view_resolver: Callable[[str, str, str], Any] | None = None,
     ) -> None:
         super().__init__()
         self._history_probe = history_probe
+        self._live_view_resolver = live_view_resolver
 
     def wrap_model_call(
         self,
@@ -65,14 +67,38 @@ class ConditionalToolExposureMiddleware(AgentMiddleware):
         video_handshake_completed = (
             getattr(context, "realtime_media_mode", "none") == "video"
         )
+        live = self._trusted_live_view(runtime)
         if availability is ToolAvailability.VIDEO_HANDSHAKE_COMPLETED:
-            return video_handshake_completed
+            return video_handshake_completed and live is not None
         if availability is ToolAvailability.VISUAL_HISTORY_AVAILABLE:
-            return video_handshake_completed and self._has_visual_history(
-                runtime,
-                as_of_sequence=media.visual_target_sequence,
+            return (
+                video_handshake_completed
+                and live is not None
+                and live.target_sequence is not None
+                and self._has_visual_history(
+                    runtime,
+                    as_of_sequence=live.target_sequence,
+                )
             )
         return False
+
+    def _trusted_live_view(self, runtime: Any) -> Any | None:
+        if self._live_view_resolver is None:
+            return None
+        context = getattr(runtime, "context", None)
+        token = getattr(context, "visual_capability_token", None)
+        execution = getattr(runtime, "execution_info", None)
+        session_id = getattr(execution, "thread_id", None)
+        if not isinstance(token, str) or not isinstance(session_id, str):
+            return None
+        try:
+            return self._live_view_resolver(
+                authenticated_user_identity(runtime),
+                session_id,
+                token,
+            )
+        except Exception:  # noqa: BLE001 - availability must fail closed.
+            return None
 
     def _has_visual_history(
         self,
