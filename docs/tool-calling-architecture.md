@@ -1,6 +1,6 @@
 # LangChain-native Tool 与扩展架构
 
-最后更新：2026-08-19
+最后更新：2026-08-20
 
 ## Authority contract
 
@@ -102,8 +102,14 @@ coding 模式使用独立静态 Tool inventory：`coding_repo_list`、`coding_re
 均由 `ToolRuntime` 与 Agent Server 事实解析，不进入模型 schema。
 
 实际 patch apply 是 `AssistantCodingGraph` 的确定性节点，不注册为 Tool。coding inventory 不加入普通
-fast/planning Agent；阶段 1 不提供 shell、delete、commit、merge、push 或任意宿主路径访问。路径、symlink、
+fast/planning Agent；coding 不提供 shell、delete、commit、merge、push 或任意宿主路径访问。路径、symlink、
 protected glob、UTF-8、大小、base commit、file digest 和 patch digest 均由 Tool/backend fail closed 校验。
+
+阶段 2 的 test/lint/format/build 也不注册为模型 Tool。服务端 repository allowlist 把稳定 command ID 映射为
+固定 argv、kind 和资源上限，并由 Graph 在已批准 patch apply 后按固定 sequence 调用；模型、客户端和消息都
+不能提交 argv、cwd、env、shell syntax 或 command ID。test/lint/build 的 scratch 写入全部丢弃；format 的
+增量 diff 只有重新通过 patch validator 和独立 HITL 后才写入 worktree。命令执行资源生命周期归 Agent Server
+authority；本阶段不宣称容器级网络或恶意代码隔离。
 
 ## Provider-native 能力
 

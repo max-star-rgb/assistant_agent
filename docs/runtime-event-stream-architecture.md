@@ -24,6 +24,7 @@ AssistantRootGraph
   -> execution_router
        fast     -> AssistantFastAgent --------+
        planning -> AssistantPlanningGraph ----+
+       coding   -> AssistantCodingGraph ------+
   -> refresh_memory_extraction
   -> END
 ```
@@ -34,8 +35,11 @@ Studio 的标准 messages-only run。路由函数不从用户文本、关键词�
 
 coding 分支是顺序 `AssistantCodingGraph`，只在结构化输入同时提供受信 allowlist 中的
 `coding_repo_id` 时启用。它在 thread-scoped 临时 Git worktree 中执行 inspect/draft、确定性 patch validation、
-digest-bound 原生 interrupt 和受信 apply；模型不可见 apply、shell、delete、commit、merge 或 push。
-coding 不复用 planning 并行 worker，所有 mutation 通过单一顺序节点完成。
+digest-bound 原生 interrupt、受信 apply 和 apply 后的确定性 `run_validation`；模型不可见 apply、validation
+进程、shell、delete、commit、merge 或 push。验证成功后才形成 applied terminal result；失败返回结构化
+command evidence。formatter 只在 scratch 中生成增量 diff，该 diff 重新通过既有 validator 并带
+`origin=formatter` 返回同一 digest-bound interrupt/apply 闭环；最多允许一轮 formatter patch，避免非幂等
+循环。coding 不复用 planning 并行 worker，所有 mutation 通过单一顺序节点完成。
 
 `capture_trusted_runtime_facts` 在 `memory_recall` 前采集带时区的当前时间与部署默认地点，写入结构化
 `trusted_runtime_facts`。当前默认地点为“上海市青浦区华为练秋湖研发中心”，并显式标记

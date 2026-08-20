@@ -1,6 +1,6 @@
 # LangGraph Agent Server 部署架构
 
-最后更新：2026-08-18
+最后更新：2026-08-20
 
 ## Authority contract
 
@@ -15,15 +15,22 @@
 
 ## 生产 Graph 入口
 
-Agent Server process owner 静态持有一份 `CodingWorkspaceService`。coding 默认 disabled；显式启用后，
+Agent Server process owner 静态持有一份 `CodingWorkspaceService` 和一份 `CodingValidationService`。coding 默认 disabled；显式启用后，
 source repository 只能从服务端 JSON allowlist 通过 opaque `coding_repo_id` 选择。每个
 `user.identity + thread_id + repo_id` 解析到独立临时 Git worktree，workspace ref 使用服务端 HMAC 派生，
 metadata、锁和 TTL 位于受管 workspace root，不进入 Graph state。
 
 Graph checkpoint 只保存 opaque workspace ref、base commit、proposal/validation 和结构化结果，不保存
 宿主路径、Git client、文件句柄或进程对象。interrupt 恢复时 backend 重新校验唯一认证身份、thread、
-base commit、目标文件 digest 和 patch digest。阶段 1 终态保留 worktree 到 TTL；不自动 commit、merge、
+base commit、目标文件 digest 和 patch digest。终态保留 worktree 到 TTL；不自动 commit、merge、
 push 或写回 source repository。
+
+每个 repository 可在同一服务端 allowlist 中配置有序 `verification_sequence`，其中 command ID 只映射到
+受信固定 argv、command kind 和资源上限。验证进程不在 source repo、Agent Server cwd 或受管 worktree 中
+直接启动，而在 workspace root 下的一次性 scratch 副本中使用固定 cwd、净化环境、wall timeout、进程组
+终止、POSIX CPU/内存/进程/文件限制和总磁盘扫描；stdout/stderr 只保留有界投影和 digest。scratch 与进程
+对象不进入 checkpoint，命令结束后无条件清理。此宿主限制不是容器级恶意代码或网络隔离；强 sandbox、
+依赖安装和 egress 控制仍属于后续阶段。
 
 `langgraph.json` 只注册当前两张原生 Graph：
 
