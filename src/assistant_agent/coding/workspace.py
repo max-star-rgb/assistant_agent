@@ -20,6 +20,9 @@ from assistant_agent.coding.models import (
     CodingDiffResult,
     CodingListEntry,
     CodingListResult,
+    CodingPatchApplyResult,
+    CodingPatchProposal,
+    CodingPatchValidation,
     CodingReadResult,
     CodingSearchMatch,
     CodingSearchResult,
@@ -27,6 +30,7 @@ from assistant_agent.coding.models import (
     CodingWorkspace,
     CodingWorkspaceMetadata,
 )
+from assistant_agent.coding.patches import CodingPatchError, parse_coding_patch
 from assistant_agent.coding.policy import CodingPathPolicy, CodingPolicyError
 
 
@@ -271,6 +275,166 @@ class CodingWorkspaceService:
         )
         truncated = len(output) > _MAX_GIT_OUTPUT
         return CodingDiffResult(diff=output[:_MAX_GIT_OUTPUT], truncated=truncated)
+
+    def validate_patch(
+        self,
+        workspace: CodingWorkspace,
+        patch: str,
+        summary: str,
+    ) -> CodingPatchValidation:
+        try:
+            parsed = parse_coding_patch(
+                patch,
+                policy=self.policy,
+                root=workspace.root,
+                limits=self.config,
+            )
+        except CodingPatchError as exc:
+            raise CodingWorkspaceError(exc.code) from exc
+        if not summary.strip() or len(summary) > 4_000:
+            raise CodingWorkspaceError("invalid_tool_input")
+        with self._lock(workspace.workspace_ref):
+            self._require_base_commit(workspace)
+            digests = self._base_file_digests(workspace, parsed.changed_paths)
+            self._run_git(
+                workspace.root,
+                "apply",
+                "--check",
+                "--whitespace=nowarn",
+                "-",
+                error_code="patch_apply_conflict",
+                input_text=patch,
+            )
+        proposal = CodingPatchProposal(
+            patch=patch,
+            summary=summary.strip(),
+            changed_paths=parsed.changed_paths,
+            base_commit=workspace.base_commit,
+            base_file_digests=digests,
+            patch_digest=parsed.patch_digest,
+        )
+        return CodingPatchValidation(
+            proposal=proposal,
+            diff_preview=patch[:32_000],
+        )
+
+    def apply_validated_patch(
+        self,
+        workspace: CodingWorkspace,
+        validation: CodingPatchValidation,
+    ) -> CodingPatchApplyResult:
+        proposal = validation.proposal
+        actual_digest = hashlib.sha256(proposal.patch.encode("utf-8")).hexdigest()
+        if actual_digest != proposal.patch_digest:
+            raise CodingWorkspaceError("approval_digest_mismatch")
+        with self._lock(workspace.workspace_ref):
+            self._require_base_commit(workspace)
+            current_digests = self._base_file_digests(workspace, proposal.changed_paths)
+            if current_digests != proposal.base_file_digests:
+                raise CodingWorkspaceError("file_digest_changed")
+            snapshots = {
+                path: (
+                    (workspace.root / path).read_bytes()
+                    if (workspace.root / path).exists()
+                    else None
+                )
+                for path in proposal.changed_paths
+            }
+            before_status = self.status(workspace)
+            before_diff = self.diff(workspace)
+            self._run_git(
+                workspace.root,
+                "apply",
+                "--check",
+                "--whitespace=nowarn",
+                "-",
+                error_code="patch_apply_conflict",
+                input_text=proposal.patch,
+            )
+            try:
+                self._run_git(
+                    workspace.root,
+                    "apply",
+                    "--whitespace=nowarn",
+                    "-",
+                    error_code="patch_apply_failed",
+                    input_text=proposal.patch,
+                )
+            except CodingWorkspaceError:
+                self._restore_targets(workspace, snapshots)
+                if self.status(workspace) != before_status or self.diff(workspace) != before_diff:
+                    self._freeze_workspace(workspace.workspace_ref)
+                    raise CodingWorkspaceError("rollback_failed")
+                raise
+            status = self.status(workspace)
+            diff = self.diff(workspace)
+        summary = "\n".join((*status.entries, diff.diff))[:32_000]
+        return CodingPatchApplyResult(
+            workspace_ref=workspace.workspace_ref,
+            base_commit=workspace.base_commit,
+            patch_digest=proposal.patch_digest,
+            changed_paths=proposal.changed_paths,
+            diff_summary=summary,
+        )
+
+    def _require_base_commit(self, workspace: CodingWorkspace) -> None:
+        if self.git_head(workspace.root) != workspace.base_commit:
+            raise CodingWorkspaceError("base_commit_changed")
+
+    def _base_file_digests(
+        self,
+        workspace: CodingWorkspace,
+        paths: tuple[str, ...],
+    ) -> dict[str, str]:
+        digests: dict[str, str] = {}
+        for path in paths:
+            try:
+                candidate = self.policy.validate_relative_path(
+                    workspace.root,
+                    path,
+                    operation="write",
+                )
+            except CodingPolicyError as exc:
+                raise CodingWorkspaceError(exc.code) from exc
+            if not candidate.exists():
+                digests[path] = "absent"
+                continue
+            if not candidate.is_file() or candidate.is_symlink():
+                raise CodingWorkspaceError("path_invalid")
+            data = candidate.read_bytes()
+            if len(data) > self.config.max_file_bytes:
+                raise CodingWorkspaceError("file_too_large")
+            try:
+                data.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise CodingWorkspaceError("file_encoding_unsupported") from exc
+            digests[path] = hashlib.sha256(data).hexdigest()
+        return digests
+
+    def _restore_targets(
+        self,
+        workspace: CodingWorkspace,
+        snapshots: dict[str, bytes | None],
+    ) -> None:
+        for path, snapshot in snapshots.items():
+            candidate = workspace.root / path
+            if snapshot is None:
+                candidate.unlink(missing_ok=True)
+                parent = candidate.parent
+                while parent != workspace.root:
+                    try:
+                        parent.rmdir()
+                    except OSError:
+                        break
+                    parent = parent.parent
+            else:
+                candidate.parent.mkdir(parents=True, exist_ok=True)
+                candidate.write_bytes(snapshot)
+
+    def _freeze_workspace(self, workspace_ref: str) -> None:
+        path = self._management_root(workspace_ref) / _METADATA_FILE
+        metadata = self._load_metadata(path)
+        self._write_metadata(path, metadata.model_copy(update={"frozen": True}))
 
     def cleanup_expired(self) -> None:
         root = self.config.workspace_root
