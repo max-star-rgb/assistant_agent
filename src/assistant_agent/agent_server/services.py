@@ -13,6 +13,10 @@ from langgraph.store.base import BaseStore
 
 from assistant_agent.coding.config import CodingConfig
 from assistant_agent.coding.integration import CodingIntegrationService
+from assistant_agent.coding.sandbox import (
+    CodingSandboxBackend,
+    DockerCodingSandboxBackend,
+)
 from assistant_agent.coding.tools import create_coding_tools
 from assistant_agent.coding.validation import CodingValidationService
 from assistant_agent.coding.workspace import CodingWorkspaceService
@@ -41,6 +45,7 @@ class AgentServerExecutionOwner:
     tools: list[BaseTool]
     coding_tools: list[BaseTool]
     coding_workspace_service: CodingWorkspaceService
+    coding_sandbox_backend: CodingSandboxBackend | None
     coding_validation_service: CodingValidationService
     coding_integration_service: CodingIntegrationService
     memory_backend: MemoryBackend
@@ -88,7 +93,16 @@ class AgentServerExecutionOwner:
         planning_graph = build_planning_graph(model, fast_agent)
         coding_config = CodingConfig.from_env()
         coding_workspace_service = CodingWorkspaceService(coding_config)
-        coding_validation_service = CodingValidationService(coding_workspace_service)
+        coding_sandbox_backend: CodingSandboxBackend | None = None
+        if coding_config.enabled and any(
+            repository.sandbox_enabled
+            for repository in coding_config.repositories.values()
+        ):
+            coding_sandbox_backend = DockerCodingSandboxBackend()
+        coding_validation_service = CodingValidationService(
+            coding_workspace_service,
+            sandbox_backend=coding_sandbox_backend,
+        )
         coding_integration_service = CodingIntegrationService(coding_workspace_service)
         coding_tools = create_coding_tools(coding_workspace_service)
         coding_graph = build_coding_graph(
@@ -113,6 +127,7 @@ class AgentServerExecutionOwner:
             tools=tools,
             coding_tools=coding_tools,
             coding_workspace_service=coding_workspace_service,
+            coding_sandbox_backend=coding_sandbox_backend,
             coding_validation_service=coding_validation_service,
             coding_integration_service=coding_integration_service,
             memory_backend=memory_backend,
@@ -126,6 +141,7 @@ class AgentServerExecutionOwner:
             self.memory_backend,
             self.coding_workspace_service,
             self.coding_validation_service,
+            self.coding_sandbox_backend,
             self.coding_integration_service,
             self.model,
             *self.tools,
