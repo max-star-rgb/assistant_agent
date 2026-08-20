@@ -231,7 +231,7 @@ class DockerCodingSandboxBackend:
 
     def _create_argv(self, request: CodingSandboxRequest) -> tuple[str, ...]:
         tmpfs_bytes = max(1_048_576, min(67_108_864, request.max_disk_bytes // 8))
-        mount = f"type=bind,src={request.scratch_root},dst=/workspace,rw"
+        mount = f"type=bind,src={request.scratch_root},dst=/workspace"
         label = f"assistant_agent.coding.owner={self._owner_id}"
         argv = (
             self._docker,
