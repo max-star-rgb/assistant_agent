@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any, Literal
 
@@ -29,7 +30,9 @@ class _PlannerExecutionModel(MockAssistantChatModel):
             return AIMessage(content="worker-or-finalizer-sentinel")
         if self.scenario == "default-tool":
             if "weather_probe" in visible_names and not _has_tool_result(
-                messages, "weather_probe"
+                messages,
+                "weather_probe",
+                tool_call_id="weather-call-1",
             ):
                 return _tool_call("weather_probe", "weather-call-1")
             return _proposal_call(
@@ -55,6 +58,51 @@ class _PlannerExecutionModel(MockAssistantChatModel):
             evidence_id="route-call-1",
             producer_node_id="route-worker",
         )
+
+
+class _CompactingFastAgent:
+    """Delegate execution to a real agent, then emulate history replacement."""
+
+    name = "AssistantFastAgent"
+
+    def __init__(self, delegate: Any) -> None:
+        self._delegate = delegate
+
+    def get_graph(self):
+        return self._delegate.get_graph()
+
+    async def ainvoke(self, input: dict[str, Any], *, context: Any):
+        result = await self._delegate.ainvoke(input, context=context)
+        if input.get("agent_phase") != "planner":
+            return result
+        input_count = len(input.get("messages", ()))
+        generated = list(result.get("messages", ()))[input_count:]
+        replaced_historical_tool = next(
+            (
+                message.model_copy(update={"id": "replacement-tool-message"})
+                for message in input.get("messages", ())
+                if isinstance(message, ToolMessage)
+            ),
+            None,
+        )
+        return {
+            **result,
+            "messages": [
+                HumanMessage(content="compacted-history-sentinel", id="summary-1"),
+                *(
+                    [replaced_historical_tool]
+                    if replaced_historical_tool is not None
+                    else []
+                ),
+                ToolMessage(
+                    content="orphan-weather-sentinel",
+                    name="weather_probe",
+                    tool_call_id="orphan-weather-call",
+                    id="orphan-tool-message",
+                ),
+                *generated,
+            ],
+        }
 
 
 def test_planner_calls_default_tool_and_captures_real_evidence() -> None:
@@ -125,6 +173,46 @@ def test_planner_loads_skill_then_calls_governed_tool(tmp_path: Path) -> None:
     }
     assert [item.tool_name for item in result["planner_evidence"]] == ["route_probe"]
     assert result["planner_evidence"][0].content == "route-sentinel"
+
+
+def test_planner_captures_new_evidence_after_history_replacement() -> None:
+    model = _PlannerExecutionModel(scenario="default-tool")
+    weather_probe = _create_probe_tool(
+        "weather_probe",
+        content="weather-sentinel",
+        artifact={"temperature": 23},
+    )
+    compiled_agent = build_fast_agent(
+        model,
+        [weather_probe],
+        skill_catalog=SkillCatalog(),
+    )
+    graph = build_planning_graph(model, _CompactingFastAgent(compiled_agent))
+    history = [
+        HumanMessage(content="history-0-sentinel"),
+        _tool_call("weather_probe", "historical-weather-call"),
+        ToolMessage(
+            content="historical-weather-sentinel",
+            name="weather_probe",
+            tool_call_id="historical-weather-call",
+        ),
+        HumanMessage(content="history-1-sentinel"),
+        HumanMessage(content="history-2-sentinel"),
+    ]
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {
+                **_planning_input(),
+                "messages": [*history, HumanMessage(content="request-sentinel")],
+            },
+            context=AssistantRunContext(),
+        )
+    )
+
+    assert [(item.evidence_id, item.content) for item in result["planner_evidence"]] == [
+        ("weather-call-1", "weather-sentinel")
+    ]
 
 
 def test_evidence_capture_rejects_unreferenceable_ids_and_bounds_artifacts() -> None:
@@ -212,6 +300,52 @@ def test_evidence_capture_keeps_json_safe_data_without_provider_raw_payload() ->
     assert evidence[1].artifact_ref == "artifact://opaque-sentinel"
 
 
+def test_evidence_capture_removes_all_raw_provider_shapes() -> None:
+    raw_fields = {
+        "provider_response": {"secret": "provider-response"},
+        "provider_raw_payload": {"secret": "provider-raw-payload"},
+        "provider_payload": {"secret": "provider-payload"},
+        "raw_payload": {"secret": "raw-payload"},
+        "raw_provider_payload": {"secret": "raw-provider-payload"},
+        "raw_provider": {"secret": "raw-provider"},
+        "raw_result": {"secret": "raw-result"},
+    }
+    messages = [
+        ToolMessage(
+            content=[
+                {
+                    "type": "json",
+                    "safe": "content-sentinel",
+                    **raw_fields,
+                }
+            ],
+            name="weather_probe",
+            tool_call_id="raw-filter-call-1",
+            artifact={
+                "safe": "artifact-sentinel",
+                "nested": {
+                    "keep": 7,
+                    "Provider Response": {"secret": "normalized-key-sentinel"},
+                },
+                **raw_fields,
+            },
+        )
+    ]
+
+    evidence = planning_graph.capture_planner_evidence(
+        messages,
+        inventory_names={"weather_probe"},
+    )
+
+    assert json.loads(evidence[0].content) == [
+        {"safe": "content-sentinel", "type": "json"}
+    ]
+    assert evidence[0].structured_content == {
+        "safe": "artifact-sentinel",
+        "nested": {"keep": 7},
+    }
+
+
 def _planning_input() -> dict[str, Any]:
     return {
         "messages": [HumanMessage(content="request-sentinel")],
@@ -251,9 +385,16 @@ def _visible_tool_names(raw_tools: object) -> set[str]:
     return names
 
 
-def _has_tool_result(messages: list[Any], name: str) -> bool:
+def _has_tool_result(
+    messages: list[Any],
+    name: str,
+    *,
+    tool_call_id: str | None = None,
+) -> bool:
     return any(
-        isinstance(message, ToolMessage) and message.name == name
+        isinstance(message, ToolMessage)
+        and message.name == name
+        and (tool_call_id is None or message.tool_call_id == tool_call_id)
         for message in messages
     )
 

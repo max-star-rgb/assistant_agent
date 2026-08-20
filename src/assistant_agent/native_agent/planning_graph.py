@@ -28,6 +28,7 @@ from assistant_agent.tools.ids import (
     LOAD_SKILL_REFERENCE_TOOL_NAME,
     LOAD_SKILL_TOOL_NAME,
 )
+from assistant_agent.tools.observation_safety import is_unsafe_tool_observation_key
 
 
 _CONTROL_TOOL_NAMES = frozenset(
@@ -43,13 +44,6 @@ _MAX_STRUCTURED_CONTENT_BYTES = 50_000
 _MAX_ARTIFACT_REF_CHARS = 2_000
 _MAX_ARTIFACT_SEARCH_DEPTH = 16
 _MAX_ARTIFACT_SEARCH_ITEMS = 10_000
-_PROVIDER_RAW_KEYS = frozenset(
-    {
-        "provider_raw_response",
-        "raw_provider_response",
-        "raw_response",
-    }
-)
 
 
 class NativePlanAdmissionError(ValueError):
@@ -129,9 +123,8 @@ def build_planning_graph(
         )
         admitted = admit_native_plan(proposal)
         result_messages = list(planner_result.get("messages", ()))
-        planner_messages_start = min(len(planner_messages), len(result_messages))
         evidence = capture_planner_evidence(
-            result_messages[planner_messages_start:],
+            _new_planner_tool_messages(planner_messages, result_messages),
             inventory_names=inventory_names,
         )
         return {
@@ -421,6 +414,62 @@ def _fast_agent_inventory_names(fast_agent: Any) -> frozenset[str]:
     return frozenset(name for name in tools_by_name if isinstance(name, str) and name)
 
 
+def _new_planner_tool_messages(
+    input_messages: Sequence[Any],
+    result_messages: Sequence[Any],
+) -> tuple[ToolMessage, ...]:
+    """Select this planner invocation's Tool results after history replacement."""
+
+    known_message_ids = {
+        message_id
+        for message in input_messages
+        if isinstance((message_id := getattr(message, "id", None)), str)
+        and message_id
+    }
+    known_tool_call_ids = _message_tool_call_ids(input_messages)
+    new_tool_call_ids = _message_tool_call_ids(
+        tuple(
+            message
+            for message in result_messages
+            if isinstance(message, AIMessage)
+            and (
+                not isinstance(message.id, str)
+                or not message.id
+                or message.id not in known_message_ids
+            )
+        )
+    ).difference(known_tool_call_ids)
+    return tuple(
+        message
+        for message in result_messages
+        if isinstance(message, ToolMessage)
+        and (
+            not isinstance(message.id, str)
+            or not message.id
+            or message.id not in known_message_ids
+        )
+        and message.tool_call_id not in known_tool_call_ids
+        and message.tool_call_id in new_tool_call_ids
+    )
+
+
+def _message_tool_call_ids(messages: Sequence[Any]) -> frozenset[str]:
+    tool_call_ids: set[str] = set()
+    for message in messages:
+        if isinstance(message, ToolMessage):
+            tool_call_id = message.tool_call_id
+            if isinstance(tool_call_id, str) and tool_call_id:
+                tool_call_ids.add(tool_call_id)
+        if isinstance(message, AIMessage):
+            tool_call_ids.update(
+                tool_call_id
+                for tool_call in message.tool_calls
+                if isinstance((tool_call_id := tool_call.get("id")), str)
+                and tool_call_id
+            )
+    return frozenset(tool_call_ids)
+
+
 def _bounded_tool_content(content: Any, *, max_chars: int) -> str:
     if isinstance(content, str):
         rendered = content
@@ -488,7 +537,7 @@ def _without_provider_raw(value: Any) -> Any:
         return {
             key: _without_provider_raw(item)
             for key, item in value.items()
-            if isinstance(key, str) and key.casefold() not in _PROVIDER_RAW_KEYS
+            if not is_unsafe_tool_observation_key(key)
         }
     if isinstance(value, list):
         return [_without_provider_raw(item) for item in value]
@@ -514,7 +563,7 @@ def _trusted_artifact_ref(value: Any) -> str | None:
                 pending.extend(
                     (item, depth + 1)
                     for key, item in reversed(tuple(current.items()))
-                    if isinstance(key, str) and key.casefold() not in _PROVIDER_RAW_KEYS
+                    if not is_unsafe_tool_observation_key(key)
                 )
         elif isinstance(current, list) and depth < _MAX_ARTIFACT_SEARCH_DEPTH:
             pending.extend((item, depth + 1) for item in reversed(current))
