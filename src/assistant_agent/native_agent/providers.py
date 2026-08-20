@@ -244,6 +244,13 @@ def _mock_structured_tool_call(tools: Any) -> tuple[str, dict[str, Any]] | None:
                     "depends_on": [],
                 }
             ],
+            "deliverables": [
+                {
+                    "deliverable_id": "answer",
+                    "description": "形成最终回答",
+                    "producer_node_ids": ["answer"],
+                }
+            ],
         }
     return None
 

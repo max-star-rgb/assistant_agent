@@ -19,6 +19,7 @@ from assistant_agent.native_agent.fast_agent import (
 from assistant_agent.native_agent.models import (
     NativePlanNode,
     NativePlanProposal,
+    PlanDeliverable,
     WorkerResult,
 )
 from assistant_agent.native_agent.planning_graph import build_planning_graph
@@ -36,6 +37,13 @@ class _HitlPlanningModel(MockAssistantChatModel):
                     NativePlanNode(
                         node_id="worker-1",
                         objective="write-sentinel",
+                    ),
+                ),
+                deliverables=(
+                    PlanDeliverable(
+                        deliverable_id="answer",
+                        description="write the sentinel",
+                        producer_node_ids=("worker-1",),
                     ),
                 ),
             )

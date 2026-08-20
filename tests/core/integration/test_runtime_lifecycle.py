@@ -16,6 +16,7 @@ from assistant_agent.native_agent.fast_agent import build_fast_agent
 from assistant_agent.native_agent.models import (
     NativePlanNode,
     NativePlanProposal,
+    PlanDeliverable,
 )
 from assistant_agent.native_agent.planning_graph import build_planning_graph
 from assistant_agent.native_agent.providers import MockAssistantChatModel
@@ -49,6 +50,13 @@ class _PlanningProbeModel(MockAssistantChatModel):
                 nodes=tuple(
                     NativePlanNode(node_id=f"worker-{index}", objective=objective)
                     for index, objective in enumerate(self.objectives, start=1)
+                ),
+                deliverables=(
+                    PlanDeliverable(
+                        deliverable_id="answer",
+                        description="return the planning probe answer",
+                        producer_node_ids=("worker-1",),
+                    ),
                 ),
             )
 
