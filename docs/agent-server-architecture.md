@@ -40,6 +40,14 @@ Agent Server cwd、Docker socket 或宿主秘密。sandbox 启用后任何 daemo
 resource 或 cleanup 错误都 fail closed，禁止回退宿主 subprocess；owner 关闭时只清理由自身 label 标记的
 遗留容器。
 
+Stage 4B1 的 dependency profile 仍是 repository 静态 allowlist。lockfile 变化经独立 digest-bound HITL 获批后，
+进程 owner 才创建短生命周期 downloader、Docker internal network 和双网卡 allowlist proxy。downloader 没有
+直接外部路由，proxy 只允许配置中的 exact public FQDN + HTTPS 443，并拒绝特殊地址解析结果；两类镜像都必须
+operator 预置、RepoDigest pinned 且声明对应协议。下载结果只允许 hash-pinned binary wheel，导出后验证类型、
+名称、版本、数量、大小和 SHA-256 provenance。验证容器仍保持 `network none`，启动前复制 wheelhouse 并由
+trusted runner 固定离线安装。container、network、artifact 和 cleanup 对象不进入 checkpoint；任何不确定状态
+都阻止 validation、controlled commit 与 merge，禁止回退宿主 pip 或普通联网容器。
+
 每个 repository 可在同一服务端 allowlist 中配置有序 `verification_sequence`，其中 command ID 只映射到
 受信固定 argv、command kind 和资源上限。验证进程不在 source repo、Agent Server cwd 或受管 worktree 中
 直接启动，而在 workspace root 下的一次性 scratch 副本中使用固定 cwd、净化环境、wall timeout、进程组

@@ -13,6 +13,7 @@ from langgraph.store.base import BaseStore
 
 from assistant_agent.coding.config import CodingConfig
 from assistant_agent.coding.integration import CodingIntegrationService
+from assistant_agent.coding.dependency_egress import DockerDependencyFetcher
 from assistant_agent.coding.sandbox import (
     CodingSandboxBackend,
     DockerCodingSandboxBackend,
@@ -46,6 +47,7 @@ class AgentServerExecutionOwner:
     coding_tools: list[BaseTool]
     coding_workspace_service: CodingWorkspaceService
     coding_sandbox_backend: CodingSandboxBackend | None
+    coding_dependency_fetcher: DockerDependencyFetcher | None
     coding_validation_service: CodingValidationService
     coding_integration_service: CodingIntegrationService
     memory_backend: MemoryBackend
@@ -95,14 +97,21 @@ class AgentServerExecutionOwner:
         coding_config = CodingConfig.from_env()
         coding_workspace_service = CodingWorkspaceService(coding_config)
         coding_sandbox_backend: CodingSandboxBackend | None = None
+        coding_dependency_fetcher: DockerDependencyFetcher | None = None
         if coding_config.enabled and any(
             repository.sandbox_enabled
             for repository in coding_config.repositories.values()
         ):
             coding_sandbox_backend = DockerCodingSandboxBackend()
+        if coding_config.enabled and any(
+            repository.dependency_profile is not None
+            for repository in coding_config.repositories.values()
+        ):
+            coding_dependency_fetcher = DockerDependencyFetcher()
         coding_validation_service = CodingValidationService(
             coding_workspace_service,
             sandbox_backend=coding_sandbox_backend,
+            dependency_fetcher=coding_dependency_fetcher,
         )
         coding_integration_service = CodingIntegrationService(coding_workspace_service)
         coding_tools = create_coding_tools(coding_workspace_service)
@@ -129,6 +138,7 @@ class AgentServerExecutionOwner:
             coding_tools=coding_tools,
             coding_workspace_service=coding_workspace_service,
             coding_sandbox_backend=coding_sandbox_backend,
+            coding_dependency_fetcher=coding_dependency_fetcher,
             coding_validation_service=coding_validation_service,
             coding_integration_service=coding_integration_service,
             memory_backend=memory_backend,
@@ -143,6 +153,7 @@ class AgentServerExecutionOwner:
             self.coding_workspace_service,
             self.coding_validation_service,
             self.coding_sandbox_backend,
+            self.coding_dependency_fetcher,
             self.coding_integration_service,
             self.model,
             *self.tools,

@@ -23,6 +23,11 @@ from assistant_agent.coding.models import (
     CodingPatchValidation,
     CodingTerminalResult,
 )
+from assistant_agent.coding.dependencies import (
+    build_dependency_plan,
+    dependency_interrupt_payload,
+    validate_dependency_approval,
+)
 from assistant_agent.coding.integration import CodingIntegrationService
 from assistant_agent.coding.validation import CodingValidationService
 from assistant_agent.coding.workspace import CodingWorkspaceError, CodingWorkspaceService
@@ -246,7 +251,7 @@ def build_coding_graph(
             ),
         }
 
-    def run_validation_node(
+    def plan_dependencies_node(
         state: CodingState,
         runtime: Runtime[AssistantRunContext],
         config: RunnableConfig,
@@ -259,10 +264,123 @@ def build_coding_graph(
             repository = workspace_service.config.repositories.get(workspace.repo_id)
             if repository is None:
                 raise CodingWorkspaceError("workspace_not_allowed")
+            plan = build_dependency_plan(
+                repository,
+                workspace.root,
+                changed_paths=applied.changed_paths,
+            )
+        except CodingWorkspaceError as exc:
+            return {"coding_result": _failed(state, exc.code)}
+        except ValueError:
+            return {
+                "coding_result": _failed(state, "dependency_lockfile_invalid"),
+                "dependency_plan": None,
+                "dependency_approval_status": None,
+            }
+        return {
+            "dependency_plan": plan,
+            "dependency_approval_status": (
+                "pending" if plan is not None else "not_required"
+            ),
+        }
+
+    def dependency_approval_node(
+        state: CodingState,
+        runtime: Runtime[AssistantRunContext],
+        config: RunnableConfig,
+    ) -> Command[Literal["run_validation", "summarize"]]:
+        plan = state.get("dependency_plan")
+        applied = state.get("applied_result")
+        if plan is None or applied is None:
+            return Command(
+                update={
+                    "coding_result": _failed(state, "dependency_approval_required")
+                },
+                goto="summarize",
+            )
+        raw = interrupt(dependency_interrupt_payload(plan))
+        try:
+            decision = validate_dependency_approval(plan, raw)
+        except ValueError:
+            return Command(
+                update={
+                    "coding_result": _failed(
+                        state,
+                        "dependency_approval_mismatch",
+                    )
+                },
+                goto="summarize",
+            )
+        if decision == "reject":
+            return Command(
+                update={
+                    "dependency_approval_status": "rejected",
+                    "coding_result": CodingTerminalResult(
+                        status="rejected",
+                        workspace_ref=state.get("workspace_ref"),
+                        base_commit=state.get("base_commit"),
+                        patch_digest=applied.patch_digest,
+                        changed_paths=applied.changed_paths,
+                        error_code="dependency_install_rejected",
+                    ),
+                },
+                goto="summarize",
+            )
+        try:
+            workspace = _resolve_workspace(state, runtime, config, workspace_service)
+            repository = workspace_service.config.repositories.get(workspace.repo_id)
+            if repository is None:
+                raise CodingWorkspaceError("workspace_not_allowed")
+            fresh_plan = build_dependency_plan(
+                repository,
+                workspace.root,
+                changed_paths=applied.changed_paths,
+            )
+        except (CodingWorkspaceError, ValueError):
+            fresh_plan = None
+        if fresh_plan is None or fresh_plan.plan_digest != plan.plan_digest:
+            return Command(
+                update={
+                    "coding_result": _failed(
+                        state,
+                        "dependency_approval_mismatch",
+                    )
+                },
+                goto="summarize",
+            )
+        return Command(
+            update={
+                "dependency_plan": fresh_plan,
+                "dependency_approval_status": "approved",
+            },
+            goto="run_validation",
+        )
+
+    def run_validation_node(
+        state: CodingState,
+        runtime: Runtime[AssistantRunContext],
+        config: RunnableConfig,
+    ) -> dict[str, object]:
+        applied = state.get("applied_result")
+        if applied is None:
+            return {"coding_result": _failed(state, "patch_apply_failed")}
+        if (
+            state.get("dependency_plan") is not None
+            and state.get("dependency_approval_status") != "approved"
+        ):
+            return {
+                "coding_result": _failed(state, "dependency_approval_required")
+            }
+        try:
+            workspace = _resolve_workspace(state, runtime, config, workspace_service)
+            repository = workspace_service.config.repositories.get(workspace.repo_id)
+            if repository is None:
+                raise CodingWorkspaceError("workspace_not_allowed")
             result = validation_service.run(
                 workspace,
                 repository,
                 format_round=int(state.get("format_round", 0)),
+                dependency_plan=state.get("dependency_plan"),
             )
         except CodingWorkspaceError as exc:
             return {"coding_result": _failed(state, exc.code)}
@@ -465,6 +583,13 @@ def build_coding_graph(
             return "create_commit"
         return "summarize"
 
+    def after_dependency_plan(state: CodingState) -> str:
+        if state.get("coding_result") is not None:
+            return "summarize"
+        if state.get("dependency_plan") is not None:
+            return "dependency_approval"
+        return "run_validation"
+
     def after_integration_step(state: CodingState) -> str:
         return "summarize" if state.get("coding_result") is not None else "prepare_merge"
 
@@ -477,6 +602,8 @@ def build_coding_graph(
     builder.add_node("validate_proposal", validate_proposal_node)
     builder.add_node("approval", approval_node)
     builder.add_node("apply_patch", apply_patch_node)
+    builder.add_node("plan_dependencies", plan_dependencies_node)
+    builder.add_node("dependency_approval", dependency_approval_node)
     builder.add_node("run_validation", run_validation_node)
     builder.add_node("create_commit", create_commit_node)
     builder.add_node("prepare_merge", prepare_merge_node)
@@ -487,7 +614,8 @@ def build_coding_graph(
     builder.add_conditional_edges("resolve_workspace", after_resolve)
     builder.add_edge("inspect_and_draft", "validate_proposal")
     builder.add_conditional_edges("validate_proposal", after_validation)
-    builder.add_edge("apply_patch", "run_validation")
+    builder.add_edge("apply_patch", "plan_dependencies")
+    builder.add_conditional_edges("plan_dependencies", after_dependency_plan)
     builder.add_conditional_edges("run_validation", after_run_validation)
     builder.add_conditional_edges("create_commit", after_integration_step)
     builder.add_conditional_edges("prepare_merge", after_merge_preview)
