@@ -66,6 +66,22 @@ revoke，删除失败再 kill/retry；acquire、inject、revoke 的脱敏状态�
 container 或 cleanup 任一状态不确定即 fail closed。
 当前 broker 对静态 operator token 只提供进程内最小暴露与 TTL 使用边界，不宣称具备上游可撤销的真实临时凭据语义。
 
+Stage 4B3 增加 repository 静态 artifact profile，但不接受任意 URL、上传内容、发布目标或私有 artifact
+凭据。ingress 只在严格 JSON manifest 发生变化时生成独立 digest-bound HITL；manifest 中每个 HTTPS URL
+必须命中 exact public FQDN + 443，并同时固定 filename、media type、size 与 SHA-256。恢复后重新计算 plan，审批
+漂移立即拒绝。获批后进程 owner 使用 operator 预置且 RepoDigest pinned 的 fetcher、allowlist proxy 与 scanner：
+fetcher 只能经 internal network 访问 proxy，scanner 固定 `network none`；抓取、host-side exact hash/size 校验、
+恶意内容扫描或 cleanup 任一失败均 fail closed。清洁 ingress 仅通过 `docker cp --archive` 复制到验证容器
+`/artifacts/input`，runner 只暴露固定 `ASSISTANT_AGENT_ARTIFACT_ROOT`，验证容器仍保持 `network none`，不挂载
+宿主目录。
+
+build output 只有 artifact profile 中按 command ID 声明的精确相对路径可导出。trusted runner 在成功 build 后拒绝
+缺失文件、目录、symlink、hardlink、超限文件或重复 export，并返回 size/SHA-256 元数据；sandbox backend 在容器
+停止后、删除前只复制这些精确路径，再在宿主重新校验。导出结果必须再次进入 RepoDigest-pinned scanner 的
+`network none` 容器，扫描通过后才原子写入受管 artifact bundle root。上层 evidence 只保存 scanner/manifest
+digest、状态和不可解释的 `artifact_bundle_*` 引用，不保存宿主路径或二进制；bundle metadata 带服务端 TTL。
+当前阶段不提供下载/发布 route，不把 bundle 自动写回 source repository，也不允许 validation 网络访问。
+
 每个 repository 可在同一服务端 allowlist 中配置有序 `verification_sequence`，其中 command ID 只映射到
 受信固定 argv、command kind 和资源上限。验证进程不在 source repo、Agent Server cwd 或受管 worktree 中
 直接启动，而在 workspace root 下的一次性 scratch 副本中使用固定 cwd、净化环境、wall timeout、进程组
