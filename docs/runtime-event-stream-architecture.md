@@ -1,6 +1,6 @@
 # LangGraph-native Assistant 运行与流式架构
 
-最后更新：2026-08-19
+最后更新：2026-08-20
 
 ## Authority contract
 
@@ -39,7 +39,10 @@ digest-bound 原生 interrupt、受信 apply 和 apply 后的确定性 `run_vali
 进程、shell、delete、commit、merge 或 push。验证成功后才形成 applied terminal result；失败返回结构化
 command evidence。formatter 只在 scratch 中生成增量 diff，该 diff 重新通过既有 validator 并带
 `origin=formatter` 返回同一 digest-bound interrupt/apply 闭环；最多允许一轮 formatter patch，避免非幂等
-循环。coding 不复用 planning 并行 worker，所有 mutation 通过单一顺序节点完成。
+循环。repository 显式启用 integration 时，验证成功后顺序执行 `create_commit -> prepare_merge ->
+merge_approval -> apply_merge`。merge approval 是独立原生 interrupt，绑定 frozen source commit、expected
+target HEAD 和 preview digest；apply 不调用模型，目标漂移或审批不匹配不会重新生成 preview。integration
+关闭时保持阶段 2 applied terminal。coding 不复用 planning 并行 worker，所有 mutation 通过单一顺序节点完成。
 
 `capture_trusted_runtime_facts` 在 `memory_recall` 前采集带时区的当前时间与部署默认地点，写入结构化
 `trusted_runtime_facts`。当前默认地点为“上海市青浦区华为练秋湖研发中心”，并显式标记
