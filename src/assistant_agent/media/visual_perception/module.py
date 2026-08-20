@@ -96,6 +96,22 @@ class VisualTargetWindow:
 
 
 @dataclass(frozen=True)
+class LiveViewProjection:
+    """Trusted live-view facts projected from the VLM side for one session.
+
+    The main LLM never sees these (no``source=live_camera`` message block); the
+    ``live_view_inspect`` Tool resolves them by ``(user_id, thread_id)`` from the
+    process-owned visual module when it decides to answer a picture question.
+    """
+
+    live_video_ids: tuple[str, ...]
+    window_id: str | None = None
+    window_start_sequence: int | None = None
+    target_sequence: int | None = None
+    target_video_id: str | None = None
+
+
+@dataclass(frozen=True)
 class VisualPerceptionToolResources:
     """Read-side resources injected into governed Agent tools."""
 
@@ -138,7 +154,8 @@ class VisualPerceptionSession:
         selected: tuple[VideoFrame, ...] = ()
         for video_id in reversed(tuple(video_ids)):
             frames = tuple(
-                self._video_context_store.get_recent_frames(
+                await asyncio.to_thread(
+                    self._video_context_store.get_recent_frames,
                     video_id,
                     limit=REALTIME_VISUAL_TARGET_WINDOW_SIZE,
                 )
@@ -231,6 +248,8 @@ class VisualPerceptionModule:
         self._vision_client_lock = Lock()
         self._observer_factory = observer_factory or self._create_observer
         self._sessions: set[VisualPerceptionSession] = set()
+        self._live_views: dict[tuple[str, str], LiveViewProjection] = {}
+        self._live_views_lock = Lock()
         self._closed = False
 
     @property
@@ -259,6 +278,38 @@ class VisualPerceptionModule:
         if self._closed:
             raise RuntimeError("visual_perception_module_closed")
         return H264VideoIngestionService(store=self.video_context_store)
+
+    def record_live_view(
+        self,
+        user_id: str,
+        session_id: str,
+        *,
+        video_ids: Sequence[str],
+        window: VisualTargetWindow | None,
+    ) -> None:
+        """Freeze the current live-view facts for a session on the VLM side."""
+        if self._closed:
+            return
+        projection = LiveViewProjection(
+            live_video_ids=tuple(video_ids),
+            window_id=window.window_id if window is not None else None,
+            window_start_sequence=window.start_sequence if window is not None else None,
+            target_sequence=window.target_sequence if window is not None else None,
+            target_video_id=window.video_id if window is not None else None,
+        )
+        with self._live_views_lock:
+            self._live_views[(user_id, session_id)] = projection
+
+    def resolve_live_view(
+        self,
+        user_id: str,
+        session_id: str,
+    ) -> LiveViewProjection | None:
+        """Return the session's current live-view facts, if any."""
+        if not user_id or not session_id:
+            return None
+        with self._live_views_lock:
+            return self._live_views.get((user_id, session_id))
 
     def understand(
         self,
