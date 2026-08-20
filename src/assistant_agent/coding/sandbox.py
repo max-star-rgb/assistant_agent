@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import stat
 import threading
 import time
 import uuid
@@ -22,7 +23,11 @@ from pydantic import (
     model_validator,
 )
 
-from assistant_agent.coding.models import CodingSandboxRequest, CodingSandboxResult
+from assistant_agent.coding.models import (
+    CodingArtifactExportRecord,
+    CodingSandboxRequest,
+    CodingSandboxResult,
+)
 
 _CONTAINER_REFERENCE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$")
 _OWNER_ID = re.compile(r"^[a-zA-Z0-9_.-]{1,80}$")
@@ -90,10 +95,16 @@ class _RunnerPayload(BaseModel):
         default=None, pattern=r"^[0-9a-f]{64}$"
     )
     artifact_ingress_status: Literal["passed", "failed"] | None = None
+    artifact_exports: tuple[CodingArtifactExportRecord, ...] = ()
 
     @field_validator("formatter_deletions", mode="before")
     @classmethod
     def _freeze_deletions(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @field_validator("artifact_exports", mode="before")
+    @classmethod
+    def _freeze_artifact_exports(cls, value: object) -> object:
         return tuple(value) if isinstance(value, list) else value
 
     @model_validator(mode="after")
@@ -194,6 +205,13 @@ class DockerCodingSandboxBackend:
             or not request.artifact_root.is_dir()
         ):
             return self._failure("artifact_fetch_failed", started, "not_created")
+        if request.artifact_export_root is not None and (
+            not request.artifact_export_root.is_absolute()
+            or request.artifact_export_root.is_symlink()
+            or not request.artifact_export_root.is_dir()
+            or any(request.artifact_export_root.iterdir())
+        ):
+            return self._failure("artifact_export_failed", started, "not_created")
         image_error = self._require_local_image(request.image)
         if image_error is not None:
             return self._failure(image_error, started, "not_created")
@@ -350,6 +368,14 @@ class DockerCodingSandboxBackend:
                 "--artifact-manifest-digest",
                 str(request.artifact_manifest_digest),
             )
+        export_args = tuple(
+            value
+            for export in request.artifact_exports
+            for value in (
+                "--artifact-export-json",
+                json.dumps(export.model_dump(mode="json"), separators=(",", ":")),
+            )
+        )
         return (
             self._docker, "create", "--name", container_name, "--hostname", "sandbox",
             "--network", "none", "--cgroupns", "private", "--read-only",
@@ -377,6 +403,7 @@ class DockerCodingSandboxBackend:
             "--max-patch-bytes", str(request.max_patch_bytes),
             *dependency_args,
             *artifact_args,
+            *export_args,
             "--",
             *request.argv,
         )
@@ -490,6 +517,12 @@ class DockerCodingSandboxBackend:
             )
         ):
             return self._failure("sandbox_output_invalid", started, "removed")
+        if not self._validate_artifact_exports(payload.artifact_exports, request):
+            return self._failure("sandbox_output_invalid", started, "removed")
+        if payload.artifact_exports and not self._copy_artifact_exports(
+            container_name, payload.artifact_exports, request
+        ):
+            return self._failure("artifact_export_failed", started, "removed")
         return CodingSandboxResult(
             status=payload.status, exit_code=payload.exit_code,
             duration_ms=payload.duration_ms, output_digest=payload.output_digest,
@@ -517,7 +550,68 @@ class DockerCodingSandboxBackend:
             artifact_plan_digest=payload.artifact_plan_digest,
             artifact_manifest_digest=payload.artifact_manifest_digest,
             artifact_ingress_status=payload.artifact_ingress_status,
+            artifact_exports=payload.artifact_exports,
         )
+
+    def _validate_artifact_exports(
+        self,
+        records: tuple[CodingArtifactExportRecord, ...],
+        request: CodingSandboxRequest,
+    ) -> bool:
+        expected = {item.export_id: item for item in request.artifact_exports}
+        if len(records) != len(expected):
+            return False
+        for record in records:
+            policy = expected.get(record.export_id)
+            if (
+                policy is None
+                or record.path != policy.path
+                or record.media_type != policy.media_type
+                or record.size_bytes > policy.max_bytes
+            ):
+                return False
+        return True
+
+    def _copy_artifact_exports(
+        self,
+        container_name: str,
+        records: tuple[CodingArtifactExportRecord, ...],
+        request: CodingSandboxRequest,
+    ) -> bool:
+        root = request.artifact_export_root
+        if root is None:
+            return False
+        for record in records:
+            target = root.joinpath(*record.path.split("/"))
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                return False
+            copied = self._run(
+                (
+                    self._docker,
+                    "cp",
+                    "--archive",
+                    f"{container_name}:/workspace/{record.path}",
+                    str(target),
+                ),
+                timeout=min(30.0, float(request.timeout_seconds)),
+            )
+            if copied is None or copied.returncode != 0:
+                return False
+            try:
+                metadata = target.lstat()
+                digest = hashlib.sha256(target.read_bytes()).hexdigest()
+            except OSError:
+                return False
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+                or metadata.st_size != record.size_bytes
+                or digest != record.sha256
+            ):
+                return False
+        return True
 
     def _validate_formatter_changes(
         self, payload: _RunnerPayload, request: CodingSandboxRequest,

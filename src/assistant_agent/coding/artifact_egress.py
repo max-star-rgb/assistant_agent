@@ -5,11 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
+import stat
 import subprocess
 import tempfile
 import uuid
 from collections.abc import Callable
 from pathlib import Path
+from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -20,6 +23,9 @@ from assistant_agent.coding.dependency_egress import DockerRunner, SubprocessDoc
 from assistant_agent.coding.models import (
     CodingArtifactIngressManifest,
     CodingArtifactIngressPlan,
+    CodingArtifactExportManifest,
+    CodingArtifactExportRecord,
+    CodingArtifactExportRequest,
 )
 
 
@@ -31,6 +37,15 @@ class ArtifactIngressBackend(Protocol):
         input_root: Path,
         output_root: Path,
     ) -> CodingArtifactIngressManifest: ...
+
+    def scan_exports(
+        self,
+        profile: CodingArtifactProfile,
+        command_id: str,
+        exports: tuple[CodingArtifactExportRequest, ...],
+        input_root: Path,
+        bundle_root: Path,
+    ) -> CodingArtifactExportManifest: ...
 
     async def aclose(self) -> None: ...
 
@@ -314,6 +329,219 @@ class DockerArtifactIngressBackend:
         if result is None:
             raise ValueError(error)
         return result
+
+    def scan_exports(
+        self,
+        profile: CodingArtifactProfile,
+        command_id: str,
+        exports: tuple[CodingArtifactExportRequest, ...],
+        input_root: Path,
+        bundle_root: Path,
+    ) -> CodingArtifactExportManifest:
+        configured = {
+            item.export_id: item
+            for item in profile.exports.values()
+            if item.command_id == command_id
+        }
+        if not exports or set(configured) != {item.export_id for item in exports}:
+            raise ValueError("artifact_export_invalid")
+        records: list[CodingArtifactExportRecord] = []
+        total_bytes = 0
+        for export in exports:
+            policy = configured.get(export.export_id)
+            if (
+                policy is None
+                or policy.path != export.path
+                or policy.media_type != export.media_type
+                or policy.max_bytes != export.max_bytes
+            ):
+                raise ValueError("artifact_export_invalid")
+            path = input_root.joinpath(*export.path.split("/"))
+            current = input_root
+            for part in export.path.split("/")[:-1]:
+                current /= part
+                if current.is_symlink() or not current.is_dir():
+                    raise ValueError("artifact_export_invalid")
+            try:
+                metadata = path.lstat()
+            except OSError as exc:
+                raise ValueError("artifact_export_invalid") from exc
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+                or metadata.st_size <= 0
+                or metadata.st_size > export.max_bytes
+            ):
+                raise ValueError("artifact_export_invalid")
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            total_bytes += metadata.st_size
+            records.append(
+                CodingArtifactExportRecord(
+                    export_id=export.export_id,
+                    path=export.path,
+                    media_type=export.media_type,
+                    size_bytes=metadata.st_size,
+                    sha256=digest,
+                )
+            )
+        if total_bytes > profile.max_total_bytes:
+            raise ValueError("artifact_export_invalid")
+        scanner_policy_digest = hashlib.sha256(
+            json.dumps(
+                {
+                    "scanner_image": profile.scanner_image,
+                    "exports": [item.model_dump(mode="json") for item in exports],
+                    "max_total_bytes": profile.max_total_bytes,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        scanner = self.names("export-scanner")
+        created = False
+        cleanup_failed = False
+        try:
+            self._image(
+                profile.scanner_image,
+                "org.assistant-agent.coding-artifact-scan-protocol",
+            )
+            self._ok(
+                (
+                    "create",
+                    "--name",
+                    scanner,
+                    "--hostname",
+                    "artifact-export-scan",
+                    "--network",
+                    "none",
+                    "--read-only",
+                    "--user",
+                    f"{self.uid}:{self.gid}",
+                    "--cap-drop",
+                    "ALL",
+                    "--security-opt",
+                    "no-new-privileges=true",
+                    "--memory",
+                    "268435456",
+                    "--memory-swap",
+                    "268435456",
+                    "--cpus",
+                    "1.0",
+                    "--pids-limit",
+                    "64",
+                    "--label",
+                    f"assistant_agent.coding.owner={self.owner}",
+                    "--log-driver",
+                    "none",
+                    "--tmpfs",
+                    f"/scan:rw,nosuid,nodev,size={max(total_bytes, 1048576)},nr_inodes={len(records) + 16},uid={self.uid},gid={self.gid}",
+                    "--tmpfs",
+                    f"/tmp:rw,noexec,nosuid,nodev,size=16777216,uid={self.uid},gid={self.gid}",
+                    "--entrypoint",
+                    "/usr/local/bin/assistant-agent-artifact-scan",
+                    profile.scanner_image,
+                    "--input",
+                    "/scan",
+                    "--result",
+                    "/result.json",
+                    "--policy-digest",
+                    scanner_policy_digest,
+                ),
+                20,
+            )
+            created = True
+            self._ok(("cp", "--archive", f"{input_root}/.", f"{scanner}:/scan"), 30)
+            self._ok(("start", scanner), 20)
+            self._ok(("wait", scanner), profile.timeout_seconds)
+            self._state(scanner, running=False)
+            with tempfile.TemporaryDirectory() as temporary:
+                result_path = Path(temporary) / "result.json"
+                self._ok(("cp", "--archive", f"{scanner}:/result.json", str(result_path)), 20)
+                scan = _read_scan_result(result_path, scanner_policy_digest)
+            expected = {item.export_id: item.sha256 for item in records}
+            observed = {item.artifact_id: item.sha256 for item in scan.artifacts}
+            if observed != expected or any(
+                item.status != "clean" for item in scan.artifacts
+            ):
+                raise ValueError("artifact_scan_failed")
+        finally:
+            if created:
+                try:
+                    removed = self.runner.run(
+                        (self.docker, "rm", "--force", scanner), timeout=20
+                    )
+                except (OSError, subprocess.SubprocessError):
+                    cleanup_failed = True
+                else:
+                    cleanup_failed = removed.returncode != 0
+        if cleanup_failed:
+            raise ValueError("artifact_cleanup_failed")
+        return self._persist_export_bundle(
+            profile,
+            command_id,
+            tuple(records),
+            input_root,
+            bundle_root,
+            scanner_policy_digest,
+        )
+
+    def _persist_export_bundle(
+        self,
+        profile: CodingArtifactProfile,
+        command_id: str,
+        records: tuple[CodingArtifactExportRecord, ...],
+        input_root: Path,
+        bundle_root: Path,
+        scanner_policy_digest: str,
+    ) -> CodingArtifactExportManifest:
+        bundle_root.mkdir(parents=True, exist_ok=True)
+        if bundle_root.is_symlink() or not bundle_root.is_dir():
+            raise ValueError("artifact_export_failed")
+        now = datetime.now(UTC)
+        bundle_ref = f"artifact_bundle_{uuid.uuid4().hex}"
+        destination = bundle_root / bundle_ref
+        staging = bundle_root / f".{bundle_ref}.tmp"
+        expires_at = now + timedelta(seconds=profile.bundle_ttl_seconds)
+        manifest_values = {
+            "profile_id": profile.profile_id,
+            "command_id": command_id,
+            "artifacts": [item.model_dump(mode="json") for item in records],
+            "artifact_count": len(records),
+            "total_bytes": sum(item.size_bytes for item in records),
+            "scanner_policy_digest": scanner_policy_digest,
+            "bundle_ref": bundle_ref,
+            "created_at": now,
+            "expires_at": expires_at,
+        }
+        disk_payload = {
+            **manifest_values,
+            "created_at": now.isoformat(),
+            "expires_at": expires_at.isoformat(),
+        }
+        manifest_digest = hashlib.sha256(
+            json.dumps(disk_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        disk_payload["manifest_digest"] = manifest_digest
+        manifest_values["manifest_digest"] = manifest_digest
+        try:
+            staging.mkdir(mode=0o700)
+            for record in records:
+                source = input_root.joinpath(*record.path.split("/"))
+                target = staging.joinpath(*record.path.split("/"))
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, target, follow_symlinks=False)
+                target.chmod(0o400)
+            metadata = staging / "manifest.json"
+            metadata.write_text(
+                json.dumps(disk_payload, sort_keys=True, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            metadata.chmod(0o400)
+            staging.rename(destination)
+        except OSError as exc:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise ValueError("artifact_export_failed") from exc
+        return CodingArtifactExportManifest.model_validate(manifest_values)
 
     def _image(self, image: str, label: str) -> None:
         completed = self.runner.run(

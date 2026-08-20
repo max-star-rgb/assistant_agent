@@ -22,6 +22,7 @@ from assistant_agent.coding.models import (
     CodingDependencyPlan,
     CodingCredentialRequest,
     CodingArtifactIngressPlan,
+    CodingArtifactExportRequest,
 )
 from assistant_agent.coding.dependencies import (
     build_dependency_plan,
@@ -361,6 +362,10 @@ class CodingValidationService:
                     "",
                 )
             if repository.sandbox_enabled:
+                artifact_exports = _artifact_export_requests(repository, command)
+                artifact_export_root = temporary / "artifact-exports"
+                if artifact_exports:
+                    artifact_export_root.mkdir()
                 evidence = self._execute_sandbox(
                     repository,
                     command,
@@ -371,6 +376,10 @@ class CodingValidationService:
                     artifact_root=artifact_root,
                     artifact_plan=artifact_plan,
                     artifact_manifest=artifact_manifest,
+                    artifact_exports=artifact_exports,
+                    artifact_export_root=(
+                        artifact_export_root if artifact_exports else None
+                    ),
                 )
             else:
                 evidence = _execute(command, scratch, temporary)
@@ -402,6 +411,8 @@ class CodingValidationService:
         artifact_root: Path | None,
         artifact_plan: CodingArtifactIngressPlan | None,
         artifact_manifest,
+        artifact_exports: tuple[CodingArtifactExportRequest, ...],
+        artifact_export_root: Path | None,
     ) -> CodingCommandEvidence:
         if self.sandbox_backend is None or repository.sandbox_image is None:
             return _empty_evidence(
@@ -443,6 +454,8 @@ class CodingValidationService:
                 if artifact_manifest is not None
                 else None
             ),
+            artifact_exports=artifact_exports,
+            artifact_export_root=artifact_export_root,
         )
         result = self.sandbox_backend.execute(request)
         if result.status == "passed" and (
@@ -473,7 +486,48 @@ class CodingValidationService:
                     timed_out=result.timed_out,
                     oom_killed=result.oom_killed,
                 )
-        return _sandbox_evidence(command, result)
+        evidence = _sandbox_evidence(command, result)
+        if artifact_exports and result.status == "passed":
+            profile = repository.artifact_profile
+            if (
+                profile is None
+                or self.artifact_backend is None
+                or artifact_export_root is None
+            ):
+                return evidence.model_copy(
+                    update={
+                        "status": "failed",
+                        "error_code": "artifact_unconfigured",
+                        "artifact_export_status": "failed",
+                    }
+                )
+            try:
+                export_manifest = self.artifact_backend.scan_exports(
+                    profile,
+                    command.command_id,
+                    artifact_exports,
+                    artifact_export_root,
+                    self._root / "artifact-bundles",
+                )
+            except ValueError as exc:
+                return evidence.model_copy(
+                    update={
+                        "status": "failed",
+                        "error_code": str(exc),
+                        "artifact_export_status": "failed",
+                    }
+                )
+            return evidence.model_copy(
+                update={
+                    "artifact_export_manifest_digest": export_manifest.manifest_digest,
+                    "artifact_export_bundle_ref": export_manifest.bundle_ref,
+                    "artifact_scanner_policy_digest": (
+                        export_manifest.scanner_policy_digest
+                    ),
+                    "artifact_export_status": "passed",
+                }
+            )
+        return evidence
 
 
 def _copy_workspace(source: Path, destination: Path) -> None:
@@ -651,6 +705,25 @@ def _sandbox_evidence(
         artifact_plan_digest=result.artifact_plan_digest,
         artifact_manifest_digest=result.artifact_manifest_digest,
         artifact_ingress_status=result.artifact_ingress_status,
+    )
+
+
+def _artifact_export_requests(
+    repository: CodingRepositoryConfig,
+    command: CodingCommandConfig,
+) -> tuple[CodingArtifactExportRequest, ...]:
+    profile = repository.artifact_profile
+    if profile is None or command.kind != "build":
+        return ()
+    return tuple(
+        CodingArtifactExportRequest(
+            export_id=item.export_id,
+            path=item.path,
+            media_type=item.media_type,
+            max_bytes=item.max_bytes,
+        )
+        for item in sorted(profile.exports.values(), key=lambda value: value.export_id)
+        if item.command_id == command.command_id
     )
 
 

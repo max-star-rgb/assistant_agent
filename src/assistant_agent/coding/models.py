@@ -285,6 +285,65 @@ class CodingDependencyManifest(BaseModel):
         return self
 
 
+class CodingArtifactExportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    export_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$")
+    path: str = Field(min_length=1, max_length=240)
+    media_type: str = Field(min_length=3, max_length=192)
+    max_bytes: int = Field(ge=1_024, le=1_073_741_824)
+
+    @field_validator("path")
+    @classmethod
+    def _safe_path(cls, value: str) -> str:
+        parts = value.split("/")
+        if (
+            value.startswith("/")
+            or any(part in {"", ".", "..", ".git"} for part in parts)
+            or any(item in value for item in ("\\", "\x00", "\n", "\r"))
+        ):
+            raise ValueError("artifact export path is invalid")
+        return value
+
+
+class CodingArtifactExportRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    export_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$")
+    path: str = Field(min_length=1, max_length=240)
+    media_type: str = Field(min_length=3, max_length=192)
+    size_bytes: int = Field(ge=1, le=1_073_741_824)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class CodingArtifactExportManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    profile_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$")
+    command_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$")
+    artifacts: tuple[CodingArtifactExportRecord, ...] = Field(min_length=1)
+    artifact_count: int = Field(ge=1, le=512)
+    total_bytes: int = Field(ge=1, le=4_294_967_296)
+    scanner_policy_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    manifest_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    bundle_ref: str = Field(pattern=r"^artifact_bundle_[0-9a-f]{32}$")
+    created_at: datetime
+    expires_at: datetime
+
+    @field_validator("artifacts", mode="before")
+    @classmethod
+    def _freeze_artifacts(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @model_validator(mode="after")
+    def _totals_match(self) -> "CodingArtifactExportManifest":
+        if self.artifact_count != len(self.artifacts):
+            raise ValueError("artifact export count mismatch")
+        if self.total_bytes != sum(item.size_bytes for item in self.artifacts):
+            raise ValueError("artifact export size mismatch")
+        return self
+
+
 class CodingSandboxRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -323,6 +382,8 @@ class CodingSandboxRequest(BaseModel):
     artifact_manifest_digest: str | None = Field(
         default=None, pattern=r"^[0-9a-f]{64}$"
     )
+    artifact_exports: tuple["CodingArtifactExportRequest", ...] = ()
+    artifact_export_root: Path | None = None
 
     @model_validator(mode="after")
     def _dependency_fields_are_atomic(self) -> "CodingSandboxRequest":
@@ -360,6 +421,16 @@ class CodingSandboxRequest(BaseModel):
             item is not None for item in values
         ):
             raise ValueError("sandbox artifact fields must be supplied together")
+        if bool(self.artifact_exports) != (self.artifact_export_root is not None):
+            raise ValueError("sandbox artifact export fields must be supplied together")
+        if self.artifact_exports and self.kind != "build":
+            raise ValueError("sandbox artifact exports require a build command")
+        export_ids = [item.export_id for item in self.artifact_exports]
+        export_paths = [item.path for item in self.artifact_exports]
+        if len(export_ids) != len(set(export_ids)) or len(export_paths) != len(
+            set(export_paths)
+        ):
+            raise ValueError("sandbox artifact exports must be unique")
         return self
 
 
@@ -395,6 +466,7 @@ class CodingSandboxResult(BaseModel):
         default=None, pattern=r"^[0-9a-f]{64}$"
     )
     artifact_ingress_status: Literal["passed", "failed"] | None = None
+    artifact_exports: tuple["CodingArtifactExportRecord", ...] = ()
 
 
 class CodingCommandEvidence(BaseModel):
@@ -449,6 +521,13 @@ class CodingCommandEvidence(BaseModel):
         default=None, pattern=r"^[0-9a-f]{64}$"
     )
     artifact_ingress_status: Literal["passed", "failed"] | None = None
+    artifact_export_manifest_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    artifact_export_bundle_ref: str | None = Field(
+        default=None, pattern=r"^artifact_bundle_[0-9a-f]{32}$"
+    )
+    artifact_export_status: Literal["passed", "failed"] | None = None
 
 
 class CodingVerificationResult(BaseModel):
