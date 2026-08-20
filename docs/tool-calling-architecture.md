@@ -87,6 +87,9 @@ Tool 的 `artifact` 保留全部规范化 `ShoppingSearchResult`，`content` 按
 镜像、plugin-private runner 或 Registry。旧 `personal_assistant_tools` / `email_tools` 远端映射已删除，MCP
 能力直接使用官方 adapter 生成的标准 Tool。MCP tool discovery 属于 worker 进程 composition，只执行一次；schema、history、state 与
 run 复用同一个 compiled graph 和 Tool 集合，实际 MCP Tool 调用仍遵循官方按调用创建 session 的行为。
+production composition 在构造 inventory 前只加载一次 repo `SkillCatalog`，并把同一实例显式注入
+`SkillLoadingPlugin`、fast agent 和 planning admission；Skill loading plugin 不在 production inventory 构造时
+再次读盘。只有直接省略 catalog 的非 production fixture 保留 plugin 自行加载的兼容行为。
 高德 `amap_maps` 的驾车、公交、骑行和步行路线调用通过官方 MCP adapter 的 `tool_interceptors`
 扩展点，在成功结果中追加由受信起终点坐标确定性生成的高德 HTTPS 路线规划链接；链接不包含 API Key，
 失败结果、非法坐标和其他 MCP Tool 保持原样。最终答复原样保留该 Markdown 链接；移动端可尝试调起

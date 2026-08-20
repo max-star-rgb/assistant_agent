@@ -72,18 +72,19 @@ class AgentServerExecutionOwner:
             config,
             store,
         )
+        skill_catalog = await asyncio.to_thread(
+            load_repo_skill_descriptors,
+            default_repo_root(),
+        )
         tools = await create_native_tool_inventory(
             config,
             resources=tool_resources,
             mcp_server_configs=load_mcp_server_configs_from_env(),
+            skill_catalog=skill_catalog,
         )
         context_token_counter = await asyncio.to_thread(
             create_context_token_counter,
             config,
-        )
-        skill_catalog = await asyncio.to_thread(
-            load_repo_skill_descriptors,
-            default_repo_root(),
         )
         fast_agent = build_fast_agent(
             model,

@@ -28,6 +28,9 @@ from assistant_agent.skills.loading import (
     SkillDescriptor,
     load_repo_skill_descriptors,
 )
+from assistant_agent.tools.plugins.builtin.skill_loading import (
+    plugin as skill_loading_plugin,
+)
 
 
 DEFAULT_TOOL_NAME = "default_probe"
@@ -288,16 +291,37 @@ def test_policy_inventory_is_immutable() -> None:
 def test_production_composition_loads_and_shares_one_skill_catalog(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    loaded_catalogs: list[SkillCatalog] = []
+    service_loaded_catalogs: list[SkillCatalog] = []
+    plugin_loaded_catalogs: list[SkillCatalog] = []
+    inventory_catalogs: list[SkillCatalog | None] = []
+    skill_loading_plugin_catalogs: list[SkillCatalog | None] = []
     fast_catalogs: list[SkillCatalog | None] = []
     planning_catalogs: list[SkillCatalog | None] = []
+    real_skill_loading_plugin = skill_loading_plugin.SkillLoadingPlugin
+    real_create_native_tool_inventory = services.create_native_tool_inventory
     real_build_fast_agent = services.build_fast_agent
     real_build_planning_graph = services.build_planning_graph
 
-    def recording_load(root) -> SkillCatalog:
+    def recording_service_load(root) -> SkillCatalog:
         catalog = load_repo_skill_descriptors(root)
-        loaded_catalogs.append(catalog)
+        service_loaded_catalogs.append(catalog)
         return catalog
+
+    def recording_plugin_load(root) -> SkillCatalog:
+        catalog = load_repo_skill_descriptors(root)
+        plugin_loaded_catalogs.append(catalog)
+        return catalog
+
+    async def recording_create_native_tool_inventory(*args: Any, **kwargs: Any):
+        inventory_catalogs.append(kwargs.get("skill_catalog"))
+        return await real_create_native_tool_inventory(*args, **kwargs)
+
+    def recording_skill_loading_plugin(
+        *,
+        skill_catalog: SkillCatalog | None = None,
+    ):
+        skill_loading_plugin_catalogs.append(skill_catalog)
+        return real_skill_loading_plugin(skill_catalog=skill_catalog)
 
     def recording_build_fast_agent(*args: Any, **kwargs: Any):
         fast_catalogs.append(kwargs.get("skill_catalog"))
@@ -310,8 +334,22 @@ def test_production_composition_loads_and_shares_one_skill_catalog(
     monkeypatch.setattr(
         services,
         "load_repo_skill_descriptors",
-        recording_load,
-        raising=False,
+        recording_service_load,
+    )
+    monkeypatch.setattr(
+        skill_loading_plugin,
+        "load_repo_skill_descriptors",
+        recording_plugin_load,
+    )
+    monkeypatch.setattr(
+        skill_loading_plugin,
+        "SkillLoadingPlugin",
+        recording_skill_loading_plugin,
+    )
+    monkeypatch.setattr(
+        services,
+        "create_native_tool_inventory",
+        recording_create_native_tool_inventory,
     )
     monkeypatch.setattr(services, "build_fast_agent", recording_build_fast_agent)
     monkeypatch.setattr(
@@ -326,8 +364,14 @@ def test_production_composition_loads_and_shares_one_skill_catalog(
 
     asyncio.run(compose_and_close())
 
-    assert len(loaded_catalogs) == 1
+    assert len(service_loaded_catalogs) + len(plugin_loaded_catalogs) == 1
+    assert len(service_loaded_catalogs) == 1
+    assert plugin_loaded_catalogs == []
+    assert len(inventory_catalogs) == 1
+    assert len(skill_loading_plugin_catalogs) == 1
     assert len(fast_catalogs) == 1
     assert len(planning_catalogs) == 1
-    assert fast_catalogs[0] is loaded_catalogs[0]
-    assert planning_catalogs[0] is loaded_catalogs[0]
+    assert inventory_catalogs[0] is service_loaded_catalogs[0]
+    assert skill_loading_plugin_catalogs[0] is service_loaded_catalogs[0]
+    assert fast_catalogs[0] is service_loaded_catalogs[0]
+    assert planning_catalogs[0] is service_loaded_catalogs[0]

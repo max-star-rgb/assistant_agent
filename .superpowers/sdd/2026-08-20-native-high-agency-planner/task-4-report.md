@@ -79,3 +79,53 @@ Tests: 新增/更新 `tests/tdd/native-high-agency-planner` 临时 RED/GREEN；�
   scope 修改该脚本。
 - 未调用真实 Provider；所有 pytest 均为 mock/offline。
 - 按 Task 4 scope 未提前实现 scheduler/revision/repair。
+
+## Fix round 1：消除 production SkillCatalog 双加载
+
+### Finding 验证与根因
+
+review finding 已复现。`AgentServerExecutionOwner.compose()` 原先先调用
+`create_native_tool_inventory()`；其内的 `SkillLoadingPlugin.build_tools()` 会加载一次 repo catalog。inventory
+返回后 services 又加载一次 catalog 供 fast/planning 使用，形成两个可能漂移的 snapshot。旧测试只 monkeypatch
+services 模块符号，因此没有观察 plugin 模块 loader。
+
+### RED
+
+加强 composition 测试，同时记录 services loader、底层 skill-loading plugin loader、inventory 参数、实际
+`SkillLoadingPlugin` 构造参数以及 fast/planning 参数。旧实现稳定观察到：
+
+```text
+service load = 1
+plugin load = 1
+total load = 2
+```
+
+定向命令结果：`1 failed`，失败于 `assert (1 + 1) == 1`。
+
+### GREEN 与修复
+
+- services 在 inventory 构建前加载唯一 `SkillCatalog`。
+- `create_native_tool_inventory(..., skill_catalog=...)` 将同一实例传给 builtin inventory。
+- `_builtin_plugins(...)` 显式构造 `SkillLoadingPlugin(skill_catalog=...)`。
+- plugin 仅在 catalog 参数为 `None` 的非 production fixture 兼容路径读盘；显式空 catalog 也不会 fallback。
+- 同一测试确认 services loader 仅一次、plugin loader 为零，且 inventory、实际 SkillLoadingPlugin、fast 与
+  planning 收到的对象均与 services catalog 为同一实例。
+
+### Fix round 最终验证
+
+- covering composition test：`1 passed in 4.44s`
+- 完整 feature：`28 passed in 4.99s`
+- 完整 mock core：`49 passed in 6.49s`
+- Tool/extension contracts：`7 passed in 3.97s`
+- 本轮相关文件定向 `ruff check`：通过
+- authority validator：`valid: true`
+- `git diff --check`：通过
+
+Core invariant: unchanged；本轮仅修复 production composition 共享 EXT-001/LOOP-001 已有静态装配事实，
+没有改变已登记 core invariant 内容。
+
+Tests: 更新 `tests/tdd/native-high-agency-planner/test_plan_admission.py` 的临时 RED/GREEN；用户可手动删除
+feature 目录，未晋升 core。
+
+Fix round concern：仓库级 `ruff check .` 仍只命中本任务未修改文件的既有 E402：
+`scripts/run_system_multimodal_embedding_eval.py:18`；本轮相关文件定向 ruff 通过，未扩大 scope。
