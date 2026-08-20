@@ -12,6 +12,7 @@ from langchain_core.tools import BaseTool
 from langgraph.store.base import BaseStore
 
 from assistant_agent.coding.config import CodingConfig
+from assistant_agent.coding.integration import CodingIntegrationService
 from assistant_agent.coding.tools import create_coding_tools
 from assistant_agent.coding.validation import CodingValidationService
 from assistant_agent.coding.workspace import CodingWorkspaceService
@@ -41,6 +42,7 @@ class AgentServerExecutionOwner:
     coding_tools: list[BaseTool]
     coding_workspace_service: CodingWorkspaceService
     coding_validation_service: CodingValidationService
+    coding_integration_service: CodingIntegrationService
     memory_backend: MemoryBackend
     graph: Any
     memory_graph: Any
@@ -87,12 +89,14 @@ class AgentServerExecutionOwner:
         coding_config = CodingConfig.from_env()
         coding_workspace_service = CodingWorkspaceService(coding_config)
         coding_validation_service = CodingValidationService(coding_workspace_service)
+        coding_integration_service = CodingIntegrationService(coding_workspace_service)
         coding_tools = create_coding_tools(coding_workspace_service)
         coding_graph = build_coding_graph(
             model,
             coding_tools,
             coding_workspace_service,
             validation_service=coding_validation_service,
+            integration_service=coding_integration_service,
             model_call_limit=config.max_tool_iterations,
             tool_call_limit=config.max_tool_iterations,
         )
@@ -110,6 +114,7 @@ class AgentServerExecutionOwner:
             coding_tools=coding_tools,
             coding_workspace_service=coding_workspace_service,
             coding_validation_service=coding_validation_service,
+            coding_integration_service=coding_integration_service,
             memory_backend=memory_backend,
             graph=graph,
             memory_graph=memory_graph,
@@ -121,6 +126,7 @@ class AgentServerExecutionOwner:
             self.memory_backend,
             self.coding_workspace_service,
             self.coding_validation_service,
+            self.coding_integration_service,
             self.model,
             *self.tools,
             *self.coding_tools,
