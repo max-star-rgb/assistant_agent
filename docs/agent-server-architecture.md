@@ -15,6 +15,16 @@
 
 ## 生产 Graph 入口
 
+Agent Server process owner 静态持有一份 `CodingWorkspaceService`。coding 默认 disabled；显式启用后，
+source repository 只能从服务端 JSON allowlist 通过 opaque `coding_repo_id` 选择。每个
+`user.identity + thread_id + repo_id` 解析到独立临时 Git worktree，workspace ref 使用服务端 HMAC 派生，
+metadata、锁和 TTL 位于受管 workspace root，不进入 Graph state。
+
+Graph checkpoint 只保存 opaque workspace ref、base commit、proposal/validation 和结构化结果，不保存
+宿主路径、Git client、文件句柄或进程对象。interrupt 恢复时 backend 重新校验唯一认证身份、thread、
+base commit、目标文件 digest 和 patch digest。阶段 1 终态保留 worktree 到 TTL；不自动 commit、merge、
+push 或写回 source repository。
+
 `langgraph.json` 只注册当前两张原生 Graph：
 
 ```text
@@ -35,7 +45,8 @@ manager、cancel token、checkpoint facade 或产品状态机。
 }
 ```
 
-`execution_mode` 只允许 `fast|planning`，省略时默认为 `fast`。Memory Graph 的严格输入只有标准
+`execution_mode` 只允许 `fast|planning|coding`，省略时默认为 `fast`；coding 还要求 `coding_repo_id`。
+Memory Graph 的严格输入只有标准
 messages；它由 Assistant Graph 通过 Agent Server SDK 调度，不向普通用户入口暴露 run type。
 认证用户唯一来自 Agent Server 原生
 `Runtime.server_info.user.identity`；`AssistantRunContext` 不复制用户或租户身份，只保存有默认值的

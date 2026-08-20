@@ -9,7 +9,14 @@ from typing import Annotated, Literal, NotRequired, Required
 from langchain.agents import AgentState
 from langchain_core.messages import AnyMessage
 from langgraph.graph import MessagesState
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
+
+from assistant_agent.coding.models import (
+    CodingPatchApplyResult,
+    CodingPatchProposal,
+    CodingPatchValidation,
+    CodingTerminalResult,
+)
 
 from assistant_agent.native_agent.models import (
     NativePlanProposal,
@@ -18,7 +25,7 @@ from assistant_agent.native_agent.models import (
 )
 from assistant_agent.native_agent.runtime_facts import TrustedRuntimeFacts
 
-ExecutionMode = Literal["fast", "planning"]
+ExecutionMode = Literal["fast", "planning", "coding"]
 MemoryStatus = Literal["ready", "empty", "degraded"]
 AgentPhase = Literal["fast", "planner", "worker", "finalizer"]
 
@@ -30,6 +37,13 @@ class AssistantRootInput(BaseModel):
 
     messages: list[AnyMessage]
     execution_mode: ExecutionMode = "fast"
+    coding_repo_id: str | None = None
+
+    @model_validator(mode="after")
+    def _coding_requires_repository(self) -> "AssistantRootInput":
+        if self.execution_mode == "coding" and not (self.coding_repo_id or "").strip():
+            raise ValueError("coding_repo_id is required in coding mode")
+        return self
 
 
 class MemoryExtractionInput(BaseModel):
@@ -47,6 +61,8 @@ class AssistantRootState(MessagesState):
     memory_status: NotRequired[MemoryStatus]
     execution_mode: NotRequired[ExecutionMode]
     trusted_runtime_facts: NotRequired[TrustedRuntimeFacts]
+    coding_repo_id: NotRequired[str]
+    coding_result: NotRequired[CodingTerminalResult]
 
 
 class FastAgentState(AgentState):
@@ -89,6 +105,24 @@ class PlanningState(AgentState):
     worker_results: NotRequired[Annotated[list[WorkerResult], operator.add]]
 
 
+class CodingState(AgentState):
+    """Sequential coding channels kept out of fast and planning branches."""
+
+    memory_context: NotRequired[tuple[str, ...]]
+    memory_status: NotRequired[MemoryStatus]
+    execution_mode: NotRequired[ExecutionMode]
+    trusted_runtime_facts: NotRequired[TrustedRuntimeFacts]
+    coding_repo_id: Required[str]
+    workspace_ref: NotRequired[str]
+    base_commit: NotRequired[str]
+    draft_artifact: NotRequired[dict[str, object] | None]
+    proposal: NotRequired[CodingPatchProposal | None]
+    validation: NotRequired[CodingPatchValidation | None]
+    approval_status: NotRequired[Literal["pending", "approved", "rejected"] | None]
+    applied_result: NotRequired[CodingPatchApplyResult | None]
+    coding_result: NotRequired[CodingTerminalResult]
+
+
 def _merge_unique_strings(
     current: Sequence[str] | None,
     update: Sequence[str] | None,
@@ -115,6 +149,7 @@ __all__ = [
     "AgentPhase",
     "AssistantRootInput",
     "AssistantRootState",
+    "CodingState",
     "ExecutionMode",
     "FastAgentState",
     "MemoryExtractionInput",
