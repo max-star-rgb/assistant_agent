@@ -248,7 +248,10 @@ class CodingValidationService:
                     artifact_plan=fresh_plan,
                     artifact_manifest=manifest,
                 )
-        except ValueError as exc:
+        except (OSError, ValueError) as exc:
+            error_code = (
+                str(exc) if isinstance(exc, ValueError) else "artifact_cleanup_failed"
+            )
             evidence = CodingCommandEvidence(
                 command_id="artifact-ingress",
                 kind="build",
@@ -257,12 +260,12 @@ class CodingValidationService:
                 output_digest=hashlib.sha256(b"").hexdigest(),
                 stdout="",
                 stderr="",
-                error_code=str(exc),
+                error_code=error_code,
                 artifact_plan_digest=artifact_ingress_plan.plan_digest,
                 artifact_ingress_status="failed",
             )
             return CodingVerificationResult(
-                status="failed", evidence=(evidence,), error_code=str(exc)
+                status="failed", evidence=(evidence,), error_code=error_code
             )
 
     def _run_sequence(
@@ -487,6 +490,14 @@ class CodingValidationService:
                     oom_killed=result.oom_killed,
                 )
         evidence = _sandbox_evidence(command, result)
+        if artifact_manifest is not None:
+            evidence = evidence.model_copy(
+                update={
+                    "artifact_scanner_policy_digest": (
+                        artifact_manifest.scanner_policy_digest
+                    )
+                }
+            )
         if artifact_exports and result.status == "passed":
             profile = repository.artifact_profile
             if (

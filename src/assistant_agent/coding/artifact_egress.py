@@ -90,6 +90,7 @@ class DockerArtifactIngressBackend:
         )
         self.uid = os.getuid() if uid is None else uid
         self.gid = os.getgid() if gid is None else gid
+        self._bundle_roots: set[Path] = set()
 
     def fetch_scan(
         self,
@@ -164,6 +165,7 @@ class DockerArtifactIngressBackend:
                 profile.scanner_image,
                 "org.assistant-agent.coding-artifact-scan-protocol",
             )
+            resources.append(("network", internal))
             self._ok(
                 (
                     "network",
@@ -175,7 +177,7 @@ class DockerArtifactIngressBackend:
                 ),
                 20,
             )
-            resources.append(("network", internal))
+            resources.append(("network", external))
             self._ok(
                 (
                     "network",
@@ -186,7 +188,7 @@ class DockerArtifactIngressBackend:
                 ),
                 20,
             )
-            resources.append(("network", external))
+            resources.append(("container", proxy))
             self._ok(
                 (
                     "create",
@@ -207,8 +209,8 @@ class DockerArtifactIngressBackend:
                 ),
                 20,
             )
-            resources.append(("container", proxy))
             self._ok(("network", "connect", external, proxy), 20)
+            resources.append(("container", fetcher))
             self._ok(
                 (
                     "create",
@@ -233,7 +235,6 @@ class DockerArtifactIngressBackend:
                 ),
                 20,
             )
-            resources.append(("container", fetcher))
             policy = {
                 "hosts": list(plan.allowed_hosts),
                 "ports": list(plan.allowed_ports),
@@ -243,6 +244,7 @@ class DockerArtifactIngressBackend:
                 policy_path = Path(temporary) / "policy.json"
                 policy_path.write_text(json.dumps(policy, sort_keys=True), encoding="utf-8")
                 self._ok(("cp", "--archive", str(policy_path), f"{proxy}:/policy.json"), 20)
+            resources.append(("container", scanner))
             self._ok(
                 (
                     "cp",
@@ -290,7 +292,6 @@ class DockerArtifactIngressBackend:
                 ),
                 20,
             )
-            resources.append(("container", scanner))
             self._ok(("cp", "--archive", f"{output_root}/.", f"{scanner}:/scan"), 30)
             self._ok(("start", scanner), 20)
             self._ok(("wait", scanner), plan.timeout_seconds)
@@ -338,6 +339,8 @@ class DockerArtifactIngressBackend:
         input_root: Path,
         bundle_root: Path,
     ) -> CodingArtifactExportManifest:
+        if self.uid <= 0 or self.gid < 0:
+            raise ValueError("artifact_unconfigured")
         configured = {
             item.export_id: item
             for item in profile.exports.values()
@@ -405,6 +408,7 @@ class DockerArtifactIngressBackend:
                 profile.scanner_image,
                 "org.assistant-agent.coding-artifact-scan-protocol",
             )
+            created = True
             self._ok(
                 (
                     "create",
@@ -449,7 +453,6 @@ class DockerArtifactIngressBackend:
                 ),
                 20,
             )
-            created = True
             self._ok(("cp", "--archive", f"{input_root}/.", f"{scanner}:/scan"), 30)
             self._ok(("start", scanner), 20)
             self._ok(("wait", scanner), profile.timeout_seconds)
@@ -464,6 +467,10 @@ class DockerArtifactIngressBackend:
                 item.status != "clean" for item in scan.artifacts
             ):
                 raise ValueError("artifact_scan_failed")
+        except ValueError:
+            raise
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ValueError("artifact_scan_failed") from exc
         finally:
             if created:
                 try:
@@ -474,8 +481,8 @@ class DockerArtifactIngressBackend:
                     cleanup_failed = True
                 else:
                     cleanup_failed = removed.returncode != 0
-        if cleanup_failed:
-            raise ValueError("artifact_cleanup_failed")
+            if cleanup_failed:
+                raise ValueError("artifact_cleanup_failed")
         return self._persist_export_bundle(
             profile,
             command_id,
@@ -498,6 +505,8 @@ class DockerArtifactIngressBackend:
         if bundle_root.is_symlink() or not bundle_root.is_dir():
             raise ValueError("artifact_export_failed")
         now = datetime.now(UTC)
+        self._prune_expired_bundles(bundle_root, now)
+        self._bundle_roots.add(bundle_root)
         bundle_ref = f"artifact_bundle_{uuid.uuid4().hex}"
         destination = bundle_root / bundle_ref
         staging = bundle_root / f".{bundle_ref}.tmp"
@@ -542,6 +551,33 @@ class DockerArtifactIngressBackend:
             shutil.rmtree(staging, ignore_errors=True)
             raise ValueError("artifact_export_failed") from exc
         return CodingArtifactExportManifest.model_validate(manifest_values)
+
+    def _prune_expired_bundles(self, bundle_root: Path, now: datetime) -> None:
+        try:
+            entries = tuple(bundle_root.iterdir())
+            for entry in entries:
+                if entry.name.startswith("."):
+                    continue
+                if (
+                    entry.is_symlink()
+                    or not entry.is_dir()
+                    or not entry.name.startswith("artifact_bundle_")
+                    or len(entry.name) != len("artifact_bundle_") + 32
+                ):
+                    raise ValueError("artifact_cleanup_failed")
+                metadata = entry / "manifest.json"
+                if metadata.is_symlink() or metadata.stat().st_size > 262_144:
+                    raise ValueError("artifact_cleanup_failed")
+                payload = json.loads(metadata.read_text(encoding="utf-8"))
+                if payload.get("bundle_ref") != entry.name:
+                    raise ValueError("artifact_cleanup_failed")
+                expires_at = datetime.fromisoformat(payload["expires_at"])
+                if expires_at.tzinfo is None:
+                    raise ValueError("artifact_cleanup_failed")
+                if expires_at <= now:
+                    shutil.rmtree(entry)
+        except (KeyError, TypeError, json.JSONDecodeError, OSError) as exc:
+            raise ValueError("artifact_cleanup_failed") from exc
 
     def _image(self, image: str, label: str) -> None:
         completed = self.runner.run(
@@ -593,6 +629,9 @@ class DockerArtifactIngressBackend:
             raise ValueError("artifact_fetch_failed")
 
     async def aclose(self) -> None:
+        now = datetime.now(UTC)
+        for bundle_root in tuple(self._bundle_roots):
+            self._prune_expired_bundles(bundle_root, now)
         for list_argv, remove_prefix in (
             (
                 (

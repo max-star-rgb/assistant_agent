@@ -426,6 +426,11 @@ class CodingRepositoryConfig(BaseModel):
             }.difference(self.commands)
             if missing_commands:
                 raise ValueError("artifact export references an unknown command")
+            if any(
+                self.commands[item.command_id].kind != "build"
+                for item in self.artifact_profile.exports.values()
+            ):
+                raise ValueError("artifact export requires a build command")
         return self
 
 
