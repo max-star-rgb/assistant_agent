@@ -10,6 +10,7 @@ from typing import Any
 from langchain_core.tools import BaseTool
 
 from assistant_agent.config import ProviderConfig
+from assistant_agent.mcp.amap_route_links import amap_route_link_interceptor
 from assistant_agent.mcp.config import (
     MCPServerConfig,
     resolve_mcp_server_env,
@@ -99,7 +100,11 @@ async def _create_official_mcp_tools(
         from langchain_mcp_adapters.client import MultiServerMCPClient
 
         client_factory = MultiServerMCPClient
-    client = client_factory(mcp_connections(server_configs), tool_name_prefix=False)
+    client = client_factory(
+        mcp_connections(server_configs),
+        tool_interceptors=[amap_route_link_interceptor],
+        tool_name_prefix=False,
+    )
     assembled: list[BaseTool] = []
     for server in server_configs:
         discovered = await client.get_tools(server_name=server.server_name)
