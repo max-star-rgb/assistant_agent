@@ -63,7 +63,7 @@ class _HitlPlanningModel(MockAssistantChatModel):
                                     "node_id": "worker-2",
                                     "objective": "dependent-sentinel",
                                     "depends_on": ["worker-1"],
-                                }
+                                },
                             ],
                             "deliverables": [
                                 {
@@ -245,7 +245,9 @@ def test_create_agent_owns_limits_summary_and_hitl_middleware() -> None:
 
 
 @pytest.mark.core_invariant("CTX-001")
-def test_planning_write_tools_interrupt_and_resume_without_replaying_completed_work() -> None:
+def test_planning_write_tools_interrupt_and_resume_without_replaying_completed_work() -> (
+    None
+):
     executed: list[str] = []
 
     def write_probe(value: str) -> str:
@@ -326,12 +328,14 @@ def test_planning_write_tools_interrupt_and_resume_without_replaying_completed_w
     assert executed_before_planner_resume == ()
     assert executed_before_worker_resume == ("planner-write-sentinel",)
     assert executed == ["planner-write-sentinel", "worker-write-sentinel"]
-    assert planner_interrupted["__interrupt__"][0].value["action_requests"][0][
-        "name"
-    ] == "write_probe"
-    assert worker_interrupted["__interrupt__"][0].value["action_requests"][0][
-        "name"
-    ] == "write_probe"
+    assert (
+        planner_interrupted["__interrupt__"][0].value["action_requests"][0]["name"]
+        == "write_probe"
+    )
+    assert (
+        worker_interrupted["__interrupt__"][0].value["action_requests"][0]["name"]
+        == "write_probe"
+    )
     assert resumed["worker_results"] == [
         WorkerResult(
             work_item_id="worker-1",

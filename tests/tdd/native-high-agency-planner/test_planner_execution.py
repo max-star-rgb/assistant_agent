@@ -227,9 +227,9 @@ def test_planner_captures_new_evidence_after_history_replacement() -> None:
         )
     )
 
-    assert [(item.evidence_id, item.content) for item in result["planner_evidence"]] == [
-        ("weather-call-1", "weather-sentinel")
-    ]
+    assert [
+        (item.evidence_id, item.content) for item in result["planner_evidence"]
+    ] == [("weather-call-1", "weather-sentinel")]
 
 
 def test_evidence_capture_rejects_unreferenceable_ids_and_bounds_artifacts() -> None:

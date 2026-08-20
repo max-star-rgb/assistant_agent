@@ -83,9 +83,7 @@ def build_fast_agent(
     if context_window_tokens < 100:
         raise ValueError("context window must contain at least 100 tokens")
     if not 0 < compaction_target_ratio < compaction_trigger_ratio <= 1:
-        raise ValueError(
-            "compaction ratios must satisfy 0 < target < trigger <= 1"
-        )
+        raise ValueError("compaction ratios must satisfy 0 < target < trigger <= 1")
     resolved_skill_catalog = skill_catalog or load_repo_skill_descriptors(
         default_repo_root()
     )
@@ -319,8 +317,7 @@ def render_assistant_system_prompt(
         and (descriptor := skill_descriptors_by_id.get(skill_id)) is not None
     )
     loaded_skill_guidance = (
-        "\n\n已加载专业流程：\n"
-        f"{active_skill_guidance}"
+        f"\n\n已加载专业流程：\n{active_skill_guidance}"
         if active_skill_guidance
         else ""
     )
