@@ -34,6 +34,7 @@ def build_assistant_root_graph(
     memory_backend: MemoryBackend,
     fast_agent: Any,
     planning_graph: Any,
+    coding_graph: Any,
     extraction_delay_seconds: int = DEFAULT_EXTRACTION_DELAY_SECONDS,
 ):
     """Compose recall, execution, and post-answer Memory debounce."""
@@ -61,6 +62,7 @@ def build_assistant_root_graph(
     builder.add_node("execution_router", execution_router_node)
     builder.add_node("fast_agent", fast_agent)
     builder.add_node("planning_graph", planning_graph)
+    builder.add_node("coding_graph", coding_graph)
     builder.add_node(
         "refresh_memory_extraction",
         partial(
@@ -82,10 +84,15 @@ def build_assistant_root_graph(
     builder.add_conditional_edges(
         "execution_router",
         route_execution_mode,
-        {"fast": "fast_agent", "planning": "planning_graph"},
+        {
+            "fast": "fast_agent",
+            "planning": "planning_graph",
+            "coding": "coding_graph",
+        },
     )
     builder.add_edge("fast_agent", "refresh_memory_extraction")
     builder.add_edge("planning_graph", "refresh_memory_extraction")
+    builder.add_edge("coding_graph", "refresh_memory_extraction")
     builder.add_edge("refresh_memory_extraction", END)
     return builder.compile(name="AssistantRootGraph")
 
@@ -99,7 +106,10 @@ def execution_router_node(_state: AssistantRootState) -> dict[str, object]:
 def route_execution_mode(state: AssistantRootState) -> str:
     """Route only on the trusted structured execution mode."""
 
-    return "planning" if state.get("execution_mode") == "planning" else "fast"
+    mode = state.get("execution_mode", "fast")
+    if mode not in {"fast", "planning", "coding"}:
+        raise ValueError("unsupported execution mode")
+    return mode
 
 
 async def refresh_memory_extraction_node(

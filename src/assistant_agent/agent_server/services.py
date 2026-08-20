@@ -11,11 +11,15 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from langgraph.store.base import BaseStore
 
+from assistant_agent.coding.config import CodingConfig
+from assistant_agent.coding.tools import create_coding_tools
+from assistant_agent.coding.workspace import CodingWorkspaceService
 from assistant_agent.config import ProviderConfig
 from assistant_agent.context.token_counter import create_context_token_counter
 from assistant_agent.mcp.config import load_mcp_server_configs_from_env
 from assistant_agent.media.visual_perception import get_visual_perception_module
 from assistant_agent.native_agent.fast_agent import build_fast_agent
+from assistant_agent.native_agent.coding_graph import build_coding_graph
 from assistant_agent.native_agent.memory import MemoryBackend, create_memory_backend
 from assistant_agent.native_agent.memory_graph import build_memory_extraction_graph
 from assistant_agent.native_agent.planning_graph import build_planning_graph
@@ -33,6 +37,8 @@ class AgentServerExecutionOwner:
 
     model: BaseChatModel
     tools: list[BaseTool]
+    coding_tools: list[BaseTool]
+    coding_workspace_service: CodingWorkspaceService
     memory_backend: MemoryBackend
     graph: Any
     memory_graph: Any
@@ -76,16 +82,28 @@ class AgentServerExecutionOwner:
             visual_history_probe=tool_resources.visual_history_probe,
         )
         planning_graph = build_planning_graph(model, fast_agent)
+        coding_workspace_service = CodingWorkspaceService(CodingConfig.from_env())
+        coding_tools = create_coding_tools(coding_workspace_service)
+        coding_graph = build_coding_graph(
+            model,
+            coding_tools,
+            coding_workspace_service,
+            model_call_limit=config.max_tool_iterations,
+            tool_call_limit=config.max_tool_iterations,
+        )
         graph = build_assistant_root_graph(
             memory_backend=memory_backend,
             fast_agent=fast_agent,
             planning_graph=planning_graph,
+            coding_graph=coding_graph,
             extraction_delay_seconds=config.memory_extraction_delay_seconds,
         )
         memory_graph = build_memory_extraction_graph(backend=memory_backend)
         return cls(
             model=model,
             tools=tools,
+            coding_tools=coding_tools,
+            coding_workspace_service=coding_workspace_service,
             memory_backend=memory_backend,
             graph=graph,
             memory_graph=memory_graph,
@@ -95,8 +113,10 @@ class AgentServerExecutionOwner:
         seen: set[int] = set()
         for target in (
             self.memory_backend,
+            self.coding_workspace_service,
             self.model,
             *self.tools,
+            *self.coding_tools,
         ):
             if id(target) in seen:
                 continue
