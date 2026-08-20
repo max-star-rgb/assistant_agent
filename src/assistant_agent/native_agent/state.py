@@ -29,6 +29,7 @@ from assistant_agent.native_agent.models import (
     ProviderSearchProfile,
     WorkerResult,
 )
+
 ExecutionMode = Literal["fast", "planning", "coding"]
 MemoryStatus = Literal["ready", "empty", "degraded"]
 AgentPhase = Literal["fast", "planner", "worker", "finalizer"]
@@ -91,13 +92,22 @@ class MemoryExtractionState(MessagesState):
     pass
 
 
-class WorkerState(FastAgentState):
+class WorkerState(AgentState):
     """Narrow input/output state for one planning worker branch."""
 
+    memory_context: Required[tuple[str, ...]]
+    memory_status: Required[MemoryStatus]
+    execution_mode: Required[ExecutionMode]
+    trusted_runtime_facts: NotRequired[dict[str, object]]
+    agent_phase: Required[AgentPhase]
+    worker_tool_allowlist: Required[tuple[str, ...]]
+    provider_search_profile: Required[ProviderSearchProfile]
+    active_skill_ids: Required[list[str]]
+    skill_reference_grants: Required[dict[str, list[str]]]
     work_item_id: Required[str]
     objective: Required[str]
-    dependency_results: NotRequired[tuple[WorkerResult, ...]]
-    planner_evidence: NotRequired[tuple[PlannerEvidence, ...]]
+    dependency_results: Required[tuple[WorkerResult, ...]]
+    planner_evidence: Required[tuple[PlannerEvidence, ...]]
 
 
 class PlanningState(AgentState):

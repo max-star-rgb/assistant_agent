@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.tools import tool
+from langgraph.prebuilt import ToolRuntime
 from langgraph.store.memory import InMemoryStore
 from langgraph_sdk.auth.types import StudioUser
 from pydantic import PrivateAttr, ValidationError
@@ -14,6 +16,8 @@ from assistant_agent.native_agent.fast_agent import build_fast_agent
 from assistant_agent.native_agent.planning_graph import build_planning_graph
 from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.native_agent.state import AssistantRootInput
+from assistant_agent.skills.loading import SkillCatalog
+from assistant_agent.tools.native_boundary import configure_builtin_tool
 
 
 def _server_config() -> dict[str, object]:
@@ -95,6 +99,49 @@ class _PlanningProbeModel(MockAssistantChatModel):
         )
 
 
+class _ZeroNodePlanningProbeModel(MockAssistantChatModel):
+    def _response_message(self, messages, **kwargs):
+        visible_names = _probe_tool_names(kwargs.get("tools"))
+        if "NativePlanProposal" not in visible_names:
+            return AIMessage(content="zero-node-final-answer-sentinel")
+        if not any(
+            isinstance(message, ToolMessage) and message.name == "planning_probe"
+            for message in messages
+        ):
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "planning_probe",
+                        "args": {},
+                        "id": "planning-probe-call",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "NativePlanProposal",
+                    "args": {
+                        "schema_version": "native_plan_v1",
+                        "nodes": [],
+                        "deliverables": [
+                            {
+                                "deliverable_id": "answer",
+                                "description": "answer from planning evidence",
+                                "evidence_refs": ["planning-probe-call"],
+                            }
+                        ],
+                    },
+                    "id": "zero-node-plan-call",
+                    "type": "tool_call",
+                }
+            ],
+        )
+
+
 def _probe_last_human_text(messages) -> str:
     for message in reversed(messages):
         if isinstance(message, HumanMessage):
@@ -150,6 +197,31 @@ def test_parent_graph_has_fast_planning_and_coding_native_branches(monkeypatch) 
         assert graph.nodes["fast_agent"].data.name == "AssistantFastAgent"
         assert graph.nodes["planning_graph"].data.name == "AssistantPlanningGraph"
         assert graph.nodes["coding_graph"].data.name == "AssistantCodingGraph"
+        planning_nodes = set(graph.nodes["planning_graph"].data.get_graph().nodes)
+        assert planning_nodes == {
+            "__start__",
+            "planner",
+            "admit_plan",
+            "scheduler",
+            "worker",
+            "join",
+            "finalize",
+            "__end__",
+        }
+        planning_edges = {
+            (edge.source, edge.target)
+            for edge in graph.nodes["planning_graph"].data.get_graph().edges
+        }
+        assert planning_edges == {
+            ("__start__", "planner"),
+            ("planner", "admit_plan"),
+            ("admit_plan", "scheduler"),
+            ("scheduler", "worker"),
+            ("scheduler", "finalize"),
+            ("worker", "join"),
+            ("join", "scheduler"),
+            ("finalize", "__end__"),
+        }
         coding_nodes = set(graph.nodes["coding_graph"].data.get_graph().nodes)
         assert {
             "approval",
@@ -195,9 +267,7 @@ def test_both_modes_finish_with_standard_ai_messages(monkeypatch) -> None:
 
 @pytest.mark.core_invariant("LOOP-001")
 def test_planning_workers_reuse_one_agent_without_state_leakage() -> None:
-    model = _PlanningProbeModel(
-        objectives=("worker-a-sentinel", "worker-b-sentinel")
-    )
+    model = _PlanningProbeModel(objectives=("worker-a-sentinel", "worker-b-sentinel"))
     shared_agent = build_fast_agent(model, [])
     graph = build_planning_graph(model, shared_agent)
 
@@ -212,14 +282,52 @@ def test_planning_workers_reuse_one_agent_without_state_leakage() -> None:
         )
     )
 
-    contents = {
-        item.work_item_id: item.content for item in result["worker_results"]
-    }
+    contents = {item.work_item_id: item.content for item in result["worker_results"]}
     assert model._max_active_workers == 2
     assert "worker-a-sentinel" in contents["worker-1"]
     assert "worker-b-sentinel" not in contents["worker-1"]
     assert "worker-b-sentinel" in contents["worker-2"]
     assert "worker-a-sentinel" not in contents["worker-2"]
+
+
+@pytest.mark.core_invariant("RUN-001")
+@pytest.mark.core_invariant("LOOP-001")
+def test_zero_node_planning_plan_finishes_with_standard_ai_message() -> None:
+    model = _ZeroNodePlanningProbeModel()
+
+    @tool("planning_probe")
+    def planning_probe(
+        runtime: ToolRuntime[AssistantRunContext],
+    ) -> str:
+        """Return one generic offline planning sentinel."""
+
+        del runtime
+        return "planning-evidence-sentinel"
+
+    probe = configure_builtin_tool(planning_probe, "read")
+    catalog = SkillCatalog()
+    shared_agent = build_fast_agent(model, [probe], skill_catalog=catalog)
+    graph = build_planning_graph(
+        model,
+        shared_agent,
+        tools=[probe],
+        skill_catalog=catalog,
+    )
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {
+                "messages": [HumanMessage(content="zero-node-request-sentinel")],
+                "memory_context": (),
+                "memory_status": "empty",
+            },
+            context=AssistantRunContext(),
+        )
+    )
+
+    assert result["worker_results"] == []
+    assert isinstance(result["messages"][-1], AIMessage)
+    assert result["messages"][-1].content == "zero-node-final-answer-sentinel"
 
 
 @pytest.mark.core_invariant("RUN-001")
@@ -253,7 +361,10 @@ def test_studio_input_without_execution_mode_defaults_to_fast(monkeypatch) -> No
 @pytest.mark.core_invariant("IDENT-001")
 def test_public_input_separates_mode_from_non_identity_runtime_context() -> None:
     value = AssistantRootInput.model_validate(
-        {"messages": [HumanMessage(content="request-sentinel")], "execution_mode": "fast"}
+        {
+            "messages": [HumanMessage(content="request-sentinel")],
+            "execution_mode": "fast",
+        }
     )
     context = AssistantRunContext.model_validate({})
 
