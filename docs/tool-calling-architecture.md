@@ -34,7 +34,8 @@ artifact 声明任意 grant；该可见性层不替代具体 Tool 的身份、�
 `request.tools` 中的 Tool，并按 Tool metadata 的封闭 `availability` 枚举读取可信运行事实：
 `uploaded_media_inspect` 要求最新用户消息含 `source=uploaded` 的图片或视频；`live_view_inspect` 要求当前
 WebSocket 已成功完成 `callType=VIDEO` 的 control 握手；`visual_memory_search` 还要求当前
-`user/thread/as-of sequence` 已存在可检索视觉文本。它不读取 `active_skill_ids` 或
+`user/thread/as-of sequence` 已存在可检索视觉文本；`visual_reminder_manage` 要求媒体侧至少已有一个视频包
+成功解码并绑定到该连接，不能只靠 VIDEO 握手出现。它不读取 `active_skill_ids` 或
 `skill_reference_grants`，不根据用户关键词推断意图，探针异常时 fail closed。Tool 自身在执行时再次校验
 握手、媒体来源和身份边界，避免绕过模型可见性直接调用。
 
@@ -51,7 +52,8 @@ WebSocket 已成功完成 `callType=VIDEO` 的 control 握手；`visual_memory_s
   抛出 `ToolException`；
 - metadata 至少声明 `effect=read|generate|write|dangerous` 与 `source=builtin|mcp`。
 
-`uploaded_media_inspect`、`live_view_inspect` 和 `visual_memory_search` 都由原生函数 Tool 工厂构造；Tool
+`uploaded_media_inspect`、`live_view_inspect`、`visual_memory_search` 和 `visual_reminder_manage` 都由原生
+函数 Tool 工厂构造；Tool
 层只负责标准执行与可信运行事实注入，视觉算法和资源复用全部由视觉 authority 负责。
 
 只读 Tool 由 `ToolRetryMiddleware` 做有界重试，重试耗尽后产生 error `ToolMessage`；非 read 内建 Tool

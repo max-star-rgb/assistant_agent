@@ -103,7 +103,7 @@ context；窗口内容不进入标准 messages/context，也不由模型或普�
 | media connection | custom route | 一次 WebSocket 传输连接，不是 thread |
 | delivery ID | custom route/outbox | 媒体 ACK 关联，不是 run 或 checkpoint |
 | proactive delivery Store | custom route 与显式产品 publisher | 媒体连接 presence/claim/ACK；不是 LangGraph Store |
-| Visual Perception Module | Agent Server 进程资源 | 视觉 authority 的进程级 owner；不是 Graph Runtime |
+| Visual Perception Module | Agent Server 进程资源 | 视觉 authority 的进程级 owner，包含共享 embedding coordinator 与连接级视觉提醒 registry；不是 Graph Runtime |
 
 Agent Server async factory 在每个 worker 进程首次取图时创建唯一 `AgentServerExecutionOwner`，持有标准
 `BaseChatModel` Provider adapter、静态本地 `BaseTool`、一次发现得到的官方 MCP tools、一个

@@ -227,7 +227,9 @@ lease 条目，避免长连接在持续处理期间被关闭。observer close �
 和 runtime close 仍可立即终止并清理对应状态。
 
 视觉提醒与上述 session retention 不同：它在成功 `assistantControl.callType=VIDEO` 后按内部
-`runtime_session_id` 创建，切换同一连接的 `video_id` 时保留，WebSocket close 时立即关闭、清空和注销。
+`runtime_session_id` 创建连接级 manager，但只有首个视频包成功解码并绑定 `video_id` 后才注册到 Runtime
+registry；握手成功但尚无有效帧时 Tool 不暴露且 registry 查询不可用。切换同一连接的 `video_id` 时保留，
+WebSocket close 时立即关闭、清空和注销。
 同一连接不允许重复 `assistantControl`，视频帧 `userNumber` 必须与握手 owner 一致。提醒创建还要求
 SigLIP2 image/text 双模态 readiness 和 text event 的 model/revision/space/dimension 契约一致；不可用、
 非归一化、非有限或零范数向量不会登记为 pending。提醒状态不写 `SessionVisualSemanticStore`、长期记忆 backend、
@@ -278,7 +280,9 @@ hard gate。
 
 `visual_reminder_manage` 是 `category=write`。只有显式注入连接级 reminder resources 的受信 composition
 才构造该 Tool；session 与身份由 `ToolRuntime` 绑定，模型不能提交 owner、manager、embedding 或阈值。
-create/list/cancel 经过同一 `BaseTool -> ToolNode` 路径，planning 模式下由原生 HITL 在执行前审批。
+其 `availability=video_frame_received` 只读取服务端冻结 live-view projection 中非空的 `live_video_ids`，
+不读取用户话术。create/list/cancel 经过同一 `BaseTool -> ToolNode` 路径，planning 模式下由原生 HITL
+在执行前审批。
 
 向量、owned evidence 路径和原始 VLM payload 不进入模型 schema、Tool data、trace、日志或 system eval artifact。
 session evidence 不是长期记忆，不写 Mem0，也不跨 user/session 搜索。

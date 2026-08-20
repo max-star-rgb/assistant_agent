@@ -188,7 +188,9 @@ enqueue 时已有有效在线 presence 才排队，在线写成功后记为 sent
 媒体入口给摄像头引用固定标记 `source=live_camera`；用户主动上传的图片或视频必须由普通请求入口标记为
 `source=uploaded`，交给独立的 `uploaded_media_inspect`，两类引用不能互相替代。VIDEO control 成功后即允许
 模型看到 `live_view_inspect`；当当前 `user/thread/as-of sequence` 已产生可检索视觉文本时，才进一步暴露
-`visual_memory_search`。这两项条件暴露不依赖 Skill 加载。
+`visual_memory_search`。`visual_reminder_manage` 则在首个视频包成功解码、`video_id` 已绑定后才暴露；此时
+媒体连接把连接级 reminder manager 注册到视觉 Runtime，并将提醒命中机械投影为当前 WebSocket 上的主动
+`chatResponse`。握手后尚未收到有效帧、解码失败或连接已关闭时均不可用。这些条件暴露不依赖 Skill 加载。
 
 媒体 wire 只负责把每个成功解码帧提交给连接级视觉句柄。chat 到达时只冻结当时已经成功解码的帧；已入队但
 尚未完成解码的帧不进入该轮窗口。随后它把视觉模块冻结得到的可信

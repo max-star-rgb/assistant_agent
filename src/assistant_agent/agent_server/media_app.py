@@ -29,6 +29,7 @@ from assistant_agent.agent_server.media_protocol import (
     parse_chat,
     parse_envelope,
     progress_response,
+    proactive_chat_response,
     streaming_chat_response,
     success_chat_response,
     artifact_completed_response,
@@ -47,7 +48,11 @@ from assistant_agent.media.video.video_context import SQLiteVideoContextStore
 from assistant_agent.media.video.video_context import VideoFrame
 from assistant_agent.media.visual_perception import get_visual_perception_module
 from assistant_agent.media.artifact_delivery import get_media_artifact_delivery_hub
-from assistant_agent.proactive_delivery import SQLiteProactiveDeliveryStore
+from assistant_agent.proactive_delivery import (
+    ProactiveMessage,
+    SQLiteProactiveDeliveryStore,
+)
+from assistant_agent.runtime.proactive_messages import ProactiveDeliveryAttempt
 from assistant_agent.runtime.generated_artifacts import (
     GENERATED_ARTIFACT_DIR,
     generated_artifact_file,
@@ -186,6 +191,30 @@ class _VisualPerceptionConnection:
             await asyncio.gather(*tasks, return_exceptions=True)
         self.video_tasks.clear()
         self.video_tail = None
+
+
+@dataclass(frozen=True)
+class _MediaVisualReminderSink:
+    """Deliver one ephemeral visual reminder on its owning media connection."""
+
+    websocket: Any
+    send_lock: asyncio.Lock
+    protocol_session_id: str | None
+
+    async def publish(self, message: ProactiveMessage) -> ProactiveDeliveryAttempt:
+        await _send_json(
+            self.websocket,
+            self.send_lock,
+            proactive_chat_response(
+                session_id=self.protocol_session_id,
+                message=message,
+            ),
+        )
+        return ProactiveDeliveryAttempt(
+            message_id=message.message_id,
+            status="sent",
+            delivery_scope="server_transport",
+        )
 
 
 @dataclass
@@ -455,6 +484,11 @@ async def _handle_frame(
             visual_perception.session = visual_module.open_session(
                 user_id=authenticated_identity,
                 session_id=thread_id,
+                reminder_sink=_MediaVisualReminderSink(
+                    websocket=websocket,
+                    send_lock=send_lock,
+                    protocol_session_id=frame.session_id,
+                ),
             )
         await artifact_hub.register(
             session_id=thread_id,
@@ -902,6 +936,7 @@ async def _ingest_video_packets(
             if visual_perception.session is not None and isinstance(
                 frame_result, VideoFrame
             ):
+                visual_perception.session.mark_video_received()
                 await visual_perception.session.submit(frame_result)
         await _send_json(
             websocket,

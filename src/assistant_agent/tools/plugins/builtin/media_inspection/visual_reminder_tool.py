@@ -18,6 +18,7 @@ from assistant_agent.media.video.visual_reminder import (
     validate_visual_reminder_target_embedding,
 )
 from assistant_agent.native_agent.context import AssistantRunContext
+from assistant_agent.tools.availability import ToolAvailability
 from assistant_agent.tools.ids import VISUAL_REMINDER_MANAGE_TOOL_NAME
 from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.native_boundary import (
@@ -135,7 +136,11 @@ def create_visual_reminder_manage_tool(
             ),
         )
 
-    return configure_builtin_tool(visual_reminder_manage, "write")
+    return configure_builtin_tool(
+        visual_reminder_manage,
+        "write",
+        availability=ToolAvailability.VIDEO_FRAME_RECEIVED.value,
+    )
 
 
 def _execute_visual_reminder_manage_from_runtime(

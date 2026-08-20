@@ -11,6 +11,7 @@ class ToolAvailability(str, Enum):
     ALWAYS = "always"
     UPLOADED_MEDIA_PRESENT = "uploaded_media_present"
     VIDEO_HANDSHAKE_COMPLETED = "video_handshake_completed"
+    VIDEO_FRAME_RECEIVED = "video_frame_received"
     VISUAL_HISTORY_AVAILABLE = "visual_history_available"
 
 

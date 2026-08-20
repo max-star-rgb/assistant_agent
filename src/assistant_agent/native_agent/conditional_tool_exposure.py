@@ -70,6 +70,12 @@ class ConditionalToolExposureMiddleware(AgentMiddleware):
         live = self._trusted_live_view(runtime)
         if availability is ToolAvailability.VIDEO_HANDSHAKE_COMPLETED:
             return video_handshake_completed and live is not None
+        if availability is ToolAvailability.VIDEO_FRAME_RECEIVED:
+            return (
+                video_handshake_completed
+                and live is not None
+                and bool(live.live_video_ids)
+            )
         if availability is ToolAvailability.VISUAL_HISTORY_AVAILABLE:
             return (
                 video_handshake_completed

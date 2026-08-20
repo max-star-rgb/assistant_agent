@@ -34,6 +34,10 @@ from assistant_agent.media.video.video_context import (
     VideoContextStore,
     VideoFrame,
 )
+from assistant_agent.media.video.visual_reminder import (
+    VisualReminderManager,
+    VisualReminderRegistry,
+)
 from assistant_agent.media.video.visual_memory_index import VisualMemoryTextIndex
 from assistant_agent.media.vision.models import (
     VisionUnderstandingRequest,
@@ -51,6 +55,7 @@ from assistant_agent.media.visual_perception.history_probe import (
     PoolVisualObservationHistoryProbe,
     VisualObservationHistoryProbe,
 )
+from assistant_agent.runtime.proactive_messages import ProactiveMessageSink
 
 
 DEFAULT_VISUAL_PERCEPTION_ROOT = Path(".data") / "visual_perception"
@@ -121,6 +126,8 @@ class VisualPerceptionToolResources:
     visual_semantic_store_pool: SessionVisualSemanticStorePool
     visual_memory_text_index: VisualMemoryTextIndex
     visual_history_probe: VisualObservationHistoryProbe
+    embedding_coordinator_store: SessionEmbeddingCoordinatorStore
+    visual_reminder_registry: VisualReminderRegistry
 
 
 class VisualPerceptionSession:
@@ -131,10 +138,17 @@ class VisualPerceptionSession:
         *,
         observer: RealtimeVisualObserver,
         video_context_store: VideoContextStore,
+        reminder_manager: VisualReminderManager | None = None,
+        reminder_registry: VisualReminderRegistry | None = None,
+        reminder_sink: ProactiveMessageSink | None = None,
         release: Callable[["VisualPerceptionSession"], None],
     ) -> None:
         self._observer = observer
         self._video_context_store = video_context_store
+        self._reminder_manager = reminder_manager
+        self._reminder_registry = reminder_registry
+        self._reminder_sink = reminder_sink
+        self._reminder_registered = False
         self._release = release
         self._closed = False
 
@@ -143,6 +157,20 @@ class VisualPerceptionSession:
 
         self._ensure_open()
         return await self._observer.submit(frame)
+
+    def mark_video_received(self) -> None:
+        """Activate connection-scoped reminders after the first decoded frame."""
+
+        self._ensure_open()
+        if self._reminder_registered:
+            return
+        if self._reminder_manager is None or self._reminder_registry is None:
+            raise RuntimeError("visual_reminder_resources_unavailable")
+        self._reminder_registry.register(
+            self._reminder_manager,
+            sink=self._reminder_sink,
+        )
+        self._reminder_registered = True
 
     async def prepare_strict_window(
         self,
@@ -193,7 +221,23 @@ class VisualPerceptionSession:
         try:
             await self._observer.close()
         finally:
-            self._release(self)
+            try:
+                if (
+                    self._reminder_registered
+                    and self._reminder_manager is not None
+                    and self._reminder_registry is not None
+                ):
+                    removed = await self._reminder_registry.close_connection(
+                        self._reminder_manager.user_id,
+                        self._reminder_manager.session_id,
+                        manager=self._reminder_manager,
+                    )
+                    if not removed:
+                        self._reminder_manager.close()
+                elif self._reminder_manager is not None:
+                    self._reminder_manager.close()
+            finally:
+                self._release(self)
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -230,6 +274,11 @@ class VisualPerceptionModule:
                 observer=self.embedding_observer,
             )
         )
+        self.visual_reminder_registry = VisualReminderRegistry(
+            delivery_timeout_seconds=(
+                self.config.proactive_message_delivery_timeout_seconds
+            ),
+        )
         self.visual_semantic_store_pool = visual_semantic_store_pool or (
             SessionVisualSemanticStorePool(
                 root=self.data_root / "semantic",
@@ -264,6 +313,7 @@ class VisualPerceptionModule:
         *,
         user_id: str,
         session_id: str,
+        reminder_sink: ProactiveMessageSink | None = None,
     ) -> VisualPerceptionSession:
         if self._closed:
             raise RuntimeError("visual_perception_module_closed")
@@ -272,6 +322,17 @@ class VisualPerceptionModule:
         handle = VisualPerceptionSession(
             observer=self._observer_factory(user_id, session_id),
             video_context_store=self.video_context_store,
+            reminder_manager=VisualReminderManager(
+                user_id=user_id,
+                session_id=session_id,
+                similarity_threshold=self.config.visual_reminder_similarity_threshold,
+                max_active=self.config.visual_reminder_max_active,
+                terminal_history_limit=(
+                    self.config.visual_reminder_terminal_history_limit
+                ),
+            ),
+            reminder_registry=self.visual_reminder_registry,
+            reminder_sink=reminder_sink,
             release=self._sessions.discard,
         )
         self._sessions.add(handle)
@@ -377,6 +438,8 @@ class VisualPerceptionModule:
             visual_semantic_store_pool=self.visual_semantic_store_pool,
             visual_memory_text_index=self.visual_memory_text_index,
             visual_history_probe=self.visual_history_probe,
+            embedding_coordinator_store=self.embedding_coordinator_store,
+            visual_reminder_registry=self.visual_reminder_registry,
         )
 
     async def aclose(self) -> None:
@@ -429,6 +492,7 @@ class VisualPerceptionModule:
                 memory_store=self.realtime_video_memory_store,
                 semantic_store=semantic_lease.store,
                 embedding_coordinator=embedding_lease.coordinator,
+                visual_reminder_registry=self.visual_reminder_registry,
                 visual_memory_text_index=self.visual_memory_text_index,
                 provider_config=self.config,
                 keyframe_root=self.data_root / "keyframes",
