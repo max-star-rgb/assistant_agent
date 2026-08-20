@@ -57,6 +57,30 @@ class CodingPatchValidation(BaseModel):
     diff_preview: str = Field(max_length=32_000)
 
 
+class CodingCommandEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    command_id: str = Field(min_length=1, max_length=80)
+    kind: Literal["test", "lint", "format", "build"]
+    status: Literal["passed", "failed", "timed_out", "resource_exceeded"]
+    exit_code: int | None = None
+    duration_ms: int = Field(ge=0)
+    output_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    stdout: str
+    stderr: str
+    truncated: bool = False
+    error_code: str | None = None
+
+
+class CodingVerificationResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    status: Literal["passed", "failed", "format_approval_required"]
+    evidence: tuple[CodingCommandEvidence, ...] = ()
+    formatter_validation: CodingPatchValidation | None = None
+    error_code: str | None = None
+
+
 class CodingApprovalDecision(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -90,6 +114,8 @@ class CodingTerminalResult(BaseModel):
     patch_digest: str | None = None
     changed_paths: tuple[str, ...] = ()
     error_code: str | None = None
+    verification_status: Literal["passed", "failed"] | None = None
+    verification_evidence: tuple[CodingCommandEvidence, ...] = ()
 
     @field_validator("changed_paths", mode="before")
     @classmethod
@@ -161,6 +187,7 @@ class CodingDiffResult(BaseModel):
 
 __all__ = [
     "CodingApprovalDecision",
+    "CodingCommandEvidence",
     "CodingPatchApplyResult",
     "CodingPatchProposal",
     "CodingPatchValidation",
@@ -173,6 +200,7 @@ __all__ = [
     "CodingStatusResult",
     "CodingTerminalResult",
     "CodingToolScope",
+    "CodingVerificationResult",
     "CodingWorkspace",
     "CodingWorkspaceMetadata",
 ]

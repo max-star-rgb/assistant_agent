@@ -8,9 +8,55 @@ import subprocess
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+_SHELL_EXECUTABLES = {
+    "bash",
+    "cmd",
+    "cmd.exe",
+    "dash",
+    "fish",
+    "ksh",
+    "powershell",
+    "powershell.exe",
+    "pwsh",
+    "sh",
+    "zsh",
+}
+
+
+class CodingCommandConfig(BaseModel):
+    """One server-owned command ID mapped to immutable process arguments."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    command_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$")
+    kind: Literal["test", "lint", "format", "build"]
+    argv: tuple[str, ...] = Field(min_length=1, max_length=64)
+    timeout_seconds: int = Field(default=300, ge=1, le=1_800)
+    cpu_seconds: int = Field(default=120, ge=1, le=1_800)
+    memory_bytes: int = Field(default=1_073_741_824, ge=67_108_864, le=17_179_869_184)
+    max_processes: int = Field(default=64, ge=1, le=512)
+    max_output_bytes: int = Field(default=1_048_576, ge=1_024, le=16_777_216)
+    max_disk_bytes: int = Field(default=1_073_741_824, ge=1_048_576, le=17_179_869_184)
+
+    @field_validator("argv", mode="before")
+    @classmethod
+    def _tuple_argv(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @field_validator("argv")
+    @classmethod
+    def _validate_argv(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not item or "\x00" in item or "\n" in item or "\r" in item for item in value):
+            raise ValueError("coding command arguments must be non-empty single-line strings")
+        executable = Path(value[0]).name.lower()
+        if executable in _SHELL_EXECUTABLES:
+            raise ValueError("coding commands cannot invoke a shell")
+        return value
 
 
 class CodingRepositoryConfig(BaseModel):
@@ -19,6 +65,25 @@ class CodingRepositoryConfig(BaseModel):
     repo_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$")
     path: Path
     target_branch: str = Field(min_length=1, max_length=160)
+    commands: dict[str, CodingCommandConfig] = Field(default_factory=dict)
+    verification_sequence: tuple[str, ...] = ()
+
+    @field_validator("verification_sequence", mode="before")
+    @classmethod
+    def _tuple_sequence(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @model_validator(mode="after")
+    def _validate_commands(self) -> "CodingRepositoryConfig":
+        for command_id, command in self.commands.items():
+            if command_id != command.command_id:
+                raise ValueError("coding command key must match command_id")
+        if len(set(self.verification_sequence)) != len(self.verification_sequence):
+            raise ValueError("coding verification sequence cannot contain duplicates")
+        missing = set(self.verification_sequence).difference(self.commands)
+        if missing:
+            raise ValueError("coding verification sequence references an unknown command")
+        return self
 
 
 class CodingConfig(BaseModel):
@@ -155,5 +220,4 @@ def _int_value(source: Mapping[str, str], name: str, default: int) -> int:
         raise ValueError(f"{name} must be an integer") from exc
 
 
-__all__ = ["CodingConfig", "CodingRepositoryConfig"]
-
+__all__ = ["CodingCommandConfig", "CodingConfig", "CodingRepositoryConfig"]
