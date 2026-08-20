@@ -12,6 +12,8 @@ source_globs = [
   "langgraph.json",
   "src/assistant_agent/agent_server/**",
   "src/assistant_agent/coding/config.py",
+  "src/assistant_agent/coding/artifacts.py",
+  "src/assistant_agent/coding/artifact_egress.py",
   "src/assistant_agent/coding/credentials.py",
   "src/assistant_agent/coding/dependencies.py",
   "src/assistant_agent/coding/dependency_egress.py",
@@ -32,6 +34,7 @@ verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/ai-coding-validation",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/ai-coding-integration",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/ai-coding-sandbox",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/ai-coding-artifact-governance",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python scripts/agent_cli.py --help",
 ]
 exclusive_literals = []

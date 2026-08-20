@@ -142,6 +142,85 @@ class CodingCredentialApprovalDecision(BaseModel):
         return self
 
 
+class CodingArtifactDescriptor(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    artifact_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$")
+    url: str = Field(min_length=10, max_length=2_048)
+    filename: str = Field(min_length=1, max_length=255)
+    media_type: str = Field(min_length=3, max_length=192)
+    size_bytes: int = Field(ge=1, le=1_073_741_824)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class CodingArtifactIngressPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    profile_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$")
+    manifest_path: str = Field(min_length=1, max_length=240)
+    manifest_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    artifacts: tuple[CodingArtifactDescriptor, ...] = Field(min_length=1, max_length=512)
+    artifact_count: int = Field(ge=1, le=512)
+    allowed_hosts: tuple[str, ...] = Field(min_length=1, max_length=32)
+    allowed_ports: tuple[int, ...] = (443,)
+    timeout_seconds: int = Field(ge=10, le=1_800)
+    max_total_bytes: int = Field(ge=1_048_576, le=4_294_967_296)
+    max_file_bytes: int = Field(ge=1_024, le=1_073_741_824)
+    policy_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("artifacts", "allowed_hosts", "allowed_ports", mode="before")
+    @classmethod
+    def _tuple_values(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @model_validator(mode="after")
+    def _count_matches(self) -> "CodingArtifactIngressPlan":
+        if self.artifact_count != len(self.artifacts):
+            raise ValueError("artifact count mismatch")
+        return self
+
+
+class CodingArtifactApprovalDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    decision: Literal["approve", "reject"]
+    plan_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def _approval_requires_digest(self) -> "CodingArtifactApprovalDecision":
+        if self.decision == "approve" and self.plan_digest is None:
+            raise ValueError("artifact approval requires plan digest")
+        return self
+
+
+class CodingScannedArtifact(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    artifact_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$")
+    filename: str = Field(min_length=1, max_length=255)
+    media_type: str = Field(min_length=3, max_length=192)
+    size_bytes: int = Field(ge=1, le=1_073_741_824)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    scan_status: Literal["clean"] = "clean"
+
+
+class CodingArtifactIngressManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    policy_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    scanner_policy_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    artifacts: tuple[CodingScannedArtifact, ...] = Field(min_length=1, max_length=512)
+    total_bytes: int = Field(ge=1)
+    manifest_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("artifacts", mode="before")
+    @classmethod
+    def _tuple_artifacts(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+
 class CodingDependencyWheel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -206,6 +285,65 @@ class CodingDependencyManifest(BaseModel):
         return self
 
 
+class CodingArtifactExportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    export_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$")
+    path: str = Field(min_length=1, max_length=240)
+    media_type: str = Field(min_length=3, max_length=192)
+    max_bytes: int = Field(ge=1_024, le=1_073_741_824)
+
+    @field_validator("path")
+    @classmethod
+    def _safe_path(cls, value: str) -> str:
+        parts = value.split("/")
+        if (
+            value.startswith("/")
+            or any(part in {"", ".", "..", ".git"} for part in parts)
+            or any(item in value for item in ("\\", "\x00", "\n", "\r"))
+        ):
+            raise ValueError("artifact export path is invalid")
+        return value
+
+
+class CodingArtifactExportRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    export_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$")
+    path: str = Field(min_length=1, max_length=240)
+    media_type: str = Field(min_length=3, max_length=192)
+    size_bytes: int = Field(ge=1, le=1_073_741_824)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class CodingArtifactExportManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    profile_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$")
+    command_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$")
+    artifacts: tuple[CodingArtifactExportRecord, ...] = Field(min_length=1)
+    artifact_count: int = Field(ge=1, le=512)
+    total_bytes: int = Field(ge=1, le=4_294_967_296)
+    scanner_policy_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    manifest_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    bundle_ref: str = Field(pattern=r"^artifact_bundle_[0-9a-f]{32}$")
+    created_at: datetime
+    expires_at: datetime
+
+    @field_validator("artifacts", mode="before")
+    @classmethod
+    def _freeze_artifacts(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @model_validator(mode="after")
+    def _totals_match(self) -> "CodingArtifactExportManifest":
+        if self.artifact_count != len(self.artifacts):
+            raise ValueError("artifact export count mismatch")
+        if self.total_bytes != sum(item.size_bytes for item in self.artifacts):
+            raise ValueError("artifact export size mismatch")
+        return self
+
+
 class CodingSandboxRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -237,6 +375,15 @@ class CodingSandboxRequest(BaseModel):
     dependency_manifest_digest: str | None = Field(
         default=None, pattern=r"^[0-9a-f]{64}$"
     )
+    artifact_root: Path | None = None
+    artifact_plan_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    artifact_manifest_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    artifact_exports: tuple["CodingArtifactExportRequest", ...] = ()
+    artifact_export_root: Path | None = None
 
     @model_validator(mode="after")
     def _dependency_fields_are_atomic(self) -> "CodingSandboxRequest":
@@ -261,6 +408,29 @@ class CodingSandboxRequest(BaseModel):
                 )
             ):
                 raise ValueError("sandbox dependency lockfile path is invalid")
+        return self
+
+    @model_validator(mode="after")
+    def _artifact_fields_are_atomic(self) -> "CodingSandboxRequest":
+        values = (
+            self.artifact_root,
+            self.artifact_plan_digest,
+            self.artifact_manifest_digest,
+        )
+        if any(item is not None for item in values) and not all(
+            item is not None for item in values
+        ):
+            raise ValueError("sandbox artifact fields must be supplied together")
+        if bool(self.artifact_exports) != (self.artifact_export_root is not None):
+            raise ValueError("sandbox artifact export fields must be supplied together")
+        if self.artifact_exports and self.kind != "build":
+            raise ValueError("sandbox artifact exports require a build command")
+        export_ids = [item.export_id for item in self.artifact_exports]
+        export_paths = [item.path for item in self.artifact_exports]
+        if len(export_ids) != len(set(export_ids)) or len(export_paths) != len(
+            set(export_paths)
+        ):
+            raise ValueError("sandbox artifact exports must be unique")
         return self
 
 
@@ -289,6 +459,14 @@ class CodingSandboxResult(BaseModel):
     )
     dependency_install_status: Literal["passed", "failed"] | None = None
     dependency_install_error: str | None = None
+    artifact_plan_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    artifact_manifest_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    artifact_ingress_status: Literal["passed", "failed"] | None = None
+    artifact_exports: tuple["CodingArtifactExportRecord", ...] = ()
 
 
 class CodingCommandEvidence(BaseModel):
@@ -333,6 +511,23 @@ class CodingCommandEvidence(BaseModel):
     credential_inject_status: Literal["not_attempted", "failed", "injected"] | None = None
     credential_cleanup_status: Literal["not_required", "failed", "revoked"] | None = None
     credential_lease_status: Literal["used", "failed"] | None = None
+    artifact_plan_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    artifact_manifest_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    artifact_scanner_policy_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    artifact_ingress_status: Literal["passed", "failed"] | None = None
+    artifact_export_manifest_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    artifact_export_bundle_ref: str | None = Field(
+        default=None, pattern=r"^artifact_bundle_[0-9a-f]{32}$"
+    )
+    artifact_export_status: Literal["passed", "failed"] | None = None
 
 
 class CodingVerificationResult(BaseModel):
@@ -526,6 +721,11 @@ class CodingDiffResult(BaseModel):
 
 __all__ = [
     "CodingApprovalDecision",
+    "CodingArtifactApprovalDecision",
+    "CodingArtifactDescriptor",
+    "CodingArtifactIngressPlan",
+    "CodingArtifactIngressManifest",
+    "CodingScannedArtifact",
     "CodingCommandEvidence",
     "CodingCommitResult",
     "CodingCredentialApprovalDecision",

@@ -18,6 +18,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Literal
 
+from pydantic import ValidationError
+
+from assistant_agent.coding.models import (
+    CodingArtifactExportRecord,
+    CodingArtifactExportRequest,
+)
+
 
 @dataclass(frozen=True)
 class SandboxRunnerRequest:
@@ -34,6 +41,9 @@ class SandboxRunnerRequest:
     dependency_lockfile_path: str | None = None
     dependency_plan_digest: str | None = None
     dependency_manifest_digest: str | None = None
+    artifact_plan_digest: str | None = None
+    artifact_manifest_digest: str | None = None
+    artifact_exports: tuple[CodingArtifactExportRequest, ...] = ()
 
 
 class _OutputBudget:
@@ -171,6 +181,23 @@ def run_sandbox_command(request: SandboxRunnerRequest) -> dict[str, object]:
                 stderr=stderr,
                 error_code="sandbox_resource_exceeded",
             )
+    try:
+        artifact_exports = _collect_artifact_exports(request)
+    except _RunnerBoundaryError:
+        return _result(
+            "failed",
+            started,
+            exit_code=return_code,
+            output_digest=output_digest,
+            stdout=stdout,
+            stderr=stderr,
+            error_code="artifact_export_invalid",
+            artifact_plan_digest=request.artifact_plan_digest,
+            artifact_manifest_digest=request.artifact_manifest_digest,
+            artifact_ingress_status=(
+                "passed" if request.artifact_plan_digest is not None else None
+            ),
+        )
     return _result(
         "passed",
         started,
@@ -186,7 +213,56 @@ def run_sandbox_command(request: SandboxRunnerRequest) -> dict[str, object]:
         dependency_install_status=(
             "passed" if request.dependency_lockfile_path is not None else None
         ),
+        artifact_plan_digest=request.artifact_plan_digest,
+        artifact_manifest_digest=request.artifact_manifest_digest,
+        artifact_ingress_status=(
+            "passed" if request.artifact_plan_digest is not None else None
+        ),
+        artifact_exports=artifact_exports,
     )
+
+
+def _collect_artifact_exports(
+    request: SandboxRunnerRequest,
+) -> list[CodingArtifactExportRecord]:
+    if request.artifact_exports and request.kind != "build":
+        raise _RunnerBoundaryError
+    records: list[CodingArtifactExportRecord] = []
+    for export in request.artifact_exports:
+        current = request.workspace_root
+        for part in export.path.split("/")[:-1]:
+            current /= part
+            if current.is_symlink() or not current.is_dir():
+                raise _RunnerBoundaryError
+        path = request.workspace_root.joinpath(*export.path.split("/"))
+        try:
+            metadata = path.lstat()
+        except OSError as exc:
+            raise _RunnerBoundaryError from exc
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_size <= 0
+            or metadata.st_size > export.max_bytes
+        ):
+            raise _RunnerBoundaryError
+        digest = hashlib.sha256()
+        try:
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(65_536), b""):
+                    digest.update(chunk)
+        except OSError as exc:
+            raise _RunnerBoundaryError from exc
+        records.append(
+            CodingArtifactExportRecord(
+                export_id=export.export_id,
+                path=export.path,
+                media_type=export.media_type,
+                size_bytes=metadata.st_size,
+                sha256=digest.hexdigest(),
+            )
+        )
+    return records
 
 
 def _prepare_workspace(request: SandboxRunnerRequest) -> None:
@@ -348,6 +424,8 @@ def _command_env() -> dict[str, str]:
     dependency_target = Path("/workspace/.assistant_deps")
     if dependency_target.is_dir():
         environment["PYTHONPATH"] = str(dependency_target)
+    if Path("/artifacts/input").is_dir():
+        environment["ASSISTANT_AGENT_ARTIFACT_ROOT"] = "/artifacts/input"
     return environment
 
 
@@ -412,6 +490,10 @@ def _result(
     dependency_manifest_digest: str | None = None,
     dependency_install_status: str | None = None,
     dependency_install_error: str | None = None,
+    artifact_plan_digest: str | None = None,
+    artifact_manifest_digest: str | None = None,
+    artifact_ingress_status: str | None = None,
+    artifact_exports: list[CodingArtifactExportRecord] | None = None,
 ) -> dict[str, object]:
     return {
         "protocol_version": 1,
@@ -430,6 +512,12 @@ def _result(
         "dependency_manifest_digest": dependency_manifest_digest,
         "dependency_install_status": dependency_install_status,
         "dependency_install_error": dependency_install_error,
+        "artifact_plan_digest": artifact_plan_digest,
+        "artifact_manifest_digest": artifact_manifest_digest,
+        "artifact_ingress_status": artifact_ingress_status,
+        "artifact_exports": [
+            item.model_dump(mode="json") for item in artifact_exports or []
+        ],
     }
 
 
@@ -445,11 +533,21 @@ def _parse_args() -> SandboxRunnerRequest:
     parser.add_argument("--dependency-lockfile")
     parser.add_argument("--dependency-plan-digest")
     parser.add_argument("--dependency-manifest-digest")
+    parser.add_argument("--artifact-plan-digest")
+    parser.add_argument("--artifact-manifest-digest")
+    parser.add_argument("--artifact-export-json", action="append", default=[])
     parser.add_argument("argv", nargs=argparse.REMAINDER)
     values = parser.parse_args()
     argv = tuple(values.argv[1:] if values.argv[:1] == ["--"] else values.argv)
     if not argv:
         parser.error("command argv is required")
+    try:
+        artifact_exports = tuple(
+            CodingArtifactExportRequest.model_validate_json(item)
+            for item in values.artifact_export_json
+        )
+    except ValidationError:
+        parser.error("artifact export policy is invalid")
     return SandboxRunnerRequest(
         input_root=Path("/input"),
         workspace_root=Path("/workspace"),
@@ -464,6 +562,9 @@ def _parse_args() -> SandboxRunnerRequest:
         dependency_lockfile_path=values.dependency_lockfile,
         dependency_plan_digest=values.dependency_plan_digest,
         dependency_manifest_digest=values.dependency_manifest_digest,
+        artifact_plan_digest=values.artifact_plan_digest,
+        artifact_manifest_digest=values.artifact_manifest_digest,
+        artifact_exports=artifact_exports,
     )
 
 

@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from assistant_agent.coding.models import (
     CodingCommandEvidence,
     CodingCommitResult,
+    CodingArtifactIngressPlan,
     CodingCredentialRequest,
     CodingDependencyPlan,
     CodingMergePreview,
@@ -132,6 +133,10 @@ class CodingState(AgentState):
     ]
     credential_request: NotRequired[CodingCredentialRequest | None]
     credential_approval_status: NotRequired[
+        Literal["pending", "approved", "rejected", "not_required"] | None
+    ]
+    artifact_ingress_plan: NotRequired[CodingArtifactIngressPlan | None]
+    artifact_approval_status: NotRequired[
         Literal["pending", "approved", "rejected", "not_required"] | None
     ]
     format_round: NotRequired[int]
