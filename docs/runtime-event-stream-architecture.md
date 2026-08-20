@@ -58,9 +58,15 @@ approved changed paths 与严格 lockfile，只有 lockfile 变化才生成 depe
 从更早 checkpoint replay 并重新执行该节点时允许刷新。这与 `memory_recall` 的原生节点恢复语义一致。
 
 fast 与 planning 直接作为父图节点装配。fast 分支是 `create_agent` 编译出的 `AssistantFastAgent`，使用标准 `BaseChatModel`、`BaseTool`、`ToolRuntime`、
-messages channel 和官方 middleware，不维护项目自建 assistant/tool loop。
+messages channel 和官方 middleware，不维护项目自建 assistant/tool loop。planning 的 planner、worker 和 finalizer
+也复用这一个 compiled fast graph：分别通过 `agent_phase="planner|worker|finalizer"` 选择 model-call 投影，
+不创建独立 Agent 或模型调用链。相同初始 state 与受信运行事实下，planner 首轮继承 fast 首轮相同的 Tool
+projection；差异只在 planner system role 与严格 `NativePlanProposal` structured response。
 
-planning 分支是显式 `AssistantPlanningGraph`：planner 输出严格 `NativePlanProposal`，本地 admission 根据
+planning 分支是显式 `AssistantPlanningGraph`：planner 可在共享的 model→ToolNode→model loop 中调用 Tool，
+其已完成业务 `ToolMessage` 被捕获为有界 `PlannerEvidence`；成功 `load_skill` 产生的 active Skill/reference grant
+随 planning state reducer 保存。planner 随后输出严格 `NativePlanProposal`，其中 deliverable 必须引用 producer
+node 或实际 planner evidence。本地 admission 根据
 composition 注入的静态 Tool inventory 与同一份 Skill catalog 确定性校验节点 Tool、Planner 实际激活 Skill、
 节点 Skill grant、真实 planner evidence 引用、deliverable producer/evidence 引用、节点上限、DAG 无环和依赖深度；
 未知或未授权事实一律 fail closed，且不读取用户文本或内置领域规则。admission 失败时把有界错误码写入
@@ -71,10 +77,15 @@ planning state，并由原生 conditional edge 回到同一个 planner；最多�
 它不注入旧 planner transcript、Tool schema 或原始异常；evidence、已激活 Skill 与 reference grant 沿用原生 state
 reducer，只有候选计划被覆盖。成功 admission 清除错误并进入 scheduler。`Send` 按依赖分 wave 并行派发 worker。调度器根据 `depends_on` 自动把直接上游
 `WorkerResult` 组装为运行时 `dependency_results`，worker 将其作为明确的只读数据输入交给同一个 fast graph；
-该字段不是 planner 输出 schema。worker 只能继承节点 required Skill 与 Planner 实际快照的交集；admission 禁止节点把
+该字段不是 planner 输出 schema。其原生拓扑是
+`planner -> admit_plan -> scheduler -> Send(worker) -> join -> scheduler`；scheduler 每轮只派发当前 ready wave，
+依赖失败会生成稳定的 failed `WorkerResult` 并向下游传播。零节点 plan 不派发 worker，scheduler 直接进入
+finalizer。worker 只能继承节点 required Skill 与 Planner 实际快照的交集；admission 禁止节点把
 `load_skill` 放入 worker Tool allowlist，worker phase 也确定性过滤该 Tool。显式允许 `load_skill_reference` 时，Tool
-只能读取 scheduler 投影的既有 `skill_reference_grants`，不能扩大 Skill 或 reference grant。全部节点完成后，finalize 用同一个模型根据原始请求和按 plan 排序的结果生成
-标准 `AIMessage`，不机械拼接输出。planning 不创建第二套 Runtime，也不重复父图 Memory 节点。当前不维护
+只能读取 scheduler 投影的既有 `skill_reference_grants`，不能扩大 Skill 或 reference grant。全部节点完成后，
+finalizer 仍调用共享 `AssistantFastAgent`，但 `agent_phase="finalizer"` 确定性清空 Tool 与 structured response，
+根据原始请求、deliverables、planner evidence 和按 plan 排序的 worker results 返回标准 `AIMessage`，不机械拼接输出。
+planning 不创建第二套 Runtime，也不重复父图 Memory 节点。当前不维护
 verifier、repair ledger、acceptance contract 或 artifact provenance；deliverable 当前只做 producer/evidence
 引用准入，不建立运行期 artifact binding。只有真实产品需求出现后才增加。
 

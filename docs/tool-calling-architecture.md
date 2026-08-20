@@ -33,6 +33,18 @@ artifact 声明任意 grant；该可见性层不替代具体 Tool 的身份、�
 快照。worker 可显式调用 `load_skill_reference`，但 ToolContext 只读取 scheduler 投影的既有
 `skill_reference_grants`，未投影 reference 必须 fail closed，调用本身不产生新 grant。
 
+planning 不另建 Planner Tool executor。Planner 以 `agent_phase="planner"` 复用同一个
+`AssistantFastAgent` model→ToolNode→model loop；在相同初始 state 与受信运行事实下，其首轮 Tool projection
+与 fast 首轮等价，Planner Tool 调用继续经过同一组 `ToolRetryMiddleware`、state-aware
+`HumanInTheLoopMiddleware` 和标准 `ToolNode`。因此 read Tool 保持有界 retry，planning 中非 read Tool 在执行前
+产生原生 interrupt，approve/resume 后沿 checkpoint 继续而不重放已经完成的 Planner Tool。
+
+成功的 `load_skill` 通过标准 `Command(update=...)` 写入受信 `active_skill_ids` 和 reference grant；后续 Planner
+model call 会从同一受信 catalog 将对应完整 Skill 正文加入 system prompt，并暴露其 `governed_tools`。admission
+冻结 Planner 实际激活的 Skill snapshot，scheduler 只把节点 `required_skill_ids` 与该 snapshot 的交集投影给
+worker；worker 的空 Tool allowlist 为 fail closed，且不能重新调用 `load_skill` 扩权。finalizer phase 则确定性
+使用空 Tool projection，不允许任何 Tool 调用。
+
 媒体 Tool 使用另一条与 Skill 正交的条件暴露链。`ConditionalToolExposureMiddleware` 只过滤已经静态注册在
 `request.tools` 中的 Tool，并按 Tool metadata 的封闭 `availability` 枚举读取可信运行事实：
 `uploaded_media_inspect` 要求最新用户消息含 `source=uploaded` 的图片或视频；`live_view_inspect` 要求当前
