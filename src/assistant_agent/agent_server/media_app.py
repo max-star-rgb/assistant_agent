@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
+import json
+import logging
 import os
 import re
 from dataclasses import dataclass, field
+from time import perf_counter_ns
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import NAMESPACE_URL, uuid4, uuid5
@@ -50,6 +53,10 @@ from assistant_agent.runtime.generated_artifacts import (
 )
 
 
+logger = logging.getLogger(__name__)
+MAX_PENDING_VIDEO_MESSAGES = 8
+
+
 @asynccontextmanager
 async def agent_server_lifespan(application: FastAPI):
     """Own the process-wide visual module for this Agent Server process."""
@@ -84,6 +91,31 @@ class _ProactiveDeliveryConnection:
 @dataclass
 class _VisualPerceptionConnection:
     session: Any | None = None
+    video_tail: asyncio.Task[None] | None = None
+    video_tasks: set[asyncio.Task[None]] = field(default_factory=set)
+
+    def enqueue_video(self, operation: Callable[[], Awaitable[None]]) -> bool:
+        """Run video packets in wire order without blocking later chat packets."""
+
+        if len(self.video_tasks) >= MAX_PENDING_VIDEO_MESSAGES:
+            return False
+        previous = self.video_tail
+
+        async def run_in_order() -> None:
+            if previous is not None:
+                await previous
+            await operation()
+
+        task = asyncio.create_task(run_in_order(), name="media-video-ingestion")
+        self.video_tail = task
+        self.video_tasks.add(task)
+        task.add_done_callback(self.video_tasks.discard)
+        return True
+
+    async def aclose_video_tasks(self) -> None:
+        tasks = tuple(self.video_tasks)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @dataclass
@@ -114,7 +146,8 @@ class _NativeAssistantTextStream:
             message_id = message.get("id")
             if not isinstance(message_id, str) or not message_id:
                 continue
-            if self.message_nodes.get(message_id) != "model":
+            node = self.message_nodes.get(message_id)
+            if node is not None and node != "model":
                 continue
             current = _stream_message_content_text(message.get("content"))
             previous = self.snapshots.get(message_id, "")
@@ -226,8 +259,14 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
             return
         while True:
             raw = await websocket.receive_json()
+            received_ns = perf_counter_ns()
             try:
                 frame = parse_envelope(raw)
+                if frame.message == "chat":
+                    logger.info(
+                        "media_chat_received connection=%s",
+                        session.connection_id,
+                    )
                 await _handle_frame(
                     websocket,
                     session=session,
@@ -241,6 +280,7 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
                     proactive_delivery=proactive_delivery,
                     visual_module=visual_module,
                     visual_perception=visual_perception,
+                    received_ns=received_ns,
                 )
             except (MediaProtocolError, ValueError) as exc:
                 await _send_json(
@@ -262,6 +302,7 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
             task.cancel()
         if chat_tasks:
             await asyncio.gather(*chat_tasks.values(), return_exceptions=True)
+        await visual_perception.aclose_video_tasks()
         if visual_perception.session is not None:
             await visual_perception.session.aclose()
         for video_id in session.video_ids:
@@ -291,6 +332,7 @@ async def _handle_frame(
     proactive_delivery,
     visual_module,
     visual_perception,
+    received_ns: int | None = None,
 ) -> None:
     if frame.message in {"assistantControl", "assistantControlStart"}:
         user_id = _control_user_id(frame.message, frame.body)
@@ -366,6 +408,7 @@ async def _handle_frame(
         )
         return
     if frame.message == "chat":
+        chat_received_ns = received_ns or perf_counter_ns()
         if session.thread_id is None or session.user_id is None:
             raise MediaProtocolError("chat requires assistantControl handshake")
         chat = parse_chat(frame)
@@ -383,11 +426,13 @@ async def _handle_frame(
                 delivery_id=delivery_id,
             ),
         )
+        visual_prepare_started_ns = perf_counter_ns()
         visual_window = None
         if visual_perception.session is not None:
             visual_window = await visual_perception.session.prepare_strict_window(
                 session.video_ids
             )
+        visual_prepared_ns = perf_counter_ns()
         record_live_view = getattr(visual_module, "record_live_view", None)
         if callable(record_live_view):
             record_live_view(
@@ -410,20 +455,25 @@ async def _handle_frame(
                     visual_window.window_id if visual_window is not None else None
                 ),
                 visual_window_start_sequence=(
-                    visual_window.start_sequence
-                    if visual_window is not None
-                    else None
+                    visual_window.start_sequence if visual_window is not None else None
                 ),
                 visual_target_sequence=(
-                    visual_window.target_sequence
-                    if visual_window is not None
-                    else None
+                    visual_window.target_sequence if visual_window is not None else None
                 ),
                 visual_target_video_id=(
                     visual_window.video_id if visual_window is not None else None
                 ),
+                received_ns=chat_received_ns,
+                dispatched_ns=visual_prepared_ns,
             ),
             name=f"media-chat:{chat.chat_index}",
+        )
+        logger.info(
+            "media_chat_dispatched delivery=%s chat=%s entry_ms=%s visual_prepare_ms=%s",
+            delivery_id,
+            _safe_identifier(chat.chat_index),
+            _elapsed_ms(chat_received_ns, visual_prepared_ns),
+            _elapsed_ms(visual_prepare_started_ns, visual_prepared_ns),
         )
         chat_tasks[chat.chat_index] = task
         task.add_done_callback(
@@ -483,31 +533,31 @@ async def _handle_frame(
             raise MediaProtocolError("missing videoConfig")
         if not isinstance(contents, list) or not contents:
             raise MediaProtocolError("missing contents")
+        packets: list[tuple[str, str, dict[str, Any], str]] = []
         for index, item in enumerate(contents):
             if not isinstance(item, dict):
                 raise MediaProtocolError(f"contents[{index}] must be an object")
-            frame_result = await asyncio.to_thread(
-                video_ingestion.ingest,
-                session.thread_id,
-                video_index if len(contents) == 1 else f"{video_index}-{index}",
-                _required_text(item, "videoContent"),
-                video_config,
-                _required_text(item, "time"),
+            packets.append(
+                (
+                    video_index if len(contents) == 1 else f"{video_index}-{index}",
+                    _required_text(item, "videoContent"),
+                    dict(video_config),
+                    _required_text(item, "time"),
+                )
             )
-            session.bind_video(frame_result.video_id)
-            if visual_perception.session is not None and isinstance(
-                frame_result, VideoFrame
-            ):
-                await visual_perception.session.submit(frame_result)
-        await _send_json(
-            websocket,
-            send_lock,
-            envelope(
-                message="videoResponse",
-                session_id=frame.session_id,
-                body={"code": 0, "message": "video received"},
-            ),
+        accepted = visual_perception.enqueue_video(
+            lambda: _ingest_video_packets(
+                websocket,
+                session=session,
+                protocol_session_id=frame.session_id,
+                send_lock=send_lock,
+                video_ingestion=video_ingestion,
+                visual_perception=visual_perception,
+                packets=packets,
+            )
         )
+        if not accepted:
+            raise MediaProtocolError("video ingestion queue is full")
         return
     if frame.message == "audio":
         await _send_json(
@@ -537,13 +587,25 @@ async def _run_chat(
     visual_window_start_sequence: int | None = None,
     visual_target_sequence: int | None = None,
     visual_target_video_id: str | None = None,
+    received_ns: int | None = None,
+    dispatched_ns: int | None = None,
 ) -> None:
     def bind_run(run_id: str) -> None:
         session.bind_run(chat_index=chat.chat_index, run_id=run_id)
+        now_ns = perf_counter_ns()
+        logger.info(
+            "media_chat_run_created delivery=%s run=%s chat=%s total_ms=%s dispatch_ms=%s",
+            delivery_id,
+            run_id,
+            _safe_identifier(chat.chat_index),
+            _elapsed_ms(received_ns, now_ns),
+            _elapsed_ms(dispatched_ns, now_ns),
+        )
 
     try:
         final_state: dict[str, Any] | None = None
         text_stream = _NativeAssistantTextStream()
+        first_delta_sent = False
         run_context = {
             "entry_profile": "agent_service",
             "media_capabilities": list(session.media_capabilities),
@@ -582,6 +644,15 @@ async def _run_chat(
                             sequence=sequence,
                         ),
                     )
+                    if not first_delta_sent:
+                        first_delta_sent = True
+                        logger.info(
+                            "media_chat_first_delta delivery=%s chat=%s sequence=%s total_ms=%s",
+                            delivery_id,
+                            _safe_identifier(chat.chat_index),
+                            sequence,
+                            _elapsed_ms(received_ns, perf_counter_ns()),
+                        )
             if part.get("event") == "values" and isinstance(data, dict):
                 final_state = data
             if part.get("event") == "error":
@@ -605,6 +676,14 @@ async def _run_chat(
                 full_text=full_text,
             ),
         )
+        logger.info(
+            "media_chat_final delivery=%s chat=%s sequence=%s chunks=%s total_ms=%s",
+            delivery_id,
+            _safe_identifier(chat.chat_index),
+            text_stream.sequence + 1,
+            text_stream.sequence,
+            _elapsed_ms(received_ns, perf_counter_ns()),
+        )
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 - background protocol boundary.
@@ -620,6 +699,64 @@ async def _run_chat(
             )
     finally:
         session.finish_run(chat_index=chat.chat_index)
+
+
+async def _ingest_video_packets(
+    websocket: WebSocket,
+    *,
+    session: MediaConnectionSession,
+    protocol_session_id: str | None,
+    send_lock: asyncio.Lock,
+    video_ingestion: Any,
+    visual_perception: _VisualPerceptionConnection,
+    packets: list[tuple[str, str, dict[str, Any], str]],
+) -> None:
+    """Decode one wire video message after it has left the receive hot path."""
+
+    try:
+        for video_index, video_content, video_config, captured_at in packets:
+            frame_result = await asyncio.to_thread(
+                video_ingestion.ingest,
+                session.thread_id,
+                video_index,
+                video_content,
+                video_config,
+                captured_at,
+            )
+            session.bind_video(frame_result.video_id)
+            if visual_perception.session is not None and isinstance(
+                frame_result, VideoFrame
+            ):
+                await visual_perception.session.submit(frame_result)
+        await _send_json(
+            websocket,
+            send_lock,
+            envelope(
+                message="videoResponse",
+                session_id=protocol_session_id,
+                body={"code": 0, "message": "video received"},
+            ),
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - background protocol boundary.
+        logger.warning(
+            "media_video_ingestion_failed connection=%s error_type=%s",
+            session.connection_id,
+            type(exc).__name__,
+        )
+        try:
+            await _send_json(
+                websocket,
+                send_lock,
+                failure_response(
+                    message="video",
+                    session_id=protocol_session_id,
+                    detail=str(exc),
+                ),
+            )
+        except Exception:  # noqa: BLE001 - disconnected transport.
+            return
 
 
 async def _cancel_active_runs(*, session: MediaConnectionSession, client: Any) -> None:
@@ -677,6 +814,60 @@ async def _send_json(
 ) -> None:
     async with lock:
         await websocket.send_json(value)
+    message, chat_index, sequence, final, content_length = _wire_log_fields(value)
+    log = logger.info if message in {"chatProgress", "chatResponse"} else logger.debug
+    log(
+        "media_websocket_sent message=%s chat=%s sequence=%s final=%s content_length=%s",
+        message,
+        _safe_identifier(chat_index),
+        sequence,
+        final,
+        content_length,
+    )
+
+
+def _wire_log_fields(
+    value: Mapping[str, Any],
+) -> tuple[str, str | None, int | None, bool | None, int]:
+    message = str(value.get("message") or "unknown")
+    raw_body = value.get("body")
+    try:
+        body = json.loads(raw_body) if isinstance(raw_body, str) else raw_body
+    except json.JSONDecodeError:
+        body = None
+    if not isinstance(body, Mapping):
+        return message, None, None, None, 0
+    nested_message = body.get("message")
+    chat_index = None
+    content_length = 0
+    if isinstance(nested_message, Mapping):
+        raw_chat_index = nested_message.get("chatIndex")
+        chat_index = raw_chat_index if isinstance(raw_chat_index, str) else None
+        content = nested_message.get("content")
+        intent = content.get("intentResult") if isinstance(content, Mapping) else None
+        description = intent.get("description") if isinstance(intent, Mapping) else None
+        if isinstance(description, str):
+            content_length = len(description)
+    if chat_index is None:
+        raw_chat_index = body.get("chatIndex")
+        chat_index = raw_chat_index if isinstance(raw_chat_index, str) else None
+    sequence = body.get("sequence")
+    if isinstance(sequence, bool) or not isinstance(sequence, int):
+        sequence = None
+    final = body.get("final") if isinstance(body.get("final"), bool) else None
+    return message, chat_index, sequence, final, content_length
+
+
+def _safe_identifier(value: str | None) -> str:
+    if not value:
+        return "none"
+    return str(uuid5(NAMESPACE_URL, value))[:12]
+
+
+def _elapsed_ms(start_ns: int | None, end_ns: int | None) -> int | None:
+    if start_ns is None or end_ns is None:
+        return None
+    return max(0, int((end_ns - start_ns) / 1_000_000))
 
 
 def _control_user_id(message: str, body: dict[str, Any]) -> str:

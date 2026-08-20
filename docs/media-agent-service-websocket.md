@@ -103,8 +103,9 @@ Graph 完成后发送成功终包：
 
 `assistantMode` 省略时为 `fast`，也可显式选择 `planning`；旧 `standard|deep_research` 不再接受。媒体适配器
 把请求机械转换为标准 HumanMessage content blocks 和根输入 `execution_mode`。`stream=true` 只投影
-`messages/metadata.langgraph_node=model` 对应 `AIMessageChunk` 的 string content 或 `text|output_text` block；
-planner 等其他节点的内部文本、tool-call name/arguments、ToolMessage 和 updates 不进入媒体正文。
+`AIMessageChunk` 的 string content 或 `text|output_text` block；当 `messages/metadata` 存在时，明确标记为
+非 `model` 节点的 chunk 会被排除；metadata 缺失时按标准 assistant chunk 降级投影，避免原生流存在但媒体侧
+只能收到终包。planner 等已标记的其他节点内部文本、tool-call name/arguments、ToolMessage 和 updates 不进入媒体正文。
 Agent Server 的 `messages/partial` 是同一 message 的累计快照，适配器按 message ID
 计算 append-only delta；工具前导文本与工具后的下一条 assistant message 之间若均无换行，适配器在新消息首包
 补一个换行。中间包按 `sequence` 递增且 `final=false`，不携带 `deliveryId`；`stream=false` 不发送中间包。
@@ -156,8 +157,10 @@ enqueue 时已有有效在线 presence 才排队，在线写成功后记为 sent
 
 ## 5. audio、video 与 3D callback
 
-`audio` 继续做字段校验后的传输层 ACK，不把原始音频写入 Graph State。`video` 校验独立 Annex-B H.264
-frame，在 media edge 的工作线程中解码为有界 JPEG window，Graph 输入只携带稳定 `video_id`。Graph worker
+`audio` 继续做字段校验后的传输层 ACK，不把原始音频写入 Graph State。`video` 先在 WebSocket 热路径完成
+字段校验，再按连接内 wire 顺序进入后台解码队列；后续 chat 不等待尚未完成的视频解码。后台任务在 media edge
+的工作线程中把独立 Annex-B H.264 frame 解码为有界 JPEG window；连接级待处理消息数有固定上限，满时返回
+结构化失败而不无限保留媒体正文。Graph 输入只携带稳定 `video_id`。Graph worker
 的受治理 `live_view_inspect` Tool 通过共享 SQLite frame index 解析该引用；H.264 hex、JPEG
 正文和本地路径均不进入 Graph State、prompt 或 Agent Server Store。
 
@@ -166,7 +169,8 @@ frame，在 media edge 的工作线程中解码为有界 JPEG window，Graph 输
 模型看到 `live_view_inspect`；当当前 `user/thread/as-of sequence` 已产生可检索视觉文本时，才进一步暴露
 `visual_memory_search`。这两项条件暴露不依赖 Skill 加载。
 
-媒体 wire 只负责把每个成功解码帧提交给连接级视觉句柄。chat 时，它把视觉模块冻结得到的可信
+媒体 wire 只负责把每个成功解码帧提交给连接级视觉句柄。chat 到达时只冻结当时已经成功解码的帧；已入队但
+尚未完成解码的帧不进入该轮窗口。随后它把视觉模块冻结得到的可信
 `window_id`、`window_start_sequence` 和 `target_sequence` 绑定到标准 `source=live_camera` video content
 block，不传 JPEG、Provider client 或 task。逐帧并发、semantic keyframe、目标帧等待、ready/missing 结果和
 晚到帧处理均以 [`visual-perception-architecture.md`](visual-perception-architecture.md) 为唯一权威。
