@@ -186,6 +186,126 @@ class CodingCredentialProfile(BaseModel):
             raise ValueError("credential gateway image must be pinned by sha256 digest")
         return value
 
+class CodingArtifactExport(BaseModel):
+    """One server-owned build output eligible for governed export."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    export_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$")
+    command_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$")
+    path: str = Field(min_length=1, max_length=240)
+    media_type: str = Field(
+        pattern=r"^[a-z0-9][a-z0-9!#$&^_.+-]{0,63}/[a-z0-9][a-z0-9!#$&^_.+-]{0,127}$"
+    )
+    max_bytes: int = Field(ge=1_024, le=1_073_741_824)
+
+    @field_validator("path")
+    @classmethod
+    def _safe_export_path(cls, value: str) -> str:
+        return _safe_artifact_relative_path(value, "artifact export path")
+
+
+class CodingArtifactProfile(BaseModel):
+    """Server-owned ingress and build-output artifact policy."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    profile_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$")
+    manifest_path: str = Field(min_length=1, max_length=240)
+    trigger: Literal["manifest_changed"] = "manifest_changed"
+    allowed_hosts: tuple[str, ...] = Field(min_length=1, max_length=32)
+    allowed_ports: tuple[int, ...] = (443,)
+    fetcher_image: str = Field(min_length=73, max_length=512)
+    proxy_image: str = Field(min_length=73, max_length=512)
+    scanner_image: str = Field(min_length=73, max_length=512)
+    allowed_media_types: tuple[str, ...] = Field(min_length=1, max_length=32)
+    exports: dict[str, CodingArtifactExport] = Field(default_factory=dict)
+    timeout_seconds: int = Field(default=300, ge=10, le=1_800)
+    max_artifacts: int = Field(default=32, ge=1, le=512)
+    max_total_bytes: int = Field(default=536_870_912, ge=1_048_576, le=4_294_967_296)
+    max_file_bytes: int = Field(default=134_217_728, ge=1_024, le=1_073_741_824)
+    max_manifest_bytes: int = Field(default=262_144, ge=1_024, le=1_048_576)
+    bundle_ttl_seconds: int = Field(default=86_400, ge=300, le=604_800)
+
+    @field_validator(
+        "allowed_hosts", "allowed_ports", "allowed_media_types", mode="before"
+    )
+    @classmethod
+    def _tuple_values(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @field_validator("manifest_path")
+    @classmethod
+    def _safe_manifest_path(cls, value: str) -> str:
+        return _safe_artifact_relative_path(value, "artifact manifest path")
+
+    @field_validator("allowed_hosts")
+    @classmethod
+    def _exact_artifact_hosts(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        normalized: list[str] = []
+        for raw_host in value:
+            if not isinstance(raw_host, str):
+                raise ValueError("artifact host is invalid")
+            try:
+                host = raw_host.encode("idna").decode("ascii").lower()
+                ipaddress.ip_address(host)
+            except ValueError:
+                pass
+            else:
+                raise ValueError("artifact host cannot be an IP literal")
+            labels = host.split(".")
+            if (
+                raw_host != host
+                or len(labels) < 2
+                or any(_DNS_LABEL.fullmatch(label) is None for label in labels)
+            ):
+                raise ValueError("artifact host must be an exact FQDN")
+            normalized.append(host)
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("artifact hosts cannot contain duplicates")
+        return tuple(sorted(normalized))
+
+    @field_validator("allowed_ports")
+    @classmethod
+    def _https_only(cls, value: tuple[int, ...]) -> tuple[int, ...]:
+        if value != (443,):
+            raise ValueError("artifact ingress only supports HTTPS port 443")
+        return value
+
+    @field_validator("fetcher_image", "proxy_image", "scanner_image")
+    @classmethod
+    def _digest_pinned_image(cls, value: str) -> str:
+        if _DIGEST_IMAGE.fullmatch(value) is None:
+            raise ValueError("artifact image must be pinned by sha256 digest")
+        return value
+
+    @field_validator("allowed_media_types")
+    @classmethod
+    def _safe_media_types(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        pattern = re.compile(
+            r"[a-z0-9][a-z0-9!#$&^_.+-]{0,63}/[a-z0-9][a-z0-9!#$&^_.+-]{0,127}"
+        )
+        if any(pattern.fullmatch(item) is None for item in value):
+            raise ValueError("artifact media type is invalid")
+        if len(set(value)) != len(value):
+            raise ValueError("artifact media types cannot contain duplicates")
+        return tuple(sorted(value))
+
+    @model_validator(mode="after")
+    def _validate_exports(self) -> "CodingArtifactProfile":
+        for export_id, item in self.exports.items():
+            if export_id != item.export_id:
+                raise ValueError("artifact export key must match export_id")
+            if item.media_type not in self.allowed_media_types:
+                raise ValueError("artifact export media type is not allowed")
+            if item.max_bytes > self.max_file_bytes:
+                raise ValueError("artifact export exceeds profile file limit")
+        paths = [item.path for item in self.exports.values()]
+        if len(set(paths)) != len(paths):
+            raise ValueError("artifact export paths cannot contain duplicates")
+        return self
+
+
 class CodingCommandConfig(BaseModel):
     """One server-owned command ID mapped to immutable process arguments."""
 
@@ -231,6 +351,7 @@ class CodingRepositoryConfig(BaseModel):
     sandbox_enabled: bool = False
     sandbox_image: str | None = Field(default=None, min_length=1, max_length=512)
     dependency_profile: CodingDependencyProfile | None = None
+    artifact_profile: CodingArtifactProfile | None = None
     commit_author_name: str = Field(default="Assistant Agent", min_length=1, max_length=160)
     commit_author_email: str = Field(
         default="assistant-agent@localhost",
@@ -297,6 +418,14 @@ class CodingRepositoryConfig(BaseModel):
             raise ValueError("coding sandbox requires a digest-pinned image")
         if self.dependency_profile is not None and not self.sandbox_enabled:
             raise ValueError("coding dependencies require the Stage 4A sandbox")
+        if self.artifact_profile is not None:
+            if not self.sandbox_enabled:
+                raise ValueError("coding artifacts require the Stage 4A sandbox")
+            missing_commands = {
+                item.command_id for item in self.artifact_profile.exports.values()
+            }.difference(self.commands)
+            if missing_commands:
+                raise ValueError("artifact export references an unknown command")
         return self
 
 
@@ -450,6 +579,19 @@ def _require_git_worktree(path: Path) -> None:
         raise ValueError("coding repository path must be a Git worktree")
 
 
+def _safe_artifact_relative_path(value: str, label: str) -> str:
+    if "\\" in value or any(character in value for character in ("\x00", "\n", "\r")):
+        raise ValueError(f"{label} is invalid")
+    path = PurePosixPath(value)
+    if (
+        path.is_absolute()
+        or str(path) != value
+        or any(part in {"", ".", "..", ".git"} for part in path.parts)
+    ):
+        raise ValueError(f"{label} is invalid")
+    return value
+
+
 def _bool_value(raw: str) -> bool:
     normalized = str(raw).strip().lower()
     if normalized in {"1", "true", "yes", "on"}:
@@ -469,6 +611,8 @@ def _int_value(source: Mapping[str, str], name: str, default: int) -> int:
 
 __all__ = [
     "CodingCommandConfig",
+    "CodingArtifactExport",
+    "CodingArtifactProfile",
     "CodingConfig",
     "CodingCredentialProfile",
     "CodingDependencyProfile",

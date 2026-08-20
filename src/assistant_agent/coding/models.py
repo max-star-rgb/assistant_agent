@@ -142,6 +142,58 @@ class CodingCredentialApprovalDecision(BaseModel):
         return self
 
 
+class CodingArtifactDescriptor(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    artifact_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$")
+    url: str = Field(min_length=10, max_length=2_048)
+    filename: str = Field(min_length=1, max_length=255)
+    media_type: str = Field(min_length=3, max_length=192)
+    size_bytes: int = Field(ge=1, le=1_073_741_824)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class CodingArtifactIngressPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    profile_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$")
+    manifest_path: str = Field(min_length=1, max_length=240)
+    manifest_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    artifacts: tuple[CodingArtifactDescriptor, ...] = Field(min_length=1, max_length=512)
+    artifact_count: int = Field(ge=1, le=512)
+    allowed_hosts: tuple[str, ...] = Field(min_length=1, max_length=32)
+    allowed_ports: tuple[int, ...] = (443,)
+    timeout_seconds: int = Field(ge=10, le=1_800)
+    max_total_bytes: int = Field(ge=1_048_576, le=4_294_967_296)
+    max_file_bytes: int = Field(ge=1_024, le=1_073_741_824)
+    policy_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("artifacts", "allowed_hosts", "allowed_ports", mode="before")
+    @classmethod
+    def _tuple_values(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @model_validator(mode="after")
+    def _count_matches(self) -> "CodingArtifactIngressPlan":
+        if self.artifact_count != len(self.artifacts):
+            raise ValueError("artifact count mismatch")
+        return self
+
+
+class CodingArtifactApprovalDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    decision: Literal["approve", "reject"]
+    plan_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def _approval_requires_digest(self) -> "CodingArtifactApprovalDecision":
+        if self.decision == "approve" and self.plan_digest is None:
+            raise ValueError("artifact approval requires plan digest")
+        return self
+
+
 class CodingDependencyWheel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -526,6 +578,9 @@ class CodingDiffResult(BaseModel):
 
 __all__ = [
     "CodingApprovalDecision",
+    "CodingArtifactApprovalDecision",
+    "CodingArtifactDescriptor",
+    "CodingArtifactIngressPlan",
     "CodingCommandEvidence",
     "CodingCommitResult",
     "CodingCredentialApprovalDecision",
