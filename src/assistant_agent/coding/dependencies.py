@@ -4,17 +4,29 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import shutil
+import stat
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal
 
 from packaging.requirements import InvalidRequirement, Requirement
-from packaging.utils import canonicalize_name
+from packaging.utils import (
+    InvalidWheelFilename,
+    canonicalize_name,
+    parse_wheel_filename,
+)
 
 from assistant_agent.coding.config import CodingRepositoryConfig
 from assistant_agent.coding.models import (
     CodingDependencyApprovalDecision,
+    CodingDependencyManifest,
     CodingDependencyPlan,
+    CodingDependencyWheel,
     CodingLockedDependency,
 )
 
@@ -102,6 +114,104 @@ def validate_dependency_approval(
     return decision.decision
 
 
+def validate_wheelhouse(
+    plan: CodingDependencyPlan,
+    root: Path,
+) -> CodingDependencyManifest:
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("dependency_artifact_invalid")
+    locked = {item.name: item for item in plan.packages}
+    seen: set[str] = set()
+    wheels: list[CodingDependencyWheel] = []
+    total_bytes = 0
+    try:
+        entries = sorted(os.scandir(root), key=lambda item: item.name)
+    except OSError as exc:
+        raise ValueError("dependency_artifact_invalid") from exc
+    if not entries or len(entries) > plan.max_files:
+        raise ValueError("dependency_artifact_invalid")
+    for entry in entries:
+        try:
+            metadata = entry.stat(follow_symlinks=False)
+        except OSError as exc:
+            raise ValueError("dependency_artifact_invalid") from exc
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or not entry.name.endswith(".whl")
+            or len(entry.name.encode("utf-8")) > 255
+            or any(character in entry.name for character in ("\x00", "\n", "\r"))
+            or metadata.st_size > plan.max_file_bytes
+        ):
+            raise ValueError("dependency_artifact_invalid")
+        try:
+            parsed_name, parsed_version, _, _ = parse_wheel_filename(entry.name)
+        except InvalidWheelFilename as exc:
+            raise ValueError("dependency_artifact_invalid") from exc
+        name = canonicalize_name(parsed_name)
+        version = str(parsed_version)
+        expected = locked.get(name)
+        if (
+            expected is None
+            or expected.version != version
+            or name in seen
+        ):
+            raise ValueError("dependency_artifact_invalid")
+        digest = _file_digest(Path(entry.path), plan.max_file_bytes)
+        if digest not in expected.sha256:
+            raise ValueError("dependency_artifact_invalid")
+        seen.add(name)
+        total_bytes += metadata.st_size
+        if total_bytes > plan.max_download_bytes:
+            raise ValueError("dependency_artifact_invalid")
+        wheels.append(
+            CodingDependencyWheel(
+                filename=entry.name,
+                name=name,
+                version=version,
+                sha256=digest,
+                size_bytes=metadata.st_size,
+            )
+        )
+    if seen != set(locked):
+        raise ValueError("dependency_artifact_invalid")
+    values: dict[str, object] = {
+        "plan_digest": plan.plan_digest,
+        "lockfile_digest": plan.lockfile_digest,
+        "policy_digest": plan.policy_digest,
+        "wheels": tuple(wheels),
+        "total_bytes": total_bytes,
+    }
+    return CodingDependencyManifest.model_validate(
+        {**values, "manifest_digest": _digest(values)}
+    )
+
+
+@contextmanager
+def temporary_wheelhouse(parent: Path) -> Iterator[Path]:
+    parent.mkdir(parents=True, exist_ok=True)
+    root = Path(tempfile.mkdtemp(prefix="dependency-wheelhouse-", dir=parent))
+    root.chmod(0o700)
+    try:
+        yield root
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def _file_digest(path: Path, limit: int) -> str:
+    digest = hashlib.sha256()
+    total = 0
+    try:
+        with path.open("rb") as source:
+            while chunk := source.read(65_536):
+                total += len(chunk)
+                if total > limit:
+                    raise ValueError("dependency_artifact_invalid")
+                digest.update(chunk)
+    except OSError as exc:
+        raise ValueError("dependency_artifact_invalid") from exc
+    return digest.hexdigest()
+
+
 def _parse_lockfile(
     text: str,
     *,
@@ -182,5 +292,7 @@ def _digest(value: object) -> str:
 __all__ = [
     "build_dependency_plan",
     "dependency_interrupt_payload",
+    "temporary_wheelhouse",
     "validate_dependency_approval",
+    "validate_wheelhouse",
 ]

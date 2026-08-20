@@ -113,6 +113,32 @@ class CodingDependencyApprovalDecision(BaseModel):
         return self
 
 
+class CodingDependencyWheel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    filename: str = Field(min_length=5, max_length=255)
+    name: str = Field(pattern=r"^[a-z0-9](?:[a-z0-9-]{0,126}[a-z0-9])?$")
+    version: str = Field(min_length=1, max_length=128)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    size_bytes: int = Field(ge=0)
+
+
+class CodingDependencyManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    lockfile_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    policy_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    wheels: tuple[CodingDependencyWheel, ...] = Field(min_length=1, max_length=4_096)
+    total_bytes: int = Field(ge=0)
+    manifest_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("wheels", mode="before")
+    @classmethod
+    def _tuple_wheels(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+
 class CodingSandboxRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
