@@ -11,6 +11,7 @@ import shutil
 import signal
 import stat
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -30,6 +31,9 @@ class SandboxRunnerRequest:
     max_files: int
     max_changed_files: int
     max_patch_bytes: int
+    dependency_lockfile_path: str | None = None
+    dependency_plan_digest: str | None = None
+    dependency_manifest_digest: str | None = None
 
 
 class _OutputBudget:
@@ -77,6 +81,20 @@ def run_sandbox_command(request: SandboxRunnerRequest) -> dict[str, object]:
         _prepare_workspace(request)
     except (_RunnerBoundaryError, OSError):
         return _failure("sandbox_resource_exceeded", started)
+
+    if request.dependency_lockfile_path is not None:
+        if not _install_dependencies(request):
+            return _result(
+                "failed",
+                started,
+                exit_code=None,
+                output_digest=hashlib.sha256(b"").hexdigest(),
+                error_code="dependency_offline_install_failed",
+                dependency_plan_digest=request.dependency_plan_digest,
+                dependency_manifest_digest=request.dependency_manifest_digest,
+                dependency_install_status="failed",
+                dependency_install_error="dependency_offline_install_failed",
+            )
 
     budget = _OutputBudget(request.max_output_bytes)
     try:
@@ -163,6 +181,11 @@ def run_sandbox_command(request: SandboxRunnerRequest) -> dict[str, object]:
         formatter_files=formatter_files,
         formatter_deletions=formatter_deletions,
         formatter_modes=formatter_modes,
+        dependency_plan_digest=request.dependency_plan_digest,
+        dependency_manifest_digest=request.dependency_manifest_digest,
+        dependency_install_status=(
+            "passed" if request.dependency_lockfile_path is not None else None
+        ),
     )
 
 
@@ -312,7 +335,7 @@ def _terminate(process: subprocess.Popen[bytes]) -> None:
 
 
 def _command_env() -> dict[str, str]:
-    return {
+    environment = {
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
@@ -322,6 +345,44 @@ def _command_env() -> dict[str, str]:
         "GIT_TERMINAL_PROMPT": "0",
         "PYTHONDONTWRITEBYTECODE": "1",
     }
+    dependency_target = Path("/workspace/.assistant_deps")
+    if dependency_target.is_dir():
+        environment["PYTHONPATH"] = str(dependency_target)
+    return environment
+
+
+def _install_dependencies(request: SandboxRunnerRequest) -> bool:
+    lockfile = Path("/input").joinpath(*request.dependency_lockfile_path.split("/"))
+    argv = (
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--no-index",
+        "--no-deps",
+        "--only-binary=:all:",
+        "--target",
+        "/workspace/.assistant_deps",
+        "--find-links",
+        "/dependencies",
+        "-r",
+        str(lockfile),
+    )
+    try:
+        completed = subprocess.run(
+            argv,
+            cwd=request.workspace_root,
+            env=_command_env(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            shell=False,
+            timeout=300,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0
 
 
 def _failure(error_code: str, started: float) -> dict[str, object]:
@@ -347,6 +408,10 @@ def _result(
     formatter_files: dict[str, str] | None = None,
     formatter_deletions: tuple[str, ...] = (),
     formatter_modes: dict[str, int] | None = None,
+    dependency_plan_digest: str | None = None,
+    dependency_manifest_digest: str | None = None,
+    dependency_install_status: str | None = None,
+    dependency_install_error: str | None = None,
 ) -> dict[str, object]:
     return {
         "protocol_version": 1,
@@ -361,6 +426,10 @@ def _result(
         "formatter_files": formatter_files or {},
         "formatter_deletions": formatter_deletions,
         "formatter_modes": formatter_modes or {},
+        "dependency_plan_digest": dependency_plan_digest,
+        "dependency_manifest_digest": dependency_manifest_digest,
+        "dependency_install_status": dependency_install_status,
+        "dependency_install_error": dependency_install_error,
     }
 
 
@@ -373,6 +442,9 @@ def _parse_args() -> SandboxRunnerRequest:
     parser.add_argument("--max-files", required=True, type=int)
     parser.add_argument("--max-changed-files", required=True, type=int)
     parser.add_argument("--max-patch-bytes", required=True, type=int)
+    parser.add_argument("--dependency-lockfile")
+    parser.add_argument("--dependency-plan-digest")
+    parser.add_argument("--dependency-manifest-digest")
     parser.add_argument("argv", nargs=argparse.REMAINDER)
     values = parser.parse_args()
     argv = tuple(values.argv[1:] if values.argv[:1] == ["--"] else values.argv)
@@ -389,6 +461,9 @@ def _parse_args() -> SandboxRunnerRequest:
         max_files=values.max_files,
         max_changed_files=values.max_changed_files,
         max_patch_bytes=values.max_patch_bytes,
+        dependency_lockfile_path=values.dependency_lockfile,
+        dependency_plan_digest=values.dependency_plan_digest,
+        dependency_manifest_digest=values.dependency_manifest_digest,
     )
 
 

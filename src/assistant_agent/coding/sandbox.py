@@ -75,6 +75,14 @@ class _RunnerPayload(BaseModel):
     formatter_files: dict[str, str] = Field(default_factory=dict)
     formatter_deletions: tuple[str, ...] = ()
     formatter_modes: dict[str, int] = Field(default_factory=dict)
+    dependency_plan_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    dependency_manifest_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    dependency_install_status: Literal["passed", "failed"] | None = None
+    dependency_install_error: str | None = None
 
     @field_validator("formatter_deletions", mode="before")
     @classmethod
@@ -167,6 +175,12 @@ class DockerCodingSandboxBackend:
             or any(item in scratch_value for item in (",", "\x00", "\n", "\r"))
         ):
             return self._failure("sandbox_workspace_invalid", started, "not_created")
+        if request.dependency_root is not None and (
+            not request.dependency_root.is_absolute()
+            or request.dependency_root.is_symlink()
+            or not request.dependency_root.is_dir()
+        ):
+            return self._failure("dependency_artifact_invalid", started, "not_created")
         image_error = self._require_local_image(request.image)
         if image_error is not None:
             return self._failure(image_error, started, "not_created")
@@ -194,8 +208,28 @@ class DockerCodingSandboxBackend:
                     ),
                     timeout=min(30.0, float(request.timeout_seconds)),
                 )
+                dependencies_copied = True
+                if request.dependency_root is not None:
+                    dependency_copy = self._run(
+                        (
+                            self._docker,
+                            "cp",
+                            "--archive",
+                            f"{request.dependency_root}/.",
+                            f"{container_name}:/dependencies",
+                        ),
+                        timeout=min(30.0, float(request.timeout_seconds)),
+                    )
+                    dependencies_copied = (
+                        dependency_copy is not None
+                        and dependency_copy.returncode == 0
+                    )
                 container_id = self._inspect_id(container_name)
-                if copied is None or copied.returncode != 0:
+                if (
+                    copied is None
+                    or copied.returncode != 0
+                    or not dependencies_copied
+                ):
                     execution = self._failure(
                         "sandbox_input_copy_failed",
                         started,
@@ -269,6 +303,16 @@ class DockerCodingSandboxBackend:
             f"size={request.max_disk_bytes},nr_inodes={inode_limit},"
             f"uid={self._uid},gid={self._gid}"
         )
+        dependency_args: tuple[str, ...] = ()
+        if request.dependency_root is not None:
+            dependency_args = (
+                "--dependency-lockfile",
+                str(request.dependency_lockfile_path),
+                "--dependency-plan-digest",
+                str(request.dependency_plan_digest),
+                "--dependency-manifest-digest",
+                str(request.dependency_manifest_digest),
+            )
         return (
             self._docker, "create", "--name", container_name, "--hostname", "sandbox",
             "--network", "none", "--cgroupns", "private", "--read-only",
@@ -293,7 +337,10 @@ class DockerCodingSandboxBackend:
             "--max-disk-bytes", str(request.max_disk_bytes),
             "--max-files", str(request.max_files),
             "--max-changed-files", str(request.max_changed_files),
-            "--max-patch-bytes", str(request.max_patch_bytes), "--", *request.argv,
+            "--max-patch-bytes", str(request.max_patch_bytes),
+            *dependency_args,
+            "--",
+            *request.argv,
         )
 
     def _start_and_collect(
@@ -370,6 +417,24 @@ class DockerCodingSandboxBackend:
         if formatter_changes is None:
             return self._failure("sandbox_output_invalid", started, "removed")
         formatter_files, formatter_deletions, formatter_modes = formatter_changes
+        if request.dependency_root is not None:
+            if (
+                payload.dependency_plan_digest != request.dependency_plan_digest
+                or payload.dependency_manifest_digest
+                != request.dependency_manifest_digest
+                or payload.dependency_install_status not in {"passed", "failed"}
+            ):
+                return self._failure("sandbox_output_invalid", started, "removed")
+        elif any(
+            item is not None
+            for item in (
+                payload.dependency_plan_digest,
+                payload.dependency_manifest_digest,
+                payload.dependency_install_status,
+                payload.dependency_install_error,
+            )
+        ):
+            return self._failure("sandbox_output_invalid", started, "removed")
         return CodingSandboxResult(
             status=payload.status, exit_code=payload.exit_code,
             duration_ms=payload.duration_ms, output_digest=payload.output_digest,
@@ -390,6 +455,10 @@ class DockerCodingSandboxBackend:
             formatter_files=formatter_files,
             formatter_deletions=formatter_deletions,
             formatter_modes=formatter_modes,
+            dependency_plan_digest=payload.dependency_plan_digest,
+            dependency_manifest_digest=payload.dependency_manifest_digest,
+            dependency_install_status=payload.dependency_install_status,
+            dependency_install_error=payload.dependency_install_error,
         )
 
     def _validate_formatter_changes(

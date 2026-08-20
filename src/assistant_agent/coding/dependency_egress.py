@@ -20,6 +20,18 @@ class DockerRunner(Protocol):
     def run(self, argv: tuple[str, ...], *, timeout: float): ...
 
 
+class CodingDependencyFetcher(Protocol):
+    def fetch(
+        self,
+        profile: CodingDependencyProfile,
+        plan: CodingDependencyPlan,
+        input_root: Path,
+        output_root: Path,
+    ) -> CodingDependencyManifest: ...
+
+    async def aclose(self) -> None: ...
+
+
 class SubprocessDockerRunner:
     def run(self, argv: tuple[str, ...], *, timeout: float):
         return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
@@ -171,4 +183,4 @@ class DockerDependencyFetcher:
                         continue
 
 
-__all__ = ["DockerDependencyFetcher"]
+__all__ = ["CodingDependencyFetcher", "DockerDependencyFetcher"]

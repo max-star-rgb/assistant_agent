@@ -19,7 +19,10 @@ from assistant_agent.coding.models import (
     CodingSandboxResult,
     CodingVerificationResult,
     CodingWorkspace,
+    CodingDependencyPlan,
 )
+from assistant_agent.coding.dependencies import temporary_wheelhouse
+from assistant_agent.coding.dependency_egress import CodingDependencyFetcher
 from assistant_agent.coding.sandbox import CodingSandboxBackend
 from assistant_agent.coding.workspace import CodingWorkspaceError, CodingWorkspaceService
 
@@ -31,9 +34,11 @@ class CodingValidationService:
         self,
         workspace_service: CodingWorkspaceService,
         sandbox_backend: CodingSandboxBackend | None = None,
+        dependency_fetcher: CodingDependencyFetcher | None = None,
     ) -> None:
         self.workspace_service = workspace_service
         self.sandbox_backend = sandbox_backend
+        self.dependency_fetcher = dependency_fetcher
         self._root = workspace_service.config.workspace_root / "validation"
 
     def run(
@@ -42,11 +47,63 @@ class CodingValidationService:
         repository: CodingRepositoryConfig,
         *,
         format_round: int,
+        dependency_plan: CodingDependencyPlan | None = None,
+    ) -> CodingVerificationResult:
+        if dependency_plan is not None:
+            profile = repository.dependency_profile
+            if profile is None or self.dependency_fetcher is None:
+                return CodingVerificationResult(
+                    status="failed",
+                    error_code="dependency_egress_unconfigured",
+                )
+            try:
+                with temporary_wheelhouse(self._root) as dependency_root:
+                    manifest = self.dependency_fetcher.fetch(
+                        profile,
+                        dependency_plan,
+                        workspace.root,
+                        dependency_root,
+                    )
+                    return self._run_sequence(
+                        workspace,
+                        repository,
+                        format_round=format_round,
+                        dependency_root=dependency_root,
+                        dependency_plan=dependency_plan,
+                        dependency_manifest_digest=manifest.manifest_digest,
+                    )
+            except ValueError as exc:
+                return CodingVerificationResult(
+                    status="failed",
+                    error_code=str(exc),
+                )
+        return self._run_sequence(
+            workspace,
+            repository,
+            format_round=format_round,
+        )
+
+    def _run_sequence(
+        self,
+        workspace: CodingWorkspace,
+        repository: CodingRepositoryConfig,
+        *,
+        format_round: int,
+        dependency_root: Path | None = None,
+        dependency_plan: CodingDependencyPlan | None = None,
+        dependency_manifest_digest: str | None = None,
     ) -> CodingVerificationResult:
         evidence: list[CodingCommandEvidence] = []
         for command_id in repository.verification_sequence:
             command = repository.commands[command_id]
-            item, patch = self._run_one(workspace, repository, command)
+            item, patch = self._run_one(
+                workspace,
+                repository,
+                command,
+                dependency_root=dependency_root,
+                dependency_plan=dependency_plan,
+                dependency_manifest_digest=dependency_manifest_digest,
+            )
             evidence.append(item)
             if item.status != "passed":
                 return CodingVerificationResult(
@@ -88,6 +145,10 @@ class CodingValidationService:
         workspace: CodingWorkspace,
         repository: CodingRepositoryConfig,
         command: CodingCommandConfig,
+        *,
+        dependency_root: Path | None = None,
+        dependency_plan: CodingDependencyPlan | None = None,
+        dependency_manifest_digest: str | None = None,
     ) -> tuple[CodingCommandEvidence, str]:
         self._root.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(
@@ -110,7 +171,14 @@ class CodingValidationService:
                     "",
                 )
             if repository.sandbox_enabled:
-                evidence = self._execute_sandbox(repository, command, scratch)
+                evidence = self._execute_sandbox(
+                    repository,
+                    command,
+                    scratch,
+                    dependency_root=dependency_root,
+                    dependency_plan=dependency_plan,
+                    dependency_manifest_digest=dependency_manifest_digest,
+                )
             else:
                 evidence = _execute(command, scratch, temporary)
             if _tree_bytes(temporary) >= command.max_disk_bytes:
@@ -134,6 +202,10 @@ class CodingValidationService:
         repository: CodingRepositoryConfig,
         command: CodingCommandConfig,
         scratch: Path,
+        *,
+        dependency_root: Path | None,
+        dependency_plan: CodingDependencyPlan | None,
+        dependency_manifest_digest: str | None,
     ) -> CodingCommandEvidence:
         if self.sandbox_backend is None or repository.sandbox_image is None:
             return _empty_evidence(
@@ -158,6 +230,14 @@ class CodingValidationService:
             max_files=command.max_files,
             max_changed_files=self.workspace_service.config.max_changed_files,
             max_patch_bytes=self.workspace_service.config.max_patch_bytes,
+            dependency_root=dependency_root,
+            dependency_lockfile_path=(
+                dependency_plan.lockfile_path if dependency_plan is not None else None
+            ),
+            dependency_plan_digest=(
+                dependency_plan.plan_digest if dependency_plan is not None else None
+            ),
+            dependency_manifest_digest=dependency_manifest_digest,
         )
         result = self.sandbox_backend.execute(request)
         if result.status == "passed" and (
@@ -359,6 +439,10 @@ def _sandbox_evidence(
         cleanup_status=result.cleanup_status,
         timed_out=result.timed_out,
         oom_killed=result.oom_killed,
+        dependency_plan_digest=result.dependency_plan_digest,
+        dependency_manifest_digest=result.dependency_manifest_digest,
+        dependency_install_status=result.dependency_install_status,
+        dependency_install_error=result.dependency_install_error,
     )
 
 

@@ -162,6 +162,39 @@ class CodingSandboxRequest(BaseModel):
     max_files: int = Field(ge=16, le=1_000_000)
     max_changed_files: int = Field(ge=1, le=256)
     max_patch_bytes: int = Field(ge=1_024, le=1_048_576)
+    dependency_root: Path | None = None
+    dependency_lockfile_path: str | None = Field(default=None, max_length=240)
+    dependency_plan_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    dependency_manifest_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+
+    @model_validator(mode="after")
+    def _dependency_fields_are_atomic(self) -> "CodingSandboxRequest":
+        values = (
+            self.dependency_root,
+            self.dependency_lockfile_path,
+            self.dependency_plan_digest,
+            self.dependency_manifest_digest,
+        )
+        if any(item is not None for item in values) and not all(
+            item is not None for item in values
+        ):
+            raise ValueError("sandbox dependency fields must be supplied together")
+        if self.dependency_lockfile_path is not None:
+            parts = self.dependency_lockfile_path.split("/")
+            if (
+                self.dependency_lockfile_path.startswith("/")
+                or any(part in {"", ".", "..", ".git"} for part in parts)
+                or any(
+                    item in self.dependency_lockfile_path
+                    for item in ("\\", "\x00", "\n", "\r")
+                )
+            ):
+                raise ValueError("sandbox dependency lockfile path is invalid")
+        return self
 
 
 class CodingSandboxResult(BaseModel):
@@ -181,6 +214,14 @@ class CodingSandboxResult(BaseModel):
     formatter_files: dict[str, str] = Field(default_factory=dict)
     formatter_deletions: tuple[str, ...] = ()
     formatter_modes: dict[str, int] = Field(default_factory=dict)
+    dependency_plan_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    dependency_manifest_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    dependency_install_status: Literal["passed", "failed"] | None = None
+    dependency_install_error: str | None = None
 
 
 class CodingCommandEvidence(BaseModel):
@@ -199,6 +240,14 @@ class CodingCommandEvidence(BaseModel):
     cleanup_status: Literal["not_created", "removed", "failed"] | None = None
     timed_out: bool = False
     oom_killed: bool = False
+    dependency_plan_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    dependency_manifest_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    dependency_install_status: Literal["passed", "failed"] | None = None
+    dependency_install_error: str | None = None
 
 
 class CodingVerificationResult(BaseModel):

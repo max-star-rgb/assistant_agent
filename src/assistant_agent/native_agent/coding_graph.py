@@ -380,6 +380,7 @@ def build_coding_graph(
                 workspace,
                 repository,
                 format_round=int(state.get("format_round", 0)),
+                dependency_plan=state.get("dependency_plan"),
             )
         except CodingWorkspaceError as exc:
             return {"coding_result": _failed(state, exc.code)}

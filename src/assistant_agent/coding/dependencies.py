@@ -194,7 +194,10 @@ def temporary_wheelhouse(parent: Path) -> Iterator[Path]:
     try:
         yield root
     finally:
-        shutil.rmtree(root, ignore_errors=True)
+        try:
+            shutil.rmtree(root)
+        except OSError as exc:
+            raise ValueError("dependency_cleanup_failed") from exc
 
 
 def _file_digest(path: Path, limit: int) -> str:

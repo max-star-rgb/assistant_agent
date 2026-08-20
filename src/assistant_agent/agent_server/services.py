@@ -110,6 +110,7 @@ class AgentServerExecutionOwner:
         coding_validation_service = CodingValidationService(
             coding_workspace_service,
             sandbox_backend=coding_sandbox_backend,
+            dependency_fetcher=coding_dependency_fetcher,
         )
         coding_integration_service = CodingIntegrationService(coding_workspace_service)
         coding_tools = create_coding_tools(coding_workspace_service)
