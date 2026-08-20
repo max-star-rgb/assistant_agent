@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -14,6 +15,7 @@ from assistant_agent.native_agent.planning_graph import build_planning_graph
 from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.native_agent.root_graph import build_assistant_root_graph
 from assistant_agent.native_agent.state import CodingState, FastAgentState, PlanningState
+from scripts import run_server
 
 
 class _User(dict):
@@ -216,3 +218,29 @@ def test_independent_memory_graph_extracts_without_recall_or_agent() -> None:
         "request-sentinel",
         "existing-answer-sentinel",
     ]
+
+
+@pytest.mark.core_invariant("MEMORY-001")
+def test_dev_server_keeps_capacity_for_chat_while_memory_extracts(
+    monkeypatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    monkeypatch.setattr(
+        run_server,
+        "hold_dev_server_lock",
+        lambda: nullcontext(),
+    )
+    monkeypatch.setattr(run_server, "require_available_port", lambda *_args: None)
+
+    def capture_command(command, **_kwargs):
+        captured["command"] = list(command)
+        return 0
+
+    monkeypatch.setattr(run_server, "run_command_with_log", capture_command)
+
+    assert run_server.main(["--backend", "dev", "--no-env-file"]) == 0
+
+    command = captured["command"]
+    option_index = command.index("--n-jobs-per-worker")
+    assert int(command[option_index + 1]) >= 2

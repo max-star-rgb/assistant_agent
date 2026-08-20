@@ -36,6 +36,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--no-reload", action="store_true")
     parser.add_argument("--no-browser", action="store_true", default=True)
+    parser.add_argument(
+        "--n-jobs-per-worker",
+        type=int,
+        default=10,
+        help=(
+            "Maximum concurrent Agent Server jobs for the dev backend. "
+            "Keep this above 1 so delayed Memory extraction cannot starve chat runs."
+        ),
+    )
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--no-env-file", action="store_true")
     parser.add_argument(
@@ -266,6 +275,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--port",
         str(args.port),
         "--no-browser",
+        "--n-jobs-per-worker",
+        str(args.n_jobs_per_worker),
     ]
     if args.no_reload:
         command.append("--no-reload")
