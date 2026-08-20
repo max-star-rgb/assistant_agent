@@ -100,6 +100,7 @@ class DockerArtifactIngressBackend:
         self._janitor_stop = threading.Event()
         self._janitor_wake = threading.Event()
         self._janitor_lock = threading.Lock()
+        self._bundle_io_lock = threading.Lock()
         self._janitor: threading.Thread | None = None
         if managed_bundle_root is not None:
             self._start_janitor()
@@ -517,7 +518,8 @@ class DockerArtifactIngressBackend:
         if bundle_root.is_symlink() or not bundle_root.is_dir():
             raise ValueError("artifact_export_failed")
         now = datetime.now(UTC)
-        self._prune_expired_bundles(bundle_root, now)
+        with self._bundle_io_lock:
+            self._prune_expired_bundles(bundle_root, now)
         with self._janitor_lock:
             self._bundle_roots.add(bundle_root)
         self._start_janitor()
@@ -630,7 +632,8 @@ class DockerArtifactIngressBackend:
                 roots = tuple(self._bundle_roots)
             for bundle_root in roots:
                 try:
-                    candidate = self._prune_expired_bundles(bundle_root, now)
+                    with self._bundle_io_lock:
+                        candidate = self._prune_expired_bundles(bundle_root, now)
                 except ValueError:
                     continue
                 if candidate is not None and (
@@ -706,7 +709,8 @@ class DockerArtifactIngressBackend:
             bundle_roots = tuple(self._bundle_roots)
         for bundle_root in bundle_roots:
             try:
-                self._prune_expired_bundles(bundle_root, now)
+                with self._bundle_io_lock:
+                    self._prune_expired_bundles(bundle_root, now)
             except ValueError:
                 pass
         for list_argv, remove_prefix in (
