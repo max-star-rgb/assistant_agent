@@ -65,6 +65,8 @@ Tool 的 Provider adapter 先把外部响应规范化为业务 Pydantic result�
 `artifact`，需要审计时只保留受治理的引用。具体 Tool 再从完整业务 result 派生有界的模型投影：例如购物
 Tool 的 `artifact` 保留全部规范化 `ShoppingSearchResult`，`content` 按每个 need 保留状态、选中商品、
 购买链接、单价/小计与至多两个备选。两者是同一业务结果的完整视图与模型视图，不是两份相同 payload。
+媒体入口需要兼容购物卡片时，只从当前轮成功 `shopping_search` 的标准 `ToolMessage.artifact` 确定性生成
+`<detail>/<link>/<pic>` 文本块；模型正文和 Tool `content` 不负责拼接该 wire 协议。
 
 `image_generation` 沿用同一原生双通道，不创建第二条 UI 消息。Provider adapter 返回远程图片地址后，Tool
 先把图片下载到受管本地目录，再令 `content` 只包含成功状态与 `image_id`，令

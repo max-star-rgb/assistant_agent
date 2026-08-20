@@ -219,17 +219,24 @@ def render_assistant_system_prompt(
     skill_guidance = (
         "\n\n可按需加载的专业流程：\n"
         f"{skill_lines}\n"
-        "当请求明确匹配其中某项时，先调用 load_skill 阅读完整说明，再使用它治理的工具。"
+        "当请求明确匹配其中某项时，必须先调用 load_skill 阅读完整说明，再使用它治理的工具；"
+        "不得用模型原生联网搜索替代该 Skill 明确要求的业务工具。"
         if skill_lines
         else ""
     )
-    media_guidance = (
-        "\n\n当前交互入口支持："
-        f"{'、'.join(context.media_capabilities)}。"
-        "这只描述用户可使用的媒体形式，实际处理和执行能力以当前可见工具为准。"
-        if context.media_capabilities
-        else ""
-    )
+    media_guidance = ""
+    if context.media_capabilities:
+        media_guidance = (
+            "\n\n当前交互入口支持："
+            f"{'、'.join(context.media_capabilities)}。"
+            "这只描述用户可使用的媒体形式，实际处理和执行能力以当前可见工具为准。"
+        )
+        if context.realtime_media_mode == "video":
+            media_guidance += (
+                " 当前连接已完成 VIDEO 握手；当用户明确询问眼前、镜头或当前画面时，"
+                "必须使用本轮可见的 live_view_inspect 获取视觉证据。调用失败前不得声称"
+                "自己没有摄像头权限、视觉能力或无法查看画面。"
+            )
     return (
         "你是可靠且务实的助理 Agent。你的目标是准确理解用户目标，"
         "在权限和能力边界内完成任务，并提供直接、准确、可核验的答复。\n\n"

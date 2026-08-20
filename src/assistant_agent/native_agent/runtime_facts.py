@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from langchain_core.messages import HumanMessage
@@ -35,6 +35,13 @@ class TrustedRuntimeFacts(BaseModel):
     timezone: str
     current_location: RuntimeLocation
 
+    @field_validator("current_time", mode="before")
+    @classmethod
+    def _parse_checkpoint_time(cls, value: object) -> object:
+        if isinstance(value, str):
+            return datetime.fromisoformat(value)
+        return value
+
     @field_validator("current_time")
     @classmethod
     def _require_aware_time(cls, value: datetime) -> datetime:
@@ -47,7 +54,7 @@ def capture_trusted_runtime_facts_node(
     _state: object,
     *,
     clock: Callable[[], datetime] | None = None,
-) -> dict[str, TrustedRuntimeFacts]:
+) -> dict[str, dict[str, Any]]:
     """Capture facts only when LangGraph executes this checkpointed node."""
 
     timezone = ZoneInfo(DEFAULT_RUNTIME_TIMEZONE)
@@ -55,27 +62,28 @@ def capture_trusted_runtime_facts_node(
     if current_time.tzinfo is None or current_time.utcoffset() is None:
         raise ValueError("trusted runtime clock must return a timezone-aware datetime")
     current_time = current_time.astimezone(timezone)
-    return {
-        "trusted_runtime_facts": TrustedRuntimeFacts(
-            current_time=current_time,
+    facts = TrustedRuntimeFacts(
+        current_time=current_time,
+        timezone=DEFAULT_RUNTIME_TIMEZONE,
+        current_location=RuntimeLocation(
+            name="上海市青浦区华为练秋湖研发中心",
             timezone=DEFAULT_RUNTIME_TIMEZONE,
-            current_location=RuntimeLocation(
-                name="上海市青浦区华为练秋湖研发中心",
-                timezone=DEFAULT_RUNTIME_TIMEZONE,
-                source="deployment_default",
-                is_fallback=True,
-            ),
-        )
-    }
+            source="deployment_default",
+            is_fallback=True,
+        ),
+    )
+    return {"trusted_runtime_facts": facts.model_dump(mode="json")}
 
 
 def trusted_runtime_facts_message(
-    facts: TrustedRuntimeFacts | None,
+    facts: TrustedRuntimeFacts | Mapping[str, Any] | None,
 ) -> HumanMessage | None:
     """Render the frozen snapshot as ephemeral, non-instructional context."""
 
     if facts is None:
         return None
+    if not isinstance(facts, TrustedRuntimeFacts):
+        facts = TrustedRuntimeFacts.model_validate(facts)
     location = facts.current_location
     local_time = facts.current_time.astimezone(ZoneInfo(facts.timezone))
     content = (
@@ -83,8 +91,9 @@ def trusted_runtime_facts_message(
         f"- 当前时间: {local_time.isoformat(sep=' ')}\n"
         f"- 时区: {facts.timezone}\n"
         f"- 用户默认地点: {location.name}\n\n"
-        "时间是本次运行捕获的可信事实。地点是部署默认值，并非已观测到的用户物理位置；"
-        "如果用户在当前请求中明确指定地点，应按该请求处理任务，但不要改写这条事实的来源。"
+        "时间是本次运行捕获的可信事实。地点只是未指定地点时的查询默认值，并非已观测到的用户物理位置；"
+        "用户明确指定地点时按用户请求处理。回答中不要主动解释这些内部标签、来源或注入机制，"
+        "也不要把默认地点描述成用户当前所在位置。"
     )
     return HumanMessage(content=content)
 

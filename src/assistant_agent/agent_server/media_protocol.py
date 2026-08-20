@@ -145,6 +145,7 @@ def success_chat_response(
     artifact_dir: Path | None = None,
     sequence: int = 1,
     full_text: str | None = None,
+    display_only: bool | None = None,
 ) -> dict[str, Any]:
     text = str(response.get("message") or "")
     authoritative_text = text if full_text is None else full_text
@@ -173,7 +174,10 @@ def success_chat_response(
             )
     if image_details:
         intent_result["detail"] = image_details
-    display_only = sequence > 1 and not image_details
+    if display_only is None:
+        display_only = sequence > 1 and not image_details
+    elif image_details:
+        display_only = False
     return envelope(
         message="chatResponse",
         session_id=session_id,

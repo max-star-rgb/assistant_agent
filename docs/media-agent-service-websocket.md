@@ -1,6 +1,6 @@
 # Media-Agent WebSocket 接口权威文档
 
-Last updated: 2026-08-19
+Last updated: 2026-08-20
 
 ## Authority contract
 
@@ -92,6 +92,11 @@ Last updated: 2026-08-19
 }
 ```
 
+媒体入口创建原生 run 时开启 `stream_subgraphs=true`，因为 fast Agent 是父图中的原生子图；否则 Provider
+虽已产生 token，顶层 Agent Server stream 仍看不到子图消息。模型在 ToolCall 前生成的普通文本按上述结构
+原样增量发送；若模型直接产生 ToolCall 而没有任何前导正文，媒体适配器只补一次不含工具名和参数的通用
+`PROCESSING` 前导语，避免语音端在工具执行期间静默。ToolCall name/arguments 与 ToolMessage 仍不进入媒体正文。
+
 Graph 完成后发送成功终包：
 
 ```json
@@ -114,6 +119,18 @@ Agent Server 的 `messages/partial` 是同一 message 的累计快照，适配�
 最新消息中尚未流出的后缀，使用最后一个 `sequence`、`final=true`，并独占 `deliveryId`；若最终文本与已流出的
 最新 assistant message 不一致，则完整发送权威终态，避免丢失正文。已发送中间包且终包不含媒体 detail 时，
 终包的 `displayOnly/display_only=true`；citation 的 `fullDescription` 始终保留完整权威终态。
+
+若当前用户轮次存在成功的 `shopping_search` 标准 `ToolMessage`，媒体终态会从其结构化 `artifact` 确定性追加
+兼容购物卡片块，而不是要求模型生成协议标签：
+
+```text
+<detail>
+1. 京东 - 商品名 2599元 <link>https://...</link><pic>https://...</pic>
+</detail>
+```
+
+只使用当前轮最新成功购物结果，最多三项；商品名会移除协议标签和控制字符，购买链接与图片必须是无空白、
+无尖括号的 HTTP(S) URL。没有安全完整的链接与图片时不输出对应卡片，也不会复用历史轮次结果。
 
 Memory debounce 是所有入口共享的
 主图规则：生成回答后通过官方 Agent Server SDK rollback 同 thread 的旧 pending Memory run，并立即 enqueue

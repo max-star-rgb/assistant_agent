@@ -33,6 +33,7 @@ from assistant_agent.agent_server.media_protocol import (
     artifact_completed_response,
 )
 from assistant_agent.agent_server.media_session import MediaConnectionSession
+from assistant_agent.agent_server.shopping_detail import shopping_detail_block
 from assistant_agent.agent_server.proactive_delivery import (
     MediaProactiveDeliveryPump,
 )
@@ -55,6 +56,7 @@ from assistant_agent.runtime.generated_artifacts import (
 
 logger = logging.getLogger(__name__)
 MAX_PENDING_VIDEO_MESSAGES = 8
+TOOL_PROCESSING_PREAMBLE = "我来处理一下，请稍候。"
 
 
 @asynccontextmanager
@@ -115,7 +117,11 @@ class _VisualPerceptionConnection:
     async def aclose_video_tasks(self) -> None:
         tasks = tuple(self.video_tasks)
         if tasks:
+            for task in tasks:
+                task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+        self.video_tasks.clear()
+        self.video_tail = None
 
 
 @dataclass
@@ -128,6 +134,7 @@ class _NativeAssistantTextStream:
     last_streamed_message_id: str | None = None
     last_wire_message_id: str | None = None
     wire_ends_with_newline: bool = False
+    tool_preamble_sent: bool = False
 
     def consume(self, part: Mapping[str, Any]) -> list[tuple[int, str]]:
         if part.get("event") == "messages/metadata":
@@ -151,26 +158,29 @@ class _NativeAssistantTextStream:
                 continue
             current = _stream_message_content_text(message.get("content"))
             previous = self.snapshots.get(message_id, "")
-            if current == previous:
-                continue
-            if not current.startswith(previous):
-                continue
-            self.snapshots[message_id] = current
-            delta = current[len(previous) :]
-            if not delta:
-                continue
-            if (
-                self.last_wire_message_id is not None
-                and self.last_wire_message_id != message_id
-                and not self.wire_ends_with_newline
-                and not delta.startswith(("\n", "\r"))
-            ):
-                delta = f"\n{delta}"
-            self.sequence += 1
-            self.last_streamed_message_id = message_id
-            self.last_wire_message_id = message_id
-            self.wire_ends_with_newline = delta.endswith(("\n", "\r"))
-            deltas.append((self.sequence, delta))
+            if current != previous and current.startswith(previous):
+                self.snapshots[message_id] = current
+                delta = current[len(previous) :]
+                if delta:
+                    if (
+                        self.last_wire_message_id is not None
+                        and self.last_wire_message_id != message_id
+                        and not self.wire_ends_with_newline
+                        and not delta.startswith(("\n", "\r"))
+                    ):
+                        delta = f"\n{delta}"
+                    self.sequence += 1
+                    self.last_streamed_message_id = message_id
+                    self.last_wire_message_id = message_id
+                    self.wire_ends_with_newline = delta.endswith(("\n", "\r"))
+                    deltas.append((self.sequence, delta))
+            if _stream_message_has_tool_call(message) and not self.tool_preamble_sent:
+                self.tool_preamble_sent = True
+                if not current.strip():
+                    self.sequence += 1
+                    self.last_wire_message_id = "__tool_processing_preamble__"
+                    self.wire_ends_with_newline = False
+                    deltas.append((self.sequence, TOOL_PROCESSING_PREAMBLE))
         return deltas
 
     def _record_metadata(self, data: Any) -> None:
@@ -184,12 +194,21 @@ class _NativeAssistantTextStream:
                 continue
             node = metadata.get("langgraph_node")
             if isinstance(node, str) and node:
-                self.message_nodes[message_id] = node
+                checkpoint_ns = metadata.get("langgraph_checkpoint_ns")
+                is_internal_subgraph_model = (
+                    node == "model"
+                    and isinstance(checkpoint_ns, str)
+                    and bool(checkpoint_ns)
+                    and not checkpoint_ns.startswith("fast_agent:")
+                )
+                self.message_nodes[message_id] = (
+                    "__internal_subgraph__" if is_internal_subgraph_model else node
+                )
 
-    def remaining_terminal_text(self, text: str) -> str:
-        if self.last_streamed_message_id is None:
+    def remaining_terminal_text(self, text: str, *, message_id: str | None) -> str:
+        if message_id is None or message_id != self.last_streamed_message_id:
             return text
-        streamed = self.snapshots.get(self.last_streamed_message_id, "")
+        streamed = self.snapshots.get(message_id, "")
         if not streamed:
             return text
         if text.startswith(streamed):
@@ -197,6 +216,14 @@ class _NativeAssistantTextStream:
         if text.strip() == streamed.strip():
             return ""
         return text
+
+    def terminal_message_fully_streamed(
+        self, text: str, *, message_id: str | None
+    ) -> bool:
+        if message_id is None or message_id != self.last_streamed_message_id:
+            return False
+        streamed = self.snapshots.get(message_id, "")
+        return bool(streamed) and text.strip() == streamed.strip()
 
 
 @app.get("/health/agent-server-adapter")
@@ -661,8 +688,26 @@ async def _run_chat(
             return
         response = native_response_from_state(final_state)
         full_text = str(response.get("message") or "")
+        terminal_message_id = response.pop("_terminal_message_id", None)
+        terminal_text = str(response.pop("_terminal_text", full_text))
+        display_only = False
         if chat.stream:
-            response["message"] = text_stream.remaining_terminal_text(full_text)
+            response["message"] = text_stream.remaining_terminal_text(
+                full_text,
+                message_id=(
+                    terminal_message_id
+                    if isinstance(terminal_message_id, str)
+                    else None
+                ),
+            )
+            display_only = text_stream.terminal_message_fully_streamed(
+                terminal_text,
+                message_id=(
+                    terminal_message_id
+                    if isinstance(terminal_message_id, str)
+                    else None
+                ),
+            )
         await _send_json(
             websocket,
             send_lock,
@@ -674,6 +719,7 @@ async def _run_chat(
                 capabilities=session.client_capabilities,
                 sequence=text_stream.sequence + 1,
                 full_text=full_text,
+                display_only=display_only,
             ),
         )
         logger.info(
@@ -918,14 +964,18 @@ def native_response_from_state(state: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(messages, (list, tuple)):
         raise MediaProtocolError("Agent Server run returned no standard messages")
     output_refs = generated_image_output_refs(messages)
+    shopping_detail = shopping_detail_block(messages)
     for message in reversed(messages):
         if isinstance(message, AIMessage):
             text = _message_content_text(message.content)
             response_metadata = message.response_metadata
+            message_id = message.id
         elif isinstance(message, Mapping) and (
             message.get("role") == "assistant" or message.get("type") == "ai"
         ):
             text = _message_content_text(message.get("content"))
+            raw_message_id = message.get("id")
+            message_id = raw_message_id if isinstance(raw_message_id, str) else None
             raw_metadata = message.get("response_metadata")
             response_metadata = (
                 raw_metadata if isinstance(raw_metadata, Mapping) else {}
@@ -933,9 +983,16 @@ def native_response_from_state(state: dict[str, Any] | None) -> dict[str, Any]:
         else:
             continue
         if text:
+            delivered_text = f"{text}\n{shopping_detail}" if shopping_detail else text
             citations = _terminal_source_citations(text, response_metadata)
             return {
-                "message": text,
+                "message": delivered_text,
+                "_terminal_text": text,
+                **(
+                    {"_terminal_message_id": message_id}
+                    if isinstance(message_id, str) and message_id
+                    else {}
+                ),
                 **({"output_refs": output_refs} if output_refs else {}),
                 **({"citations": citations} if citations else {}),
             }
@@ -976,6 +1033,20 @@ def _stream_message_content_text(content: Any) -> str:
         if isinstance(block, Mapping)
         and block.get("type") in {"text", "output_text"}
         and isinstance(block.get("text"), str)
+    )
+
+
+def _stream_message_has_tool_call(message: Mapping[str, Any]) -> bool:
+    if any(
+        isinstance(message.get(key), (list, tuple)) and bool(message.get(key))
+        for key in ("tool_calls", "tool_call_chunks")
+    ):
+        return True
+    content = message.get("content")
+    return isinstance(content, (list, tuple)) and any(
+        isinstance(block, Mapping)
+        and block.get("type") in {"tool_call", "tool_call_chunk"}
+        for block in content
     )
 
 

@@ -27,8 +27,6 @@ from assistant_agent.native_agent.models import (
     ProviderSearchProfile,
     WorkerResult,
 )
-from assistant_agent.native_agent.runtime_facts import TrustedRuntimeFacts
-
 ExecutionMode = Literal["fast", "planning", "coding"]
 MemoryStatus = Literal["ready", "empty", "degraded"]
 AgentPhase = Literal["fast", "planner", "worker", "finalizer"]
@@ -64,7 +62,7 @@ class AssistantRootState(MessagesState):
     memory_context: NotRequired[tuple[str, ...]]
     memory_status: NotRequired[MemoryStatus]
     execution_mode: NotRequired[ExecutionMode]
-    trusted_runtime_facts: NotRequired[TrustedRuntimeFacts]
+    trusted_runtime_facts: NotRequired[dict[str, object]]
     coding_repo_id: NotRequired[str]
     coding_result: NotRequired[CodingTerminalResult]
 
@@ -75,7 +73,7 @@ class FastAgentState(AgentState):
     memory_context: NotRequired[tuple[str, ...]]
     memory_status: NotRequired[MemoryStatus]
     execution_mode: NotRequired[ExecutionMode]
-    trusted_runtime_facts: NotRequired[TrustedRuntimeFacts]
+    trusted_runtime_facts: NotRequired[dict[str, object]]
     agent_phase: NotRequired[AgentPhase]
     worker_tool_allowlist: NotRequired[tuple[str, ...]]
     provider_search_profile: NotRequired[ProviderSearchProfile]
@@ -104,7 +102,7 @@ class PlanningState(AgentState):
 
     memory_context: Required[tuple[str, ...]]
     memory_status: Required[MemoryStatus]
-    trusted_runtime_facts: NotRequired[TrustedRuntimeFacts]
+    trusted_runtime_facts: NotRequired[dict[str, object]]
     plan: NotRequired[NativePlanProposal]
     worker_results: NotRequired[Annotated[list[WorkerResult], operator.add]]
 
@@ -115,7 +113,7 @@ class CodingState(AgentState):
     memory_context: NotRequired[tuple[str, ...]]
     memory_status: NotRequired[MemoryStatus]
     execution_mode: NotRequired[ExecutionMode]
-    trusted_runtime_facts: NotRequired[TrustedRuntimeFacts]
+    trusted_runtime_facts: NotRequired[dict[str, object]]
     coding_repo_id: Required[str]
     workspace_ref: NotRequired[str]
     base_commit: NotRequired[str]

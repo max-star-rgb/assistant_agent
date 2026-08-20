@@ -76,6 +76,8 @@ fast agent 子图才增加由成功 `load_skill` 标准 Tool 结果产生的 `ac
 父图节点、父图输出或独立 Memory Graph。planning 子图内部另外持有 plan、worker result，
 并在 `Send` 派发时从直接依赖结果派生窄 `dependency_results` worker 输入。
 planning 的 planner、worker 与 finalizer 都读取父图传入的同一份可信事实快照，不在子图内重新采集。
+`trusted_runtime_facts` 写入 checkpoint 时保存为 JSON-safe 字典（时间为 ISO 8601 字符串），模型调用边界再校验为
+严格 Pydantic 值；它不依赖 checkpoint 对项目自定义类型的宽松 msgpack 反序列化。
 
 父图不投影或改写生成图片。`image_generation` 直接使用标准 `ToolMessage(content, artifact)`：模型下一次调用
 只读取窄文本 `content`，程序消费者从 `artifact.images[]` 读取受管图片引用。最终 `AIMessage` 保持模型原始
@@ -106,6 +108,8 @@ assistant ID `assistant-native-v1`。
 生产消费者直接使用 Agent Server 的 messages/updates/values、thread/run、cancel、checkpoint、interrupt 与
 resume 协议。模型 token 和 Tool 消息由 LangChain/LangGraph 原生 callback/stream 产生；项目不再投影
 `GraphStreamPart`、`AgentEvent` 或产品 run 状态作为主链事实源。
+父图中的 fast/planning 单元是子图，因此需要模型 token 的消费者必须显式启用原生 subgraph stream；媒体入口
+仍只把标准 assistant 文本和受控兼容投影发送到 wire，不转发 planner、Tool 参数或 ToolMessage 正文。
 
 `HumanInTheLoopMiddleware` 使用 state-aware `when` predicate：fast 模式自动放行，planning 模式对非 read
 Tool 触发原生 interrupt；恢复使用 Agent Server/LangGraph `Command(resume=...)`。model/tool call limit、
