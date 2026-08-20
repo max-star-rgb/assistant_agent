@@ -57,7 +57,6 @@ from assistant_agent.runtime.generated_artifacts import (
 
 logger = logging.getLogger(__name__)
 MAX_PENDING_VIDEO_MESSAGES = 8
-TOOL_PROCESSING_PREAMBLE = "我来处理一下，请稍候。"
 
 
 @asynccontextmanager
@@ -199,7 +198,6 @@ class _NativeAssistantTextStream:
     last_streamed_message_id: str | None = None
     last_wire_message_id: str | None = None
     wire_ends_with_newline: bool = False
-    tool_preamble_sent: bool = False
 
     def consume(self, part: Mapping[str, Any]) -> list[tuple[int, str]]:
         if part.get("event") == "messages/metadata":
@@ -239,13 +237,6 @@ class _NativeAssistantTextStream:
                     self.last_wire_message_id = message_id
                     self.wire_ends_with_newline = delta.endswith(("\n", "\r"))
                     deltas.append((self.sequence, delta))
-            if _stream_message_has_tool_call(message) and not self.tool_preamble_sent:
-                self.tool_preamble_sent = True
-                if not current.strip():
-                    self.sequence += 1
-                    self.last_wire_message_id = "__tool_processing_preamble__"
-                    self.wire_ends_with_newline = False
-                    deltas.append((self.sequence, TOOL_PROCESSING_PREAMBLE))
         return deltas
 
     def _record_metadata(self, data: Any) -> None:
@@ -1171,20 +1162,6 @@ def _stream_message_content_text(content: Any) -> str:
         if isinstance(block, Mapping)
         and block.get("type") in {"text", "output_text"}
         and isinstance(block.get("text"), str)
-    )
-
-
-def _stream_message_has_tool_call(message: Mapping[str, Any]) -> bool:
-    if any(
-        isinstance(message.get(key), (list, tuple)) and bool(message.get(key))
-        for key in ("tool_calls", "tool_call_chunks")
-    ):
-        return True
-    content = message.get("content")
-    return isinstance(content, (list, tuple)) and any(
-        isinstance(block, Mapping)
-        and block.get("type") in {"tool_call", "tool_call_chunk"}
-        for block in content
     )
 
 

@@ -69,7 +69,7 @@ class SdkAgentServerClient:
             async for part in self._client.runs.stream(
                 thread_id,
                 assistant_id,
-                stream_mode=["messages", "updates", "values"],
+                stream_mode=["messages", "values"],
                 stream_subgraphs=True,
                 stream_resumable=True,
                 on_disconnect="continue",

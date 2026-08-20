@@ -188,8 +188,10 @@ custom route 只负责：
 `ARTIFACT_BASE_URL` 时，图像 Tool 会在 `ToolMessage.artifact.images[].url` 中附带客户端可访问的绝对 URL。
 当前 Studio 不保证渲染 Tool artifact。
 
-它不读取 checkpoint，不执行 Tool/Memory，不构造旧 Runtime，也不翻译项目 run/error 状态机。SDK stream 使用
-messages/updates/values；短暂订阅断开后按 last event ID 调用 `threads.join_stream`。WebSocket 断开时
+它不读取 checkpoint，不执行 Tool/Memory，不构造旧 Runtime，也不翻译项目 run/error 状态机。媒体 SDK stream
+只订阅 messages/values：messages 投影模型正文增量，values 读取权威终态；updates/custom 仅留给显式选择这些
+模式的 Agent Server 原生 SDK 或 Studio 消费者。短暂订阅断开后按 last event ID 调用
+`threads.join_stream`。WebSocket 断开时
 best-effort cancel 当前连接仍活动的 reactive runs；delivery ACK 不改变 run 或 checkpoint。
 
 主动投递不进入 `AssistantRootGraph`；当前图没有业务生产者，因此不保留休眠的 state channel 或 dispatch

@@ -98,8 +98,8 @@ capability token 放入 run context；token 按认证身份与 thread 校验，r
 
 媒体入口创建原生 run 时开启 `stream_subgraphs=true`，因为 fast Agent 是父图中的原生子图；否则 Provider
 虽已产生 token，顶层 Agent Server stream 仍看不到子图消息。模型在 ToolCall 前生成的普通文本按上述结构
-原样增量发送；若模型直接产生 ToolCall 而没有任何前导正文，媒体适配器只补一次不含工具名和参数的通用
-`PROCESSING` 前导语，避免语音端在工具执行期间静默。ToolCall name/arguments 与 ToolMessage 仍不进入媒体正文。
+原样增量发送；若模型直接产生 ToolCall 而没有任何前导正文，媒体适配器不合成提示语，等待模型后续正文或
+终态。ToolCall name/arguments、ToolMessage、原生 updates 与 custom Tool 生命周期均不进入媒体正文。
 
 Graph 完成后发送成功终包：
 
@@ -116,7 +116,7 @@ Graph 完成后发送成功终包：
 非 `model` 节点的 chunk 会被排除；metadata 缺失时按标准 assistant chunk 降级投影，避免原生流存在但媒体侧
 只能收到终包。planner 等已标记的其他节点内部文本、tool-call name/arguments、ToolMessage 和 updates 不进入媒体正文。
 Agent Server 的 `messages/partial` 是同一 message 的累计快照，适配器按 message ID
-计算 append-only delta；工具前导文本与工具后的下一条 assistant message 之间若均无换行，适配器在新消息首包
+计算 append-only delta；模型生成的 Tool 前导文本与工具后的下一条 assistant message 之间若均无换行，适配器在新消息首包
 补一个换行。中间包按 `sequence` 递增且 `final=false`，不携带 `deliveryId`；`stream=false` 不发送中间包。
 
 最终正文仍来自 terminal values 中的最新标准 `AIMessage`，适配器不把 delta 拼接成业务终态。成功终包发送该

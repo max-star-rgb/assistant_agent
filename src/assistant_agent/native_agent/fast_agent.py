@@ -25,8 +25,11 @@ from langchain_core.messages import (
     AIMessage,
     HumanMessage,
     MessageLikeRepresentation,
+    ToolMessage,
 )
 from langchain_core.tools import BaseTool
+from langgraph.errors import GraphBubbleUp
+from langgraph.types import Command
 
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.media.visual_perception.history_probe import (
@@ -121,16 +124,17 @@ def build_fast_agent(
             exit_behavior="error",
         ),
     ]
-    if read_tool_names:
-        middleware.append(
-            ToolRetryMiddleware(
-                max_retries=2,
-                tools=read_tool_names,
-                initial_delay=0,
-                backoff_factor=0,
-                jitter=False,
-            )
+    tool_retry_middleware = (
+        ToolRetryMiddleware(
+            max_retries=2,
+            tools=read_tool_names,
+            initial_delay=0,
+            backoff_factor=0,
+            jitter=False,
         )
+        if read_tool_names
+        else None
+    )
     if any(tool.name == LIVE_VIEW_INSPECT_TOOL_NAME for tool in tools):
         middleware.append(
             ToolCallLimitMiddleware(
@@ -159,6 +163,9 @@ def build_fast_agent(
     if interrupt_policy:
         middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_policy))
     middleware.extend(additional_middleware)
+    middleware.append(ToolProgressMiddleware())
+    if tool_retry_middleware is not None:
+        middleware.append(tool_retry_middleware)
 
     return create_agent(
         model=model,
@@ -215,6 +222,70 @@ class TrustedRuntimeFactsMiddleware(AgentMiddleware):
         ],
     ) -> ModelResponse | AIMessage:
         return await handler(_request_with_trusted_runtime_facts(request))
+
+
+class ToolProgressMiddleware(AgentMiddleware):
+    """Emit a safe custom lifecycle without Tool arguments or result content."""
+
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
+    ) -> ToolMessage | Command[Any]:
+        writer = request.runtime.stream_writer
+        writer(_tool_progress_event(request, status="started"))
+        try:
+            result = handler(request)
+        except GraphBubbleUp:
+            raise
+        except Exception:
+            writer(_tool_progress_event(request, status="failed"))
+            raise
+        status = (
+            "failed"
+            if isinstance(result, ToolMessage) and result.status == "error"
+            else "completed"
+        )
+        writer(_tool_progress_event(request, status=status))
+        return result
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[
+            [ToolCallRequest],
+            Awaitable[ToolMessage | Command[Any]],
+        ],
+    ) -> ToolMessage | Command[Any]:
+        writer = request.runtime.stream_writer
+        writer(_tool_progress_event(request, status="started"))
+        try:
+            result = await handler(request)
+        except GraphBubbleUp:
+            raise
+        except Exception:
+            writer(_tool_progress_event(request, status="failed"))
+            raise
+        status = (
+            "failed"
+            if isinstance(result, ToolMessage) and result.status == "error"
+            else "completed"
+        )
+        writer(_tool_progress_event(request, status=status))
+        return result
+
+
+def _tool_progress_event(
+    request: ToolCallRequest,
+    *,
+    status: str,
+) -> dict[str, str]:
+    return {
+        "type": "tool_progress",
+        "status": status,
+        "tool_name": str(request.tool_call["name"]),
+        "tool_call_id": str(request.tool_call["id"]),
+    }
 
 
 def render_assistant_system_prompt(
@@ -351,6 +422,7 @@ def _quote_lines(value: str) -> str:
 
 __all__ = [
     "MemoryContextMiddleware",
+    "ToolProgressMiddleware",
     "TrustedRuntimeFactsMiddleware",
     "build_fast_agent",
     "render_assistant_system_prompt",

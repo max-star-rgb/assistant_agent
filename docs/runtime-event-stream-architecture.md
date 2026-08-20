@@ -105,11 +105,15 @@ assistant ID `assistant-native-v1`。
 
 ## 原生流与生命周期
 
-生产消费者直接使用 Agent Server 的 messages/updates/values、thread/run、cancel、checkpoint、interrupt 与
-resume 协议。模型 token 和 Tool 消息由 LangChain/LangGraph 原生 callback/stream 产生；项目不再投影
+生产消费者直接使用 Agent Server 的 messages/updates/custom/values、thread/run、cancel、checkpoint、interrupt 与
+resume 协议。原生 SDK/Studio 可显式选择所需 stream mode；媒体入口只订阅 messages/values，不消费
+updates/custom。模型 token、Tool 消息和节点 state update 由 LangChain/LangGraph 原生 callback/stream 产生；项目不再投影
 `GraphStreamPart`、`AgentEvent` 或产品 run 状态作为主链事实源。
 父图中的 fast/planning 单元是子图，因此需要模型 token 的消费者必须显式启用原生 subgraph stream；媒体入口
 仍只把标准 assistant 文本和受控兼容投影发送到 wire，不转发 planner、Tool 参数或 ToolMessage 正文。
+Tool 执行通过官方 runtime stream writer 向 custom mode 发送 `tool_progress` 生命周期事件；只包含
+`tool_name`、`tool_call_id` 与 `started|completed|failed`，不包含 Tool 参数或结果正文。由于 fast/planning
+执行单元是父图子图，Agent Server SDK 消费者需要同时启用 subgraph stream 才能接收其中的 messages/custom。
 
 `HumanInTheLoopMiddleware` 使用 state-aware `when` predicate：fast 模式自动放行，planning 模式对非 read
 Tool 触发原生 interrupt；恢复使用 Agent Server/LangGraph `Command(resume=...)`。model/tool call limit、

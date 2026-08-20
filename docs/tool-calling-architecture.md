@@ -61,6 +61,12 @@ WebSocket 已成功完成 `callType=VIDEO` 的 control 握手；`visual_memory_s
 `HumanInTheLoopMiddleware` 在执行前产生原生 interrupt。schema、身份与授权仍由具体 Tool/业务 adapter 校验；
 外部副作用幂等属于具体 Tool 或业务 API，主链不再维护通用 operation ledger。
 
+fast agent 的最内层 `ToolProgressMiddleware` 使用官方 `ToolRuntime.stream_writer` 向原生 custom stream 发出
+每次逻辑 Tool 调用的 `started` 和 `completed|failed` 生命周期。事件只携带 `type=tool_progress`、标准
+Tool name 与 tool call ID，不携带模型提交的参数、ToolMessage content、artifact 或异常正文。middleware 位于
+retry 与 HITL 内层：审批完成后才发出 started，同一次有界 retry 只对外形成一组逻辑生命周期。媒体入口不订阅
+custom；Agent Server SDK/Studio 消费者需要显式选择 custom stream mode。
+
 Tool 的 Provider adapter 先把外部响应规范化为业务 Pydantic result；Provider 原始响应不进入模型上下文或
 `artifact`，需要审计时只保留受治理的引用。具体 Tool 再从完整业务 result 派生有界的模型投影：例如购物
 Tool 的 `artifact` 保留全部规范化 `ShoppingSearchResult`，`content` 按每个 need 保留状态、选中商品、
