@@ -28,9 +28,14 @@ AssistantRootGraph
   -> END
 ```
 
-`execution_mode` 是结构化输入字段，只允许 `fast|planning`；省略时按公开 input schema 默认使用 `fast`，以兼容
+`execution_mode` 是结构化输入字段，只允许 `fast|planning|coding`；省略时按公开 input schema 默认使用 `fast`，以兼容
 Studio 的标准 messages-only run。路由函数不从用户文本、关键词、Tool 或 Memory 推断模式。父图不绑定 saver，
 由 LangGraph Agent Server 注入 checkpoint、thread、run、cancel、resume 与 Store 资源。
+
+coding 分支是顺序 `AssistantCodingGraph`，只在结构化输入同时提供受信 allowlist 中的
+`coding_repo_id` 时启用。它在 thread-scoped 临时 Git worktree 中执行 inspect/draft、确定性 patch validation、
+digest-bound 原生 interrupt 和受信 apply；模型不可见 apply、shell、delete、commit、merge 或 push。
+coding 不复用 planning 并行 worker，所有 mutation 通过单一顺序节点完成。
 
 `capture_trusted_runtime_facts` 在 `memory_recall` 前采集带时区的当前时间与部署默认地点，写入结构化
 `trusted_runtime_facts`。当前默认地点为“上海市青浦区华为练秋湖研发中心”，并显式标记

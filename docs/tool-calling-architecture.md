@@ -94,6 +94,17 @@ loader、Registry/Executor、离线 MCP server 与 Skill runtime 已删除。两
 StateGraph 的标准 `ToolNode` 执行真实 Tool。durable task 不伪造 Agent run：它使用显式工具名/effect allowlist
 和窄业务 adapter，缺失 effect metadata 时按可能写入 fail closed。
 
+## AI Coding Tool 边界
+
+coding 模式使用独立静态 Tool inventory：`coding_repo_list`、`coding_repo_search`、`coding_repo_read`、
+`coding_repo_status`、`coding_repo_diff` 与 `coding_propose_patch`。前五项是 read Tool；proposal 是
+`effect=generate`，只返回经受信 backend 验证的候选 patch artifact，不写文件。身份、thread 和 workspace
+均由 `ToolRuntime` 与 Agent Server 事实解析，不进入模型 schema。
+
+实际 patch apply 是 `AssistantCodingGraph` 的确定性节点，不注册为 Tool。coding inventory 不加入普通
+fast/planning Agent；阶段 1 不提供 shell、delete、commit、merge、push 或任意宿主路径访问。路径、symlink、
+protected glob、UTF-8、大小、base commit、file digest 和 patch digest 均由 Tool/backend fail closed 校验。
+
 ## Provider-native 能力
 
 Qwen 等模型原生联网参数属于 `BaseChatModel` 请求能力，不伪装成本地 Tool。real 模式选择 qwen 且
