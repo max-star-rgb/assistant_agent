@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -269,6 +270,32 @@ class DockerDependencyFetcher:
                 output_root.mkdir(parents=True, exist_ok=True)
                 self._ok(("cp", "--archive", f"{downloader}:/wheelhouse/.", str(output_root)), 30)
                 result = validate_wheelhouse(plan, output_root)
+                if private:
+                    evidence = {
+                        "credential_profile_id": credential_profile.credential_profile_id,
+                        "credential_policy_digest": credential_request.credential_policy_digest,
+                        "credential_request_digest": credential_request.request_digest,
+                        "credential_lease_id_digest": hashlib.sha256(
+                            lease.lease_id.encode("utf-8")
+                        ).hexdigest(),
+                        "credential_lease_issued_at": lease.issued_at,
+                        "credential_lease_expires_at": lease.expires_at,
+                        "credential_lease_status": "used",
+                    }
+                    candidate = result.model_copy(update=evidence)
+                    manifest_values = candidate.model_dump(
+                        mode="json", exclude={"manifest_digest"}
+                    )
+                    manifest_digest = hashlib.sha256(
+                        json.dumps(
+                            manifest_values,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest()
+                    result = candidate.model_copy(
+                        update={"manifest_digest": manifest_digest}
+                    )
         except ValueError as exc:
             error = str(exc)
         except (OSError, subprocess.SubprocessError):

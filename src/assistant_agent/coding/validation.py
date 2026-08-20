@@ -122,6 +122,24 @@ class CodingValidationService:
                         dependency_plan=fresh_plan,
                         dependency_manifest_digest=manifest.manifest_digest,
                     )
+                    if manifest.credential_profile_id is not None:
+                        credential_evidence = {
+                            "credential_profile_id": manifest.credential_profile_id,
+                            "credential_policy_digest": manifest.credential_policy_digest,
+                            "credential_request_digest": manifest.credential_request_digest,
+                            "credential_lease_id_digest": manifest.credential_lease_id_digest,
+                            "credential_lease_issued_at": manifest.credential_lease_issued_at,
+                            "credential_lease_expires_at": manifest.credential_lease_expires_at,
+                            "credential_lease_status": manifest.credential_lease_status,
+                        }
+                        sequence_result = sequence_result.model_copy(
+                            update={
+                                "evidence": tuple(
+                                    item.model_copy(update=credential_evidence)
+                                    for item in sequence_result.evidence
+                                )
+                            }
+                        )
                 return sequence_result
             except ValueError as exc:
                 if sequence_result is not None:

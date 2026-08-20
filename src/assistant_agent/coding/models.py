@@ -161,11 +161,43 @@ class CodingDependencyManifest(BaseModel):
     wheels: tuple[CodingDependencyWheel, ...] = Field(min_length=1, max_length=4_096)
     total_bytes: int = Field(ge=0)
     manifest_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    credential_profile_id: str | None = Field(
+        default=None, pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$"
+    )
+    credential_policy_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    credential_request_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    credential_lease_id_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    credential_lease_issued_at: datetime | None = None
+    credential_lease_expires_at: datetime | None = None
+    credential_lease_status: Literal["used"] | None = None
 
     @field_validator("wheels", mode="before")
     @classmethod
     def _tuple_wheels(cls, value: object) -> object:
         return tuple(value) if isinstance(value, list) else value
+
+    @model_validator(mode="after")
+    def _credential_evidence_is_atomic(self) -> "CodingDependencyManifest":
+        values = (
+            self.credential_profile_id,
+            self.credential_policy_digest,
+            self.credential_request_digest,
+            self.credential_lease_id_digest,
+            self.credential_lease_issued_at,
+            self.credential_lease_expires_at,
+            self.credential_lease_status,
+        )
+        if any(value is not None for value in values) and not all(
+            value is not None for value in values
+        ):
+            raise ValueError("credential lease evidence must be supplied together")
+        return self
 
 
 class CodingSandboxRequest(BaseModel):
@@ -277,6 +309,21 @@ class CodingCommandEvidence(BaseModel):
     )
     dependency_install_status: Literal["passed", "failed"] | None = None
     dependency_install_error: str | None = None
+    credential_profile_id: str | None = Field(
+        default=None, pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$"
+    )
+    credential_policy_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    credential_request_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    credential_lease_id_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    credential_lease_issued_at: datetime | None = None
+    credential_lease_expires_at: datetime | None = None
+    credential_lease_status: Literal["used"] | None = None
 
 
 class CodingVerificationResult(BaseModel):

@@ -492,12 +492,17 @@ def build_coding_graph(
             repository = workspace_service.config.repositories.get(workspace.repo_id)
             if repository is None:
                 raise CodingWorkspaceError("workspace_not_allowed")
+            validation_options: dict[str, object] = {
+                "format_round": int(state.get("format_round", 0))
+            }
+            if state.get("dependency_plan") is not None:
+                validation_options["dependency_plan"] = state["dependency_plan"]
+            if state.get("credential_request") is not None:
+                validation_options["credential_request"] = state["credential_request"]
             result = validation_service.run(
                 workspace,
                 repository,
-                format_round=int(state.get("format_round", 0)),
-                dependency_plan=state.get("dependency_plan"),
-                credential_request=state.get("credential_request"),
+                **validation_options,
             )
         except CodingWorkspaceError as exc:
             return {"coding_result": _failed(state, exc.code)}
