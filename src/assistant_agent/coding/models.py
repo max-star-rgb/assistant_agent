@@ -57,6 +57,44 @@ class CodingPatchValidation(BaseModel):
     diff_preview: str = Field(max_length=32_000)
 
 
+class CodingSandboxRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    image: str = Field(
+        min_length=73,
+        max_length=512,
+        pattern=r"^[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}$",
+    )
+    argv: tuple[str, ...] = Field(min_length=1, max_length=64)
+    scratch_root: Path
+    command_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$")
+    kind: Literal["test", "lint", "format", "build"]
+    timeout_seconds: int = Field(ge=1, le=1_800)
+    cpu_seconds: int = Field(ge=1, le=1_800)
+    cpu_cores: float = Field(ge=0.1, le=16.0)
+    memory_bytes: int = Field(ge=67_108_864, le=17_179_869_184)
+    max_processes: int = Field(ge=1, le=512)
+    max_output_bytes: int = Field(ge=1_024, le=16_777_216)
+    max_file_bytes: int = Field(ge=1_024, le=10_485_760)
+    max_disk_bytes: int = Field(ge=1_048_576, le=17_179_869_184)
+
+
+class CodingSandboxResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    status: Literal["passed", "failed", "timed_out", "resource_exceeded"]
+    exit_code: int | None = None
+    duration_ms: int = Field(ge=0)
+    output_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    stdout: str = ""
+    stderr: str = ""
+    truncated: bool = False
+    timed_out: bool = False
+    oom_killed: bool = False
+    error_code: str | None = None
+    cleanup_status: Literal["not_created", "removed", "failed"]
+
+
 class CodingCommandEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -277,6 +315,8 @@ __all__ = [
     "CodingReadResult",
     "CodingSearchMatch",
     "CodingSearchResult",
+    "CodingSandboxRequest",
+    "CodingSandboxResult",
     "CodingStatusResult",
     "CodingTerminalResult",
     "CodingToolScope",
