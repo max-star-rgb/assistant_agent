@@ -12,6 +12,10 @@ from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.fast_agent import render_assistant_system_prompt
 from assistant_agent.native_agent.planning_phase import PlanningPhaseMiddleware
 from assistant_agent.skills.loading import SkillDescriptor
+from assistant_agent.tools.ids import (
+    LOAD_SKILL_REFERENCE_TOOL_NAME,
+    LOAD_SKILL_TOOL_NAME,
+)
 
 
 def test_planner_preserves_all_upstream_visible_tools() -> None:
@@ -50,6 +54,25 @@ def test_worker_empty_allowlist_is_fail_closed() -> None:
     )
 
     assert projected.tools == []
+
+
+def test_worker_never_exposes_load_skill_but_keeps_scoped_reference_tool() -> None:
+    """Catches a bypassed plan expanding Skill scope inside worker phase."""
+
+    projected = project_phase_request(
+        phase="worker",
+        tool_names=(
+            LOAD_SKILL_TOOL_NAME,
+            LOAD_SKILL_REFERENCE_TOOL_NAME,
+            "route_probe",
+        ),
+        worker_tool_allowlist=(
+            LOAD_SKILL_TOOL_NAME,
+            LOAD_SKILL_REFERENCE_TOOL_NAME,
+        ),
+    )
+
+    assert tool_names(projected) == {LOAD_SKILL_REFERENCE_TOOL_NAME}
 
 
 def test_active_skill_body_is_rendered_from_trusted_catalog() -> None:

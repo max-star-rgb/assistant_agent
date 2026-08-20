@@ -28,7 +28,10 @@ fast agent 子图当前执行的 state/checkpoint namespace 内 `active_skill_id
 模型；成功执行 `load_skill` 后，middleware 把原 `ToolMessage` 与窄 Skill/reference grant 一起写入标准
 `Command(update=...)`，下一次模型调用才暴露对应 Tool。Skill/reference channel 不进入父图或 Memory
 Graph。Tool 名只从 `skill.toml` 重新解析，不接受模型或 Tool
-artifact 声明任意 grant；该可见性层不替代具体 Tool 的身份、授权、参数和副作用校验。
+artifact 声明任意 grant；该可见性层不替代具体 Tool 的身份、授权、参数和副作用校验。planning 的 Planner phase
+可以调用 `load_skill`，但 admission 与 worker phase 都禁止 worker 调用它，避免 worker 扩大 Planner 冻结的 Skill
+快照。worker 可显式调用 `load_skill_reference`，但 ToolContext 只读取 scheduler 投影的既有
+`skill_reference_grants`，未投影 reference 必须 fail closed，调用本身不产生新 grant。
 
 媒体 Tool 使用另一条与 Skill 正交的条件暴露链。`ConditionalToolExposureMiddleware` 只过滤已经静态注册在
 `request.tools` 中的 Tool，并按 Tool metadata 的封闭 `availability` 枚举读取可信运行事实：

@@ -28,6 +28,10 @@ from assistant_agent.skills.loading import (
     SkillDescriptor,
     load_repo_skill_descriptors,
 )
+from assistant_agent.tools.ids import (
+    LOAD_SKILL_REFERENCE_TOOL_NAME,
+    LOAD_SKILL_TOOL_NAME,
+)
 from assistant_agent.tools.plugins.builtin.skill_loading import (
     plugin as skill_loading_plugin,
 )
@@ -200,6 +204,60 @@ def test_admission_accepts_default_inventory_tool() -> None:
         policy=_policy(),
         evidence=_evidence(),
         active_skill_ids=(),
+    )
+
+    assert admitted is proposal
+
+
+def test_admission_rejects_worker_load_skill_even_when_it_is_in_inventory() -> None:
+    """Catches a worker expanding its Planner-projected Skill snapshot."""
+
+    proposal = _proposal(
+        nodes=(
+            NativePlanNode(
+                node_id="worker-1",
+                objective="attempt to expand worker Skill scope",
+                allowed_tool_names=(LOAD_SKILL_TOOL_NAME,),
+                evidence_refs=(EVIDENCE_ID,),
+            ),
+        )
+    )
+    policy = PlanningAdmissionPolicy.from_inventory(
+        [_probe_tool(DEFAULT_TOOL_NAME), _probe_tool(LOAD_SKILL_TOOL_NAME)],
+        _catalog(),
+    )
+
+    with pytest.raises(NativePlanAdmissionError, match="load_skill"):
+        admit_native_plan(
+            proposal,
+            policy=policy,
+            evidence=_evidence(),
+            active_skill_ids=(),
+        )
+
+
+def test_admission_keeps_explicit_reference_tool_for_inherited_skill() -> None:
+    proposal = _proposal(
+        nodes=(
+            NativePlanNode(
+                node_id="worker-1",
+                objective="read an inherited Skill reference",
+                required_skill_ids=(SKILL_ID,),
+                allowed_tool_names=(LOAD_SKILL_REFERENCE_TOOL_NAME,),
+                evidence_refs=(EVIDENCE_ID,),
+            ),
+        )
+    )
+    policy = PlanningAdmissionPolicy.from_inventory(
+        [_probe_tool(DEFAULT_TOOL_NAME), _probe_tool(LOAD_SKILL_REFERENCE_TOOL_NAME)],
+        _catalog(),
+    )
+
+    admitted = admit_native_plan(
+        proposal,
+        policy=policy,
+        evidence=_evidence(),
+        active_skill_ids=(SKILL_ID,),
     )
 
     assert admitted is proposal

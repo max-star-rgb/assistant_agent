@@ -65,7 +65,9 @@ composition 注入的静态 Tool inventory 与同一份 Skill catalog 确定性�
 节点 Skill grant、真实 planner evidence 引用、deliverable producer/evidence 引用、节点上限、DAG 无环和依赖深度；
 未知或未授权事实一律 fail closed，且不读取用户文本或内置领域规则。`Send` 按依赖分 wave 并行派发 worker。调度器根据 `depends_on` 自动把直接上游
 `WorkerResult` 组装为运行时 `dependency_results`，worker 将其作为明确的只读数据输入交给同一个 fast graph；
-该字段不是 planner 输出 schema。全部节点完成后，finalize 用同一个模型根据原始请求和按 plan 排序的结果生成
+该字段不是 planner 输出 schema。worker 只能继承节点 required Skill 与 Planner 实际快照的交集；admission 禁止节点把
+`load_skill` 放入 worker Tool allowlist，worker phase 也确定性过滤该 Tool。显式允许 `load_skill_reference` 时，Tool
+只能读取 scheduler 投影的既有 `skill_reference_grants`，不能扩大 Skill 或 reference grant。全部节点完成后，finalize 用同一个模型根据原始请求和按 plan 排序的结果生成
 标准 `AIMessage`，不机械拼接输出。planning 不创建第二套 Runtime，也不重复父图 Memory 节点。当前不维护
 verifier、repair、revision、acceptance contract 或 artifact provenance；deliverable 当前只做 producer/evidence
 引用准入，不建立运行期 artifact binding。只有真实产品需求出现后才增加。

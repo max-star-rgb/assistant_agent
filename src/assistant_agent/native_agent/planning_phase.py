@@ -12,6 +12,7 @@ from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.tools import BaseTool
 
 from assistant_agent.native_agent.models import NativePlanProposal
+from assistant_agent.tools.ids import LOAD_SKILL_TOOL_NAME
 
 
 class PlanningPhaseMiddleware(AgentMiddleware):
@@ -129,7 +130,9 @@ def _worker_tool_allowlist(request: ModelRequest) -> frozenset[str]:
     return frozenset(
         tool_name
         for tool_name in raw_allowlist
-        if isinstance(tool_name, str) and tool_name
+        if isinstance(tool_name, str)
+        and tool_name
+        and tool_name != LOAD_SKILL_TOOL_NAME
     )
 
 

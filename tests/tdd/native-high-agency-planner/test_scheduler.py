@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage
-from langchain_core.tools import StructuredTool
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.tools import BaseTool, StructuredTool
 
+from assistant_agent.native_agent import planning_graph
 from assistant_agent.native_agent.context import AssistantRunContext
+from assistant_agent.native_agent.fast_agent import build_fast_agent
 from assistant_agent.native_agent.models import (
     NativePlanNode,
     NativePlanProposal,
@@ -17,7 +20,12 @@ from assistant_agent.native_agent.models import (
     PlannerEvidence,
     WorkerResult,
 )
-from assistant_agent.native_agent import planning_graph
+from assistant_agent.native_agent.providers import MockAssistantChatModel
+from assistant_agent.skills.loading import SkillCatalog, load_repo_skill_descriptors
+from assistant_agent.tools.ids import LOAD_SKILL_REFERENCE_TOOL_NAME
+from assistant_agent.tools.plugins.builtin.skill_loading import (
+    create_load_skill_reference_tool,
+)
 
 
 def test_failed_dependency_becomes_terminal_without_dispatch_or_deadlock() -> None:
@@ -159,6 +167,36 @@ def test_zero_node_plan_routes_directly_to_shared_agent_finalizer() -> None:
     }
 
 
+def test_worker_reference_tool_uses_only_scheduler_projected_grants(
+    tmp_path: Path,
+) -> None:
+    """Catches inherited reference access widening worker Skill grants."""
+
+    _write_reference_skill(tmp_path)
+    catalog = load_repo_skill_descriptors(tmp_path)
+    reference_tool = create_load_skill_reference_tool(root=tmp_path)
+
+    allowed = _invoke_worker_reference(
+        reference_id="allowed-guide",
+        reference_tool=reference_tool,
+        catalog=catalog,
+    )
+    denied = _invoke_worker_reference(
+        reference_id="blocked-guide",
+        reference_tool=reference_tool,
+        catalog=catalog,
+    )
+
+    allowed_message = _only_tool_message(allowed)
+    denied_message = _only_tool_message(denied)
+    assert allowed_message.status == "success"
+    assert allowed_message.artifact["content"] == "allowed-reference-sentinel\n"
+    assert denied_message.status == "error"
+    assert "skill_reference_not_loaded" in str(denied_message.content)
+    assert denied["active_skill_ids"] == ["travel-sentinel"]
+    assert denied["skill_reference_grants"] == {"travel-sentinel": ["allowed-guide"]}
+
+
 class _RecordingFastAgent:
     name = "AssistantFastAgent"
 
@@ -192,6 +230,29 @@ class _RecordingFastAgent:
                 AIMessage(content="final-answer-sentinel"),
             ]
         }
+
+
+class _ReferenceCallModel(MockAssistantChatModel):
+    reference_id: str
+
+    def _response_message(self, messages, **kwargs):
+        del kwargs
+        if any(isinstance(message, ToolMessage) for message in messages):
+            return AIMessage(content="reference-call-complete")
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": LOAD_SKILL_REFERENCE_TOOL_NAME,
+                    "args": {
+                        "skill_id": "travel-sentinel",
+                        "reference_id": self.reference_id,
+                    },
+                    "id": f"reference-{self.reference_id}",
+                    "type": "tool_call",
+                }
+            ],
+        )
 
 
 def _state(
@@ -251,3 +312,76 @@ def _probe_tool(name: str) -> StructuredTool:
         return "probe-sentinel"
 
     return StructuredTool.from_function(probe, name=name)
+
+
+def _invoke_worker_reference(
+    *,
+    reference_id: str,
+    reference_tool: BaseTool,
+    catalog: SkillCatalog,
+) -> dict[str, Any]:
+    graph = build_fast_agent(
+        _ReferenceCallModel(reference_id=reference_id),
+        [reference_tool],
+        skill_catalog=catalog,
+    )
+    return graph.invoke(
+        {
+            "messages": [HumanMessage(content="reference-request-sentinel")],
+            "memory_context": (),
+            "memory_status": "empty",
+            "execution_mode": "planning",
+            "agent_phase": "worker",
+            "worker_tool_allowlist": (LOAD_SKILL_REFERENCE_TOOL_NAME,),
+            "active_skill_ids": ["travel-sentinel"],
+            "skill_reference_grants": {"travel-sentinel": ["allowed-guide"]},
+        },
+        context=AssistantRunContext(),
+        config={
+            "configurable": {
+                "langgraph_auth_user": _AuthenticatedUser(),
+            }
+        },
+    )
+
+
+def _only_tool_message(result: dict[str, Any]) -> ToolMessage:
+    messages = [
+        message for message in result["messages"] if isinstance(message, ToolMessage)
+    ]
+    assert len(messages) == 1
+    return messages[0]
+
+
+class _AuthenticatedUser(dict):
+    identity = "worker-user-sentinel"
+    permissions = ()
+
+
+def _write_reference_skill(root: Path) -> None:
+    skill_dir = root / "skills" / "travel-sentinel"
+    references_dir = skill_dir / "references"
+    references_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "Use the inherited travel workflow.\n",
+        encoding="utf-8",
+    )
+    (skill_dir / "skill.toml").write_text(
+        "schema_version = 1\n"
+        'skill_id = "travel-sentinel"\n'
+        "version = 1\n"
+        'description = "Travel workflow"\n'
+        'governed_tools = ["route_probe"]\n'
+        "[references]\n"
+        'allowed-guide = "references/allowed-guide.md"\n'
+        'blocked-guide = "references/blocked-guide.md"\n',
+        encoding="utf-8",
+    )
+    (references_dir / "allowed-guide.md").write_text(
+        "allowed-reference-sentinel\n",
+        encoding="utf-8",
+    )
+    (references_dir / "blocked-guide.md").write_text(
+        "blocked-reference-sentinel\n",
+        encoding="utf-8",
+    )

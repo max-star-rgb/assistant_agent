@@ -116,6 +116,10 @@ def admit_native_plan(
         if not set(node.evidence_refs).issubset(known_evidence):
             raise NativePlanAdmissionError("worker references unknown evidence")
         for tool_name in node.allowed_tool_names:
+            if tool_name == LOAD_SKILL_TOOL_NAME:
+                raise NativePlanAdmissionError(
+                    "worker Tool allowlist cannot include load_skill"
+                )
             if tool_name not in policy.inventory_tool_names:
                 raise NativePlanAdmissionError("worker references an unknown Tool")
             governing_skills = policy.governed_tool_skills.get(tool_name)
