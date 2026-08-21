@@ -58,15 +58,46 @@ approved changed paths 与严格 lockfile，只有 lockfile 变化才生成 depe
 从更早 checkpoint replay 并重新执行该节点时允许刷新。这与 `memory_recall` 的原生节点恢复语义一致。
 
 fast 与 planning 直接作为父图节点装配。fast 分支是 `create_agent` 编译出的 `AssistantFastAgent`，使用标准 `BaseChatModel`、`BaseTool`、`ToolRuntime`、
-messages channel 和官方 middleware，不维护项目自建 assistant/tool loop。
+messages channel 和官方 middleware，不维护项目自建 assistant/tool loop。planning 的 planner、worker 和 finalizer
+也复用这一个 compiled fast graph：分别通过 `agent_phase="planner|worker|finalizer"` 选择 model-call 投影，
+不创建独立 Agent 或模型调用链。相同初始 state 与受信运行事实下，planner 首轮继承 fast 首轮相同的 Tool
+projection；差异只在 planner system role 与严格 `NativePlanProposal` structured response。
 
-planning 分支是显式 `AssistantPlanningGraph`：planner 输出严格 `NativePlanProposal`，本地 admission 只校验节点
-ID、依赖引用和 DAG 无环，`Send` 按依赖分 wave 并行派发 worker。调度器根据 `depends_on` 自动把直接上游
+planning 分支是显式 `AssistantPlanningGraph`：planner 可在共享的 model→ToolNode→model loop 中调用 Tool，
+其已完成业务 `ToolMessage` 被捕获为有界 `PlannerEvidence`；成功 `load_skill` 产生的 active Skill/reference grant
+随 planning state reducer 保存。planner 随后输出严格 `NativePlanProposal`，其中 deliverable 必须引用 producer
+node 或实际 planner evidence。本地 admission 根据
+composition 注入的静态 Tool inventory 与同一份 Skill catalog 确定性校验节点 Tool、Planner 实际激活 Skill、
+节点 Skill grant、真实 planner evidence 引用、deliverable producer/evidence 引用、节点上限、DAG 无环和依赖深度；
+未知或未授权事实一律 fail closed，且不读取用户文本或内置领域规则。admission 失败时把有界错误码写入
+planning state，并由原生 conditional edge 回到同一个 planner；最多允许两次 proposal revision，第三次失败以
+有界 `NativePlanAdmissionError` 终止 run。revision 输入只增加既有 `PlannerEvidence` 的只读投影和错误码；
+该投影以 `trust=tool-output` 标记，JSON 在嵌入标签前转义 `<>&`，并以最终渲染字符数硬限制为 48,000。
+预算先保留稳定顺序的 evidence ID、Tool 名与状态，再有界保留 content/artifact ref，不输出半个 JSON。
+它不注入旧 planner transcript、Tool schema 或原始异常；evidence、已激活 Skill 与 reference grant 沿用原生 state
+reducer，只有候选计划被覆盖。成功 admission 清除错误并进入 scheduler。`Send` 按依赖分 wave 并行派发 worker。调度器根据 `depends_on` 自动把直接上游
 `WorkerResult` 组装为运行时 `dependency_results`，worker 将其作为明确的只读数据输入交给同一个 fast graph；
-该字段不是 planner 输出 schema。全部节点完成后，finalize 用同一个模型根据原始请求和按 plan 排序的结果生成
-标准 `AIMessage`，不机械拼接输出。planning 不创建第二套 Runtime，也不重复父图 Memory 节点。当前不维护
-verifier、repair、revision、acceptance contract、deliverable binding 或 artifact provenance；只有真实产品需求
-出现后才增加。
+该字段不是 planner 输出 schema。其原生拓扑是
+`planner -> admit_plan -> scheduler -> Send(worker) -> join -> scheduler`；scheduler 每轮只派发当前 ready wave，
+依赖失败会生成稳定的 failed `WorkerResult` 并向下游传播。worker 节点使用原生 `RetryPolicy` 和 node
+`error_handler`；只有明确可重试的超时、连接或临时 HTTP 执行失败在有界重试耗尽后转为不含异常正文的
+failed `WorkerResult`。`GraphBubbleUp` / interrupt / cancel、准入、鉴权与程序契约错误不进入该降级边界，
+仍保持 LangGraph 原生传播。零节点 plan 不派发 worker，scheduler 直接进入 finalizer。worker 只能继承节点 required Skill 与
+Planner 实际快照的交集；admission 禁止节点把
+`load_skill` 放入 worker Tool allowlist，worker phase 也确定性过滤该 Tool。显式允许 `load_skill_reference` 时，Tool
+只能读取 scheduler 投影的既有 `skill_reference_grants`，不能扩大 Skill 或 reference grant。全部节点完成后，
+finalizer 仍调用共享 `AssistantFastAgent`，但 `agent_phase="finalizer"` 确定性清空 Tool 与 structured response，
+根据原始请求、deliverables、planner evidence 和按 plan 排序的 worker results 返回标准 `AIMessage`，不机械拼接输出。
+worker 的直接依赖与所引用 PlannerEvidence 使用最终转义字符计数的 48,000 字符单消息预算；
+finalizer 的最新请求、deliverables、全部 PlannerEvidence 和按 plan 排序的 WorkerResult 使用 96,000 字符单消息预算。
+两者先保留 ID、状态、来源与 artifact ref，再确定性公平分配 content 字符并在 JSON 中标记裁剪；
+始终生成完整 JSON，不依赖 `SummarizationMiddleware` 压缩巨型单条 `HumanMessage`。Planner Tool artifact
+在捕获时按深度 8、最多 512 个 mapping/sequence item 增量遍历，检测循环并在遍历中过滤 raw/unsafe key；
+`structured_content` 最终 JSON 不超过 50,000 bytes，超限或未知对象只产生 JSON-safe truncation marker，
+在边界内遇到的受信 `output_ref` / `artifact_ref` 仍单独保留。
+planning 不创建第二套 Runtime，也不重复父图 Memory 节点。当前不维护
+verifier、repair ledger、acceptance contract 或 artifact provenance；deliverable 当前只做 producer/evidence
+引用准入，不建立运行期 artifact binding。只有真实产品需求出现后才增加。
 
 ## State 与恢复
 
@@ -82,6 +113,10 @@ fast agent 子图才增加由成功 `load_skill` 标准 Tool 结果产生的 `ac
 与窄 `skill_reference_grants`；这两个 channel 只在子图的 model→tool→model 循环中累积，不进入
 父图节点、父图输出或独立 Memory Graph。planning 子图内部另外持有 plan、worker result，
 并在 `Send` 派发时从直接依赖结果派生窄 `dependency_results` worker 输入。
+其 `plan_candidate`、`admission_error` 与 `revision_count` 只服务原生 revision edge；不建立 repair ledger、数据库、
+队列、checkpoint adapter 或 shadow state。恢复后 scheduler 只从 checkpointed plan 与已累积 worker results 重算
+下一 wave，不保存平行 ready/completed channel。`WorkerResult.sources` 在 JsonPlus/msgpack 的 JSON list 边界
+规范化回 tuple，避免 strict Pydantic checkpoint 恢复退化为未校验构造。
 planning 的 planner、worker 与 finalizer 都读取父图传入的同一份可信事实快照，不在子图内重新采集。
 `trusted_runtime_facts` 写入 checkpoint 时保存为 JSON-safe 字典（时间为 ISO 8601 字符串），模型调用边界再校验为
 严格 Pydantic 值；它不依赖 checkpoint 对项目自定义类型的宽松 msgpack 反序列化。
@@ -122,8 +157,9 @@ Tool 执行通过官方 runtime stream writer 向 custom mode 发送 `tool_progr
 `tool_name`、`tool_call_id` 与 `started|completed|failed`，不包含 Tool 参数或结果正文。由于 fast/planning
 执行单元是父图子图，Agent Server SDK 消费者需要同时启用 subgraph stream 才能接收其中的 messages/custom。
 
-`HumanInTheLoopMiddleware` 使用 state-aware `when` predicate：fast 模式自动放行，planning 模式对非 read
-Tool 触发原生 interrupt；恢复使用 Agent Server/LangGraph `Command(resume=...)`。model/tool call limit、
+`HumanInTheLoopMiddleware` 使用 state-aware `when` predicate：fast 模式自动放行，planning 的 planner 与 worker
+阶段都对非 read Tool 在执行前触发原生 interrupt；恢复使用 Agent Server/LangGraph `Command(resume=...)`，
+已完成的 Planner Tool 和 worker 不重放，scheduler 从 checkpoint state 重算后续 wave。model/tool call limit、
 只读 Tool retry 与 summarization 均由官方 middleware 承担。
 
 ## 已退役兼容边界
@@ -141,5 +177,5 @@ runner 因绑定旧 state/evidence 合同而删除，后续行为评测必须基
 ```bash
 MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
   tests/core/integration/test_runtime_lifecycle.py \
-  tests/tdd/native-agent-parent-graph
+  tests/tdd/native-high-agency-planner
 ```

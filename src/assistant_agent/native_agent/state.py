@@ -27,9 +27,11 @@ from assistant_agent.coding.models import (
 
 from assistant_agent.native_agent.models import (
     NativePlanProposal,
+    PlannerEvidence,
     ProviderSearchProfile,
     WorkerResult,
 )
+
 ExecutionMode = Literal["fast", "planning", "coding"]
 MemoryStatus = Literal["ready", "empty", "degraded"]
 AgentPhase = Literal["fast", "planner", "worker", "finalizer"]
@@ -92,12 +94,22 @@ class MemoryExtractionState(MessagesState):
     pass
 
 
-class WorkerState(FastAgentState):
+class WorkerState(AgentState):
     """Narrow input/output state for one planning worker branch."""
 
+    memory_context: Required[tuple[str, ...]]
+    memory_status: Required[MemoryStatus]
+    execution_mode: Required[ExecutionMode]
+    trusted_runtime_facts: NotRequired[dict[str, object]]
+    agent_phase: Required[AgentPhase]
+    worker_tool_allowlist: Required[tuple[str, ...]]
+    provider_search_profile: Required[ProviderSearchProfile]
+    active_skill_ids: Required[list[str]]
+    skill_reference_grants: Required[dict[str, list[str]]]
     work_item_id: Required[str]
     objective: Required[str]
-    dependency_results: NotRequired[tuple[WorkerResult, ...]]
+    dependency_results: Required[tuple[WorkerResult, ...]]
+    planner_evidence: Required[tuple[PlannerEvidence, ...]]
 
 
 class PlanningState(AgentState):
@@ -107,6 +119,16 @@ class PlanningState(AgentState):
     memory_status: Required[MemoryStatus]
     trusted_runtime_facts: NotRequired[dict[str, object]]
     plan: NotRequired[NativePlanProposal]
+    plan_candidate: NotRequired[NativePlanProposal]
+    planner_active_skill_ids: NotRequired[Annotated[list[str], _merge_unique_strings]]
+    planner_skill_reference_grants: NotRequired[
+        Annotated[dict[str, list[str]], _merge_reference_grants]
+    ]
+    planner_evidence: NotRequired[
+        Annotated[list[PlannerEvidence], _merge_planner_evidence]
+    ]
+    admission_error: NotRequired[str | None]
+    revision_count: NotRequired[int]
     worker_results: NotRequired[Annotated[list[WorkerResult], operator.add]]
 
 
@@ -169,6 +191,20 @@ def _merge_reference_grants(
         merged[skill_id] = list(
             dict.fromkeys([*merged.get(skill_id, ()), *reference_ids])
         )
+    return merged
+
+
+def _merge_planner_evidence(
+    current: Sequence[PlannerEvidence] | None,
+    update: Sequence[PlannerEvidence] | None,
+) -> list[PlannerEvidence]:
+    merged: list[PlannerEvidence] = []
+    seen_ids: set[str] = set()
+    for evidence in [*(current or ()), *(update or ())]:
+        if evidence.evidence_id in seen_ids:
+            continue
+        seen_ids.add(evidence.evidence_id)
+        merged.append(evidence)
     return merged
 
 

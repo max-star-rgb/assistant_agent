@@ -28,7 +28,22 @@ fast agent 子图当前执行的 state/checkpoint namespace 内 `active_skill_id
 模型；成功执行 `load_skill` 后，middleware 把原 `ToolMessage` 与窄 Skill/reference grant 一起写入标准
 `Command(update=...)`，下一次模型调用才暴露对应 Tool。Skill/reference channel 不进入父图或 Memory
 Graph。Tool 名只从 `skill.toml` 重新解析，不接受模型或 Tool
-artifact 声明任意 grant；该可见性层不替代具体 Tool 的身份、授权、参数和副作用校验。
+artifact 声明任意 grant；该可见性层不替代具体 Tool 的身份、授权、参数和副作用校验。planning 的 Planner phase
+可以调用 `load_skill`，但 admission 与 worker phase 都禁止 worker 调用它，避免 worker 扩大 Planner 冻结的 Skill
+快照。worker 可显式调用 `load_skill_reference`，但 ToolContext 只读取 scheduler 投影的既有
+`skill_reference_grants`，未投影 reference 必须 fail closed，调用本身不产生新 grant。
+
+planning 不另建 Planner Tool executor。Planner 以 `agent_phase="planner"` 复用同一个
+`AssistantFastAgent` model→ToolNode→model loop；在相同初始 state 与受信运行事实下，其首轮 Tool projection
+与 fast 首轮等价，Planner Tool 调用继续经过同一组 `ToolRetryMiddleware`、state-aware
+`HumanInTheLoopMiddleware` 和标准 `ToolNode`。因此 read Tool 保持有界 retry，planning 中非 read Tool 在执行前
+产生原生 interrupt，approve/resume 后沿 checkpoint 继续而不重放已经完成的 Planner Tool。
+
+成功的 `load_skill` 通过标准 `Command(update=...)` 写入受信 `active_skill_ids` 和 reference grant；后续 Planner
+model call 会从同一受信 catalog 将对应完整 Skill 正文加入 system prompt，并暴露其 `governed_tools`。admission
+冻结 Planner 实际激活的 Skill snapshot，scheduler 只把节点 `required_skill_ids` 与该 snapshot 的交集投影给
+worker；worker 的空 Tool allowlist 为 fail closed，且不能重新调用 `load_skill` 扩权。finalizer phase 则确定性
+使用空 Tool projection，不允许任何 Tool 调用。
 
 媒体 Tool 使用另一条与 Skill 正交的条件暴露链。`ConditionalToolExposureMiddleware` 只过滤已经静态注册在
 `request.tools` 中的 Tool，并按 Tool metadata 的封闭 `availability` 枚举读取可信运行事实：
@@ -89,6 +104,9 @@ Tool 的 `artifact` 保留全部规范化 `ShoppingSearchResult`，`content` 按
 镜像、plugin-private runner 或 Registry。旧 `personal_assistant_tools` / `email_tools` 远端映射已删除，MCP
 能力直接使用官方 adapter 生成的标准 Tool。MCP tool discovery 属于 worker 进程 composition，只执行一次；schema、history、state 与
 run 复用同一个 compiled graph 和 Tool 集合，实际 MCP Tool 调用仍遵循官方按调用创建 session 的行为。
+production composition 在构造 inventory 前只加载一次 repo `SkillCatalog`，并把同一实例显式注入
+`SkillLoadingPlugin`、fast agent 和 planning admission；Skill loading plugin 不在 production inventory 构造时
+再次读盘。只有直接省略 catalog 的非 production fixture 保留 plugin 自行加载的兼容行为。
 高德 `amap_maps` 的驾车、公交、骑行和步行路线调用通过官方 MCP adapter 的 `tool_interceptors`
 扩展点，在成功结果中追加由受信起终点坐标确定性生成的高德 HTTPS 路线规划链接；链接不包含 API Key，
 失败结果、非法坐标和其他 MCP Tool 保持原样。最终答复原样保留该 Markdown 链接；移动端可尝试调起

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import re
 from typing import Any
 
 from assistant_agent.providers.provider_errors import ProviderSafetyPolicy
@@ -12,6 +13,9 @@ _TOOL_OBSERVATION_POLICY = ProviderSafetyPolicy(
     max_message_chars=4_000,
     max_detail_chars=4_000,
 )
+_CAMEL_ACRONYM_BOUNDARY_RE = re.compile(r"([A-Z]+)([A-Z][a-z])")
+_CAMEL_WORD_BOUNDARY_RE = re.compile(r"([a-z0-9])([A-Z])")
+_NON_KEY_CHARACTER_RE = re.compile(r"[^a-z0-9]+")
 _UNSAFE_KEYS = {
     "access_token",
     "api_key",
@@ -29,6 +33,7 @@ _UNSAFE_KEYS = {
     "provider_payload",
     "provider_raw_payload",
     "provider_raw_response",
+    "provider_response",
     "raw",
     "raw_body",
     "raw_content",
@@ -38,10 +43,51 @@ _UNSAFE_KEYS = {
     "raw_provider_payload",
     "raw_provider_response",
     "raw_response",
+    "raw_result",
+    "raw_results",
     "refresh_token",
     "secret",
     "secret_token",
 }
+
+
+def is_unsafe_tool_observation_key(key: object) -> bool:
+    """Reject normalized secret, binary, and raw Provider payload keys."""
+
+    if not isinstance(key, str):
+        return True
+    normalized = _normalize_observation_key(key)
+    if not normalized or normalized in _UNSAFE_KEYS:
+        return True
+    if normalized.startswith("raw_"):
+        return True
+    if "provider_response" in normalized or "provider_payload" in normalized:
+        return True
+    parts = frozenset(normalized.split("_"))
+    if "provider" in parts and parts.intersection({"payload", "response"}):
+        return True
+    if "raw" in parts and parts.intersection(
+        {
+            "body",
+            "content",
+            "data",
+            "output",
+            "payload",
+            "response",
+            "result",
+            "results",
+        }
+    ):
+        return True
+    return "base64" in normalized or normalized.endswith(
+        ("_base64", "_bytes", "_blob", "_data_uri")
+    )
+
+
+def _normalize_observation_key(key: str) -> str:
+    separated = _CAMEL_ACRONYM_BOUNDARY_RE.sub(r"\1_\2", key.strip())
+    separated = _CAMEL_WORD_BOUNDARY_RE.sub(r"\1_\2", separated)
+    return _NON_KEY_CHARACTER_RE.sub("_", separated.lower()).strip("_")
 
 
 def sanitize_tool_observation_detail(value: Any) -> Any:
@@ -50,7 +96,7 @@ def sanitize_tool_observation_detail(value: Any) -> Any:
     if isinstance(value, Mapping):
         sanitized: dict[str, Any] = {}
         for key, child in value.items():
-            if not isinstance(key, str) or key.lower() in _UNSAFE_KEYS:
+            if is_unsafe_tool_observation_key(key):
                 continue
             sanitized[key] = sanitize_tool_observation_detail(child)
         return sanitized
@@ -63,3 +109,9 @@ def sanitize_tool_observation_detail(value: Any) -> Any:
     if value is None or isinstance(value, (bool, int, float)):
         return value
     return _TOOL_OBSERVATION_POLICY.sanitize_message(value)
+
+
+__all__ = [
+    "is_unsafe_tool_observation_key",
+    "sanitize_tool_observation_detail",
+]

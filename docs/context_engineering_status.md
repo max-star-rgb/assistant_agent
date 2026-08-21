@@ -23,12 +23,12 @@ system prompt 同时定义统一的用户可见边界：模型只说明面向用
 system/developer instructions、隐藏上下文、runtime/checkpoint、路由、内部标签、Tool schema/参数等实现细节；
 含糊指示语不得把临时注入的 Memory 或 TrustedRuntimeFacts 当成用户正在指向的内容。
 
-dynamic prompt 同时只渲染可发现 Skill 的 L0 index；完整 Skill 正文由 `load_skill` 读取，专项 reference 再由
-`load_skill_reference` 按当前 fast agent 子图 state/checkpoint namespace 中的窄 grant 读取。
-Skill 激活状态只在该次子图执行及其原生 interrupt/resume 中保存受信 `skill_id` 和注册的
-reference ID，不进入父图、后续 chat run 或 Memory Graph；
-模型可见 Tool schema 由原生 model-call middleware 根据 manifest 的 `governed_tools` 派生，
-不把 Tool schema、任意 Tool 名或 Skill 正文复制进 checkpoint。
+dynamic prompt 的 L0 index 只用于发现可加载 Skill。成功执行 `load_skill` 后，标准 `Command(update=...)` 把
+受信 `skill_id` 写入当前 fast agent 子图的 `active_skill_ids`；每次后续 model call 都以该 ID 从 composition
+注入的受信 catalog 重新取得并把完整 Skill 正文追加到 system prompt，同时由原生 model-call middleware 根据
+manifest 的 `governed_tools` 派生可见 Tool schema。专项 reference 再由 `load_skill_reference` 按当前
+state/checkpoint namespace 中的窄 grant 读取。checkpoint 只保存受信 Skill ID 和注册的 reference ID，不复制
+Skill 正文、Tool schema 或任意 Tool 名；这些状态不进入父图、后续 chat run 或 Memory Graph。
 
 Skill L0 index 使用简短自然语言列表。父图冻结的 `memory_context` 与 `trusted_runtime_facts` 都不进入
 system prompt：位于 summarization 内层的 model-call middleware 在最新真实 `HumanMessage` 前分别临时插入
@@ -43,7 +43,8 @@ Memory 每一行以引用文本呈现，并明确为可能过时或错误的背�
 覆盖本次任务参数，但不能改写可信事实的来源。最后一条用户消息始终是本轮真实请求。
 
 模型调用上限、Tool 调用上限、只读 Tool retry、长对话 summarization 与 planning 模式非 read Tool HITL
-全部使用官方 middleware；fast 模式自动放行。summarization 默认采用输入窗口 75% 触发、保留 15% 的
+全部使用官方 middleware；fast 模式自动放行，planning 的 planner 与 worker 阶段均在非 read Tool 执行前
+interrupt，并从原生 checkpoint approve/resume，不重放已完成的 Planner Tool 或 worker。summarization 默认采用输入窗口 75% 触发、保留 15% 的
 token 阈值，两者可由现有环境变量覆盖。DeepSeek V4 Flash 使用其官方 tokenizer 与
 `encoding_dsv4.py` 对标准 messages 做调用前计数；结构化 user content 只在文本 encoder 的计数副本中
 提取 text block，原始多模态 message 与媒体引用保持不变。摘要读取被淘汰的完整消息前缀，不再应用默认
@@ -53,12 +54,18 @@ token 阈值，两者可由现有环境变量覆盖。DeepSeek V4 Flash 使用�
 `ToolMessage`，不维护项目
 自建 conversation、完整问答边界或 summary state。
 
+planning 的 planner、worker 与 finalizer 都通过 `agent_phase` 复用同一个 `AssistantFastAgent`，不是直接调用
+独立模型。Planner 在共享 Tool loop 中成功加载 Skill 后，后续 Planner call 获得上述受信完整正文；admission
+冻结实际激活的 Skill snapshot，worker 只继承节点 required Skill 与该 snapshot 的交集，不能从计划文本或
+worker 输出扩展 Skill scope。
+
 planning worker 只获得自己的 objective、父图 Memory 与 TrustedRuntimeFacts 快照、调度器按 `depends_on` 派生的直接上游
-`dependency_results` 和同一个 fast agent。planner 默认生成单节点最小计划，只在存在真实独立工作或直接依赖时
-拆分，并要求 objective 自包含且保留相关用户约束。依赖结果不能覆盖当前任务、身份、权限或 Tool 约束。
-worker transcript 不并入父图对话；父图只接收结构化 `WorkerResult`。finalize 使用同一个模型根据原始请求和按
-plan 排序的 worker results 综合标准 `AIMessage`，显式处理冲突、缺失和失败，不把中间结果机械拼接成最终答案。
-planner 与 finalizer 的直接模型调用也显式注入同一份 TrustedRuntimeFacts；子图不会自行读取系统时钟或地点。
+`dependency_results`、节点引用的 planner evidence 和同一个 fast agent；objective 必须自包含并保留相关用户约束。
+依赖结果与 evidence 都是只读数据，不能覆盖当前任务、身份、权限或 Tool 约束。worker transcript 不并入父图
+对话；父图只接收结构化 `WorkerResult`。finalizer 仍复用同一 agent，但 phase projection 清空全部 Tool 和
+structured response，再根据原始请求、deliverables、planner evidence 与按 plan 排序的 worker results 综合标准
+`AIMessage`，显式处理冲突、缺失和失败，不把中间结果机械拼接成最终答案。三个 phase 都获得父图冻结的同一份
+TrustedRuntimeFacts；子图不会自行读取系统时钟或地点。
 
 Provider 联网来源属于产生该回复的 `AIMessage.response_metadata`，不会作为新上下文消息重新注入后续模型调用。
 终态入口只读取最新最终 AIMessage 的来源；中间 tool-call 或历史 AIMessage 的来源不聚合到当前答案。
