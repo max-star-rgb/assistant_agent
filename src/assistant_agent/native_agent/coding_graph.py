@@ -1224,7 +1224,11 @@ def build_coding_graph(
         }
 
     def after_resolve(state: CodingState) -> str:
-        return "summarize" if state.get("coding_result") is not None else "inspect_and_draft"
+        if state.get("coding_result") is not None:
+            return "summarize"
+        if state.get("repair_status") == "active":
+            return "consume_repair_budget"
+        return "inspect_and_draft"
 
     def after_validation(state: CodingState) -> str:
         return "summarize" if state.get("coding_result") is not None else "approval"
