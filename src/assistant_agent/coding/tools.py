@@ -225,11 +225,14 @@ def build_coding_analysis_tools(service: CodingWorkspaceService) -> list[BaseToo
             "coding_repo_read",
             runtime,
             service,
-            lambda snapshot, workspace, scope, live_workspace: service.read(
-                workspace,
+            lambda snapshot, workspace, scope, live_workspace: service.read_analysis_snapshot(
+                snapshot,
                 path,
-                start_line=start_line,
-                end_line=end_line,
+                start_line,
+                end_line,
+                identity=scope.identity,
+                thread_id=scope.thread_id,
+                workspace=live_workspace,
             ),
         )
 
