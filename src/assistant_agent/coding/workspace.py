@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import difflib
 import fcntl
 import hashlib
 import hmac
 import os
 import secrets
 import shutil
+import stat
 import subprocess
 import tempfile
 from collections.abc import Callable, Iterator, Mapping
@@ -70,6 +72,7 @@ class _AnalysisSnapshotMetadata(BaseModel):
     tree_object: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     status: CodingStatusResult
     diff: CodingDiffResult
+    active_lease: bool = True
 
 
 class CodingWorkspaceService:
@@ -175,14 +178,27 @@ class CodingWorkspaceService:
         snapshots_root = management_root / _ANALYSIS_SNAPSHOTS_DIR
         index_path: Path | None = None
         temporary_root: Path | None = None
+        object_root: Path | None = None
         published_root: Path | None = None
         published_created = False
         with self._lock(workspace.workspace_ref):
             try:
                 self._require_base_commit(workspace)
                 snapshots_root.mkdir(mode=0o700, exist_ok=True)
-                index_path = self._new_analysis_index(workspace.workspace_ref)
-                git_env = {"GIT_INDEX_FILE": str(index_path)}
+                temporary_root = Path(
+                    tempfile.mkdtemp(
+                        prefix=".analysis-build-",
+                        dir=snapshots_root,
+                    )
+                )
+                index_path = temporary_root / "index"
+                object_root = temporary_root / "objects"
+                object_root.mkdir(mode=0o700)
+                git_env = self._analysis_git_environment(
+                    workspace,
+                    index_path=index_path,
+                    object_root=object_root,
+                )
                 self._run_git(
                     workspace.root,
                     "read-tree",
@@ -190,7 +206,7 @@ class CodingWorkspaceService:
                     error_code="coding_analysis_snapshot_failed",
                     extra_env=git_env,
                 )
-                self._normalize_analysis_index(workspace, git_env)
+                baseline_files = self._normalize_analysis_index(workspace, git_env)
                 baseline_tree_object = self._run_git(
                     workspace.root,
                     "write-tree",
@@ -200,50 +216,26 @@ class CodingWorkspaceService:
                 self._run_git(
                     workspace.root,
                     "read-tree",
-                    "HEAD",
+                    "--empty",
                     error_code="coding_analysis_snapshot_failed",
                     extra_env=git_env,
                 )
-                self._run_git(
-                    workspace.root,
-                    "add",
-                    "-A",
-                    "--",
-                    error_code="coding_analysis_snapshot_failed",
-                    extra_env=git_env,
+                current_files = self._build_analysis_worktree_index(
+                    workspace,
+                    git_env,
                 )
-                self._normalize_analysis_index(workspace, git_env)
                 tree_object = self._run_git(
                     workspace.root,
                     "write-tree",
                     error_code="coding_analysis_snapshot_failed",
                     extra_env=git_env,
                 ).strip()
-                current_diff_bytes = self._run_git_bytes(
-                    workspace.root,
-                    "diff",
-                    "--no-ext-diff",
-                    "--no-color",
-                    "--no-renames",
-                    baseline_tree_object,
-                    tree_object,
-                    "--",
-                    error_code="coding_analysis_snapshot_failed",
-                    extra_env=git_env,
+                diff_result, workspace_diff_digest = self._analysis_diff_result(
+                    baseline_files,
+                    current_files,
                 )
-                try:
-                    current_diff = current_diff_bytes.decode("utf-8")
-                except UnicodeDecodeError as exc:
-                    raise CodingWorkspaceError(
-                        "coding_analysis_snapshot_failed"
-                    ) from exc
-                status = self._analysis_status_result(
-                    workspace,
-                    baseline_tree_object,
-                    tree_object,
-                )
+                status = self._analysis_status_result(baseline_files, current_files)
                 tree_digest = _digest(tree_object)
-                workspace_diff_digest = hashlib.sha256(current_diff_bytes).hexdigest()
                 identity_digest = _digest(identity)
                 thread_digest = _digest(thread_id)
                 snapshot_ref = self._analysis_snapshot_ref(
@@ -277,10 +269,7 @@ class CodingWorkspaceService:
                     repo_id=workspace.repo_id,
                     tree_object=tree_object,
                     status=status,
-                    diff=CodingDiffResult(
-                        diff=current_diff[:_MAX_GIT_OUTPUT],
-                        truncated=len(current_diff) > _MAX_GIT_OUTPUT,
-                    ),
+                    diff=diff_result,
                 )
                 published_root = self._analysis_snapshot_root(snapshot)
                 if published_root.exists():
@@ -292,6 +281,7 @@ class CodingWorkspaceService:
                             existing.snapshot,
                             existing,
                             published_root,
+                            require_active=False,
                         )
                     except CodingWorkspaceError as exc:
                         if exc.code != "coding_analysis_snapshot_expired":
@@ -323,14 +313,27 @@ class CodingWorkspaceService:
                             raise CodingWorkspaceError(
                                 "coding_analysis_snapshot_mismatch"
                             )
+                        if self._cleanup_analysis_build_resources(
+                            index_path=index_path,
+                            object_root=object_root,
+                            temporary_root=temporary_root,
+                        ):
+                            raise CodingWorkspaceError(
+                                "coding_analysis_snapshot_failed"
+                            )
+                        index_path = None
+                        object_root = None
+                        temporary_root = None
+                        if not existing.active_lease:
+                            existing = existing.model_copy(
+                                update={"active_lease": True}
+                            )
+                            self._write_analysis_snapshot_metadata(
+                                published_root / _ANALYSIS_SNAPSHOT_METADATA_FILE,
+                                existing,
+                            )
                         return existing.snapshot
 
-                temporary_root = Path(
-                    tempfile.mkdtemp(
-                        prefix=".analysis-snapshot-",
-                        dir=snapshots_root,
-                    )
-                )
                 tree_root = temporary_root / _ANALYSIS_SNAPSHOT_TREE_DIR
                 tree_root.mkdir(mode=0o700)
                 self._run_git(
@@ -346,23 +349,40 @@ class CodingWorkspaceService:
                     metadata,
                 )
                 self._make_analysis_tree_read_only(tree_root)
+                if self._cleanup_analysis_build_resources(
+                    index_path=index_path,
+                    object_root=object_root,
+                    temporary_root=None,
+                ):
+                    raise CodingWorkspaceError("coding_analysis_snapshot_failed")
+                index_path = None
+                object_root = None
                 os.replace(temporary_root, published_root)
                 temporary_root = None
                 published_created = True
                 return snapshot
-            except CodingWorkspaceError:
+            except CodingWorkspaceError as exc:
+                cleanup_failed = self._cleanup_analysis_build_resources(
+                    index_path=index_path,
+                    object_root=object_root,
+                    temporary_root=temporary_root,
+                )
                 if published_created and published_root is not None:
-                    self._remove_analysis_snapshot_directory(published_root)
+                    self._deactivate_analysis_snapshot_best_effort(published_root)
+                if cleanup_failed:
+                    raise CodingWorkspaceError(
+                        "coding_analysis_snapshot_failed"
+                    ) from exc
                 raise
             except Exception as exc:
+                self._cleanup_analysis_build_resources(
+                    index_path=index_path,
+                    object_root=object_root,
+                    temporary_root=temporary_root,
+                )
                 if published_created and published_root is not None:
-                    self._remove_analysis_snapshot_directory(published_root)
+                    self._deactivate_analysis_snapshot_best_effort(published_root)
                 raise CodingWorkspaceError("coding_analysis_snapshot_failed") from exc
-            finally:
-                if temporary_root is not None:
-                    self._remove_analysis_snapshot_directory(temporary_root)
-                if index_path is not None:
-                    self._remove_analysis_index(index_path)
 
     def resolve_analysis_snapshot(
         self,
@@ -381,6 +401,7 @@ class CodingWorkspaceService:
                 snapshot,
                 metadata,
                 snapshot_root,
+                require_active=True,
             )
             if not hmac.compare_digest(metadata.identity_digest, _digest(identity)) or not hmac.compare_digest(
                 metadata.thread_digest,
@@ -417,30 +438,49 @@ class CodingWorkspaceService:
         thread_id: str,
         workspace: CodingWorkspace,
     ) -> None:
-        self.resolve_analysis_snapshot(
-            snapshot,
-            identity=identity,
-            thread_id=thread_id,
-            workspace=workspace,
-        )
         snapshot_root = self._analysis_snapshot_root(snapshot)
         with self._lock(snapshot.workspace_ref):
-            try:
-                self._remove_analysis_snapshot_directory(snapshot_root)
-            except OSError as exc:
-                raise CodingWorkspaceError("coding_analysis_snapshot_failed") from exc
+            metadata = self._load_analysis_snapshot_metadata(
+                snapshot_root / _ANALYSIS_SNAPSHOT_METADATA_FILE
+            )
+            self._verify_analysis_snapshot_metadata(
+                snapshot,
+                metadata,
+                snapshot_root,
+                require_active=False,
+            )
+            self._verify_analysis_snapshot_scope(
+                snapshot,
+                metadata,
+                identity=identity,
+                thread_id=thread_id,
+                workspace=workspace,
+            )
+            if metadata.active_lease:
+                self._write_analysis_snapshot_metadata(
+                    snapshot_root / _ANALYSIS_SNAPSHOT_METADATA_FILE,
+                    metadata.model_copy(update={"active_lease": False}),
+                )
 
     def list_analysis_snapshot(
         self,
         snapshot: CodingAnalysisSnapshot,
         *,
+        identity: str,
+        thread_id: str,
+        workspace: CodingWorkspace,
         path: str,
         depth: int,
         cursor: int,
         limit: int,
     ) -> CodingListResult:
         return self.list_files(
-            self._analysis_snapshot_workspace(snapshot),
+            self.resolve_analysis_snapshot(
+                snapshot,
+                identity=identity,
+                thread_id=thread_id,
+                workspace=workspace,
+            ),
             path=path,
             depth=depth,
             cursor=cursor,
@@ -451,6 +491,9 @@ class CodingWorkspaceService:
         self,
         snapshot: CodingAnalysisSnapshot,
         *,
+        identity: str,
+        thread_id: str,
+        workspace: CodingWorkspace,
         query: str,
         paths: tuple[str, ...],
         globs: tuple[str, ...],
@@ -458,7 +501,12 @@ class CodingWorkspaceService:
         limit: int,
     ) -> CodingSearchResult:
         return self.search(
-            self._analysis_snapshot_workspace(snapshot),
+            self.resolve_analysis_snapshot(
+                snapshot,
+                identity=identity,
+                thread_id=thread_id,
+                workspace=workspace,
+            ),
             query=query,
             paths=paths,
             globs=globs,
@@ -472,9 +520,18 @@ class CodingWorkspaceService:
         path: str,
         start_line: int,
         end_line: int,
+        *,
+        identity: str,
+        thread_id: str,
+        workspace: CodingWorkspace,
     ) -> CodingReadResult:
         return self.read(
-            self._analysis_snapshot_workspace(snapshot),
+            self.resolve_analysis_snapshot(
+                snapshot,
+                identity=identity,
+                thread_id=thread_id,
+                workspace=workspace,
+            ),
             path,
             start_line=start_line,
             end_line=end_line,
@@ -483,13 +540,33 @@ class CodingWorkspaceService:
     def status_analysis_snapshot(
         self,
         snapshot: CodingAnalysisSnapshot,
+        *,
+        identity: str,
+        thread_id: str,
+        workspace: CodingWorkspace,
     ) -> CodingStatusResult:
+        self.resolve_analysis_snapshot(
+            snapshot,
+            identity=identity,
+            thread_id=thread_id,
+            workspace=workspace,
+        )
         return self._analysis_snapshot_metadata(snapshot).status
 
     def diff_analysis_snapshot(
         self,
         snapshot: CodingAnalysisSnapshot,
+        *,
+        identity: str,
+        thread_id: str,
+        workspace: CodingWorkspace,
     ) -> CodingDiffResult:
+        self.resolve_analysis_snapshot(
+            snapshot,
+            identity=identity,
+            thread_id=thread_id,
+            workspace=workspace,
+        )
         return self._analysis_snapshot_metadata(snapshot).diff
 
     def list_files(
@@ -858,6 +935,36 @@ class CodingWorkspaceService:
             expires_at=snapshot.expires_at,
         )
 
+    def _verify_analysis_snapshot_scope(
+        self,
+        snapshot: CodingAnalysisSnapshot,
+        metadata: _AnalysisSnapshotMetadata,
+        *,
+        identity: str,
+        thread_id: str,
+        workspace: CodingWorkspace,
+    ) -> None:
+        if not hmac.compare_digest(metadata.identity_digest, _digest(identity)) or not hmac.compare_digest(
+            metadata.thread_digest,
+            _digest(thread_id),
+        ):
+            raise CodingWorkspaceError("coding_analysis_identity_mismatch")
+        if (
+            workspace.workspace_ref != snapshot.workspace_ref
+            or workspace.base_commit != snapshot.base_commit
+            or workspace.repo_id != metadata.repo_id
+            or not hmac.compare_digest(
+                metadata.workspace_digest,
+                _digest(workspace.workspace_ref),
+            )
+        ):
+            raise CodingWorkspaceError("coding_analysis_snapshot_mismatch")
+        self._require_analysis_workspace_scope(
+            workspace,
+            identity=identity,
+            thread_id=thread_id,
+        )
+
     def _analysis_snapshot_metadata(
         self,
         snapshot: CodingAnalysisSnapshot,
@@ -929,6 +1036,8 @@ class CodingWorkspaceService:
         snapshot: CodingAnalysisSnapshot,
         metadata: _AnalysisSnapshotMetadata,
         snapshot_root: Path,
+        *,
+        require_active: bool = True,
     ) -> None:
         expected_ref = self._analysis_snapshot_ref(
             identity_digest=metadata.identity_digest,
@@ -949,39 +1058,17 @@ class CodingWorkspaceService:
                 _digest(metadata.tree_object),
             )
             or not (snapshot_root / _ANALYSIS_SNAPSHOT_TREE_DIR).is_dir()
+            or (require_active and not metadata.active_lease)
         ):
             raise CodingWorkspaceError("coding_analysis_snapshot_mismatch")
         if snapshot.expires_at <= self._clock():
             raise CodingWorkspaceError("coding_analysis_snapshot_expired")
 
-    def _new_analysis_index(self, workspace_ref: str) -> Path:
-        descriptor = -1
-        path: Path | None = None
-        try:
-            descriptor, raw_path = tempfile.mkstemp(
-                prefix=".analysis-index-",
-                dir=self._management_root(workspace_ref),
-            )
-            path = Path(raw_path)
-            os.close(descriptor)
-            descriptor = -1
-            path.unlink()
-            return path
-        except OSError as exc:
-            if descriptor >= 0:
-                try:
-                    os.close(descriptor)
-                except OSError:
-                    pass
-            if path is not None:
-                path.unlink(missing_ok=True)
-            raise CodingWorkspaceError("coding_analysis_snapshot_failed") from exc
-
     def _normalize_analysis_index(
         self,
         workspace: CodingWorkspace,
         git_env: Mapping[str, str],
-    ) -> None:
+    ) -> dict[str, tuple[str, bytes]]:
         raw_entries = self._run_git_bytes(
             workspace.root,
             "ls-files",
@@ -989,9 +1076,13 @@ class CodingWorkspaceService:
             "-z",
             error_code="coding_analysis_snapshot_failed",
             extra_env=git_env,
+            max_output_bytes=(
+                self.config.analysis_snapshot_max_files * (1_024 + 128)
+            ),
         )
-        parsed: list[tuple[bytes, str, str, str]] = []
+        files: dict[str, tuple[str, bytes]] = {}
         removed_paths: list[bytes] = []
+        blob_cache: dict[str, bytes | None] = {}
         for raw_entry in raw_entries.split(b"\0"):
             if not raw_entry:
                 continue
@@ -1011,29 +1102,18 @@ class CodingWorkspaceService:
             if not self._analysis_path_is_allowed(workspace.root, path, mode):
                 removed_paths.append(raw_path)
                 continue
-            parsed.append((raw_path, path, mode, object_id))
-
-        unique_object_ids = tuple(dict.fromkeys(item[3] for item in parsed))
-        object_sizes = self._git_blob_sizes(
-            workspace.root,
-            unique_object_ids,
-            git_env,
-        )
-        bounded_object_ids = tuple(
-            object_id
-            for object_id in unique_object_ids
-            if object_sizes[object_id] <= self.config.max_file_bytes
-        )
-        blobs = self._git_blobs(workspace.root, bounded_object_ids, git_env)
-        for raw_path, _, _, object_id in parsed:
-            blob = blobs.get(object_id)
+            if object_id not in blob_cache:
+                blob_cache[object_id] = self._read_analysis_git_blob(
+                    workspace.root,
+                    object_id,
+                    git_env,
+                )
+            blob = blob_cache[object_id]
             if blob is None:
                 removed_paths.append(raw_path)
                 continue
-            try:
-                blob.decode("utf-8")
-            except UnicodeDecodeError:
-                removed_paths.append(raw_path)
+            files[path] = (mode, blob)
+            self._enforce_analysis_tree_limits(files)
 
         if removed_paths:
             self._run_git_bytes(
@@ -1046,9 +1126,11 @@ class CodingWorkspaceService:
                 extra_env=git_env,
                 input_bytes=b"\0".join(removed_paths) + b"\0",
             )
+        self._enforce_analysis_tree_limits(files)
+        return files
 
     def _analysis_path_is_allowed(self, root: Path, path: str, mode: str) -> bool:
-        if mode not in {"100644", "100755"} or any(
+        if len(path.encode("utf-8")) > 1_024 or mode not in {"100644", "100755"} or any(
             character in path for character in ("\x00", "\n", "\r")
         ):
             return False
@@ -1058,135 +1140,280 @@ class CodingWorkspaceService:
             return False
         return True
 
-    def _git_blob_sizes(
+    def _read_analysis_git_blob(
         self,
         repo: Path,
-        object_ids: tuple[str, ...],
+        object_id: str,
         git_env: Mapping[str, str],
-    ) -> dict[str, int]:
-        if not object_ids:
-            return {}
-        output = self._run_git(
+    ) -> bytes | None:
+        try:
+            size = int(
+                self._run_git(
+                    repo,
+                    "cat-file",
+                    "-s",
+                    object_id,
+                    error_code="coding_analysis_snapshot_failed",
+                    extra_env=git_env,
+                ).strip()
+            )
+        except ValueError as exc:
+            raise CodingWorkspaceError("coding_analysis_snapshot_failed") from exc
+        if size > self.config.max_file_bytes:
+            return None
+        data = self._run_git_bytes(
             repo,
             "cat-file",
-            "--batch-check=%(objectname) %(objecttype) %(objectsize)",
+            "blob",
+            object_id,
             error_code="coding_analysis_snapshot_failed",
-            input_text="".join(f"{object_id}\n" for object_id in object_ids),
             extra_env=git_env,
-            max_output_chars=None,
+            max_output_bytes=self.config.max_file_bytes,
         )
-        sizes: dict[str, int] = {}
-        lines = output.splitlines()
-        if len(lines) != len(object_ids):
-            raise CodingWorkspaceError("coding_analysis_snapshot_failed")
-        for expected_object_id, line in zip(object_ids, lines, strict=True):
-            try:
-                object_id, object_type, raw_size = line.split(" ", 2)
-                size = int(raw_size)
-            except (TypeError, ValueError) as exc:
-                raise CodingWorkspaceError(
-                    "coding_analysis_snapshot_failed"
-                ) from exc
-            if object_id != expected_object_id or object_type != "blob" or size < 0:
-                raise CodingWorkspaceError("coding_analysis_snapshot_failed")
-            sizes[object_id] = size
-        return sizes
+        try:
+            data.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+        return data
 
-    def _git_blobs(
+    def _build_analysis_worktree_index(
         self,
-        repo: Path,
-        object_ids: tuple[str, ...],
+        workspace: CodingWorkspace,
         git_env: Mapping[str, str],
-    ) -> dict[str, bytes]:
-        if not object_ids:
-            return {}
-        output = self._run_git_bytes(
-            repo,
-            "cat-file",
-            "--batch",
-            error_code="coding_analysis_snapshot_failed",
-            extra_env=git_env,
-            input_bytes="".join(f"{object_id}\n" for object_id in object_ids).encode(
-                "ascii"
-            ),
-        )
-        blobs: dict[str, bytes] = {}
-        offset = 0
-        for expected_object_id in object_ids:
-            header_end = output.find(b"\n", offset)
-            if header_end < 0:
-                raise CodingWorkspaceError("coding_analysis_snapshot_failed")
-            try:
-                object_bytes, object_type, raw_size = output[offset:header_end].split(
-                    b" ",
-                    2,
+    ) -> dict[str, tuple[str, bytes]]:
+        files: dict[str, tuple[str, bytes]] = {}
+        index_records: list[bytes] = []
+        for directory, child_directories, filenames in os.walk(
+            workspace.root,
+            followlinks=False,
+        ):
+            root = Path(directory)
+            child_directories[:] = [
+                name
+                for name in child_directories
+                if not (root / name).is_symlink()
+                and (root / name).name != ".git"
+            ]
+            for filename in filenames:
+                candidate = root / filename
+                path = candidate.relative_to(workspace.root).as_posix()
+                mode = "100755" if os.access(candidate, os.X_OK) else "100644"
+                if not self._analysis_path_is_allowed(workspace.root, path, mode):
+                    continue
+                data = self._read_analysis_worktree_file(candidate)
+                if data is None:
+                    continue
+                files[path] = (mode, data)
+                self._enforce_analysis_tree_limits(files)
+                object_id = self._run_git_bytes(
+                    workspace.root,
+                    "hash-object",
+                    "-w",
+                    "--stdin",
+                    error_code="coding_analysis_snapshot_failed",
+                    extra_env=git_env,
+                    input_bytes=data,
+                    max_output_bytes=128,
+                ).decode("ascii").strip()
+                if len(object_id) not in {40, 64} or any(
+                    character not in "0123456789abcdef" for character in object_id
+                ):
+                    raise CodingWorkspaceError("coding_analysis_snapshot_failed")
+                index_records.append(
+                    f"{mode} {object_id}\t{path}".encode("utf-8") + b"\0"
                 )
-                object_id = object_bytes.decode("ascii")
-                size = int(raw_size)
-            except (UnicodeDecodeError, ValueError) as exc:
-                raise CodingWorkspaceError(
-                    "coding_analysis_snapshot_failed"
-                ) from exc
-            data_start = header_end + 1
-            data_end = data_start + size
-            if (
-                object_id != expected_object_id
-                or object_type != b"blob"
-                or data_end >= len(output)
-                or output[data_end : data_end + 1] != b"\n"
-            ):
-                raise CodingWorkspaceError("coding_analysis_snapshot_failed")
-            blobs[object_id] = output[data_start:data_end]
-            offset = data_end + 1
-        if offset != len(output):
+        if index_records:
+            self._run_git_bytes(
+                workspace.root,
+                "update-index",
+                "-z",
+                "--index-info",
+                error_code="coding_analysis_snapshot_failed",
+                extra_env=git_env,
+                input_bytes=b"".join(index_records),
+                max_output_bytes=1,
+            )
+        return files
+
+    def _read_analysis_worktree_file(self, path: Path) -> bytes | None:
+        descriptor = -1
+        try:
+            initial = path.lstat()
+            if not stat.S_ISREG(initial.st_mode):
+                return None
+            descriptor = os.open(
+                path,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+            )
+            details = os.fstat(descriptor)
+            if not stat.S_ISREG(details.st_mode) or details.st_size > self.config.max_file_bytes:
+                return None
+            chunks: list[bytes] = []
+            remaining = self.config.max_file_bytes + 1
+            while remaining > 0:
+                chunk = os.read(descriptor, min(65_536, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            data = b"".join(chunks)
+            if len(data) > self.config.max_file_bytes:
+                return None
+            try:
+                data.decode("utf-8")
+            except UnicodeDecodeError:
+                return None
+            return data
+        except OSError:
+            return None
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+    def _enforce_analysis_tree_limits(
+        self,
+        files: Mapping[str, tuple[str, bytes]],
+    ) -> None:
+        if len(files) > self.config.analysis_snapshot_max_files or sum(
+            len(item[1]) for item in files.values()
+        ) > self.config.analysis_snapshot_max_total_bytes:
+            raise CodingWorkspaceError("coding_analysis_snapshot_limit_exceeded")
+
+    def _analysis_git_environment(
+        self,
+        workspace: CodingWorkspace,
+        *,
+        index_path: Path,
+        object_root: Path,
+    ) -> dict[str, str]:
+        raw_common = self._run_git(
+            workspace.root,
+            "rev-parse",
+            "--git-common-dir",
+            error_code="coding_analysis_snapshot_failed",
+        ).strip()
+        common = Path(raw_common)
+        if not common.is_absolute():
+            common = (workspace.root / common).resolve()
+        main_objects = (common / "objects").resolve()
+        if not main_objects.is_dir():
             raise CodingWorkspaceError("coding_analysis_snapshot_failed")
-        return blobs
+        return {
+            "GIT_INDEX_FILE": str(index_path),
+            "GIT_OBJECT_DIRECTORY": str(object_root),
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(main_objects),
+        }
+
+    def _analysis_diff_result(
+        self,
+        baseline: Mapping[str, tuple[str, bytes]],
+        current: Mapping[str, tuple[str, bytes]],
+    ) -> tuple[CodingDiffResult, str]:
+        digest = hashlib.sha256()
+        rendered: list[str] = []
+        rendered_bytes = 0
+        truncated = False
+        limit = self.config.analysis_snapshot_max_diff_bytes
+
+        def record_line(line: str) -> None:
+            nonlocal rendered_bytes, truncated
+            encoded = line.encode("utf-8")
+            digest.update(encoded)
+            if rendered_bytes + len(encoded) <= limit:
+                rendered.append(line)
+                rendered_bytes += len(encoded)
+            else:
+                truncated = True
+
+        for path in sorted(set(baseline).union(current)):
+            old = baseline.get(path)
+            new = current.get(path)
+            if old == new:
+                continue
+            if old is not None and new is not None and old[0] != new[0]:
+                record_line(f"old mode {old[0]}\n")
+                record_line(f"new mode {new[0]}\n")
+            old_text = old[1].decode("utf-8") if old is not None else ""
+            new_text = new[1].decode("utf-8") if new is not None else ""
+            if old_text != new_text:
+                for line in difflib.unified_diff(
+                    old_text.splitlines(keepends=True),
+                    new_text.splitlines(keepends=True),
+                    fromfile=f"a/{path}" if old is not None else "/dev/null",
+                    tofile=f"b/{path}" if new is not None else "/dev/null",
+                ):
+                    record_line(line)
+        return (
+            CodingDiffResult(diff="".join(rendered), truncated=truncated),
+            digest.hexdigest(),
+        )
 
     def _analysis_status_result(
         self,
-        workspace: CodingWorkspace,
-        baseline_tree_object: str,
-        tree_object: str,
+        baseline: Mapping[str, tuple[str, bytes]],
+        current: Mapping[str, tuple[str, bytes]],
     ) -> CodingStatusResult:
-        raw_status = self._run_git_bytes(
-            workspace.root,
-            "diff",
-            "--name-status",
-            "--no-renames",
-            "-z",
-            baseline_tree_object,
-            tree_object,
-            "--",
-            error_code="coding_analysis_snapshot_failed",
-        )
-        parts = [part for part in raw_status.split(b"\0") if part]
         entries: list[str] = []
-        index = 0
-        while index < len(parts):
-            raw_status_code = parts[index]
-            index += 1
-            if b"\t" in raw_status_code:
-                raw_status_code, raw_path = raw_status_code.split(b"\t", 1)
-            else:
-                if index >= len(parts):
-                    raise CodingWorkspaceError("coding_analysis_snapshot_failed")
-                raw_path = parts[index]
-                index += 1
-            try:
-                status_code = raw_status_code.decode("ascii")
-                path = raw_path.decode("utf-8")
-            except UnicodeDecodeError as exc:
-                raise CodingWorkspaceError(
-                    "coding_analysis_snapshot_failed"
-                ) from exc
-            if status_code == "A":
+        total_bytes = 0
+        for path in sorted(set(baseline).union(current)):
+            old = baseline.get(path)
+            new = current.get(path)
+            if old == new:
+                continue
+            if old is None:
                 prefix = "??"
-            elif status_code == "D":
+            elif new is None:
                 prefix = " D"
             else:
                 prefix = " M"
-            entries.append(f"{prefix} {path}")
+            entry = f"{prefix} {path}"
+            entries.append(entry)
+            total_bytes += len(entry.encode("utf-8"))
+            if (
+                len(entries) > self.config.analysis_snapshot_max_status_entries
+                or total_bytes > self.config.analysis_snapshot_max_status_bytes
+            ):
+                raise CodingWorkspaceError("coding_analysis_snapshot_limit_exceeded")
         return CodingStatusResult(entries=tuple(entries))
+
+    def _cleanup_analysis_build_resources(
+        self,
+        *,
+        index_path: Path | None,
+        object_root: Path | None,
+        temporary_root: Path | None,
+    ) -> bool:
+        failed = False
+        if index_path is not None:
+            try:
+                index_path.unlink(missing_ok=True)
+                Path(f"{index_path}.lock").unlink(missing_ok=True)
+            except OSError:
+                failed = True
+        if object_root is not None:
+            try:
+                shutil.rmtree(object_root, ignore_errors=False)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                failed = True
+        if temporary_root is not None:
+            try:
+                self._remove_analysis_snapshot_directory(temporary_root)
+            except OSError:
+                failed = True
+        return failed
+
+    def _deactivate_analysis_snapshot_best_effort(self, snapshot_root: Path) -> None:
+        try:
+            path = snapshot_root / _ANALYSIS_SNAPSHOT_METADATA_FILE
+            metadata = self._load_analysis_snapshot_metadata(path)
+            self._write_analysis_snapshot_metadata(
+                path,
+                metadata.model_copy(update={"active_lease": False}),
+            )
+        except CodingWorkspaceError:
+            return
 
     def _remove_analysis_index(self, index_path: Path) -> None:
         try:
@@ -1325,27 +1552,61 @@ class CodingWorkspaceService:
                 metadata = self._load_metadata(metadata_path)
             except CodingWorkspaceError:
                 continue
-            if metadata.expires_at > self._clock():
-                continue
             lock_path = management_root / _LOCK_FILE
             lock_path.touch(mode=0o600, exist_ok=True)
+            remove_workspace = False
             with lock_path.open("a+") as handle:
                 try:
                     fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
                     continue
-                repository = self.config.repositories.get(metadata.repo_id)
-                if repository is None:
+                self._reap_analysis_snapshots_locked(management_root)
+                if metadata.expires_at <= self._clock():
+                    repository = self.config.repositories.get(metadata.repo_id)
+                    if repository is None:
+                        continue
+                    self._run_git(
+                        repository.path,
+                        "worktree",
+                        "remove",
+                        "--force",
+                        str(management_root / _REPO_DIR),
+                        error_code="workspace_cleanup_failed",
+                    )
+                    remove_workspace = True
+            if remove_workspace:
+                shutil.rmtree(management_root, ignore_errors=False)
+
+    def _reap_analysis_snapshots_locked(self, management_root: Path) -> None:
+        snapshots_root = management_root / _ANALYSIS_SNAPSHOTS_DIR
+        if snapshots_root.is_dir():
+            for snapshot_root in tuple(snapshots_root.iterdir()):
+                if not snapshot_root.is_dir():
                     continue
-                self._run_git(
-                    repository.path,
-                    "worktree",
-                    "remove",
-                    "--force",
-                    str(management_root / _REPO_DIR),
-                    error_code="workspace_cleanup_failed",
-                )
-            shutil.rmtree(management_root, ignore_errors=False)
+                if snapshot_root.name.startswith(".analysis-build-"):
+                    try:
+                        self._remove_analysis_snapshot_directory(snapshot_root)
+                    except OSError:
+                        continue
+                    continue
+                try:
+                    metadata = self._load_analysis_snapshot_metadata(
+                        snapshot_root / _ANALYSIS_SNAPSHOT_METADATA_FILE
+                    )
+                except CodingWorkspaceError:
+                    continue
+                if metadata.active_lease and metadata.snapshot.expires_at > self._clock():
+                    continue
+                try:
+                    self._remove_analysis_snapshot_directory(snapshot_root)
+                except OSError:
+                    continue
+        for index_path in management_root.glob(".analysis-index-*"):
+            try:
+                index_path.unlink(missing_ok=True)
+                Path(f"{index_path}.lock").unlink(missing_ok=True)
+            except OSError:
+                continue
 
     async def aclose(self) -> None:
         return None
@@ -1486,6 +1747,7 @@ class CodingWorkspaceService:
         error_code: str,
         extra_env: Mapping[str, str] | None = None,
         input_bytes: bytes | None = None,
+        max_output_bytes: int | None = None,
     ) -> bytes:
         env = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
@@ -1509,6 +1771,8 @@ class CodingWorkspaceService:
             raise CodingWorkspaceError(error_code) from exc
         if completed.returncode != 0:
             raise CodingWorkspaceError(error_code)
+        if max_output_bytes is not None and len(completed.stdout) > max_output_bytes:
+            raise CodingWorkspaceError("coding_analysis_snapshot_limit_exceeded")
         return completed.stdout
 
 

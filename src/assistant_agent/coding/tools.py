@@ -179,7 +179,7 @@ def build_coding_analysis_tools(service: CodingWorkspaceService) -> list[BaseToo
             "coding_repo_list",
             runtime,
             service,
-            lambda snapshot, workspace: service.list_files(
+            lambda snapshot, workspace, scope, live_workspace: service.list_files(
                 workspace,
                 path=path,
                 depth=depth,
@@ -202,7 +202,7 @@ def build_coding_analysis_tools(service: CodingWorkspaceService) -> list[BaseToo
             "coding_repo_search",
             runtime,
             service,
-            lambda snapshot, workspace: service.search(
+            lambda snapshot, workspace, scope, live_workspace: service.search(
                 workspace,
                 query=query,
                 paths=paths,
@@ -225,7 +225,7 @@ def build_coding_analysis_tools(service: CodingWorkspaceService) -> list[BaseToo
             "coding_repo_read",
             runtime,
             service,
-            lambda snapshot, workspace: service.read(
+            lambda snapshot, workspace, scope, live_workspace: service.read(
                 workspace,
                 path,
                 start_line=start_line,
@@ -243,7 +243,12 @@ def build_coding_analysis_tools(service: CodingWorkspaceService) -> list[BaseToo
             "coding_repo_status",
             runtime,
             service,
-            lambda snapshot, workspace: service.status_analysis_snapshot(snapshot),
+            lambda snapshot, workspace, scope, live_workspace: service.status_analysis_snapshot(
+                snapshot,
+                identity=scope.identity,
+                thread_id=scope.thread_id,
+                workspace=live_workspace,
+            ),
         )
 
     @tool("coding_repo_diff", response_format="content_and_artifact")
@@ -256,7 +261,12 @@ def build_coding_analysis_tools(service: CodingWorkspaceService) -> list[BaseToo
             "coding_repo_diff",
             runtime,
             service,
-            lambda snapshot, workspace: service.diff_analysis_snapshot(snapshot),
+            lambda snapshot, workspace, scope, live_workspace: service.diff_analysis_snapshot(
+                snapshot,
+                identity=scope.identity,
+                thread_id=scope.thread_id,
+                workspace=live_workspace,
+            ),
         )
 
     return sorted(
@@ -329,7 +339,7 @@ def _invoke_analysis(
             thread_id=scope.thread_id,
             workspace=workspace,
         )
-        result = operation(snapshot, snapshot_workspace)
+        result = operation(snapshot, snapshot_workspace, scope, workspace)
         result_data = result.model_dump(mode="json")
         data = {
             "snapshot_ref": snapshot.snapshot_ref,

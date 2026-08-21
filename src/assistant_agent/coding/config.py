@@ -450,6 +450,27 @@ class CodingConfig(BaseModel):
     max_patch_bytes: int = Field(default=262_144, ge=1_024, le=1_048_576)
     max_changed_files: int = Field(default=32, ge=1, le=256)
     max_file_bytes: int = Field(default=2_097_152, ge=1_024, le=10_485_760)
+    analysis_snapshot_max_files: int = Field(default=4_096, ge=1, le=100_000)
+    analysis_snapshot_max_total_bytes: int = Field(
+        default=67_108_864,
+        ge=1_024,
+        le=1_073_741_824,
+    )
+    analysis_snapshot_max_status_entries: int = Field(
+        default=4_096,
+        ge=1,
+        le=100_000,
+    )
+    analysis_snapshot_max_status_bytes: int = Field(
+        default=262_144,
+        ge=64,
+        le=4_194_304,
+    )
+    analysis_snapshot_max_diff_bytes: int = Field(
+        default=262_144,
+        ge=64,
+        le=4_194_304,
+    )
 
     @model_validator(mode="after")
     def _validate_boundaries(self) -> "CodingConfig":
@@ -525,6 +546,31 @@ class CodingConfig(BaseModel):
                 source,
                 "MULTIMODAL_AGENT_CODING_MAX_FILE_BYTES",
                 2_097_152,
+            ),
+            analysis_snapshot_max_files=_int_value(
+                source,
+                "MULTIMODAL_AGENT_CODING_ANALYSIS_SNAPSHOT_MAX_FILES",
+                4_096,
+            ),
+            analysis_snapshot_max_total_bytes=_int_value(
+                source,
+                "MULTIMODAL_AGENT_CODING_ANALYSIS_SNAPSHOT_MAX_TOTAL_BYTES",
+                67_108_864,
+            ),
+            analysis_snapshot_max_status_entries=_int_value(
+                source,
+                "MULTIMODAL_AGENT_CODING_ANALYSIS_SNAPSHOT_MAX_STATUS_ENTRIES",
+                4_096,
+            ),
+            analysis_snapshot_max_status_bytes=_int_value(
+                source,
+                "MULTIMODAL_AGENT_CODING_ANALYSIS_SNAPSHOT_MAX_STATUS_BYTES",
+                262_144,
+            ),
+            analysis_snapshot_max_diff_bytes=_int_value(
+                source,
+                "MULTIMODAL_AGENT_CODING_ANALYSIS_SNAPSHOT_MAX_DIFF_BYTES",
+                262_144,
             ),
         )
 
