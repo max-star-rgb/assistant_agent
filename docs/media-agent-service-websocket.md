@@ -1,6 +1,6 @@
 # Media-Agent WebSocket 接口权威文档
 
-Last updated: 2026-08-20
+Last updated: 2026-08-21
 
 ## Authority contract
 
@@ -47,7 +47,14 @@ Last updated: 2026-08-20
 ```
 
 兼容 `assistantControlStart`，其 user 位于 `userInfo.number`，成功响应为
-`assistantControlStartAck` 和 `{"code":"OK"}`。同一连接不允许重复绑定握手。
+`assistantControlStartAck` 和 `{"code":"OK"}`。legacy AR 链路中的后续 `chat.userNumber` 和
+`video.userNumber` 沿用旧协议的独立号码口径，不强制与 `userInfo.number` 相等；native thread 和认证身份
+仍以握手身份为准。现代 `assistantControl` 的后续媒体号码必须与 `number` 一致。同一连接不允许重复绑定握手。
+
+为兼容 2026-08-13 前的 AR 媒体链路，连接首个业务消息直接为 `chat` 时，媒体入口使用该帧的
+`sessionId/userNumber` lazy 创建 native thread，再按正常 chat 流程发送 `chatProgress` 和创建 run；该兼容
+路径不具备 control 协商的客户端能力和 durable 主动投递能力。非开发者认证连接仍要求 `userNumber` 与
+Agent Server `user.identity` 一致。
 
 “完成 VIDEO 握手”的结构化定义是：服务端已成功校验并绑定首个 control 消息、创建该连接对应的 native
 `thread_id`，且绑定的 `callType` 等于 `VIDEO`。它不要求已经收到第一帧。后续 chat run 由媒体入口把该事实
@@ -72,7 +79,8 @@ capability token 放入 run context；token 按认证身份与 thread 校验，r
 }
 ```
 
-- `chatIndex`、`userNumber` 和非空 `contents` 必填；`userNumber` 必须与握手一致。
+- `chatIndex`、`userNumber` 和非空 `contents` 必填；现代 `assistantControl` 链路中 `userNumber`
+  必须与握手一致，legacy `assistantControlStart` 保持独立号码口径兼容。
 - 每项必须有 `speakerNumber`、`time`；当前 Graph 输入取最后一条非空 `speechContent`。
 - `chatIndex` 关联 run，`deliveryId` 只关联本次媒体投递 ACK。
 - 媒体入口以 `multitask_strategy=enqueue` 创建 native run。

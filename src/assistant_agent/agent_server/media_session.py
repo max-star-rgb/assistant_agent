@@ -9,6 +9,7 @@ from typing import Literal
 @dataclass
 class MediaConnectionSession:
     connection_id: str
+    control_message: Literal["assistantControl", "assistantControlStart"] | None = None
     protocol_session_id: str | None = None
     user_id: str | None = None
     thread_id: str | None = None
@@ -27,12 +28,15 @@ class MediaConnectionSession:
         protocol_session_id: str | None,
         user_id: str,
         thread_id: str,
+        control_message: Literal["assistantControl", "assistantControlStart"]
+        | None = "assistantControl",
         call_type: Literal["AUDIO", "VIDEO"] = "AUDIO",
         client_capabilities: dict[str, bool] | None = None,
         media_capabilities: tuple[str, ...] = (),
     ) -> None:
         if self.thread_id is not None:
             raise ValueError("assistantControl already bound this connection")
+        self.control_message = control_message
         self.protocol_session_id = protocol_session_id
         self.user_id = user_id
         self.thread_id = thread_id
@@ -43,6 +47,10 @@ class MediaConnectionSession:
     @property
     def video_handshake_completed(self) -> bool:
         return self.thread_id is not None and self.call_type == "VIDEO"
+
+    @property
+    def requires_matching_media_user(self) -> bool:
+        return self.control_message == "assistantControl"
 
     def bind_run(self, *, chat_index: str, run_id: str) -> None:
         existing = self.active_runs.get(chat_index)

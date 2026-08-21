@@ -34,6 +34,7 @@ SelectedCallback = Callable[
     [VideoFrame, EmbeddingEvent | None, str],
     Awaitable[None],
 ]
+EmbeddedCallback = Callable[[VideoFrame, EmbeddingEvent], Awaitable[None]]
 StateCallback = Callable[[int, bool], None]
 
 
@@ -101,6 +102,7 @@ class SemanticFramePipeline:
         sampler: FixedIntervalSemanticSampler,
         retention_root: Path | str,
         on_selected: SelectedCallback,
+        on_embedded: EmbeddedCallback | None = None,
         on_state_change: StateCallback | None = None,
         observer: EmbeddingObserver | None = None,
         clock: Callable[[], float] = monotonic,
@@ -110,6 +112,7 @@ class SemanticFramePipeline:
         self.sampler = sampler
         self.retention_root = Path(retention_root)
         self.on_selected = on_selected
+        self.on_embedded = on_embedded
         self.on_state_change = on_state_change
         self.observer = observer
         self.clock = clock
@@ -345,6 +348,11 @@ class SemanticFramePipeline:
                     ),
                 )
                 return
+            if self.on_embedded is not None:
+                try:
+                    await self.on_embedded(job.frame, outcome)
+                except Exception:
+                    pass
             timestamp_seconds = _frame_timestamp_seconds(job.frame, self.clock)
             force_interactive = (
                 job.pinned or job.frame.sequence in self._interactive_sequences
@@ -357,12 +365,18 @@ class SemanticFramePipeline:
             if not isinstance(decision, SemanticKeyframeDecision):
                 raise TypeError("semantic selector returned a legacy decision")
             if decision.selected:
-                await self._transfer_selected(job.frame, outcome, decision.reason)
+                await self._transfer_selected(
+                    job.frame,
+                    outcome,
+                    decision.reason,
+                    decision=decision,
+                )
             else:
                 self._emit(
                     "semantic_frame.skipped",
                     job.frame.sequence,
                     decision.reason,
+                    decision=decision,
                 )
                 await self._delete_owned(job.frame)
         except asyncio.CancelledError:
@@ -402,6 +416,8 @@ class SemanticFramePipeline:
         frame: VideoFrame,
         event: EmbeddingEvent | None,
         reason: str,
+        *,
+        decision: SemanticKeyframeDecision | None = None,
     ) -> None:
         try:
             await self.on_selected(frame, event, reason)
@@ -409,7 +425,12 @@ class SemanticFramePipeline:
             await self._delete_owned(frame)
             raise
         self._owned_paths.discard(Path(frame.uri))
-        self._emit("semantic_frame.selected", frame.sequence, reason)
+        self._emit(
+            "semantic_frame.selected",
+            frame.sequence,
+            reason,
+            decision=decision,
+        )
 
     def _retain_frame(self, frame: VideoFrame) -> VideoFrame:
         directory = self.retention_root / _safe_component(frame.video_id)
@@ -447,6 +468,7 @@ class SemanticFramePipeline:
         reason: str,
         *,
         replaced_sequence: int | None = None,
+        decision: SemanticKeyframeDecision | None = None,
     ) -> None:
         emit_semantic_frame_observation(
             self.observer,
@@ -455,6 +477,21 @@ class SemanticFramePipeline:
             sequence=sequence,
             reason=reason,
             replaced_sequence=replaced_sequence,
+            reference_sequence=(
+                decision.reference_sequence if decision is not None else None
+            ),
+            semantic_similarity=(
+                decision.semantic_similarity if decision is not None else None
+            ),
+            semantic_change=(
+                decision.semantic_change if decision is not None else None
+            ),
+            semantic_threshold=(
+                self.selector.config.semantic_threshold
+                if decision is not None
+                else None
+            ),
+            selected=(decision.selected if decision is not None else None),
         )
 
 

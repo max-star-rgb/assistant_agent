@@ -40,6 +40,8 @@ class SemanticKeyframeDecision:
     selected: bool
     reason: SemanticKeyframeReason
     semantic_change: float = 0.0
+    semantic_similarity: float | None = None
+    reference_sequence: int | None = None
 
 
 class SemanticKeyframeSelector:
@@ -69,7 +71,9 @@ class SemanticKeyframeSelector:
         elapsed = frame_timestamp_seconds - self._last_selected_at
         if elapsed >= self.config.max_interval_seconds:
             return self._commit(event, frame_timestamp_seconds, "max_interval")
-        semantic_change = 1.0 - self.comparator.similarity(event, self._last_event)
+        reference_sequence = self._last_event.frame_sequence
+        semantic_similarity = self.comparator.similarity(event, self._last_event)
+        semantic_change = 1.0 - semantic_similarity
         if (
             elapsed >= self.config.min_interval_seconds
             and semantic_change >= self.config.semantic_threshold
@@ -79,11 +83,15 @@ class SemanticKeyframeSelector:
                 frame_timestamp_seconds,
                 "semantic",
                 semantic_change=semantic_change,
+                semantic_similarity=semantic_similarity,
+                reference_sequence=reference_sequence,
             )
         return SemanticKeyframeDecision(
             selected=False,
             reason="below_threshold",
             semantic_change=semantic_change,
+            semantic_similarity=semantic_similarity,
+            reference_sequence=reference_sequence,
         )
 
     def _commit(
@@ -93,11 +101,17 @@ class SemanticKeyframeSelector:
         reason: SemanticKeyframeReason,
         *,
         semantic_change: float = 0.0,
+        semantic_similarity: float | None = None,
+        reference_sequence: int | None = None,
     ) -> SemanticKeyframeDecision:
+        if reference_sequence is None and self._last_event is not None:
+            reference_sequence = self._last_event.frame_sequence
         self._last_event = event
         self._last_selected_at = frame_timestamp_seconds
         return SemanticKeyframeDecision(
             selected=True,
             reason=reason,
             semantic_change=semantic_change,
+            semantic_similarity=semantic_similarity,
+            reference_sequence=reference_sequence,
         )

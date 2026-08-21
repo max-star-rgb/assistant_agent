@@ -120,6 +120,9 @@ MCP 只有一份 `MCPServerConfig` 文件 schema：根对象包含 `servers` 列
 connection、显式 Tool allowlist、read-only 集合与 namespace。MCP 未启用时不读取配置；显式启用后，配置文件
 缺失、JSON/schema 非法或出现遗留字段时 composition 立即以脱敏错误失败，不静默跳过 server，也不兼容旧的
 顶层数组、`email_tools`、`personal_assistant_tools` 或 server-local `timeout_seconds`。
+当前 Gmail MCP 由 operator 在 Agent Server 启动前通过 `google-workspace-mcp` optional extra 固定安装
+`workspace-mcp==1.22.0`；运行配置直接调用该环境内的 `workspace-mcp` executable，不使用会在进程启动期间
+解析或下载依赖的 `uvx`，避免 Graph 冷装配被依赖下载阻塞。
 
 本地 Plugin 只复用纯构造逻辑和 Provider adapter，生产装配清单是代码中的显式列表。旧 Tool CLI、动态
 loader、Registry/Executor、离线 MCP server 与 Skill runtime 已删除。两个本地日历 system eval 也通过最小

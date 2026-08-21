@@ -19,6 +19,10 @@ from assistant_agent.media.embedding.comparator import (
     EmbeddingComparisonError,
 )
 from assistant_agent.media.embedding.models import EmbeddingEvent
+from assistant_agent.media.embedding.observability import (
+    EmbeddingObserver,
+    emit_visual_reminder_observation,
+)
 from assistant_agent.media.video.visual_reminder_observability import (
     VisualReminderTraceContext,
     record_visual_reminder_lifecycle,
@@ -104,6 +108,7 @@ class _VisualReminderRecord:
     trace_context: VisualReminderTraceContext | None = None
     status: VisualReminderStatus = "pending"
     reservation_id: str | None = None
+    last_compared_frame_sequence: int | None = None
     terminal_at_ms: int | None = None
 
 
@@ -128,6 +133,7 @@ class VisualReminderManager:
         terminal_history_limit: int = 64,
         comparator: EmbeddingComparator | None = None,
         clock_ms: Callable[[], int] | None = None,
+        observer: EmbeddingObserver | None = None,
     ) -> None:
         if not user_id or not session_id:
             raise ValueError("visual reminder owner and session must be non-empty")
@@ -143,6 +149,7 @@ class VisualReminderManager:
         self.max_active = max_active
         self.terminal_history_limit = terminal_history_limit
         self.comparator = comparator or EmbeddingComparator()
+        self.observer = observer
         self._clock_ms = clock_ms or (lambda: int(time() * 1000))
         self._records: OrderedDict[str, _VisualReminderRecord] = OrderedDict()
         self._closed = False
@@ -208,7 +215,16 @@ class VisualReminderManager:
                 ),
             )
             self._records[record.reminder_id] = record
-            return _public(record)
+            public = _public(record)
+        emit_visual_reminder_observation(
+            self.observer,
+            "visual_reminder.created",
+            session_id=self.session_id,
+            reminder_id=record.reminder_id,
+            similarity_threshold=self.similarity_threshold,
+            status="pending",
+        )
+        return public
 
     def reserve_matches(
         self,
@@ -217,6 +233,7 @@ class VisualReminderManager:
         if image_event.modality != "image" or image_event.session_id != self.session_id:
             return []
         matches: list[VisualReminderReservation] = []
+        comparisons: list[tuple[str, float, bool]] = []
         with self._lock:
             if self._closed:
                 return []
@@ -230,7 +247,10 @@ class VisualReminderManager:
                     )
                 except EmbeddingComparisonError:
                     continue
-                if similarity < self.similarity_threshold:
+                matched = similarity >= self.similarity_threshold
+                record.last_compared_frame_sequence = image_event.frame_sequence
+                comparisons.append((record.reminder_id, similarity, matched))
+                if not matched:
                     continue
                 reservation_id = f"reservation-{uuid4().hex}"
                 record.status = "reserved"
@@ -244,6 +264,18 @@ class VisualReminderManager:
                         similarity=similarity,
                     )
                 )
+        for reminder_id, similarity, matched in comparisons:
+            emit_visual_reminder_observation(
+                self.observer,
+                "visual_reminder.compared",
+                session_id=self.session_id,
+                reminder_id=reminder_id,
+                frame_sequence=image_event.frame_sequence,
+                similarity=similarity,
+                similarity_threshold=self.similarity_threshold,
+                matched=matched,
+                status="reserved" if matched else "pending",
+            )
         return matches
 
     def confirm(
@@ -261,8 +293,19 @@ class VisualReminderManager:
             record.status = "triggered"
             record.reservation_id = None
             record.terminal_at_ms = self._clock_ms()
+            frame_sequence = record.last_compared_frame_sequence
             self._prune_terminal_locked()
-            return _operation(reminder_id, "triggered", True)
+            operation = _operation(reminder_id, "triggered", True)
+        emit_visual_reminder_observation(
+            self.observer,
+            "visual_reminder.triggered",
+            session_id=self.session_id,
+            reminder_id=reminder_id,
+            frame_sequence=frame_sequence,
+            similarity_threshold=self.similarity_threshold,
+            status="triggered",
+        )
+        return operation
 
     def release(
         self,
@@ -291,8 +334,19 @@ class VisualReminderManager:
                 return _operation(reminder_id, record.status, False)
             record.status = "cancelled"
             record.terminal_at_ms = self._clock_ms()
+            frame_sequence = record.last_compared_frame_sequence
             self._prune_terminal_locked()
-            return _operation(reminder_id, "cancelled", True)
+            operation = _operation(reminder_id, "cancelled", True)
+        emit_visual_reminder_observation(
+            self.observer,
+            "visual_reminder.cancelled",
+            session_id=self.session_id,
+            reminder_id=reminder_id,
+            frame_sequence=frame_sequence,
+            similarity_threshold=self.similarity_threshold,
+            status="cancelled",
+        )
+        return operation
 
     def list_records(self) -> list[VisualReminderPublicRecord]:
         with self._lock:

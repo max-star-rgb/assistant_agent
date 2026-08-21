@@ -1,6 +1,6 @@
 # 实时视觉感知与语义关键帧架构
 
-Last updated: 2026-08-20
+Last updated: 2026-08-21
 
 ## Authority contract
 
@@ -41,8 +41,8 @@ exact sequence 时旧记录只能用于状态诊断，Tool 返回 `usable_visual
   使用本地 Qdrant 的 multilingual BM25 与 `BAAI/bge-small-zh-v1.5` dense vector 做 Weighted RRF，
   BM25:dense 权重为 `3:1`、两路各 prefetch 32 条、返回最多 12 条。Tool 不在查询阶段再次调用 VLM，
   也不替主 LLM 做最终事实判定。
-- 连接级视觉提醒：把用户提交的视觉条件计算一次 text embedding，与每个已选关键帧的现有 image
-  embedding 匹配，首次命中后通过当前 Agent-Service VIDEO 连接即时通知。
+- 连接级视觉提醒：把用户提交的视觉条件计算一次 text embedding，与每个成功完成共享 image embedding
+  的 semantic 准入帧匹配，首次命中后通过当前 Agent-Service VIDEO 连接即时通知。
 
 给主 LLM 的视觉语义 Tool 包括 `live_view_inspect`、`visual_memory_search` 和
 `visual_reminder_manage`。后者只管理当前
@@ -74,9 +74,10 @@ Realtime frame
         │    -> bounded timestamped text timeline + Qdrant derived index
         └─ 5 FPS fixed semantic admission
              -> one image embedding per admitted frame
-             -> SemanticKeyframeSelector + latest-wins pending
-             -> selected image EmbeddingEvent
-             -> VisualReminderManager（只比较 pending target，命中后即时 chatResponse）
+             -> shared image EmbeddingEvent
+             ├─ VisualReminderManager（每个成功 event 比较 pending target，命中后即时 chatResponse）
+             └─ SemanticKeyframeSelector + latest-wins pending
+                    -> selected / skipped decision
         -> SessionVisualSemanticStore
              ├─ live_view_inspect（冻结窗口内的 ready subset）
              └─ visual_memory_search（最多 256 条可信候选）
@@ -145,10 +146,11 @@ semantic 自适应支路最多一个 embedding in-flight 和一个 pending，pen
 distance、首次事件、交互提升和最长 10 秒间隔选帧；缓慢但累计明显的场景变化仍能产生新的 selected event。
 embedding Provider 失败时只允许交互目标或最长间隔形成无 embedding event 的降级选择，不伪造 semantic score。
 
-提醒匹配只发生在 Selector 最终选中的帧上。`SemanticFramePipeline` 把同一次 image inference 产生的
-`EmbeddingEvent` 交给 `RealtimeVideoObserver`；observer 用它执行 reminder comparison 后释放 semantic
-支路的临时证据，不再次调用 VLM。embedding 失败后因 interactive/max interval 降级选出的关键帧没有 event，
-因此跳过提醒匹配；对应帧的独立 VLM 不受影响。
+`SemanticFramePipeline` 在 Selector gate 之前，把每个成功 image inference 产生的同一个
+`EmbeddingEvent` 交给 `RealtimeVideoObserver` 执行 reminder comparison；随后 Selector 继续用该 event
+计算相对上一已选关键帧的 semantic change。因此低于选帧阈值的准入帧仍可命中提醒，整条路径只调用一次
+真实 image embedding 模型，不会为了提醒再次编码视频帧。单条提醒比较失败不会改变 Selector 决策；embedding
+失败后因 interactive/max interval 降级选出的关键帧没有 event，因此跳过提醒匹配；对应帧的独立 VLM 不受影响。
 
 ## 单帧文本时间线
 
@@ -192,6 +194,13 @@ chat 冻结目标边界后，`visual.target_barrier.started/finished` 才记录 
 ready/missing 数量和目标终态。context 帧晚完成不能延长 target barrier span。LangGraph conditional edge 的
 input/output 出现 `fast` 只代表 Agent 路由选择，视觉诊断必须定位真正的 `vlm.infer` generation；视觉流水线
 本身不读取或依赖该路由结果。
+
+semantic 诊断事件可记录当前 sequence、参考关键帧 sequence、image-image cosine、semantic change、阈值和
+selected/reason；提醒诊断事件可记录脱敏 session/reminder ID、frame sequence、image-text cosine、阈值、
+matched 和生命周期状态。它们不得记录目标文本、通知文案、embedding 向量、媒体内容、用户原始 ID 或媒体路径。
+本地静态或实时报告只投影这些允许字段，不读取或重算模型输入；日志中缺失的历史数值必须保持缺失。实时模式
+只在回环地址提供 HTML 与 SSE，先建立当前日志快照，再以单调事件 ID 增量追踪追加内容；浏览器重连和日志轮转
+不得放宽 session digest 过滤或字段 allowlist。
 
 ## 文本、ASR 与跨模态消费者
 

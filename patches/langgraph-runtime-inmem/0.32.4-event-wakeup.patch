@@ -1,0 +1,259 @@
+--- a/langgraph_runtime_inmem/ops.py
++++ b/langgraph_runtime_inmem/ops.py
+@@ -33,6 +33,7 @@
+     Message,
+     get_stream_manager,
+ )
++from langgraph_runtime_inmem.queue_signal import RUN_QUEUE_SIGNAL
+ 
+ if typing.TYPE_CHECKING:
+     from langgraph_api.asyncio import ValueEvent
+@@ -2328,15 +2329,28 @@
+         return {}
+ 
+     @staticmethod
++    async def next_wait_timeout(max_wait_seconds: float = 5.0) -> float:
++        """Return the wait until the next delayed pending run is eligible."""
++        now = datetime.now(UTC)
++        async with connect() as conn, RUN_LOCK:
++            delayed = []
++            for run in conn.store["runs"]:
++                if run["status"] != "pending":
++                    continue
++                created_at = run.get("created_at", now)
++                if created_at.tzinfo is None:
++                    created_at = created_at.replace(tzinfo=UTC)
++                if created_at > now:
++                    delayed.append((created_at - now).total_seconds())
++            return min(max_wait_seconds, min(delayed, default=max_wait_seconds))
++
++    @staticmethod
+     async def next(wait: bool, limit: int = 1) -> AsyncIterator[tuple[Run, int]]:
+         """Get the next run from the queue, and the attempt number.
+         1 is the first attempt, 2 is the first retry, etc."""
+         now = datetime.now(UTC)
+ 
+-        if wait:
+-            await asyncio.sleep(0.5)
+-        else:
+-            await asyncio.sleep(0)
++        await asyncio.sleep(0)
+ 
+         async with connect() as conn, RUN_LOCK:
+             pending_runs = sorted(
+@@ -2357,6 +2371,8 @@
+                     continue
+ 
+                 run_id = run["run_id"]
++                if RUN_QUEUE_SIGNAL.is_active(run_id):
++                    continue
+                 thread_id = run["thread_id"]
+                 thread = next(
+                     (t for t in conn.store["threads"] if t["thread_id"] == thread_id),
+@@ -2663,6 +2679,8 @@
+             langsmith_session_name=langsmith_session_name,
+         )
+         conn.store["runs"].append(new_run)
++        if status == "pending":
++            RUN_QUEUE_SIGNAL.notify()
+ 
+         async def _yield_new():
+             yield new_run
+--- a/langgraph_runtime_inmem/queue.py
++++ b/langgraph_runtime_inmem/queue.py
+@@ -12,6 +12,7 @@
+ from langsmith import env as ls_env
+ 
+ from langgraph_runtime_inmem import database, ops
++from langgraph_runtime_inmem.queue_signal import RUN_QUEUE_SIGNAL
+ 
+ if TYPE_CHECKING:
+     from langgraph_api.utils import future as lg_future
+@@ -128,13 +129,16 @@
+         def cleanup(
+             task: lg_future.AnyFuture,
+             runner: BgLoopRunner,
++            run_id: object,
+         ):
+             WORKERS.discard(task)
++            RUN_QUEUE_SIGNAL.deactivate(run_id)
+             try:
+                 if config.BG_JOB_ISOLATED_LOOPS:
+                     loop.call_soon_threadsafe(runners.put_nowait, runner)
+                 else:
+                     runners.put_nowait(runner)
++                RUN_QUEUE_SIGNAL.notify()
+             except Exception as exc:
+                 expired_runners.append(runner)
+                 logger.exception("Background worker cleanup failed", exc_info=exc)
+@@ -171,7 +175,6 @@
+ 
+         await logger.ainfo(f"Starting {concurrency} background workers")
+         try:
+-            run = None
+             while True:
+                 if expired_runners:
+                     await logger.awarning(
+@@ -201,12 +204,11 @@
+                             available=concurrency - active,
+                             active=active,
+                         )
+-                    # skip the wait, if 1st time, or got a run last time
+-                    wait = run is None and last_stats_secs is not None
++                    queue_generation = RUN_QUEUE_SIGNAL.generation()
+                     # try to get a run, handle it
+                     run = None
+                     async for run, attempt in ops.Runs.next(
+-                        wait=wait, limit=runners.qsize()
++                        wait=False, limit=runners.qsize()
+                     ):
+                         runner = runners.get_nowait()
+                         graph_id = (
+@@ -221,23 +223,47 @@
+                         else:
+                             task_name = f"run-{run['run_id']}-attempt-{attempt}"
+ 
+-                        if not config.BG_JOB_ISOLATED_LOOPS or (
+-                            graph_id and graph.is_js_graph(graph_id)
+-                        ):
+-                            task = asyncio.create_task(
+-                                worker.worker(run, attempt, loop),
+-                                name=task_name,
+-                            )
+-                            task.add_done_callback(
+-                                functools.partial(cleanup, runner=runner)
+-                            )
+-                            WORKERS.add(task)
+-                        else:
+-                            runner.submit(
+-                                worker.worker(run, attempt, loop),
+-                                name=task_name,
+-                                callback=functools.partial(cleanup, runner=runner),
+-                            )
++                        run_id = run["run_id"]
++                        RUN_QUEUE_SIGNAL.activate(run_id)
++                        worker_coro = worker.worker(run, attempt, loop)
++                        try:
++                            if not config.BG_JOB_ISOLATED_LOOPS or (
++                                graph_id and graph.is_js_graph(graph_id)
++                            ):
++                                task = asyncio.create_task(
++                                    worker_coro,
++                                    name=task_name,
++                                )
++                                task.add_done_callback(
++                                    functools.partial(
++                                        cleanup,
++                                        runner=runner,
++                                        run_id=run_id,
++                                    )
++                                )
++                                WORKERS.add(task)
++                            else:
++                                runner.submit(
++                                    worker_coro,
++                                    name=task_name,
++                                    callback=functools.partial(
++                                        cleanup,
++                                        runner=runner,
++                                        run_id=run_id,
++                                    ),
++                                )
++                        except Exception as exc:
++                            worker_coro.close()
++                            RUN_QUEUE_SIGNAL.deactivate(run_id)
++                            runners.put_nowait(runner)
++                            async with database.connect() as conn:
++                                await ops.Runs.set_status(conn, run_id, "pending")
++                            RUN_QUEUE_SIGNAL.notify()
++                            logger.exception(
++                                "Background worker submission failed", exc_info=exc
++                            )
++                            await asyncio.sleep(0.1)
++                            continue
+                     # run stats and sweep if needed
+                     if calc_stats or do_sweep:
+                         async with database.connect() as conn:
+@@ -249,6 +275,12 @@
+                             if do_sweep:
+                                 last_sweep_secs = loop.time()
+                                 await ops.Runs.sweep()
++                    if run is None:
++                        wait_timeout = await ops.Runs.next_wait_timeout()
++                        await RUN_QUEUE_SIGNAL.wait_for_change(
++                            queue_generation,
++                            timeout=wait_timeout,
++                        )
+                 except Exception as exc:
+                     # keep trying to run the scheduler indefinitely
+                     logger.exception("Background worker scheduler failed", exc_info=exc)
+--- /dev/null
++++ b/langgraph_runtime_inmem/queue_signal.py
+@@ -0,0 +1,67 @@
++from __future__ import annotations
++
++import asyncio
++import threading
++
++
++def _resolve_waiter(waiter: asyncio.Future[None]) -> None:
++    if not waiter.done():
++        waiter.set_result(None)
++
++
++class RunQueueSignal:
++    """Thread-safe edge-triggered notification for the in-memory run queue."""
++
++    def __init__(self) -> None:
++        self._lock = threading.Lock()
++        self._generation = 0
++        self._active_run_ids: set[object] = set()
++        self._waiters: set[
++            tuple[asyncio.AbstractEventLoop, asyncio.Future[None]]
++        ] = set()
++
++    def generation(self) -> int:
++        with self._lock:
++            return self._generation
++
++    def activate(self, run_id: object) -> None:
++        with self._lock:
++            self._active_run_ids.add(run_id)
++
++    def deactivate(self, run_id: object) -> None:
++        with self._lock:
++            self._active_run_ids.discard(run_id)
++
++    def is_active(self, run_id: object) -> bool:
++        with self._lock:
++            return run_id in self._active_run_ids
++
++    def notify(self) -> None:
++        with self._lock:
++            self._generation += 1
++            waiters = tuple(self._waiters)
++            self._waiters.clear()
++        for loop, waiter in waiters:
++            loop.call_soon_threadsafe(_resolve_waiter, waiter)
++
++    async def wait_for_change(self, generation: int, *, timeout: float) -> None:
++        loop = asyncio.get_running_loop()
++        waiter = loop.create_future()
++        entry = (loop, waiter)
++        with self._lock:
++            if self._generation != generation:
++                return
++            self._waiters.add(entry)
++        try:
++            async with asyncio.timeout(timeout):
++                await asyncio.shield(waiter)
++        except TimeoutError:
++            pass
++        finally:
++            with self._lock:
++                self._waiters.discard(entry)
++            if not waiter.done():
++                waiter.cancel()
++
++
++RUN_QUEUE_SIGNAL = RunQueueSignal()

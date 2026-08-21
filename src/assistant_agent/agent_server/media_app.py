@@ -474,6 +474,11 @@ async def _handle_frame(
             protocol_session_id=frame.session_id,
             user_id=user_id,
             thread_id=thread_id,
+            control_message=(
+                "assistantControlStart"
+                if frame.message == "assistantControlStart"
+                else "assistantControl"
+            ),
             call_type=call_type,
             client_capabilities=_client_capabilities(frame.body),
             media_capabilities=("audio", "video")
@@ -527,10 +532,48 @@ async def _handle_frame(
         return
     if frame.message == "chat":
         chat_received_ns = received_ns or perf_counter_ns()
-        if session.thread_id is None or session.user_id is None:
-            raise MediaProtocolError("chat requires assistantControl handshake")
         chat = parse_chat(frame)
-        if chat.user_id != session.user_id:
+        if session.thread_id is None or session.user_id is None:
+            authenticated_user = websocket.scope.get("user")
+            authenticated_identity = _agent_server_identity(websocket)
+            if authenticated_user is not None:
+                permissions = set(getattr(authenticated_user, "permissions", ()) or ())
+                if (
+                    "assistant:developer" not in permissions
+                    and chat.user_id != authenticated_identity
+                ):
+                    raise MediaProtocolError(
+                        "chat userNumber does not match authenticated identity"
+                    )
+            thread_id = await client.create_thread(
+                metadata={"protocol": "agent-service-v1"},
+                thread_id=_native_thread_id(
+                    protocol_session_id=frame.session_id,
+                    user_id=chat.user_id,
+                ),
+            )
+            session.bind_control(
+                protocol_session_id=frame.session_id,
+                user_id=chat.user_id,
+                thread_id=thread_id,
+                control_message=None,
+                call_type="AUDIO",
+                media_capabilities=("audio",),
+            )
+            await artifact_hub.register(
+                session_id=thread_id,
+                subscriber_id=session.connection_id,
+                sender=lambda event: _send_json(
+                    websocket,
+                    send_lock,
+                    artifact_completed_response(
+                        session_id=session.protocol_session_id,
+                        user_id=session.user_id,
+                        event=event,
+                    ),
+                ),
+            )
+        if session.requires_matching_media_user and chat.user_id != session.user_id:
             raise MediaProtocolError("chat userNumber does not match assistantControl")
         session.begin_chat(chat.chat_index)
         delivery_id = f"delivery-{uuid4()}"
@@ -660,7 +703,10 @@ async def _handle_frame(
     if frame.message == "video":
         if session.thread_id is None or session.user_id is None:
             raise MediaProtocolError("video requires assistantControl handshake")
-        if _required_text(frame.body, "userNumber") != session.user_id:
+        if (
+            session.requires_matching_media_user
+            and _required_text(frame.body, "userNumber") != session.user_id
+        ):
             raise MediaProtocolError("video userNumber does not match assistantControl")
         video_index = _required_text(frame.body, "videoIndex")
         video_config = frame.body.get("videoConfig")
@@ -898,11 +944,7 @@ def _release_visual_capability(
         "release_frozen_live_view",
         None,
     )
-    if (
-        callable(release_frozen_live_view)
-        and visual_identity
-        and capability_token
-    ):
+    if callable(release_frozen_live_view) and visual_identity and capability_token:
         release_frozen_live_view(
             visual_identity,
             session_id,

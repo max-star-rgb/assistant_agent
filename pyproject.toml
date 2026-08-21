@@ -42,6 +42,12 @@ memory-langmem = [
 ]
 agent-server-dev = [
     "langgraph-cli[inmem]>=0.4.30,<0.5",
+    "langgraph-runtime-inmem==0.32.4",
+    "wheel>=0.46,<1",
+]
+google-workspace-mcp = [
+    "PySocks>=1.7,<2",
+    "workspace-mcp==1.22.0",
 ]
 
 [tool.pytest.ini_options]

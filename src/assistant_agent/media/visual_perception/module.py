@@ -334,6 +334,7 @@ class VisualPerceptionModule:
                 terminal_history_limit=(
                     self.config.visual_reminder_terminal_history_limit
                 ),
+                observer=self.embedding_observer,
             ),
             reminder_registry=self.visual_reminder_registry,
             reminder_sink=reminder_sink,

@@ -1,6 +1,6 @@
 # LangGraph Agent Server 部署架构
 
-最后更新：2026-08-20
+最后更新：2026-08-21
 
 ## Authority contract
 
@@ -169,6 +169,16 @@ backend 与两张静态原生 Graph，不构造平行 Graph Runtime、产品状�
 stream/queue 协调。LangMem 仍使用 factory 注入的 Agent Server Store，不引入项目自有 PostgreSQL adapter。
 `langgraph.json` 同时声明运行镜像所需的 LangMem optional runtime 依赖，不能只依赖宿主 Python 环境已安装的
 extra。
+
+当前 dev backend 使用基于官方 `langgraph-runtime-inmem==0.32.4` 的最小本地 fork
+`0.32.4+assistant1`，补丁与可重复构建入口分别是
+`patches/langgraph-runtime-inmem/0.32.4-event-wakeup.patch` 和
+`scripts/install_patched_inmem_runtime.py`。该 fork 仍由 Agent Server runtime 原生拥有 queue：创建即时 pending
+run，或 worker 完成并释放 thread（包括 retry run 已恢复为 pending）后，通过跨 event loop 的 generation
+signal 唤醒唯一 queue scheduler；scheduler 先扫描再等待，避免 lost wake-up。`after_seconds` delayed run 按最早
+`created_at` 设置 deadline，空闲时只保留 5 秒安全 heartbeat，不再以 500 ms 固定扫描作为即时 chat run 的
+启动路径。补丁只属于 `langgraph dev`；postgres/Redis backend 不加载它。安装器固定校验官方 wheel SHA-256，
+上游内容或接口漂移时必须先人工 rebase，禁止静默套用。
 
 本地 dev 的唯一常驻入口由 PyCharm 管理，固定使用 `8089` 并保留 `langgraph dev` 原生 hot reload。Codex 默认
 作为客户端连接该服务；修改源码后先等待 reload，只有需要完整重启时才重启同一个 `8089` 实例。dev backend

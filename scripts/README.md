@@ -31,6 +31,19 @@ eval、Agent Server 主链路覆盖的 probe 不应继续沉积到本目录。
   `.data/logs/agent_server-<port>.log`。可用 `--log-file` 指定其他部署自有路径；旧
   `.data/logs/agent_server.log` 只保留历史记录。Studio 使用框架内建身份；其他本地客户端直接声明
   `X-Assistant-User`，当前 tokenless 部署没有网络身份认证，因此不得把 API 暴露到不受信网络。
+- `scripts/install_patched_inmem_runtime.py`：从经过 SHA-256 固定的官方
+  `langgraph-runtime-inmem==0.32.4` wheel 构建并安装 `0.32.4+assistant1` 本地 fork，将 dev queue 的固定
+  500 ms 扫描改为 run 创建与 worker 完成事件唤醒（完成事件同时覆盖 retry），同时保留 delayed run deadline 与低频安全
+  heartbeat。首次安装或重建 `hello_agent` 环境时，先安装 `.[agent-server-dev]`，再运行该脚本并完整重启
+  唯一的 8089 dev server：
+
+  ```bash
+  /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pip install -e ".[agent-server-dev]"
+  /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/install_patched_inmem_runtime.py
+  /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/install_patched_inmem_runtime.py --check
+  ```
+
+  安装器不修改项目业务模块；上游 wheel digest 变化时直接失败，必须人工复核并 rebase 补丁。
 - `scripts/run_qdrant.py`：PyCharm-friendly 本地 Qdrant supervisor。它只启动
   `docker/mem0/compose.yaml` 的 `visual-memory` profile 和 `qdrant` service，等待
   `http://127.0.0.1:6333/healthz` 就绪，并作为一个 Run process 持续运行。仓库已提供共享配置
@@ -99,6 +112,23 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 ## Observability and local operations
 
 - `scripts/trace_metrics.py`: redacted trace metric summary.
+- `scripts/render_visual_perception_report.py`：从 Agent Server 日志中的脱敏
+  `multimodal_observation` 事件生成自包含 HTML，按共享帧序号绘制关键帧 semantic change、选取阈值、
+  reminder image-text cosine、匹配阈值和 created/triggered/cancelled 标记。报告不包含目标文本、媒体内容、
+  embedding 向量、用户原始 ID 或媒体路径，也不会为旧日志重新计算缺失值。通话中实时观察使用 `--live`；
+  命令只绑定 `127.0.0.1`，浏览器通过 SSE 接收日志追加事件，日志轮转或连接中断后自动恢复：
+
+  ```bash
+  /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+    scripts/render_visual_perception_report.py \
+    --log-file /tmp/assistant_agent/logs/agent_server-8089.log \
+    --session-digest 352f328d22e92c15 \
+    --live --open
+  ```
+
+  不传 `--live` 时生成静态快照，默认输出到
+  `.data/diagnostics/visual-perception-<session-digest>.html`；实时服务默认端口为 `8765`，可用 `--port`
+  修改。`session-digest` 可从同一日志的 visual observation 事件取得。
 - 生产 Graph 生命周期以 Agent Server/LangSmith native trace 为准；旧 Gateway JSONL 兼容观测模块已删除。
 
 ## Eval and evidence

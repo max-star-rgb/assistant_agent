@@ -36,12 +36,7 @@
       "server_name": "google_gmail_readonly",
       "transport": "stdio",
       "command": [
-        "/home/lenovo1/miniconda3/envs/hello_agent/bin/uvx",
-        "--with",
-        "PySocks",
-        "--from",
-        "workspace-mcp==1.22.0",
-        "workspace-mcp",
+        "/home/lenovo1/miniconda3/envs/hello_agent/bin/workspace-mcp",
         "--tools",
         "gmail",
         "--read-only"

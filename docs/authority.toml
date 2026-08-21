@@ -23,6 +23,8 @@ source_globs = [
   "src/assistant_agent/coding/validation.py",
   "src/assistant_agent/coding/workspace.py",
   "src/assistant_agent/proactive_delivery.py",
+  "patches/langgraph-runtime-inmem/**",
+  "scripts/install_patched_inmem_runtime.py",
   "scripts/run_server.py",
   "scripts/agent_cli.py",
   "tests/core/contract/test_gateway_contract.py",
@@ -35,6 +37,7 @@ verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/ai-coding-integration",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/ai-coding-sandbox",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/ai-coding-artifact-governance",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/agent-server-inmem-wakeup",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python scripts/agent_cli.py --help",
 ]
 exclusive_literals = []

@@ -37,6 +37,12 @@ SEMANTIC_FRAME_EVENT_NAMES = (
     "semantic_frame.replaced",
     "semantic_frame.selected",
 )
+VISUAL_REMINDER_EVENT_NAMES = (
+    "visual_reminder.created",
+    "visual_reminder.compared",
+    "visual_reminder.triggered",
+    "visual_reminder.cancelled",
+)
 VISUAL_SEMANTIC_EVENT_NAMES = (
     "visual_semantic.retained",
     "visual_semantic.evicted",
@@ -89,6 +95,13 @@ class VisualSemanticTraceEvent(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class VisualReminderTraceEvent(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    event_name: str = Field(pattern=r"^visual_reminder\.")
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class VisualContextTraceEvent(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -99,6 +112,7 @@ class VisualContextTraceEvent(BaseModel):
 TraceEvent = (
     EmbeddingTraceEvent
     | SemanticFrameTraceEvent
+    | VisualReminderTraceEvent
     | VisualSemanticTraceEvent
     | VisualContextTraceEvent
 )
@@ -226,6 +240,11 @@ def semantic_frame_trace_payload(
     sequence: int,
     reason: str | None = None,
     replaced_sequence: int | None = None,
+    reference_sequence: int | None = None,
+    semantic_similarity: float | None = None,
+    semantic_change: float | None = None,
+    semantic_threshold: float | None = None,
+    selected: bool | None = None,
     **_content: Any,
 ) -> dict[str, Any]:
     """Project scheduling facts without frame content or raw identities."""
@@ -238,6 +257,16 @@ def semantic_frame_trace_payload(
         payload["reason"] = reason if reason in SEMANTIC_FRAME_REASONS else "other"
     if replaced_sequence is not None:
         payload["replaced_sequence"] = replaced_sequence
+    if reference_sequence is not None:
+        payload["reference_sequence"] = reference_sequence
+    if semantic_similarity is not None and math.isfinite(semantic_similarity):
+        payload["semantic_similarity"] = max(-1.0, min(1.0, semantic_similarity))
+    if semantic_change is not None and math.isfinite(semantic_change):
+        payload["semantic_change"] = max(0.0, min(2.0, semantic_change))
+    if semantic_threshold is not None and math.isfinite(semantic_threshold):
+        payload["semantic_threshold"] = max(0.0, min(1.0, semantic_threshold))
+    if selected is not None:
+        payload["selected"] = selected
     return payload
 
 
@@ -255,6 +284,58 @@ def emit_semantic_frame_observation(
             SemanticFrameTraceEvent(
                 event_name=event_name,
                 payload=semantic_frame_trace_payload(**facts),
+            )
+        )
+    except Exception:
+        pass
+
+
+def visual_reminder_trace_payload(
+    *,
+    session_id: str,
+    reminder_id: str,
+    frame_sequence: int | None = None,
+    similarity: float | None = None,
+    similarity_threshold: float | None = None,
+    matched: bool | None = None,
+    status: str | None = None,
+    **_content: Any,
+) -> dict[str, Any]:
+    """Project reminder diagnostics without target text, vectors, or media content."""
+
+    payload: dict[str, Any] = {
+        "session_id_digest": _digest(session_id),
+        "reminder_id": reminder_id,
+    }
+    if frame_sequence is not None:
+        payload["frame_sequence"] = frame_sequence
+    if similarity is not None and math.isfinite(similarity):
+        payload["similarity"] = max(-1.0, min(1.0, similarity))
+    if similarity_threshold is not None and math.isfinite(similarity_threshold):
+        payload["similarity_threshold"] = max(
+            0.0, min(1.0, similarity_threshold)
+        )
+    if matched is not None:
+        payload["matched"] = matched
+    if status is not None:
+        payload["status"] = status
+    return payload
+
+
+def emit_visual_reminder_observation(
+    observer: EmbeddingObserver | None,
+    event_name: str,
+    **facts: Any,
+) -> None:
+    """Best-effort content-free reminder event for local diagnostics."""
+
+    if observer is None or event_name not in VISUAL_REMINDER_EVENT_NAMES:
+        return
+    try:
+        observer.record(
+            VisualReminderTraceEvent(
+                event_name=event_name,
+                payload=visual_reminder_trace_payload(**facts),
             )
         )
     except Exception:

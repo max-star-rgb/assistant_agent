@@ -192,6 +192,7 @@ class RealtimeVideoObserver:
                 fps=resolved_provider_config.semantic_input_fps
             ),
             retention_root=self.keyframe_root / "semantic-input",
+            on_embedded=self._handle_semantic_embedding,
             on_selected=self._handle_semantic_selection,
             on_state_change=self._update_semantic_pipeline_state,
             observer=embedding_coordinator.observer,
@@ -424,18 +425,30 @@ class RealtimeVideoObserver:
         event: EmbeddingEvent | None,
         reason: str,
     ) -> None:
-        """Publish keyframe-derived reminders without gating or repeating VLM."""
+        """Release the selected semantic-branch evidence after selection."""
 
         if self.closed:
             raise RuntimeError("realtime video observer is closed")
         del reason
+        del event
+        await asyncio.to_thread(self._delete_transferred_duplicate, frame)
+
+    async def _handle_semantic_embedding(
+        self,
+        frame: VideoFrame,
+        event: EmbeddingEvent,
+    ) -> None:
+        """Compare reminders before keyframe selection using the shared embedding."""
+
+        del frame
+        if self.closed:
+            return
         if self.visual_reminder_registry is not None:
             await self.visual_reminder_registry.publish_image_event(
                 self.user_id,
                 self.session_id,
                 event,
             )
-        await asyncio.to_thread(self._delete_transferred_duplicate, frame)
 
     async def _enqueue(
         self,
