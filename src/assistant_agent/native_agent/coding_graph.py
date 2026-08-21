@@ -922,6 +922,7 @@ def build_coding_graph(
                 terminal_history = (*repair_history, current_attempt)
             terminal_repair_status = "passed"
             update["repair_status"] = terminal_repair_status
+            update["repair_failure_evidence"] = None
         if repository.integration_enabled:
             update["integration_required"] = True
             return update
