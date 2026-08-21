@@ -386,12 +386,12 @@ class CodingWorkspaceService:
         repair_round: int,
     ) -> CodingRepairApprovalContext:
         proposal = validation.proposal
-        actual_digest = hashlib.sha256(proposal.patch.encode("utf-8")).hexdigest()
-        if actual_digest != proposal.patch_digest:
-            raise CodingWorkspaceError("approval_digest_mismatch")
-        if proposal.base_commit != workspace.base_commit:
-            raise CodingWorkspaceError("base_commit_changed")
         with self._lock(workspace.workspace_ref):
+            actual_digest = hashlib.sha256(proposal.patch.encode("utf-8")).hexdigest()
+            if actual_digest != proposal.patch_digest:
+                raise CodingWorkspaceError("approval_digest_mismatch")
+            if proposal.base_commit != workspace.base_commit:
+                raise CodingWorkspaceError("base_commit_changed")
             self._require_base_commit(workspace)
             current_digests = self._base_file_digests(workspace, proposal.changed_paths)
             if current_digests != proposal.base_file_digests:
