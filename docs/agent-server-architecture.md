@@ -305,3 +305,24 @@ prompt、隔离 system/global config 的 `git rev-parse --show-object-format` �
 同一文件系统 atomic rename 为 tombstone，再由跨轮保留的单一增量 DFS cursor 按共享 entry/time
 budget 执行 `scandir`、`unlink` 与 `rmdir`；不得把任意大小目录作为一次 `rmtree` 操作。
 workspace/root 消失、进程关闭或 traversal 重置时必须关闭并清除所有 descendant cursor。
+
+### Stage5B reaper fairness and process-deadline addendum
+
+所有 coding snapshot Git `Popen` 的 stdout/stderr pipe 必须设为 nonblocking，并由 selector
+以 absolute deadline 的剩余时间等待；实际读取只使用事件就绪后的 `os.read`。deadline 到达、
+输出预算超限或 parser/budget 失败时，owner 必须 terminate、bounded wait、必要时 kill/wait，
+随后关闭 selector 与全部 pipe。不得在 deadline 检查后调用可能阻塞的 file-object `read`。
+
+周期 reaper 对 workspace root 使用 round-robin traversal；每个 cleanup round 对单个 active
+workspace 只消费固定 child slice，然后推进下一个 workspace。workspace 的 snapshot/management
+phase 与 Linux directory cookie 通过固定大小、atomic replace 的受管 progress metadata 跨轮保存，
+避免关闭 cursor 后从大目录开头重扫；内存只保留 root traversal、当前 page 和至多一个 active
+tombstone DFS。root 消失时必须同时清理 hierarchical traversal 与兼容 cursor 的全部 descendant
+iterator。
+
+expired workspace 在 workspace lock 与 metadata ownership 校验后，先把包含 repo tree 的完整
+management root 在同一文件系统 atomic rename 为受管 tombstone，再按 entry/time budget 增量删除。
+reaper 不得调用会递归删除 physical tree 的 `git worktree remove --force`。对应 Git administrative
+metadata 只能在验证 `.git` back-reference、common-dir direct-child ownership 与固定小型 entry
+allowlist 后做常数次精确 unlink/rmdir；验证不成立时 fail closed。tombstone DFS 每个 entry 与文件
+系统操作前都必须检查同一 absolute deadline，并把未完成状态留给后续 owner round。
