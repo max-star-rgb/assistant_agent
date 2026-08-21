@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-import difflib
 import fcntl
 import hashlib
 import hmac
 import os
+import selectors
 import secrets
 import shutil
 import stat
 import subprocess
 import tempfile
+import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -49,6 +50,10 @@ _REPO_DIR = "repo"
 _ANALYSIS_SNAPSHOTS_DIR = "analysis-snapshots"
 _ANALYSIS_SNAPSHOT_METADATA_FILE = "metadata.json"
 _ANALYSIS_SNAPSHOT_TREE_DIR = "tree"
+_ANALYSIS_BUILD_PREFIX = ".analysis-build-"
+_ANALYSIS_QUARANTINE_PREFIX = ".analysis-quarantine-"
+_ANALYSIS_QUARANTINE_SECONDS = 300
+_ANALYSIS_METADATA_TEMP_PREFIX = ".metadata-"
 _MAX_GIT_OUTPUT = 262_144
 
 
@@ -230,9 +235,11 @@ class CodingWorkspaceService:
                     error_code="coding_analysis_snapshot_failed",
                     extra_env=git_env,
                 ).strip()
-                diff_result, workspace_diff_digest = self._analysis_diff_result(
-                    baseline_files,
-                    current_files,
+                diff_result, workspace_diff_digest = self._analysis_git_diff_result(
+                    workspace,
+                    baseline_tree_object,
+                    tree_object,
+                    git_env,
                 )
                 status = self._analysis_status_result(baseline_files, current_files)
                 tree_digest = _digest(tree_object)
@@ -336,14 +343,7 @@ class CodingWorkspaceService:
 
                 tree_root = temporary_root / _ANALYSIS_SNAPSHOT_TREE_DIR
                 tree_root.mkdir(mode=0o700)
-                self._run_git(
-                    workspace.root,
-                    "checkout-index",
-                    "--all",
-                    f"--prefix={tree_root.as_posix()}/",
-                    error_code="coding_analysis_snapshot_failed",
-                    extra_env=git_env,
-                )
+                self._materialize_analysis_files(tree_root, current_files)
                 self._write_analysis_snapshot_metadata(
                     temporary_root / _ANALYSIS_SNAPSHOT_METADATA_FILE,
                     metadata,
@@ -673,7 +673,8 @@ class CodingWorkspaceService:
         if candidate.stat().st_size > self.config.max_file_bytes:
             raise CodingWorkspaceError("file_too_large")
         try:
-            lines = candidate.read_text(encoding="utf-8").splitlines(keepends=True)
+            with candidate.open("r", encoding="utf-8", newline="") as handle:
+                lines = handle.readlines()
         except UnicodeDecodeError as exc:
             raise CodingWorkspaceError("file_encoding_unsupported") from exc
         except OSError as exc:
@@ -1025,10 +1026,44 @@ class CodingWorkspaceService:
         path: Path,
         metadata: _AnalysisSnapshotMetadata,
     ) -> None:
+        payload = metadata.model_dump_json().encode("utf-8")
+        descriptor = -1
+        temporary_path: Path | None = None
         try:
-            path.write_text(metadata.model_dump_json(), encoding="utf-8")
-            path.chmod(0o600)
-        except OSError as exc:
+            descriptor, raw_path = tempfile.mkstemp(
+                prefix=_ANALYSIS_METADATA_TEMP_PREFIX,
+                dir=path.parent,
+            )
+            temporary_path = Path(raw_path)
+            os.fchmod(descriptor, 0o600)
+            remaining = memoryview(payload)
+            while remaining:
+                written = os.write(descriptor, remaining)
+                if written <= 0:
+                    raise OSError("metadata write made no progress")
+                remaining = remaining[written:]
+            os.fsync(descriptor)
+            os.close(descriptor)
+            descriptor = -1
+            os.replace(temporary_path, path)
+            temporary_path = None
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            directory_descriptor = os.open(path.parent, flags)
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+        except (OSError, ValueError) as exc:
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
             raise CodingWorkspaceError("coding_analysis_snapshot_failed") from exc
 
     def _verify_analysis_snapshot_metadata(
@@ -1304,49 +1339,140 @@ class CodingWorkspaceService:
             "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(main_objects),
         }
 
-    def _analysis_diff_result(
+    def _analysis_git_diff_result(
         self,
-        baseline: Mapping[str, tuple[str, bytes]],
-        current: Mapping[str, tuple[str, bytes]],
+        workspace: CodingWorkspace,
+        baseline_tree_object: str,
+        current_tree_object: str,
+        git_env: Mapping[str, str],
     ) -> tuple[CodingDiffResult, str]:
+        environment = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_EXTERNAL_DIFF": "",
+            **git_env,
+        }
+        command = (
+            "git",
+            "-C",
+            str(workspace.root),
+            "-c",
+            "diff.external=",
+            "-c",
+            f"core.attributesFile={os.devnull}",
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+            baseline_tree_object,
+            current_tree_object,
+            "--",
+        )
+        process: subprocess.Popen[bytes] | None = None
+        selector = selectors.DefaultSelector()
         digest = hashlib.sha256()
-        rendered: list[str] = []
-        rendered_bytes = 0
-        truncated = False
+        preview = bytearray()
+        total_bytes = 0
         limit = self.config.analysis_snapshot_max_diff_bytes
-
-        def record_line(line: str) -> None:
-            nonlocal rendered_bytes, truncated
-            encoded = line.encode("utf-8")
-            digest.update(encoded)
-            if rendered_bytes + len(encoded) <= limit:
-                rendered.append(line)
-                rendered_bytes += len(encoded)
-            else:
-                truncated = True
-
-        for path in sorted(set(baseline).union(current)):
-            old = baseline.get(path)
-            new = current.get(path)
-            if old == new:
-                continue
-            if old is not None and new is not None and old[0] != new[0]:
-                record_line(f"old mode {old[0]}\n")
-                record_line(f"new mode {new[0]}\n")
-            old_text = old[1].decode("utf-8") if old is not None else ""
-            new_text = new[1].decode("utf-8") if new is not None else ""
-            if old_text != new_text:
-                for line in difflib.unified_diff(
-                    old_text.splitlines(keepends=True),
-                    new_text.splitlines(keepends=True),
-                    fromfile=f"a/{path}" if old is not None else "/dev/null",
-                    tofile=f"b/{path}" if new is not None else "/dev/null",
-                ):
-                    record_line(line)
+        deadline = time.monotonic() + 20.0
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                env=environment,
+            )
+            if process.stdout is None:
+                raise CodingWorkspaceError("coding_analysis_snapshot_failed")
+            descriptor = process.stdout.fileno()
+            os.set_blocking(descriptor, False)
+            selector.register(descriptor, selectors.EVENT_READ)
+            while selector.get_map():
+                remaining_seconds = deadline - time.monotonic()
+                if remaining_seconds <= 0:
+                    raise subprocess.TimeoutExpired(command, 20.0)
+                events = selector.select(remaining_seconds)
+                if not events:
+                    raise subprocess.TimeoutExpired(command, 20.0)
+                for key, _ in events:
+                    chunk = os.read(key.fd, 65_536)
+                    if not chunk:
+                        selector.unregister(key.fd)
+                        continue
+                    digest.update(chunk)
+                    total_bytes += len(chunk)
+                    if len(preview) < limit:
+                        preview.extend(chunk[: limit - len(preview)])
+            remaining_seconds = deadline - time.monotonic()
+            if remaining_seconds <= 0:
+                raise subprocess.TimeoutExpired(command, 20.0)
+            if process.wait(timeout=remaining_seconds) != 0:
+                raise CodingWorkspaceError("coding_analysis_snapshot_failed")
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise CodingWorkspaceError("coding_analysis_snapshot_failed") from exc
+        finally:
+            selector.close()
+            if process is not None:
+                if process.poll() is None:
+                    process.kill()
+                    try:
+                        process.wait(timeout=1)
+                    except subprocess.SubprocessError:
+                        pass
+                if process.stdout is not None:
+                    process.stdout.close()
+        while preview:
+            try:
+                preview_text = preview.decode("utf-8")
+                break
+            except UnicodeDecodeError as exc:
+                if exc.end != len(preview):
+                    raise CodingWorkspaceError("coding_analysis_snapshot_failed") from exc
+                del preview[exc.start:]
+        else:
+            preview_text = ""
         return (
-            CodingDiffResult(diff="".join(rendered), truncated=truncated),
+            CodingDiffResult(
+                diff=preview_text,
+                truncated=total_bytes > len(preview),
+            ),
             digest.hexdigest(),
         )
+
+    def _materialize_analysis_files(
+        self,
+        tree_root: Path,
+        files: Mapping[str, tuple[str, bytes]],
+    ) -> None:
+        no_follow = getattr(os, "O_NOFOLLOW", 0)
+        try:
+            for relative_path in sorted(files):
+                mode, content = files[relative_path]
+                candidate = tree_root / relative_path
+                candidate.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                descriptor = os.open(
+                    candidate,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | no_follow,
+                    0o700 if mode == "100755" else 0o600,
+                )
+                try:
+                    remaining = memoryview(content)
+                    while remaining:
+                        written = os.write(descriptor, remaining)
+                        if written <= 0:
+                            raise OSError("snapshot write made no progress")
+                        remaining = remaining[written:]
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+        except (OSError, ValueError) as exc:
+            raise CodingWorkspaceError("coding_analysis_snapshot_failed") from exc
 
     def _analysis_status_result(
         self,
@@ -1583,9 +1709,23 @@ class CodingWorkspaceService:
             for snapshot_root in tuple(snapshots_root.iterdir()):
                 if not snapshot_root.is_dir():
                     continue
-                if snapshot_root.name.startswith(".analysis-build-"):
+                if snapshot_root.name.startswith(_ANALYSIS_BUILD_PREFIX):
                     try:
                         self._remove_analysis_snapshot_directory(snapshot_root)
+                    except OSError:
+                        continue
+                    continue
+                if snapshot_root.name.startswith(_ANALYSIS_QUARANTINE_PREFIX):
+                    try:
+                        quarantined_at = datetime.fromtimestamp(
+                            snapshot_root.stat(follow_symlinks=False).st_mtime,
+                            timezone.utc,
+                        )
+                        reclaim_at = quarantined_at + timedelta(
+                            seconds=_ANALYSIS_QUARANTINE_SECONDS
+                        )
+                        if reclaim_at <= self._clock():
+                            self._remove_analysis_snapshot_directory(snapshot_root)
                     except OSError:
                         continue
                     continue
@@ -1594,6 +1734,7 @@ class CodingWorkspaceService:
                         snapshot_root / _ANALYSIS_SNAPSHOT_METADATA_FILE
                     )
                 except CodingWorkspaceError:
+                    self._quarantine_analysis_snapshot(snapshot_root)
                     continue
                 if metadata.active_lease and metadata.snapshot.expires_at > self._clock():
                     continue
@@ -1607,6 +1748,27 @@ class CodingWorkspaceService:
                 Path(f"{index_path}.lock").unlink(missing_ok=True)
             except OSError:
                 continue
+
+    def _quarantine_analysis_snapshot(self, snapshot_root: Path) -> None:
+        quarantine_root = snapshot_root.with_name(
+            f"{_ANALYSIS_QUARANTINE_PREFIX}{snapshot_root.name}-{secrets.token_hex(8)}"
+        )
+        try:
+            os.replace(snapshot_root, quarantine_root)
+            timestamp = self._clock().timestamp()
+            os.utime(
+                quarantine_root,
+                times=(timestamp, timestamp),
+                follow_symlinks=False,
+            )
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            directory_descriptor = os.open(quarantine_root.parent, flags)
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+        except OSError:
+            return
 
     async def aclose(self) -> None:
         return None
