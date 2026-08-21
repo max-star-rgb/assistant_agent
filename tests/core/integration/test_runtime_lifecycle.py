@@ -124,6 +124,7 @@ def test_parent_graph_has_fast_planning_and_coding_native_branches(monkeypatch) 
         assert graph.nodes["planning_graph"].data.name == "AssistantPlanningGraph"
         assert graph.nodes["coding_graph"].data.name == "AssistantCodingGraph"
         coding_nodes = set(graph.nodes["coding_graph"].data.get_graph().nodes)
+        assert "prepare_repair" in coding_nodes
         assert {
             "approval",
             "apply_patch",

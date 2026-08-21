@@ -18,6 +18,7 @@ source_globs = [
   "src/assistant_agent/coding/dependencies.py",
   "src/assistant_agent/coding/dependency_egress.py",
   "src/assistant_agent/coding/integration.py",
+  "src/assistant_agent/coding/repair.py",
   "src/assistant_agent/coding/sandbox.py",
   "src/assistant_agent/coding/sandbox_runner.py",
   "src/assistant_agent/coding/validation.py",

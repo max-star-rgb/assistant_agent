@@ -44,6 +44,20 @@ merge_approval -> apply_merge`。merge approval 是独立原生 interrupt，绑�
 target HEAD 和 preview digest；apply 不调用模型，目标漂移或审批不匹配不会重新生成 preview。integration
 关闭时保持阶段 2 applied terminal。coding 不复用 planning 并行 worker，所有 mutation 通过单一顺序节点完成。
 
+`run_validation` 遇到一个确定性 `test|lint|build` 命令的普通非零退出，且错误码为
+`verification_command_failed` 时，才由本地策略选中 eligible failure，沿原生
+`run_validation -> prepare_repair -> inspect_and_draft` 回边进入最多两轮 repair。模型不能提交、
+改写或放宽 eligibility；runner、workspace、sandbox、resource、timeout、cleanup 等基础设施错误
+直接结束，不进入 repair loop。当轮有界 stdout/stderr 和 digest 只在 repair 模型调用边界组装为
+临时 evidence context，不追加到原始 `messages` channel。
+
+每轮 repair 只能提交一个增量 patch；候选累计 diff 在不改写 worktree 的临时 index 中预览，并绑定
+patch、当前 workspace diff 与候选累计 diff 的 digest 进入独立 patch HITL。resume 后重算并校验全部
+digest；重复 patch、累计 diff 不变或轮次停滞以 `coding_repair_no_progress` 终止。获批 patch 仍沿同一
+mutation lane 执行 `apply_patch`，清空旧 approval 及下游 gate 状态，然后重新经过 dependency、
+credential、artifact 与完整 validation gates。只有最终验证通过才能进入 integration。repair 不创建
+第二套 Runtime、Graph 或 run，也不引入并行 mutation lane。
+
 repository 配置 Stage 4B1 dependency profile 时，`apply_patch` 后先由确定性 `plan_dependencies` 检查
 approved changed paths 与严格 lockfile，只有 lockfile 变化才生成 dependency plan。独立
 `coding_dependency_install` interrupt 绑定 profile、lockfile、egress policy 与 plan digest；approve resume
