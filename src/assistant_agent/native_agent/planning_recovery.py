@@ -30,6 +30,15 @@ class PlannerPropagationError(RuntimeError):
         super().__init__(code)
 
 
+class WorkerPropagationError(RuntimeError):
+    """A stable worker boundary error without provider exception references."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+        self.__suppress_context__ = True
+
+
 def classify_operational_failure(error: BaseException) -> bool:
     """Accept only transient transport failures; fail closed for every other error."""
 
@@ -99,6 +108,62 @@ def sanitize_planner_propagation(error: Exception) -> PlannerPropagationError:
     if _exception_status_code(error) is not None:
         return PlannerPropagationError("planner_nonretryable_provider_failure")
     return PlannerPropagationError("planner_unclassified_failure")
+
+
+def find_worker_control_failure(error: BaseException) -> BaseException | None:
+    """Find native control flow hidden in a provider wrapper without converting it."""
+
+    for current in _exception_chain(error):
+        if isinstance(
+            current,
+            (asyncio.CancelledError, GraphBubbleUp, NodeCancelledError),
+        ):
+            return current
+    return None
+
+
+def sanitize_worker_propagation(error: Exception) -> WorkerPropagationError:
+    """Classify nonrecoverable worker failures using stable local codes only."""
+
+    chain = tuple(_exception_chain(error))
+    if any(isinstance(item, PermissionError) for item in chain):
+        return WorkerPropagationError("worker_authorization_failure")
+    if any(
+        isinstance(
+            item,
+            (
+                AssertionError,
+                TypeError,
+                ValueError,
+                LookupError,
+                ArithmeticError,
+                ImportError,
+                NameError,
+                SyntaxError,
+                AttributeError,
+            ),
+        )
+        for item in chain
+    ):
+        return WorkerPropagationError("worker_contract_failure")
+    if any(_exception_status_code(item) is not None for item in chain):
+        return WorkerPropagationError("worker_nonretryable_provider_failure")
+    return WorkerPropagationError("worker_unclassified_failure")
+
+
+def _exception_chain(error: BaseException):
+    pending: list[BaseException] = [error]
+    visited: set[int] = set()
+    while pending:
+        current = pending.pop(0)
+        if id(current) in visited:
+            continue
+        visited.add(id(current))
+        yield current
+        if isinstance(current.__cause__, BaseException):
+            pending.append(current.__cause__)
+        if isinstance(current.__context__, BaseException):
+            pending.append(current.__context__)
 
 
 def assess_planner_node(
@@ -296,18 +361,41 @@ def prepare_replan_node(
         raise ValueError("replan preparation exceeds configured budget")
     generation = _plan_generation(state) + 1
     plan = _optional_plan(state)
-    historical_node_ids = tuple(node.node_id for node in plan.nodes) if plan else ()
-    frozen_additions = freeze_successful_worker_results(state)
+    worker_origin = _is_current_worker_replan(
+        state,
+        decision=decision,
+        plan=plan,
+    )
+    historical_node_ids = (
+        tuple(node.node_id for node in plan.nodes)
+        if worker_origin and plan is not None
+        else ()
+    )
+    frozen_additions = freeze_successful_worker_results(state) if worker_origin else {}
     frozen_results = {
         **_frozen_worker_results(state),
         **frozen_additions,
     }
-    superseded_ids = _superseded_work_item_ids(state, plan=plan)
-    unfinished_deliverable_ids = _unfinished_deliverable_ids(
-        plan,
-        frozen_result_ids=frozen_results,
-    )
-    return {
+    if worker_origin:
+        superseded_ids = _superseded_work_item_ids(state, plan=plan)
+        unfinished_deliverable_ids = _unfinished_deliverable_ids(
+            plan,
+            frozen_result_ids=frozen_results,
+        )
+    else:
+        prior_context = state.get("recovery_context")
+        prior_context = prior_context if isinstance(prior_context, Mapping) else {}
+        superseded_ids = _preserved_ids(
+            prior_context.get(
+                "replannable_work_item_ids",
+                state.get("superseded_work_item_ids", ()),
+            ),
+            excluded_ids=frozen_results,
+        )
+        unfinished_deliverable_ids = _preserved_ids(
+            prior_context.get("unfinished_deliverable_ids", ()),
+        )
+    update: dict[str, object] = {
         "plan_generation": generation,
         "planner_attempt_count": 0,
         "revision_count": 0,
@@ -331,13 +419,15 @@ def prepare_replan_node(
         ),
         "budget_usage": BudgetUsage(replans=1),
         "historical_node_ids": list(historical_node_ids),
-        "superseded_work_item_ids": list(superseded_ids),
-        "frozen_worker_results": frozen_additions,
-        "worker_results": _ordered_compatibility_results(
+    }
+    if worker_origin:
+        update["superseded_work_item_ids"] = list(superseded_ids)
+        update["frozen_worker_results"] = frozen_additions
+        update["worker_results"] = _ordered_compatibility_results(
             frozen_results,
             plan=plan,
-        ),
-    }
+        )
+    return update
 
 
 def controlled_finalize_node(state: PlanningState) -> dict[str, object]:
@@ -439,6 +529,49 @@ def _latest_current_worker_outcomes(
     return latest
 
 
+def _is_current_worker_replan(
+    state: Mapping[str, object],
+    *,
+    decision: RecoveryDecision,
+    plan: NativePlanProposal | None,
+) -> bool:
+    if plan is None or not decision.source_execution_ids:
+        return False
+    historical_ids = frozenset(
+        item for item in state.get("historical_node_ids", ()) if isinstance(item, str)
+    )
+    plan_ids = frozenset(node.node_id for node in plan.nodes)
+    if plan_ids & historical_ids:
+        return False
+    generation = _plan_generation(state)
+    outcomes = _worker_outcomes(state)
+    sources = [
+        outcomes.get(execution_id) for execution_id in decision.source_execution_ids
+    ]
+    return all(
+        outcome is not None
+        and outcome.plan_generation == generation
+        and outcome.work_item_id in plan_ids
+        and outcome.status != "succeeded"
+        for outcome in sources
+    )
+
+
+def _preserved_ids(
+    values: object,
+    *,
+    excluded_ids: Mapping[str, object] | None = None,
+) -> tuple[str, ...]:
+    if not isinstance(values, Sequence) or isinstance(values, (str, bytes, bytearray)):
+        return ()
+    excluded = frozenset(excluded_ids or {})
+    return tuple(
+        item
+        for item in dict.fromkeys(values)
+        if isinstance(item, str) and item not in excluded
+    )
+
+
 def _superseded_work_item_ids(
     state: Mapping[str, object],
     *,
@@ -453,6 +586,7 @@ def _superseded_work_item_ids(
         if (outcome := latest.get(node.node_id)) is None
         or outcome.status != "succeeded"
     }
+    superseded.difference_update(_frozen_worker_results(state))
     changed = True
     while changed:
         changed = False
@@ -519,9 +653,12 @@ __all__ = [
     "classify_operational_failure",
     "controlled_finalize_node",
     "freeze_successful_worker_results",
+    "find_worker_control_failure",
     "prepare_replan_node",
     "route_after_planner_assessment",
     "route_after_worker_assessment",
     "PlannerPropagationError",
     "sanitize_planner_propagation",
+    "sanitize_worker_propagation",
+    "WorkerPropagationError",
 ]

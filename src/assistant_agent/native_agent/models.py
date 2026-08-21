@@ -120,9 +120,7 @@ class PlanDeliverable(BaseModel):
     @model_validator(mode="after")
     def _has_producer(self) -> "PlanDeliverable":
         if not (
-            self.producer_node_ids
-            or self.evidence_refs
-            or self.frozen_result_refs
+            self.producer_node_ids or self.evidence_refs or self.frozen_result_refs
         ):
             raise ValueError(
                 "deliverable requires a node producer, evidence, or frozen result"
@@ -246,9 +244,7 @@ class WorkerOutcome(BaseModel):
 
     execution_id: str = Field(min_length=1, max_length=240)
     plan_generation: int = Field(ge=0)
-    work_item_id: str = Field(
-        pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,119}$"
-    )
+    work_item_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,119}$")
     attempt: int = Field(ge=1)
     status: Literal[
         "succeeded",
@@ -262,11 +258,18 @@ class WorkerOutcome(BaseModel):
 
     @model_validator(mode="after")
     def _validate_status_payload(self) -> "WorkerOutcome":
+        canonical_execution_id = (
+            f"g{self.plan_generation}:{self.work_item_id}:a{self.attempt}"
+        )
+        if self.execution_id != canonical_execution_id:
+            raise ValueError("worker outcome requires canonical execution_id")
         if self.status == "succeeded":
             if self.result is None:
                 raise ValueError("successful worker outcome requires result")
             if self.failure is not None:
                 raise ValueError("successful worker outcome cannot have failure")
+            if self.result.work_item_id != self.work_item_id:
+                raise ValueError("worker result work_item_id does not match outcome")
         else:
             if self.result is not None:
                 raise ValueError("failed worker outcome cannot have result")
@@ -282,7 +285,9 @@ class WorkerOutcome(BaseModel):
             if self.failure.category != expected_category:
                 raise ValueError("worker failure category does not match status")
             if self.failure.plan_generation != self.plan_generation:
-                raise ValueError("worker failure plan_generation does not match outcome")
+                raise ValueError(
+                    "worker failure plan_generation does not match outcome"
+                )
             if self.failure.work_item_id != self.work_item_id:
                 raise ValueError("worker failure work_item_id does not match outcome")
             if self.failure.attempt != self.attempt:

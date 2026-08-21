@@ -18,10 +18,10 @@ from urllib.parse import urlsplit
 import httpx
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
-from langgraph.errors import GraphBubbleUp, NodeCancelledError, NodeError
+from langgraph.errors import GraphBubbleUp, NodeCancelledError
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
-from langgraph.types import Command, Send
+from langgraph.types import Send
 from pydantic import BaseModel
 from pydantic_core import to_jsonable_python
 
@@ -43,10 +43,12 @@ from assistant_agent.native_agent.planning_recovery import (
     assess_workers_node,
     classify_operational_failure,
     controlled_finalize_node,
+    find_worker_control_failure,
     prepare_replan_node,
     route_after_planner_assessment,
     route_after_worker_assessment,
     sanitize_planner_propagation,
+    sanitize_worker_propagation,
 )
 from assistant_agent.native_agent.state import PlanningState, WorkerState
 from assistant_agent.skills.loading import SkillCatalog
@@ -504,6 +506,8 @@ def build_planning_graph(
         state: WorkerState,
         runtime: Runtime[AssistantRunContext],
     ) -> dict[str, Any]:
+        propagation_error: Exception | None = None
+        control_failure: BaseException | None = None
         try:
             result = await fast_agent.ainvoke(
                 {
@@ -524,103 +528,20 @@ def build_planning_graph(
                 },
                 context=runtime.context,
             )
+            return _worker_result_outcome_update(state, result)
         except (GraphBubbleUp, NodeCancelledError):
             raise
         except Exception as error:
-            if _is_worker_operational_failure(error):
+            control_failure = find_worker_control_failure(error)
+            if control_failure is None and _is_worker_operational_failure(error):
                 return _operational_worker_outcome_update(state)
-            raise
-        phase_usage = BudgetUsage.model_validate(result.get("phase_budget_usage") or {})
-        usage = BudgetUsage(
-            model_calls=phase_usage.model_calls,
-            tool_calls=phase_usage.tool_calls,
-            node_attempts=1,
-            replans=phase_usage.replans,
-        )
-        if result.get("phase_budget_status") == "exhausted":
-            outcome = WorkerOutcome(
-                execution_id=state["execution_id"],
-                plan_generation=state["plan_generation"],
-                work_item_id=state["work_item_id"],
-                attempt=state["attempt"],
-                status="budget_exhausted",
-                failure=FailureFact(
-                    category="budget_exhausted",
-                    code="worker_phase_budget_exhausted",
-                    phase="worker",
-                    plan_generation=state["plan_generation"],
-                    work_item_id=state["work_item_id"],
-                    attempt=state["attempt"],
-                ),
-                usage=usage,
-            )
-            return _worker_outcome_update(outcome)
-        completion = WorkerCompletion.model_validate(result["structured_response"])
-        if completion.status == "insufficient":
-            outcome = WorkerOutcome(
-                execution_id=state["execution_id"],
-                plan_generation=state["plan_generation"],
-                work_item_id=state["work_item_id"],
-                attempt=state["attempt"],
-                status="business_failed",
-                failure=FailureFact(
-                    category="business_failure",
-                    code="worker_business_insufficient",
-                    phase="worker",
-                    plan_generation=state["plan_generation"],
-                    work_item_id=state["work_item_id"],
-                    attempt=state["attempt"],
-                ),
-                usage=usage,
-            )
-            return _worker_outcome_update(outcome)
-        terminal = next(
-            (
-                message
-                for message in reversed(result.get("messages", ()))
-                if isinstance(message, AIMessage)
-            ),
-            None,
-        )
-        metadata = terminal.response_metadata if terminal is not None else {}
-        sources = extract_worker_sources(metadata)
-        profile = metadata.get("provider_search_profile", "none")
-        verification = (
-            "failed"
-            if completion.status == "insufficient"
-            else "unverified"
-            if not sources and isinstance(profile, str) and profile != "none"
-            else "verified"
-            if sources
-            else "advisory"
-        )
-        worker_result = WorkerResult(
-            work_item_id=state["work_item_id"],
-            content=completion.content,
-            verification_status=verification,  # type: ignore[arg-type]
-            sources=sources,
-        )
-        outcome = WorkerOutcome(
-            execution_id=state["execution_id"],
-            plan_generation=state["plan_generation"],
-            work_item_id=state["work_item_id"],
-            attempt=state["attempt"],
-            status="succeeded",
-            result=worker_result,
-            usage=usage,
-        )
-        return _worker_outcome_update(outcome)
-
-    def worker_failure_node(
-        state: WorkerState,
-        error: NodeError,
-    ) -> Command[str]:
-        if not _is_worker_operational_failure(error.error):
-            raise error.error
-        return Command(
-            update=_operational_worker_outcome_update(state),
-            goto="join",
-        )
+            if control_failure is None:
+                propagation_error = sanitize_worker_propagation(error)
+        if control_failure is not None:
+            raise control_failure
+        if propagation_error is None:
+            raise RuntimeError("worker propagation classification failed")
+        raise propagation_error
 
     def join_node(_state: PlanningState) -> dict[str, Any]:
         return {}
@@ -684,7 +605,6 @@ def build_planning_graph(
         "worker",
         worker_node,
         input_schema=WorkerState,
-        error_handler=worker_failure_node,
     )
     builder.add_node("join", join_node)
     builder.add_node(
@@ -932,6 +852,92 @@ def _worker_outcome_update(outcome: WorkerOutcome) -> dict[str, Any]:
         "worker_outcomes": {outcome.execution_id: outcome},
         "budget_usage": outcome.usage,
     }
+
+
+def _worker_result_outcome_update(
+    state: WorkerState,
+    result: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate one FastAgent result entirely inside the worker safety boundary."""
+
+    phase_usage = BudgetUsage.model_validate(result.get("phase_budget_usage") or {})
+    usage = BudgetUsage(
+        model_calls=phase_usage.model_calls,
+        tool_calls=phase_usage.tool_calls,
+        node_attempts=1,
+        replans=phase_usage.replans,
+    )
+    if result.get("phase_budget_status") == "exhausted":
+        outcome = WorkerOutcome(
+            execution_id=state["execution_id"],
+            plan_generation=state["plan_generation"],
+            work_item_id=state["work_item_id"],
+            attempt=state["attempt"],
+            status="budget_exhausted",
+            failure=FailureFact(
+                category="budget_exhausted",
+                code="worker_phase_budget_exhausted",
+                phase="worker",
+                plan_generation=state["plan_generation"],
+                work_item_id=state["work_item_id"],
+                attempt=state["attempt"],
+            ),
+            usage=usage,
+        )
+        return _worker_outcome_update(outcome)
+    completion = WorkerCompletion.model_validate(result["structured_response"])
+    if completion.status == "insufficient":
+        outcome = WorkerOutcome(
+            execution_id=state["execution_id"],
+            plan_generation=state["plan_generation"],
+            work_item_id=state["work_item_id"],
+            attempt=state["attempt"],
+            status="business_failed",
+            failure=FailureFact(
+                category="business_failure",
+                code="worker_business_insufficient",
+                phase="worker",
+                plan_generation=state["plan_generation"],
+                work_item_id=state["work_item_id"],
+                attempt=state["attempt"],
+            ),
+            usage=usage,
+        )
+        return _worker_outcome_update(outcome)
+    terminal = next(
+        (
+            message
+            for message in reversed(result.get("messages", ()))
+            if isinstance(message, AIMessage)
+        ),
+        None,
+    )
+    metadata = terminal.response_metadata if terminal is not None else {}
+    sources = extract_worker_sources(metadata)
+    profile = metadata.get("provider_search_profile", "none")
+    verification = (
+        "unverified"
+        if not sources and isinstance(profile, str) and profile != "none"
+        else "verified"
+        if sources
+        else "advisory"
+    )
+    worker_result = WorkerResult(
+        work_item_id=state["work_item_id"],
+        content=completion.content,
+        verification_status=verification,  # type: ignore[arg-type]
+        sources=sources,
+    )
+    outcome = WorkerOutcome(
+        execution_id=state["execution_id"],
+        plan_generation=state["plan_generation"],
+        work_item_id=state["work_item_id"],
+        attempt=state["attempt"],
+        status="succeeded",
+        result=worker_result,
+        usage=usage,
+    )
+    return _worker_outcome_update(outcome)
 
 
 def _operational_worker_outcome_update(state: WorkerState) -> dict[str, Any]:

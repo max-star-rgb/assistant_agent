@@ -289,25 +289,55 @@ def _merge_immutable_mapping(
 
 
 def merge_worker_outcomes(
-    left: Mapping[str, WorkerOutcome] | None,
-    right: Mapping[str, WorkerOutcome] | None,
+    left: Mapping[str, WorkerOutcome | Mapping[str, object]] | None,
+    right: Mapping[str, WorkerOutcome | Mapping[str, object]] | None,
 ) -> dict[str, WorkerOutcome]:
     """Deterministically merge worker outcomes and reject conflicting replay."""
 
     return _merge_immutable_mapping(
-        left, right, conflict_message="conflicting worker outcome"
+        _validated_worker_outcome_mapping(left),
+        _validated_worker_outcome_mapping(right),
+        conflict_message="conflicting worker outcome",
     )
 
 
 def merge_frozen_worker_results(
-    left: Mapping[str, WorkerResult] | None,
-    right: Mapping[str, WorkerResult] | None,
+    left: Mapping[str, WorkerResult | Mapping[str, object]] | None,
+    right: Mapping[str, WorkerResult | Mapping[str, object]] | None,
 ) -> dict[str, WorkerResult]:
     """Merge the monotonic frozen-result ledger."""
 
     return _merge_immutable_mapping(
-        left, right, conflict_message="conflicting frozen worker result"
+        _validated_frozen_result_mapping(left),
+        _validated_frozen_result_mapping(right),
+        conflict_message="conflicting frozen worker result",
     )
+
+
+def _validated_worker_outcome_mapping(
+    values: Mapping[str, WorkerOutcome | Mapping[str, object]] | None,
+) -> dict[str, WorkerOutcome]:
+    validated: dict[str, WorkerOutcome] = {}
+    for key, value in (values or {}).items():
+        payload = value.model_dump() if isinstance(value, WorkerOutcome) else value
+        outcome = WorkerOutcome.model_validate(payload)
+        if key != outcome.execution_id:
+            raise ValueError("worker outcome key does not match execution_id")
+        validated[key] = outcome
+    return validated
+
+
+def _validated_frozen_result_mapping(
+    values: Mapping[str, WorkerResult | Mapping[str, object]] | None,
+) -> dict[str, WorkerResult]:
+    validated: dict[str, WorkerResult] = {}
+    for key, value in (values or {}).items():
+        payload = value.model_dump() if isinstance(value, WorkerResult) else value
+        result = WorkerResult.model_validate(payload)
+        if key != result.work_item_id:
+            raise ValueError("frozen worker result key does not match work_item_id")
+        validated[key] = result
+    return validated
 
 
 __all__ = [

@@ -13,16 +13,24 @@ from langgraph.checkpoint.memory import InMemorySaver
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.models import (
     BudgetUsage,
+    FailureFact,
     NativePlanNode,
     NativePlanProposal,
     PlanDeliverable,
+    RecoveryDecision,
     WorkerCompletion,
+    WorkerOutcome,
     WorkerResult,
 )
+from assistant_agent.native_agent.planning_budget import PlanningBudgetPolicy
 from assistant_agent.native_agent.planning_graph import (
     build_planning_graph,
     route_scheduler,
     scheduler_node,
+)
+from assistant_agent.native_agent.planning_recovery import (
+    assess_workers_node,
+    prepare_replan_node,
 )
 from assistant_agent.skills.loading import SkillCatalog
 
@@ -134,6 +142,14 @@ class _ParallelRecoveryAgent:
                         "phase_budget_status": "exhausted",
                         "phase_budget_usage": BudgetUsage(model_calls=1),
                     }
+                if self.failure_mode == "malformed":
+                    return {
+                        "messages": [AIMessage(content="malformed")],
+                        "structured_response": {
+                            "status": "completed",
+                            "content": {"credential": "schema-credential-marker"},
+                        },
+                    }
             return _worker_completion("replacement-ok")
         assert phase == "finalizer"
         return {"messages": [AIMessage(content="final-answer-sentinel")]}
@@ -141,8 +157,30 @@ class _ParallelRecoveryAgent:
 
 class _WorkerHttp4xx(Exception):
     def __init__(self) -> None:
-        self.status_code = 400
-        super().__init__("http-4xx-secret-sentinel")
+        self.response = type(
+            "Response",
+            (),
+            {
+                "status_code": 400,
+                "body": "http-body-marker",
+                "credential": "http-credential-marker",
+            },
+        )()
+        super().__init__("http-message-marker")
+
+
+class _WorkerPermission(PermissionError):
+    def __init__(self) -> None:
+        self.body = "permission-body-marker"
+        self.credential = "permission-credential-marker"
+        super().__init__("permission-message-marker")
+
+
+class _WorkerContract(TypeError):
+    def __init__(self) -> None:
+        self.body = "contract-body-marker"
+        self.credential = "contract-credential-marker"
+        super().__init__("contract-message-marker")
 
 
 def _worker_completion(
@@ -220,28 +258,103 @@ def test_worker_expected_failure_replans_without_same_input_retry(
 
 
 @pytest.mark.parametrize(
-    "failure",
-    [PermissionError("denied"), TypeError("bug"), _WorkerHttp4xx()],
+    ("failure", "expected_code", "markers"),
+    [
+        (
+            _WorkerPermission(),
+            "worker_authorization_failure",
+            (
+                "permission-message-marker",
+                "permission-body-marker",
+                "permission-credential-marker",
+            ),
+        ),
+        (
+            _WorkerContract(),
+            "worker_contract_failure",
+            (
+                "contract-message-marker",
+                "contract-body-marker",
+                "contract-credential-marker",
+            ),
+        ),
+        (
+            _WorkerHttp4xx(),
+            "worker_nonretryable_provider_failure",
+            (
+                "http-message-marker",
+                "http-body-marker",
+                "http-credential-marker",
+            ),
+        ),
+    ],
 )
-def test_worker_contract_or_permission_failure_propagates(
+def test_worker_nonrecoverable_failure_is_sanitized_before_checkpoint_boundary(
     failure: Exception,
+    expected_code: str,
+    markers: tuple[str, ...],
 ) -> None:
-    """Catches authorization or contract errors entering recovery state."""
+    """Catches raw authorization/contract/provider data entering durable writes."""
 
+    saver = InMemorySaver()
     agent = _ParallelRecoveryAgent(direct_failure=failure)
     graph = build_planning_graph(
         object(),
         agent,
         skill_catalog=SkillCatalog(),
+        checkpointer=saver,
     )
+    config = {"configurable": {"thread_id": f"worker-sanitize-{expected_code}"}}
 
-    with pytest.raises(type(failure), match=str(failure)):
+    with pytest.raises(Exception) as raised:
         asyncio.run(
             graph.ainvoke(
                 _planning_input(),
+                config=config,
                 context=AssistantRunContext(),
             )
         )
+    assert type(raised.value).__name__ == "WorkerPropagationError"
+    assert getattr(raised.value, "code", None) == expected_code
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    saver_text = _saver_text(saver)
+    assert all(marker not in saver_text for marker in markers)
+    snapshots = list(graph.get_state_history(config))
+    assert all(
+        all(
+            getattr(outcome, "work_item_id", None) != "route_g0"
+            for outcome in snapshot.values.get("worker_outcomes", {}).values()
+        )
+        for snapshot in snapshots
+    )
+    assert all("recovery_history" not in snapshot.values for snapshot in snapshots)
+
+
+def test_malformed_worker_completion_is_sanitized_before_checkpoint_boundary() -> None:
+    """Catches structured-response validation escaping the worker safety boundary."""
+
+    saver = InMemorySaver()
+    agent = _ParallelRecoveryAgent(failure_mode="malformed")
+    graph = build_planning_graph(
+        object(),
+        agent,
+        skill_catalog=SkillCatalog(),
+        checkpointer=saver,
+    )
+    config = {"configurable": {"thread_id": "worker-malformed-completion"}}
+
+    with pytest.raises(Exception) as raised:
+        asyncio.run(
+            graph.ainvoke(
+                _planning_input(),
+                config=config,
+                context=AssistantRunContext(),
+            )
+        )
+    assert type(raised.value).__name__ == "WorkerPropagationError"
+    assert getattr(raised.value, "code", None) == "worker_contract_failure"
+    assert "schema-credential-marker" not in _saver_text(saver)
 
 
 def test_generation_scheduler_reuses_frozen_dependency_idempotently() -> None:
@@ -274,6 +387,70 @@ def test_generation_scheduler_reuses_frozen_dependency_idempotently() -> None:
     assert first_send.arg["execution_id"] == replay_send.arg["execution_id"]
     assert first_send.arg["execution_id"] == "g1:route_replacement_g1:a1"
     assert first_send.arg["dependency_results"] == (weather,)
+
+
+def test_chained_planner_replan_does_not_reclassify_stale_admitted_plan() -> None:
+    """Catches a pre-admission planner recovery superseding frozen old work."""
+
+    policy = PlanningBudgetPolicy.from_base(1)
+    weather = WorkerResult(work_item_id="weather_g0", content="weather-ok")
+    weather_outcome = WorkerOutcome(
+        execution_id="g0:weather_g0:a1",
+        plan_generation=0,
+        work_item_id="weather_g0",
+        attempt=1,
+        status="succeeded",
+        result=weather,
+        usage=BudgetUsage(node_attempts=1),
+    )
+    route_outcome = WorkerOutcome(
+        execution_id="g0:route_g0:a3",
+        plan_generation=0,
+        work_item_id="route_g0",
+        attempt=3,
+        status="operational_failed",
+        failure=FailureFact(
+            category="operational",
+            code="worker_operational_failure",
+            phase="worker",
+            plan_generation=0,
+            work_item_id="route_g0",
+            attempt=3,
+        ),
+        usage=BudgetUsage(node_attempts=1),
+    )
+    initial = {
+        **_planning_input(),
+        "plan": _initial_parallel_plan(),
+        "plan_generation": 0,
+        "worker_outcomes": {
+            weather_outcome.execution_id: weather_outcome,
+            route_outcome.execution_id: route_outcome,
+        },
+    }
+    assessment = assess_workers_node(initial, policy=policy)
+    first_replan = prepare_replan_node(
+        {**initial, **assessment},
+        policy=policy,
+    )
+    chained_state = {
+        **initial,
+        **assessment,
+        **first_replan,
+        "frozen_worker_results": {"weather_g0": weather},
+        "recovery_decision": RecoveryDecision(
+            action="replan",
+            reason_code="planner_tool_budget_exhausted",
+        ),
+    }
+
+    second_replan = prepare_replan_node(chained_state, policy=policy)
+
+    assert second_replan["plan_generation"] == 2
+    recovery_context = second_replan["recovery_context"]
+    assert recovery_context["replannable_work_item_ids"] == ["route_g0"]
+    assert recovery_context["frozen_result_ids"] == ["weather_g0"]
+    assert "weather_g0" not in second_replan.get("superseded_work_item_ids", ())
 
 
 def _saver_text(saver: InMemorySaver) -> str:

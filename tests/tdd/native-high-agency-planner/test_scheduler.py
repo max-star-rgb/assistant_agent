@@ -10,7 +10,8 @@ from typing import Any
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
-from langgraph.errors import GraphInterrupt
+from langgraph.errors import GraphInterrupt, NodeCancelledError
+from langgraph.types import Interrupt
 
 from assistant_agent.native_agent import planning_graph
 from assistant_agent.native_agent.context import AssistantRunContext
@@ -26,6 +27,7 @@ from assistant_agent.native_agent.models import (
     WorkerResult,
 )
 from assistant_agent.native_agent.planning_budget import PlanningBudgetPolicy
+from assistant_agent.native_agent.planning_recovery import WorkerPropagationError
 from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.skills.loading import SkillCatalog, load_repo_skill_descriptors
 from assistant_agent.tools.ids import LOAD_SKILL_REFERENCE_TOOL_NAME
@@ -239,16 +241,30 @@ def _deep_operational_chain_with_cause(cause: Exception) -> TimeoutError:
 
 
 @pytest.mark.parametrize(
-    "failure",
+    ("failure", "expected_code"),
     [
-        PermissionError("denied"),
-        TypeError("bug"),
-        _operational_wrapper_with_cause(PermissionError("wrapped-denied")),
-        _operational_wrapper_with_cause(TypeError("wrapped-bug")),
-        _operational_wrapper_with_cause(AttributeError("wrapped-attribute-bug")),
-        _operational_wrapper_with_cause(RuntimeError("wrapped-runtime-bug")),
-        _operational_wrapper_with_cause(GraphInterrupt()),
-        _deep_operational_chain_with_cause(PermissionError("deep-wrapped-denied")),
+        (PermissionError("denied"), "worker_authorization_failure"),
+        (TypeError("bug"), "worker_contract_failure"),
+        (
+            _operational_wrapper_with_cause(PermissionError("wrapped-denied")),
+            "worker_authorization_failure",
+        ),
+        (
+            _operational_wrapper_with_cause(TypeError("wrapped-bug")),
+            "worker_contract_failure",
+        ),
+        (
+            _operational_wrapper_with_cause(AttributeError("wrapped-attribute-bug")),
+            "worker_contract_failure",
+        ),
+        (
+            _operational_wrapper_with_cause(RuntimeError("wrapped-runtime-bug")),
+            "worker_unclassified_failure",
+        ),
+        (
+            _deep_operational_chain_with_cause(PermissionError("deep-wrapped-denied")),
+            "worker_authorization_failure",
+        ),
     ],
     ids=[
         "permission",
@@ -257,14 +273,14 @@ def _deep_operational_chain_with_cause(cause: Exception) -> TimeoutError:
         "wrapped-type",
         "wrapped-attribute",
         "wrapped-runtime",
-        "wrapped-graph-interrupt",
         "deep-wrapped-permission",
     ],
 )
-def test_worker_failure_boundary_does_not_convert_non_operational_errors(
+def test_worker_failure_boundary_sanitizes_non_operational_errors(
     failure: Exception,
+    expected_code: str,
 ) -> None:
-    """Catches permission or programmer errors becoming advisory worker output."""
+    """Catches permission or programmer errors leaking across the node boundary."""
 
     agent = _DirectFailureFastAgent(failure)
     graph = planning_graph.build_planning_graph(
@@ -273,7 +289,7 @@ def test_worker_failure_boundary_does_not_convert_non_operational_errors(
         skill_catalog=SkillCatalog(),
     )
 
-    with pytest.raises(type(failure), match=str(failure)):
+    with pytest.raises(WorkerPropagationError) as raised:
         asyncio.run(
             graph.ainvoke(
                 {
@@ -284,6 +300,56 @@ def test_worker_failure_boundary_does_not_convert_non_operational_errors(
                 context=AssistantRunContext(),
             )
         )
+    assert raised.value.code == expected_code
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert str(failure) not in str(raised.value)
+
+
+def test_worker_wrapped_graph_interrupt_preserves_native_control_flow() -> None:
+    interrupt = GraphInterrupt((Interrupt(value="worker-interrupt-sentinel"),))
+    agent = _DirectFailureFastAgent(_operational_wrapper_with_cause(interrupt))
+    graph = planning_graph.build_planning_graph(
+        object(),
+        agent,
+        skill_catalog=SkillCatalog(),
+    )
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {
+                "messages": [HumanMessage(content="failure-request-sentinel")],
+                "memory_context": (),
+                "memory_status": "empty",
+            },
+            context=AssistantRunContext(),
+        )
+    )
+
+    assert result["__interrupt__"]
+
+
+def test_worker_node_cancelled_error_propagates_unchanged() -> None:
+    failure = NodeCancelledError("worker")
+    agent = _DirectFailureFastAgent(failure)
+    graph = planning_graph.build_planning_graph(
+        object(),
+        agent,
+        skill_catalog=SkillCatalog(),
+    )
+
+    with pytest.raises(NodeCancelledError) as raised:
+        asyncio.run(
+            graph.ainvoke(
+                {
+                    "messages": [HumanMessage(content="failure-request-sentinel")],
+                    "memory_context": (),
+                    "memory_status": "empty",
+                },
+                context=AssistantRunContext(),
+            )
+        )
+    assert raised.value is failure
 
 
 def test_worker_failure_classifier_never_converts_cancellation() -> None:
