@@ -24,6 +24,39 @@ ProviderSearchProfile = Literal[
 ]
 
 
+class BudgetUsage(BaseModel):
+    """Counters consumed by one phase or one recovery transition."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    model_calls: int = Field(default=0, ge=0)
+    tool_calls: int = Field(default=0, ge=0)
+    node_attempts: int = Field(default=0, ge=0)
+    replans: int = Field(default=0, ge=0)
+
+
+FailureCategory = Literal[
+    "budget_exhausted",
+    "operational",
+    "business_failure",
+    "authorization",
+    "contract_bug",
+]
+
+
+class FailureFact(BaseModel):
+    """A stable, local classification of an execution failure."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    category: FailureCategory
+    code: str = Field(pattern=r"^[a-z][a-z0-9_]{0,119}$")
+    phase: Literal["planner", "worker", "finalizer"]
+    plan_generation: int = Field(ge=0)
+    work_item_id: str | None = Field(default=None, max_length=120)
+    attempt: int = Field(ge=1)
+
+
 class EvidenceLink(BaseModel):
     """A sanitized https citation produced by the provider, not by the model."""
 
@@ -139,12 +172,113 @@ class NativePlanProposal(BaseModel):
         return self
 
 
+class PlannerOutcome(BaseModel):
+    """Structured result of one planner attempt."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    status: Literal["succeeded", "budget_exhausted", "operational_failed"]
+    plan_candidate: NativePlanProposal | None = None
+    evidence_ids: tuple[str, ...] = Field(default=(), max_length=128)
+    failure: FailureFact | None = None
+    usage: BudgetUsage
+
+    @field_validator("evidence_ids", mode="before")
+    @classmethod
+    def _tuple_evidence_ids(cls, value):
+        return tuple(value) if isinstance(value, list) else value
+
+    @model_validator(mode="after")
+    def _validate_status_payload(self) -> "PlannerOutcome":
+        if self.status == "succeeded":
+            if self.plan_candidate is None:
+                raise ValueError("successful planner outcome requires plan_candidate")
+            if self.failure is not None:
+                raise ValueError("successful planner outcome cannot have failure")
+        else:
+            if self.plan_candidate is not None:
+                raise ValueError("failed planner outcome cannot have plan_candidate")
+            if self.failure is None:
+                raise ValueError("failed planner outcome requires failure")
+        return self
+
+
+class WorkerCompletion(BaseModel):
+    """Strict structured response produced by a planning worker."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    status: Literal["completed", "insufficient"]
+    content: str = Field(min_length=1, max_length=100_000)
+
+
+class WorkerOutcome(BaseModel):
+    """Structured result of one deterministic worker execution attempt."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    execution_id: str = Field(min_length=1, max_length=240)
+    plan_generation: int = Field(ge=0)
+    work_item_id: str = Field(
+        pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,119}$"
+    )
+    attempt: int = Field(ge=1)
+    status: Literal[
+        "succeeded",
+        "budget_exhausted",
+        "operational_failed",
+        "business_failed",
+    ]
+    result: WorkerResult | None = None
+    failure: FailureFact | None = None
+    usage: BudgetUsage
+
+    @model_validator(mode="after")
+    def _validate_status_payload(self) -> "WorkerOutcome":
+        if self.status == "succeeded":
+            if self.result is None:
+                raise ValueError("successful worker outcome requires result")
+            if self.failure is not None:
+                raise ValueError("successful worker outcome cannot have failure")
+        else:
+            if self.result is not None:
+                raise ValueError("failed worker outcome cannot have result")
+            if self.failure is None:
+                raise ValueError("failed worker outcome requires failure")
+        return self
+
+
+class RecoveryDecision(BaseModel):
+    """Deterministic action selected by the local recovery router."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    action: Literal["retry", "replan", "finalize", "propagate"]
+    reason_code: str = Field(
+        pattern=r"^[a-z][a-z0-9_]{0,119}$",
+        min_length=1,
+    )
+    source_execution_ids: tuple[str, ...] = Field(default=(), max_length=128)
+
+    @field_validator("source_execution_ids", mode="before")
+    @classmethod
+    def _tuple_execution_ids(cls, value):
+        return tuple(value) if isinstance(value, list) else value
+
+
 __all__ = [
+    "BudgetUsage",
     "EvidenceLink",
+    "FailureCategory",
+    "FailureFact",
     "NativePlanNode",
     "NativePlanProposal",
     "PlanDeliverable",
     "PlannerEvidence",
+    "PlannerOutcome",
     "ProviderSearchProfile",
+    "RecoveryDecision",
+    "WorkerCompletion",
+    "WorkerOutcome",
     "WorkerResult",
 ]

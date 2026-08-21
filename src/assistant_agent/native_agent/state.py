@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import operator
 from collections.abc import Mapping, Sequence
-from typing import Annotated, Literal, NotRequired, Required
+from typing import Annotated, Literal, NotRequired, Required, TypeVar
 
 from langchain.agents import AgentState
 from langchain_core.messages import AnyMessage
@@ -29,9 +29,11 @@ from assistant_agent.coding.models import (
 )
 
 from assistant_agent.native_agent.models import (
+    BudgetUsage,
     NativePlanProposal,
     PlannerEvidence,
     ProviderSearchProfile,
+    WorkerOutcome,
     WorkerResult,
 )
 
@@ -223,8 +225,67 @@ def _merge_planner_evidence(
     return merged
 
 
+_ValueT = TypeVar("_ValueT")
+
+
+def _merge_immutable_mapping(
+    left: Mapping[str, _ValueT] | None,
+    right: Mapping[str, _ValueT] | None,
+    *,
+    conflict_message: str,
+) -> dict[str, _ValueT]:
+    """Merge checkpoint/reducer updates without allowing last-write-wins."""
+
+    merged = dict(left or {})
+    for key, value in (right or {}).items():
+        if key in merged:
+            if merged[key] != value:
+                raise ValueError(conflict_message)
+            continue
+        merged[key] = value
+    return merged
+
+
+def merge_worker_outcomes(
+    left: Mapping[str, WorkerOutcome] | None,
+    right: Mapping[str, WorkerOutcome] | None,
+) -> dict[str, WorkerOutcome]:
+    """Deterministically merge worker outcomes and reject conflicting replay."""
+
+    return _merge_immutable_mapping(
+        left, right, conflict_message="conflicting worker outcome"
+    )
+
+
+def merge_frozen_worker_results(
+    left: Mapping[str, WorkerResult] | None,
+    right: Mapping[str, WorkerResult] | None,
+) -> dict[str, WorkerResult]:
+    """Merge the monotonic frozen-result ledger."""
+
+    return _merge_immutable_mapping(
+        left, right, conflict_message="conflicting frozen worker result"
+    )
+
+
+def add_budget_usage(
+    left: BudgetUsage | None,
+    right: BudgetUsage | None,
+) -> BudgetUsage:
+    """Add phase usage counters without mutating either input model."""
+
+    lhs, rhs = left or BudgetUsage(), right or BudgetUsage()
+    return BudgetUsage(
+        model_calls=lhs.model_calls + rhs.model_calls,
+        tool_calls=lhs.tool_calls + rhs.tool_calls,
+        node_attempts=lhs.node_attempts + rhs.node_attempts,
+        replans=lhs.replans + rhs.replans,
+    )
+
+
 __all__ = [
     "AgentPhase",
+    "add_budget_usage",
     "AssistantRootInput",
     "AssistantRootState",
     "CodingState",
@@ -233,6 +294,8 @@ __all__ = [
     "MemoryExtractionInput",
     "MemoryExtractionState",
     "MemoryStatus",
+    "merge_frozen_worker_results",
+    "merge_worker_outcomes",
     "PlanningState",
     "WorkerState",
 ]
