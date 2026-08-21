@@ -52,7 +52,7 @@ class _HitlPlanningModel(MockAssistantChatModel):
                     {
                         "name": "NativePlanProposal",
                         "args": {
-                            "schema_version": "native_plan_v1",
+                            "schema_version": "native_plan_v2",
                             "nodes": [
                                 {
                                     "node_id": "worker-1",
@@ -116,7 +116,7 @@ class _CompletedWorkerResumeModel(MockAssistantChatModel):
                     {
                         "name": "NativePlanProposal",
                         "args": {
-                            "schema_version": "native_plan_v1",
+                            "schema_version": "native_plan_v2",
                             "nodes": [
                                 {
                                     "node_id": "completed-worker",

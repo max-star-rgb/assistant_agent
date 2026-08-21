@@ -74,6 +74,13 @@ _PLAN_REVISION_INSTRUCTION = (
 )
 
 _ADMISSION_ERROR_CODES = {
+    "recovery references are forbidden for the initial plan": "initial_replacement_forbidden",
+    "plan node id was already used by an earlier generation": "reused_node_id",
+    "replacement references an unknown or non-replannable node": "unknown_replacement",
+    "replacement cannot replace a frozen result": "replace_frozen_result",
+    "a historical node can only be replaced once": "duplicate_replacement",
+    "worker references an unknown frozen dependency": "unknown_frozen_dependency",
+    "deliverable references an unknown frozen result": "unknown_frozen_deliverable_ref",
     "workflow plan exceeds the node limit": "node_limit_exceeded",
     "planner evidence ids must be unique": "duplicate_evidence_id",
     "planner evidence uses an unknown Tool": "unknown_evidence_tool",
@@ -143,11 +150,56 @@ def admit_native_plan(
     policy: PlanningAdmissionPolicy,
     evidence: Sequence[PlannerEvidence],
     active_skill_ids: Collection[str],
+    plan_generation: int = 0,
+    historical_node_ids: Collection[str] = (),
+    replannable_node_ids: Collection[str] = (),
+    frozen_result_ids: Collection[str] = (),
 ) -> NativePlanProposal:
     """Validate a proposal against trusted inventory and captured evidence."""
 
     node_ids = [node.node_id for node in proposal.nodes]
     known = set(node_ids)
+    historical_nodes = frozenset(historical_node_ids)
+    replannable_nodes = frozenset(replannable_node_ids)
+    frozen_results = frozenset(frozen_result_ids)
+
+    if historical_nodes & known:
+        raise NativePlanAdmissionError(
+            "plan node id was already used by an earlier generation"
+        )
+    if plan_generation == 0:
+        if any(
+            node.replaces_node_ids or node.frozen_dependency_ids
+            for node in proposal.nodes
+        ) or any(deliverable.frozen_result_refs for deliverable in proposal.deliverables):
+            raise NativePlanAdmissionError(
+                "recovery references are forbidden for the initial plan"
+            )
+
+    replaced_nodes: set[str] = set()
+    for node in proposal.nodes:
+        for replacement in node.replaces_node_ids:
+            if replacement in frozen_results:
+                raise NativePlanAdmissionError(
+                    "replacement cannot replace a frozen result"
+                )
+            if (
+                replacement not in historical_nodes
+                or replacement not in replannable_nodes
+            ):
+                raise NativePlanAdmissionError(
+                    "replacement references an unknown or non-replannable node"
+                )
+            if replacement in replaced_nodes:
+                raise NativePlanAdmissionError(
+                    "a historical node can only be replaced once"
+                )
+            replaced_nodes.add(replacement)
+        if not set(node.frozen_dependency_ids).issubset(frozen_results):
+            raise NativePlanAdmissionError(
+                "worker references an unknown frozen dependency"
+            )
+
     if len(node_ids) > policy.max_nodes:
         raise NativePlanAdmissionError("workflow plan exceeds the node limit")
 
@@ -203,6 +255,10 @@ def admit_native_plan(
             raise NativePlanAdmissionError("deliverable producers must be unique")
         if len(deliverable.evidence_refs) != len(set(deliverable.evidence_refs)):
             raise NativePlanAdmissionError("deliverable evidence refs must be unique")
+        if not set(deliverable.frozen_result_refs).issubset(frozen_results):
+            raise NativePlanAdmissionError(
+                "deliverable references an unknown frozen result"
+            )
         if not set(deliverable.producer_node_ids).issubset(known):
             raise NativePlanAdmissionError("deliverable references an unknown producer")
         if not set(deliverable.evidence_refs).issubset(known_evidence):

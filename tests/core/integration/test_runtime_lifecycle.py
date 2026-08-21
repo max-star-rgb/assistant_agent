@@ -48,7 +48,7 @@ class _PlanningProbeModel(MockAssistantChatModel):
                     {
                         "name": "NativePlanProposal",
                         "args": {
-                            "schema_version": "native_plan_v1",
+                            "schema_version": "native_plan_v2",
                             "nodes": [
                                 {
                                     "node_id": f"worker-{index}",
@@ -125,7 +125,7 @@ class _ZeroNodePlanningProbeModel(MockAssistantChatModel):
                 {
                     "name": "NativePlanProposal",
                     "args": {
-                        "schema_version": "native_plan_v1",
+                        "schema_version": "native_plan_v2",
                         "nodes": [],
                         "deliverables": [
                             {

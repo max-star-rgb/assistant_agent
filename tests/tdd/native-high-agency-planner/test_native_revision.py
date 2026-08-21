@@ -53,7 +53,7 @@ class _RevisionFastAgent:
             return {
                 "messages": list(input["messages"]),
                 "structured_response": NativePlanProposal(
-                    schema_version="native_plan_v1",
+                    schema_version="native_plan_v2",
                     nodes=(
                         NativePlanNode(
                             node_id=node_id,
@@ -289,7 +289,7 @@ class _CheckpointPlanningModel(MockAssistantChatModel):
                     {
                         "name": "NativePlanProposal",
                         "args": {
-                            "schema_version": "native_plan_v1",
+                            "schema_version": "native_plan_v2",
                             "nodes": [
                                 {
                                     "node_id": "write-worker",

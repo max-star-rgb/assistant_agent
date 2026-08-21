@@ -159,10 +159,11 @@ def test_zero_node_plan_routes_directly_to_shared_agent_finalizer() -> None:
         "deliverables": [
             {
                 "deliverable_id": "answer",
-                "description": "answer from planner evidence",
-                "producer_node_ids": [],
-                "evidence_refs": ["planner-call"],
-            }
+                    "description": "answer from planner evidence",
+                    "producer_node_ids": [],
+                    "evidence_refs": ["planner-call"],
+                    "frozen_result_refs": [],
+                }
         ],
         "planner_evidence": [evidence.model_dump(mode="json")],
         "worker_results": [],
@@ -339,7 +340,7 @@ class _RecordingFastAgent:
             return {
                 "messages": list(input["messages"]),
                 "structured_response": NativePlanProposal(
-                    schema_version="native_plan_v1",
+                    schema_version="native_plan_v2",
                     nodes=(),
                     deliverables=(
                         PlanDeliverable(
@@ -373,7 +374,7 @@ class _FailingRootWorkerModel(MockAssistantChatModel):
                     {
                         "name": "NativePlanProposal",
                         "args": {
-                            "schema_version": "native_plan_v1",
+                            "schema_version": "native_plan_v2",
                             "nodes": [
                                 {
                                     "node_id": "root",
@@ -421,7 +422,7 @@ class _DirectFailureFastAgent:
             return {
                 "messages": list(input["messages"]),
                 "structured_response": NativePlanProposal(
-                    schema_version="native_plan_v1",
+                    schema_version="native_plan_v2",
                     nodes=(
                         NativePlanNode(
                             node_id="root",
@@ -478,7 +479,7 @@ def _state(
         "memory_context": (),
         "memory_status": "empty",
         "plan": NativePlanProposal(
-            schema_version="native_plan_v1",
+            schema_version="native_plan_v2",
             nodes=nodes,
             deliverables=(
                 PlanDeliverable(

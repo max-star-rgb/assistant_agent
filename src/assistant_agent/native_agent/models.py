@@ -100,7 +100,7 @@ class PlannerEvidence(BaseModel):
 
 
 class PlanDeliverable(BaseModel):
-    """A required final response item produced by a node or planner evidence."""
+    """A required final response item from current, evidence, or frozen output."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -108,16 +108,25 @@ class PlanDeliverable(BaseModel):
     description: str = Field(min_length=1, max_length=2_000)
     producer_node_ids: tuple[str, ...] = Field(default=(), max_length=32)
     evidence_refs: tuple[str, ...] = Field(default=(), max_length=64)
+    frozen_result_refs: tuple[str, ...] = Field(default=(), max_length=64)
 
-    @field_validator("producer_node_ids", "evidence_refs", mode="before")
+    @field_validator(
+        "producer_node_ids", "evidence_refs", "frozen_result_refs", mode="before"
+    )
     @classmethod
     def _tuple_collections(cls, value):
         return tuple(value) if isinstance(value, list) else value
 
     @model_validator(mode="after")
     def _has_producer(self) -> "PlanDeliverable":
-        if not self.producer_node_ids and not self.evidence_refs:
-            raise ValueError("deliverable requires a node producer or evidence")
+        if not (
+            self.producer_node_ids
+            or self.evidence_refs
+            or self.frozen_result_refs
+        ):
+            raise ValueError(
+                "deliverable requires a node producer, evidence, or frozen result"
+            )
         return self
 
 
@@ -130,6 +139,8 @@ class NativePlanNode(BaseModel):
     required_skill_ids: tuple[str, ...] = Field(default=(), max_length=16)
     allowed_tool_names: tuple[str, ...] = Field(default=(), max_length=64)
     evidence_refs: tuple[str, ...] = Field(default=(), max_length=64)
+    replaces_node_ids: tuple[str, ...] = Field(default=(), max_length=64)
+    frozen_dependency_ids: tuple[str, ...] = Field(default=(), max_length=64)
     search_profile: ProviderSearchProfile = "none"
 
     @field_validator(
@@ -137,6 +148,8 @@ class NativePlanNode(BaseModel):
         "required_skill_ids",
         "allowed_tool_names",
         "evidence_refs",
+        "replaces_node_ids",
+        "frozen_dependency_ids",
         mode="before",
     )
     @classmethod
@@ -149,13 +162,17 @@ class NativePlanNode(BaseModel):
             raise ValueError("node dependency ids must be unique")
         if len(self.evidence_refs) != len(set(self.evidence_refs)):
             raise ValueError("node evidence refs must be unique")
+        if len(self.replaces_node_ids) != len(set(self.replaces_node_ids)):
+            raise ValueError("node replacement ids must be unique")
+        if len(self.frozen_dependency_ids) != len(set(self.frozen_dependency_ids)):
+            raise ValueError("node frozen dependency ids must be unique")
         return self
 
 
 class NativePlanProposal(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    schema_version: Literal["native_plan_v1"]
+    schema_version: Literal["native_plan_v2"]
     nodes: tuple[NativePlanNode, ...] = Field(max_length=128)
     deliverables: tuple[PlanDeliverable, ...] = Field(min_length=1, max_length=64)
 

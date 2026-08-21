@@ -224,7 +224,7 @@ class _BudgetFastAgent:
             return {
                 "messages": list(input["messages"]),
                 "structured_response": NativePlanProposal(
-                    schema_version="native_plan_v1",
+                    schema_version="native_plan_v2",
                     nodes=nodes,
                     deliverables=(
                         PlanDeliverable(

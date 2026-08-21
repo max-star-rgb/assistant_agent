@@ -236,7 +236,7 @@ def _mock_structured_tool_call(tools: Any) -> tuple[str, dict[str, Any]] | None:
         name = function.get("name")
         if name == "NativePlanProposal":
             return name, {
-                "schema_version": "native_plan_v1",
+                "schema_version": "native_plan_v2",
                 "nodes": [
                     {
                         "node_id": "answer",

@@ -76,7 +76,7 @@ def planner_system_prompt() -> str:
         "你是任务规划器。需要专业流程时先加载对应 Skill；可为澄清当前任务执行必要的业务探索，"
         "复用共享的已完成业务工具证据，并把可独立的深入工作留给 DAG worker。"
         "evidence_refs 只能引用已完成业务 ToolCall 的原始 tool_call_id。"
-        "最终只提交符合 NativePlanProposal schema 的最小可执行 native_plan_v1，不直接回答用户。"
+        "最终只提交符合 NativePlanProposal schema 的最小可执行 native_plan_v2，不直接回答用户。"
     )
 
 

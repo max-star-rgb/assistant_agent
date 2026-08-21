@@ -454,7 +454,7 @@ def _proposal_call(*, evidence_id: str, producer_node_id: str) -> AIMessage:
         "NativePlanProposal",
         "proposal-call-1",
         args={
-            "schema_version": "native_plan_v1",
+            "schema_version": "native_plan_v2",
             "nodes": [
                 {
                     "node_id": producer_node_id,
