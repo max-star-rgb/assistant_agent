@@ -1,6 +1,6 @@
 # LangChain-native Tool 与扩展架构
 
-最后更新：2026-08-20
+最后更新：2026-08-21
 
 ## Authority contract
 
@@ -77,6 +77,18 @@ WebSocket 已成功完成 `callType=VIDEO` 的 control 握手；`visual_memory_s
 该边界内成为有界、可解释的 `ToolException`。fast 模式不触发 HITL；planning 模式的非 read Tool 由
 `HumanInTheLoopMiddleware` 在执行前产生原生 interrupt。schema、身份与授权仍由具体 Tool/业务 adapter 校验；
 外部副作用幂等属于具体 Tool 或业务 API，主链不再维护通用 operation ledger。
+
+`PhaseBudgetMiddleware` 位于同一个 fast agent 的 model→ToolNode loop 中，按当前 phase 对 model call 与已注册
+业务 Tool call 计数。Tool 预算超限时，它不调用实际 Tool，而是为每个被阻止的 tool call 生成标准
+`ToolMessage(status="error")` 并有界结束该 phase；未超限调用仍原样进入同一个标准 `ToolNode`，继续使用官方
+`ToolRuntime` 注入、`ToolRetryMiddleware` 与 state-aware `HumanInTheLoopMiddleware`。因此预算层不是第二个
+executor，也不接管 Tool schema、身份、授权、retry、HITL 或副作用幂等。live-view 的
+`ToolCallLimitMiddleware(tool_name="live_view_inspect")` 只保护该昂贵实时观察 Tool，不是全 inventory limiter。
+
+production composition 从一个受信 base 值构造唯一 `PlanningBudgetPolicy`，phase middleware 与 planning graph
+共享该实例。planning graph 的 global model/tool/node-attempt/replan cap 通过 typed usage、wave reservation 与
+reconciliation 防止并行 worker 超卖；global/phase budget failure 只产生稳定 failure code、typed outcome 与
+controlled standard-message terminal。模型、客户端和 Tool 参数都不能提交或扩大 policy。
 
 fast agent 的最内层 `ToolProgressMiddleware` 使用官方 `ToolRuntime.stream_writer` 向原生 custom stream 发出
 每次逻辑 Tool 调用的 `started` 和 `completed|failed` 生命周期。事件只携带 `type=tool_progress`、标准

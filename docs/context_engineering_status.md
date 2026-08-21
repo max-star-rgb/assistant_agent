@@ -1,13 +1,13 @@
 # LangChain-native Context Engineering
 
-最后更新：2026-08-20
+最后更新：2026-08-21
 
 ## Authority contract
 
 | 字段 | 内容 |
 | --- | --- |
 | 定位 | 生产 Agent 标准 messages、dynamic prompt、预算与 summarization 的当前权威 |
-| Owns | dynamic system prompt、Memory 数据边界、标准 message history、官方 limit/summarization middleware |
+| Owns | dynamic system prompt、Memory 数据边界、标准 message history、phase-aware limit 与官方 summarization middleware |
 | Does not own | Tool schema、Memory backend、Provider wire、媒体 frame、旧 ContextService |
 | 源码与 schema 入口 | `src/assistant_agent/native_agent/fast_agent.py`、`src/assistant_agent/native_agent/state.py` |
 | 验证入口 | `docs/authority.toml` 中 `context-engineering.verification`；核心不变量 `CTX-001` |
@@ -42,8 +42,11 @@ Memory 每一行以引用文本呈现，并明确为可能过时或错误的背�
 模型可见临时消息使用“用户默认地点”中文字段，并明确该地点不是已观测用户物理位置。用户在当前请求中明确指定的任务地点可以
 覆盖本次任务参数，但不能改写可信事实的来源。最后一条用户消息始终是本轮真实请求。
 
-模型调用上限、Tool 调用上限、只读 Tool retry、长对话 summarization 与 planning 模式非 read Tool HITL
-全部使用官方 middleware；fast 模式自动放行，planning 的 planner 与 worker 阶段均在非 read Tool 执行前
+模型与业务 Tool 调用由 `PhaseBudgetMiddleware` 按 `fast|planner|worker|finalizer` 分 phase 计数；production
+composition 把同一 `PlanningBudgetPolicy` 同时交给该 middleware 和 planning graph，后者再结算有界的全图
+model/tool/node attempt/replan budget。phase middleware 只在调用前形成标准预算终态，不把 policy、余额或计数
+加入公开 Graph input。只读 Tool retry、长对话 summarization 与 planning 模式非 read Tool HITL 继续使用官方
+middleware；live-view 的单次调用限制仍是独立的 Tool 专项 limiter，不是全 Tool global limiter。fast 模式自动放行，planning 的 planner 与 worker 阶段均在非 read Tool 执行前
 interrupt，并从原生 checkpoint approve/resume，不重放已完成的 Planner Tool 或 worker。summarization 默认采用输入窗口 75% 触发、保留 15% 的
 token 阈值，两者可由现有环境变量覆盖。DeepSeek V4 Flash 使用其官方 tokenizer 与
 `encoding_dsv4.py` 对标准 messages 做调用前计数；结构化 user content 只在文本 encoder 的计数副本中
@@ -60,9 +63,13 @@ planning 的 planner、worker 与 finalizer 都通过 `agent_phase` 复用同一
 worker 输出扩展 Skill scope。
 
 planning worker 只获得自己的 objective、父图 Memory 与 TrustedRuntimeFacts 快照、调度器按 `depends_on` 派生的直接上游
-`dependency_results`、节点引用的 planner evidence 和同一个 fast agent；objective 必须自包含并保留相关用户约束。
+`dependency_results`、节点引用的 planner evidence、当次 phase allowance 和同一个 fast agent；objective 必须自包含并保留相关用户约束。
 依赖结果与 evidence 都是只读数据，不能覆盖当前任务、身份、权限或 Tool 约束。worker transcript 不并入父图
-对话；父图只接收结构化 `WorkerResult`。finalizer 仍复用同一 agent，但 phase projection 清空全部 Tool 和
+对话；worker 只返回严格 `WorkerCompletion`，Graph 边界将其与稳定 failure fact、attempt/generation 和实际
+budget usage 收敛为 typed `WorkerOutcome`。成功结果单调冻结；下一 generation 只获得 frozen result ID、失败码、
+可重规划 work item ID、未完成 deliverable ID 与既有 evidence ID 组成的 recovery context。该 context 是
+JSON-safe、只读、长度有界的临时 `HumanMessage`，转义 `<>&`，不含旧 transcript、Tool schema、异常正文或
+Provider 原始响应，也不写回父图对话 messages。finalizer 仍复用同一 agent，但 phase projection 清空全部 Tool 和
 structured response，再根据原始请求、deliverables、planner evidence 与按 plan 排序的 worker results 综合标准
 `AIMessage`，显式处理冲突、缺失和失败，不把中间结果机械拼接成最终答案。三个 phase 都获得父图冻结的同一份
 TrustedRuntimeFacts；子图不会自行读取系统时钟或地点。

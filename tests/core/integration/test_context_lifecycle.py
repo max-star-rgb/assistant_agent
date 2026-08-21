@@ -3,6 +3,12 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from langchain.agents.middleware import (
+    HumanInTheLoopMiddleware,
+    SummarizationMiddleware,
+    ToolCallLimitMiddleware,
+    ToolRetryMiddleware,
+)
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.checkpoint.memory import InMemorySaver
@@ -26,11 +32,15 @@ from assistant_agent.native_agent.models import (
     WorkerOutcome,
     WorkerResult,
 )
-from assistant_agent.native_agent.planning_budget import WaveReservation
+from assistant_agent.native_agent.planning_budget import (
+    PhaseBudgetMiddleware,
+    WaveReservation,
+)
 from assistant_agent.native_agent.planning_graph import build_planning_graph
 from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.native_agent.state import PlanningState
 from assistant_agent.skills.loading import SkillCatalog
+from assistant_agent.tools.ids import LIVE_VIEW_INSPECT_TOOL_NAME
 
 
 class _HitlPlanningModel(MockAssistantChatModel):
@@ -259,23 +269,59 @@ def test_frozen_memory_is_a_transient_human_context_before_current_request() -> 
 
 
 @pytest.mark.core_invariant("CTX-001")
-def test_create_agent_owns_limits_summary_and_hitl_middleware() -> None:
+def test_create_agent_owns_phase_budget_summary_retry_and_hitl_middleware(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from assistant_agent.native_agent import fast_agent as fast_agent_module
+
     def write_probe(value: str) -> str:
         """probe"""
 
         return value
 
-    tool = StructuredTool.from_function(
+    write_tool = StructuredTool.from_function(
         write_probe,
         name="write_probe",
         metadata={"effect": "write"},
     )
-    graph = build_fast_agent(MockAssistantChatModel(), [tool])
+    read_tool = StructuredTool.from_function(
+        write_probe,
+        name="read_probe",
+        metadata={"effect": "read"},
+    )
+    live_view_tool = StructuredTool.from_function(
+        write_probe,
+        name=LIVE_VIEW_INSPECT_TOOL_NAME,
+        metadata={"effect": "read"},
+    )
+    captured_middleware: list[object] = []
+    real_create_agent = fast_agent_module.create_agent
+
+    def recording_create_agent(*args: Any, **kwargs: Any):
+        captured_middleware.extend(kwargs["middleware"])
+        return real_create_agent(*args, **kwargs)
+
+    monkeypatch.setattr(fast_agent_module, "create_agent", recording_create_agent)
+    graph = build_fast_agent(
+        MockAssistantChatModel(),
+        [write_tool, read_tool, live_view_tool],
+    )
     nodes = set(graph.get_graph().nodes)
+    tool_limiters = [
+        item
+        for item in captured_middleware
+        if isinstance(item, ToolCallLimitMiddleware)
+    ]
 
     assert any("PhaseBudgetMiddleware" in node for node in nodes)
+    assert any(isinstance(item, PhaseBudgetMiddleware) for item in captured_middleware)
+    assert all(item.tool_name is not None for item in tool_limiters)
+    assert [item.tool_name for item in tool_limiters] == [LIVE_VIEW_INSPECT_TOOL_NAME]
     assert any("SummarizationMiddleware" in node for node in nodes)
+    assert any(isinstance(item, SummarizationMiddleware) for item in captured_middleware)
     assert any("HumanInTheLoopMiddleware" in node for node in nodes)
+    assert any(isinstance(item, HumanInTheLoopMiddleware) for item in captured_middleware)
+    assert any(isinstance(item, ToolRetryMiddleware) for item in captured_middleware)
 
 
 @pytest.mark.core_invariant("CTX-001")
