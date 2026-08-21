@@ -329,13 +329,15 @@ replace 的受管 progress metadata 跨轮保存，避免关闭 cursor 后从大
 cursor 的全部 descendant iterator。progress metadata 只能由 management-root dirfd 通过
 `O_RDONLY|O_NONBLOCK|O_NOFOLLOW` 打开，且必须是当前 uid 所有、大小不超过固定上限的 ordinary file；读取循环
 受 absolute deadline 与 byte limit 约束。FIFO、symlink、directory、oversize、I/O error 或 schema 错误一律安全
-回到 cookie `0`，不得阻塞或传播卡死；写入继续使用 no-follow temporary file、`fsync` 与同 parent dirfd atomic
-replace。periodic cleanup 与 `aclose` 通过 process-owned mutex 串行。
+回到 cookie `0`，不得阻塞或传播卡死；JSON 只接受字段精确、`schema_version` 为整数 `1` 的 object，`null`、
+list、scalar、missing/wrong schema、bool-as-int 或字段越界均无效。写入继续使用 no-follow temporary file、`fsync`
+与同 parent dirfd atomic replace。periodic cleanup 与 `aclose` 通过 process-owned mutex 串行。
 
 snapshot tombstone DFS 一旦发现 root/nested inode replacement，必须立即关闭并释放全局 deletion slot，不删除
 可疑对象。owner 以常数上限 LRU cooldown 和 tombstone 同目录、ordinary/no-follow/atomic 写入的 poison marker
-避免每轮重新抢占同一可疑目录；其他 snapshot 仍须获得 eventual cleanup。workspace root 消失时同步清空进程内
-deny/cooldown state。
+避免每轮重新抢占同一可疑目录；marker reader 同样只接受字段精确、`schema_version` 为整数 `1` 且字段类型/范围
+有效的 JSON object，所有其他形状或 contract 异常均视为 marker 不存在且不得传播。其他 snapshot 仍须获得
+eventual cleanup。workspace root 消失时同步清空进程内 deny/cooldown state。
 
 本 Stage 不改变 Git worktree retirement 协议。周期 owner 和 `aclose` 不得调用 `cleanup_expired()`、
 `git worktree remove` 或任何 Git common-dir/admin registry 清理，也不得 tombstone 或递归删除 management root；

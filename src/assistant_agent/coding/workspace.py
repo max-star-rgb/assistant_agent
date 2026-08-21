@@ -2139,13 +2139,20 @@ class CodingWorkspaceService:
                 os.close(parent_descriptor)
         try:
             decoded = json.loads(payload.decode("utf-8"))
-            phase = decoded.get("phase", "snapshot")
+            if not isinstance(decoded, dict):
+                return 0
+            if set(decoded) != {"schema_version", "phase", "cookie"}:
+                return 0
+            schema_version = decoded["schema_version"]
+            phase = decoded["phase"]
             cookie = decoded["cookie"]
-        except (KeyError, TypeError, ValueError, UnicodeDecodeError):
+        except (AttributeError, KeyError, TypeError, ValueError, UnicodeDecodeError):
             return 0
-        if phase != "snapshot":
+        if type(schema_version) is not int or schema_version != 1:
             return 0
-        if not isinstance(cookie, int) or isinstance(cookie, bool):
+        if not isinstance(phase, str) or phase != "snapshot":
+            return 0
+        if type(cookie) is not int:
             return 0
         if not 0 <= cookie <= (2**63 - 1):
             return 0
@@ -2336,13 +2343,37 @@ class CodingWorkspaceService:
             if len(payload) > _ANALYSIS_REAPER_METADATA_MAX_BYTES:
                 return False
             decoded = json.loads(payload.decode("utf-8"))
+            if not isinstance(decoded, dict):
+                return False
+            if set(decoded) != {
+                "schema_version",
+                "tombstone_name",
+                "device",
+                "inode",
+            }:
+                return False
+            schema_version = decoded["schema_version"]
+            tombstone_name = decoded["tombstone_name"]
+            device = decoded["device"]
+            inode = decoded["inode"]
             return (
-                decoded.get("schema_version") == 1
-                and decoded.get("tombstone_name") == path.name
-                and isinstance(decoded.get("device"), int)
-                and isinstance(decoded.get("inode"), int)
+                type(schema_version) is int
+                and schema_version == 1
+                and isinstance(tombstone_name, str)
+                and tombstone_name == path.name
+                and type(device) is int
+                and 0 <= device <= (2**64 - 1)
+                and type(inode) is int
+                and 0 <= inode <= (2**64 - 1)
             )
-        except (OSError, TypeError, ValueError, UnicodeDecodeError):
+        except (
+            AttributeError,
+            KeyError,
+            OSError,
+            TypeError,
+            ValueError,
+            UnicodeDecodeError,
+        ):
             return False
         finally:
             if descriptor >= 0:
