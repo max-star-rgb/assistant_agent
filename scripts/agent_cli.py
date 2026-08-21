@@ -11,7 +11,10 @@ from langgraph_sdk import get_sync_client
 
 from assistant_agent.agent_server.client import (
     IncompatibleCheckpointGraphError,
+    IncompatibleThreadGraphError,
+    bind_thread_graph_identity,
     require_current_checkpoint_graph,
+    require_thread_graph_identity,
 )
 from assistant_agent.agent_server.config import ASSISTANT_GRAPH_ID
 
@@ -45,12 +48,25 @@ def _ensure_thread(client: Any, thread_id: str | None) -> str:
     thread = client.threads.create(
         thread_id=thread_id,
         if_exists="do_nothing",
-        metadata={"client": "agent_cli"},
+        metadata=bind_thread_graph_identity(
+            {"client": "agent_cli"},
+            expected_graph_id=ASSISTANT_ID,
+        ),
+        graph_id=ASSISTANT_ID,
     )
+    require_thread_graph_identity(thread, expected_graph_id=ASSISTANT_ID)
     return str(thread["thread_id"])
 
 
 def _run_once(client: Any, *, text: str, thread_id: str, mode: str) -> int:
+    try:
+        require_thread_graph_identity(
+            client.threads.get(thread_id),
+            expected_graph_id=ASSISTANT_ID,
+        )
+    except IncompatibleThreadGraphError as exc:
+        print(f"Run rejected: {exc}")
+        return 1
     result = client.runs.wait(
         thread_id,
         ASSISTANT_ID,
@@ -177,7 +193,11 @@ def main() -> int:
     args = build_parser().parse_args()
     headers = {"x-assistant-user": args.identity}
     client = get_sync_client(url=args.server, headers=headers, timeout=args.timeout)
-    thread_id = _ensure_thread(client, args.thread_id)
+    try:
+        thread_id = _ensure_thread(client, args.thread_id)
+    except IncompatibleThreadGraphError as exc:
+        print(f"Run rejected: {exc}")
+        return 1
     if not args.interactive:
         text = " ".join(args.text).strip()
         if not text:

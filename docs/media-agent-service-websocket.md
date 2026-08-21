@@ -229,7 +229,10 @@ run/checkpoint，也不宣称跨进程、离线或 exactly-once 投递；没有 
 
 ## 7. 重连与当前限制
 
-相同 `user + vendor sessionId` 通过确定性 UUID 映射到同一个 native thread；重连不会创建第二份对话轴。
+相同 `assistant graph ID + user + vendor sessionId` 通过确定性 UUID 映射到同一个 native thread；同一
+`assistant-native-v2` connection 重连不会创建第二份对话轴，且 v2 UUID 不会碰撞旧版未包含 graph ID 的 v1
+UUID。创建请求以 `if_exists="do_nothing"` 返回 existing thread 时，中央 SDK 边界仍会验证稳定 metadata
+`assistant_graph_id=assistant-native-v2`；v1 或缺失字段的 thread 在 session bind 和 run 创建前拒绝。
 custom route 创建 run 时使用 `stream_resumable=true` 与 `on_disconnect=continue`，内部订阅临时断开后从最后
 event ID 调用 `threads.join_stream`，而不是重建项目自有 session/runtime。同一连接的重复 `chatIndex` 在创建
 第二个 run 前拒绝，后续不同 chat 使用 Agent Server `enqueue`。

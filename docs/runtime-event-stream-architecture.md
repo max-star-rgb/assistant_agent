@@ -173,8 +173,11 @@ planning 的 planner、worker 与 finalizer 都读取父图传入的同一份可
 项目自建 result/artifact runtime。Provider/Tool client、Memory backend、投递 Store、身份对象和 callback
 不写入 checkpoint。旧
 `AssistantTurnState` checkpoint 不迁移进新图；旧 assistant/thread 仅作只读历史或外围兼容，新图使用版本化
-assistant ID `assistant-native-v2`。`assistant-native-v1` checkpoint 同样只读，不能在 v2 resume/replay；该 graph
-ID 升级没有自动 migration。
+assistant ID `assistant-native-v2`。项目创建的可运行 thread 以 metadata `assistant_graph_id` 绑定具体 graph；
+普通 v2 run/resume/stream 在创建 run 前精确验证该值。`assistant-native-v1` 或缺失 identity 的 unknown thread
+及其 checkpoint 同样只读，不能进入 v2 run/resume/replay；该 graph ID 升级没有自动 migration。历史 state、
+thread 和 stream inspection 不因此被禁止，部署阶段仍可 drain/cancel legacy run；校验函数接收调用方期望的
+graph ID，不阻止 Memory 等独立 Graph 使用自己的 thread 与版本身份。
 
 完整 Tool inventory 仍静态注册给 fast `create_agent` 的 `ToolNode`；每次 model call 的可见子集由原生 middleware
 从上述 Skill 激活状态与受信 manifest 派生。该过滤不创建第二套 Tool runtime，也不改变 ToolNode 对已注册 Tool

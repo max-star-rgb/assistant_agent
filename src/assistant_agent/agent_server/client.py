@@ -11,8 +11,54 @@ from langgraph_sdk import get_client
 from assistant_agent.agent_server.config import ASSISTANT_GRAPH_ID
 
 
+THREAD_GRAPH_METADATA_KEY = "assistant_graph_id"
+
+
 class IncompatibleCheckpointGraphError(ValueError):
     """A checkpoint belongs to a graph definition that cannot be resumed here."""
+
+
+class IncompatibleThreadGraphError(ValueError):
+    """A runnable thread is bound to a different graph definition."""
+
+
+def require_thread_graph_identity(
+    thread: Mapping[str, Any],
+    *,
+    expected_graph_id: str,
+) -> str:
+    """Fail closed unless thread metadata binds the expected runnable graph."""
+
+    metadata = thread.get("metadata")
+    graph_id = (
+        metadata.get(THREAD_GRAPH_METADATA_KEY)
+        if isinstance(metadata, Mapping)
+        else None
+    )
+    if graph_id != expected_graph_id:
+        actual = graph_id if isinstance(graph_id, str) and graph_id else "unknown"
+        raise IncompatibleThreadGraphError(
+            f"thread graph {actual!r} cannot run under {expected_graph_id!r}"
+        )
+    return expected_graph_id
+
+
+def bind_thread_graph_identity(
+    metadata: Mapping[str, object],
+    *,
+    expected_graph_id: str,
+) -> dict[str, object]:
+    """Return create metadata with one immutable runnable graph binding."""
+
+    bound = dict(metadata)
+    configured = bound.get(THREAD_GRAPH_METADATA_KEY)
+    if configured is not None and configured != expected_graph_id:
+        actual = configured if isinstance(configured, str) and configured else "unknown"
+        raise IncompatibleThreadGraphError(
+            f"thread graph {actual!r} cannot run under {expected_graph_id!r}"
+        )
+    bound[THREAD_GRAPH_METADATA_KEY] = expected_graph_id
+    return bound
 
 
 def require_current_checkpoint_graph(
@@ -39,7 +85,11 @@ def require_current_checkpoint_graph(
 
 class AgentServerClient(Protocol):
     async def create_thread(
-        self, *, metadata: Mapping[str, object], thread_id: str | None = None
+        self,
+        *,
+        metadata: Mapping[str, object],
+        thread_id: str | None = None,
+        graph_id: str,
     ) -> str: ...
 
     def stream_run(
@@ -72,13 +122,23 @@ class SdkAgentServerClient:
         self._client = get_client(url=url, headers=headers)
 
     async def create_thread(
-        self, *, metadata: Mapping[str, object], thread_id: str | None = None
+        self,
+        *,
+        metadata: Mapping[str, object],
+        thread_id: str | None = None,
+        graph_id: str,
     ) -> str:
+        bound_metadata = bind_thread_graph_identity(
+            metadata,
+            expected_graph_id=graph_id,
+        )
         thread = await self._client.threads.create(
-            metadata=dict(metadata),
+            metadata=bound_metadata,
             thread_id=thread_id,
             if_exists="do_nothing" if thread_id is not None else None,
+            graph_id=graph_id,
         )
+        require_thread_graph_identity(thread, expected_graph_id=graph_id)
         return str(thread["thread_id"])
 
     async def stream_run(self, **kwargs):
@@ -87,6 +147,9 @@ class SdkAgentServerClient:
         callback = kwargs.pop("on_run_created")
         run_id: str | None = None
         last_event_id: str | None = None
+
+        thread = await self._client.threads.get(thread_id)
+        require_thread_graph_identity(thread, expected_graph_id=assistant_id)
 
         def created(metadata: Mapping[str, Any]) -> None:
             nonlocal run_id
@@ -140,7 +203,11 @@ class SdkAgentServerClient:
 
 __all__ = [
     "AgentServerClient",
+    "bind_thread_graph_identity",
     "IncompatibleCheckpointGraphError",
+    "IncompatibleThreadGraphError",
+    "THREAD_GRAPH_METADATA_KEY",
+    "require_thread_graph_identity",
     "require_current_checkpoint_graph",
     "SdkAgentServerClient",
 ]

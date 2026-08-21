@@ -470,6 +470,7 @@ async def _handle_frame(
                 protocol_session_id=frame.session_id,
                 user_id=user_id,
             ),
+            graph_id=ASSISTANT_GRAPH_ID,
         )
         session.bind_control(
             protocol_session_id=frame.session_id,
@@ -552,6 +553,7 @@ async def _handle_frame(
                     protocol_session_id=frame.session_id,
                     user_id=chat.user_id,
                 ),
+                graph_id=ASSISTANT_GRAPH_ID,
             )
             session.bind_control(
                 protocol_session_id=frame.session_id,
@@ -1132,13 +1134,26 @@ def _control_user_id(message: str, body: dict[str, Any]) -> str:
     return _required_text(body, "number")
 
 
-def _native_thread_id(*, protocol_session_id: str | None, user_id: str) -> str | None:
+def _native_thread_id(
+    *,
+    protocol_session_id: str | None,
+    user_id: str,
+    graph_id: str = ASSISTANT_GRAPH_ID,
+) -> str | None:
     if protocol_session_id is None:
         return None
     return str(
         uuid5(
             NAMESPACE_URL,
-            f"assistant-agent:agent-service-v1:{user_id}:{protocol_session_id}",
+            ":".join(
+                (
+                    "assistant-agent",
+                    graph_id,
+                    "agent-service-v1",
+                    user_id,
+                    protocol_session_id,
+                )
+            ),
         )
     )
 
