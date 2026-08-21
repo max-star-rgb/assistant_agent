@@ -94,15 +94,17 @@ planning state，并由原生 conditional edge 回到同一个 planner；最多�
 reducer，只有候选计划被覆盖。成功 admission 清除错误并进入 scheduler。`Send` 按依赖分 wave 并行派发 worker。调度器根据 `depends_on` 自动把直接上游
 `WorkerResult` 组装为运行时 `dependency_results`，worker 将其作为明确的只读数据输入交给同一个 fast graph；
 该字段不是 planner 输出 schema。其 generation-aware 原生拓扑是
-`planner -> assess_planner -> admit_plan|prepare_replan|controlled_finalize`，以及
+`planner -> assess_planner -> admit_plan|planner|prepare_replan|controlled_finalize`，其中
+`assess_planner -> planner` 承担同一 generation 内有界的 operational retry；worker 路径为
 `scheduler -> reserve_wave_budget -> Send(worker) -> join -> reconcile_wave_budget -> assess_workers`。
 planner 和 worker 都把预期结果收敛为严格 `PlannerOutcome` / `WorkerOutcome`；明确可重试的超时、连接或临时
 HTTP 执行失败先在同一 generation 内有界 retry，业务不足、phase budget 耗尽或 operational retry 耗尽后经
 `assess_workers -> prepare_replan -> planner` 进入下一 generation。`prepare_replan` 先冻结已成功
 `WorkerResult`，新计划只能替换失败工作并显式引用 frozen result；scheduler 从 checkpointed generation、plan、
 outcome 与 frozen result 重算 ready wave，已成功 worker 不重放。`GraphBubbleUp` / interrupt / cancel、准入、
-鉴权与程序契约错误不进入该预期失败边界，仍保持 LangGraph 原生传播。零节点 plan 不派发 worker，scheduler
-直接进入 finalizer。worker 只能继承节点 required Skill 与
+鉴权与程序契约错误不进入该预期失败边界，仍保持 LangGraph 原生传播。零节点 plan 不派发 worker，沿
+`scheduler -> reserve_wave_budget -> finalize` 完成；`reserve_wave_budget` 的条件路线还会依据 ready wave 与预算
+进入 worker 或 `controlled_finalize`。worker 只能继承节点 required Skill 与
 Planner 实际快照的交集；admission 禁止节点把
 `load_skill` 放入 worker Tool allowlist，worker phase 也确定性过滤该 Tool。显式允许 `load_skill_reference` 时，Tool
 只能读取 scheduler 投影的既有 `skill_reference_grants`，不能扩大 Skill 或 reference grant。全部节点完成后，
@@ -174,18 +176,22 @@ assistant ID `assistant-native-v1`。
 ## 原生流与生命周期
 
 生产消费者直接使用 Agent Server 的 messages/updates/custom/values、thread/run、cancel、checkpoint、interrupt 与
-resume 协议。原生 SDK/Studio 可显式选择所需 stream mode；媒体入口只订阅 messages/values，不消费
+resume 协议。媒体入口只订阅 messages/values，不消费
 updates/custom。模型 token、Tool 消息和节点 state update 由 LangChain/LangGraph 原生 callback/stream 产生；项目不再投影
 `GraphStreamPart`、`AgentEvent` 或产品 run 状态作为主链事实源。
 父图中的 fast/planning 单元是子图，因此需要模型 token 的消费者必须显式启用原生 subgraph stream；媒体入口
 仍只把标准 assistant 文本和受控兼容投影发送到 wire，不转发 planner、Tool 参数或 ToolMessage 正文。
 Tool 执行通过官方 runtime stream writer 向 custom mode 发送 `tool_progress` 生命周期事件；只包含
 `tool_name`、`tool_call_id` 与 `started|completed|failed`，不包含 Tool 参数或结果正文。由于 fast/planning
-执行单元是父图子图，Agent Server SDK 消费者需要同时启用 subgraph stream 才能接收其中的 messages/custom。
+执行单元是父图子图，需要完整协议的 Agent Server SDK/API 消费者分别请求
+`stream_mode=["messages", "updates", "custom"]` 并设置 `stream_subgraphs=True`；进程内调用
+`graph.astream(...)` 时使用相同的 `stream_mode`，并设置 `subgraphs=True`。`stream_mode` 选择事件类型，subgraph
+开关决定嵌套 namespace 是否可见，两者互不替代。
 planning recovery 节点同样只通过原生 custom mode 发出 `recovery_transition`，字段固定为 `from`、`to`、
 `reason_code` 与 `plan_generation`；节点 state 变化仍由 updates/values 提供，终态仍由 messages 提供。
-Graph Studio 或 SDK 要查看子图中的恢复事件和模型消息必须启用 subgraph stream；媒体 custom route 不订阅或
-重解释该事件，也不建立 shadow event bus。
+Graph Studio 用于查看 graph/subgraph 执行、trace 与调试信息；其具体 UI 能力随 Studio 版本演进，不作为任意
+custom payload 的通用渲染承诺。需要完整核验恢复事件和嵌套 namespace 时，应使用上述 SDK/API 订阅。媒体
+custom route 不订阅或重解释该事件，也不建立 shadow event bus。
 
 `HumanInTheLoopMiddleware` 使用 state-aware `when` predicate：fast 模式自动放行，planning 的 planner 与 worker
 阶段都对非 read Tool 在执行前触发原生 interrupt；恢复使用 Agent Server/LangGraph `Command(resume=...)`，

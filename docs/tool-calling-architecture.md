@@ -94,7 +94,8 @@ fast agent 的最内层 `ToolProgressMiddleware` 使用官方 `ToolRuntime.strea
 每次逻辑 Tool 调用的 `started` 和 `completed|failed` 生命周期。事件只携带 `type=tool_progress`、标准
 Tool name 与 tool call ID，不携带模型提交的参数、ToolMessage content、artifact 或异常正文。middleware 位于
 retry 与 HITL 内层：审批完成后才发出 started，同一次有界 retry 只对外形成一组逻辑生命周期。媒体入口不订阅
-custom；Agent Server SDK/Studio 消费者需要显式选择 custom stream mode。
+custom；需要该生命周期的 Agent Server SDK/API 消费者需要显式选择 custom stream mode。Studio 的 graph/trace
+调试可见性不构成任意 custom payload 的通用渲染承诺，完整协议核验以 SDK/API 订阅为准。
 
 Tool 的 Provider adapter 先把外部响应规范化为业务 Pydantic result；Provider 原始响应不进入模型上下文或
 `artifact`，需要审计时只保留受治理的引用。具体 Tool 再从完整业务 result 派生有界的模型投影：例如购物

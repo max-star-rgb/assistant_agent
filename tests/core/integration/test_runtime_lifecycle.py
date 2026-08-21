@@ -199,6 +199,11 @@ class _PlanningRecoveryProbeAgent:
             }
         if phase == "worker":
             objective = str(input["messages"][0].content).split("\n", 1)[0]
+            if (
+                objective == "successful-worker-sentinel"
+                and self.worker_calls[objective]
+            ):
+                raise AssertionError("frozen successful worker was replayed")
             self.worker_calls[objective] += 1
             if objective == "operational-failure-sentinel":
                 raise TimeoutError("operational-probe")
@@ -390,6 +395,7 @@ def test_production_composition_reuses_one_planning_budget_policy(monkeypatch) -
     None
 ):
     monkeypatch.setenv("MULTIMODAL_AGENT_PROVIDER_MODE", "mock")
+    monkeypatch.setenv("MAX_TOOL_ITERATIONS", "3")
     fast_policies: list[PlanningBudgetPolicy | None] = []
     planning_policies: list[PlanningBudgetPolicy | None] = []
     real_build_fast_agent = services.build_fast_agent
@@ -414,6 +420,7 @@ def test_production_composition_reuses_one_planning_budget_policy(monkeypatch) -
     try:
         assert len(fast_policies) == len(planning_policies) == 1
         assert isinstance(fast_policies[0], PlanningBudgetPolicy)
+        assert fast_policies[0].base == 3
         assert fast_policies[0] is planning_policies[0]
     finally:
         asyncio.run(owner.aclose())
@@ -515,7 +522,13 @@ def test_planning_operational_failure_replans_without_replaying_success() -> Non
         tuple(node_path[index : index + len(recovery_path)]) == recovery_path
         for index in range(len(node_path) - len(recovery_path) + 1)
     )
-    assert agent.worker_calls["successful-worker-sentinel"] == 1
+    frozen_results = final_state["frozen_worker_results"]
+    assert frozen_results["successful-worker"].content == (
+        "successful-worker-sentinel-result"
+    )
+    assert frozen_results["replacement-worker"].content == (
+        "replacement-worker-sentinel-result"
+    )
     assert isinstance(final_state["messages"][-1], AIMessage)
 
 

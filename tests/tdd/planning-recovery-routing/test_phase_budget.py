@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import replace
 from typing import Any
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
@@ -24,6 +25,19 @@ from assistant_agent.native_agent.planning_budget import (
 from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.native_agent.state import add_budget_usage
 from assistant_agent.skills.loading import SkillCatalog
+
+
+@pytest.mark.parametrize("legacy_name", ("model_call_limit", "tool_call_limit"))
+def test_fast_agent_rejects_removed_legacy_limit_keywords(
+    legacy_name: str,
+) -> None:
+    with pytest.raises(TypeError):
+        build_fast_agent(
+            MockAssistantChatModel(),
+            [],
+            skill_catalog=SkillCatalog(),
+            **{legacy_name: 1},
+        )
 
 
 def test_budget_policy_derives_approved_limits() -> None:

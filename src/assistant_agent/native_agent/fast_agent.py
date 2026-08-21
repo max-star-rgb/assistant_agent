@@ -67,8 +67,6 @@ def build_fast_agent(
     model: BaseChatModel,
     tools: Sequence[BaseTool],
     *,
-    model_call_limit: int = 12,
-    tool_call_limit: int = 16,
     budget_policy: PlanningBudgetPolicy | None = None,
     context_window_tokens: int = 128_000,
     compaction_trigger_ratio: float = 0.75,
@@ -82,8 +80,6 @@ def build_fast_agent(
 ):
     """Build the shared create_agent unit without binding saver or Store."""
 
-    if model_call_limit <= 0 or tool_call_limit <= 0:
-        raise ValueError("model and tool call limits must be positive")
     if context_window_tokens < 100:
         raise ValueError("context window must contain at least 100 tokens")
     if not 0 < compaction_target_ratio < compaction_trigger_ratio <= 1:
