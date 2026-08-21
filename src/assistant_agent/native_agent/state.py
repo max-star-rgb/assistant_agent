@@ -31,10 +31,12 @@ from assistant_agent.coding.models import (
 from assistant_agent.native_agent.models import (
     BudgetUsage,
     NativePlanProposal,
+    PlanningAuthorizationEnvelope,
     PlannerEvidence,
     PlannerOutcome,
     ProviderSearchProfile,
     RecoveryDecision,
+    ReplacementClaim,
     WorkerOutcome,
     WorkerResult,
 )
@@ -116,6 +118,7 @@ class FastAgentState(AgentState):
     skill_reference_grants: NotRequired[
         Annotated[dict[str, list[str]], _merge_reference_grants]
     ]
+    authorization_envelope: NotRequired[PlanningAuthorizationEnvelope]
 
 
 class MemoryExtractionState(MessagesState):
@@ -167,6 +170,12 @@ class PlanningState(AgentState):
     plan_generation: NotRequired[int]
     planner_attempt_count: NotRequired[int]
     planner_outcome: NotRequired[PlannerOutcome | None]
+    authorization_envelope: NotRequired[
+        Annotated[
+            PlanningAuthorizationEnvelope | None,
+            merge_planning_authorization_envelope,
+        ]
+    ]
     recovery_decision: NotRequired[RecoveryDecision | None]
     # True once the terminal phase's single node attempt has been settled.  A
     # controlled projection after a failed model finalizer reuses that attempt.
@@ -183,6 +192,9 @@ class PlanningState(AgentState):
         Annotated[list[str], _merge_unique_strings]
     ]
     historical_node_ids: NotRequired[Annotated[list[str], _merge_unique_strings]]
+    replacement_claims: NotRequired[
+        Annotated[dict[str, ReplacementClaim], merge_replacement_claims]
+    ]
     superseded_work_item_ids: NotRequired[Annotated[list[str], _merge_unique_strings]]
     worker_outcomes: NotRequired[
         Annotated[dict[str, WorkerOutcome], merge_worker_outcomes]
@@ -328,6 +340,34 @@ def merge_frozen_worker_results(
     )
 
 
+def merge_planning_authorization_envelope(
+    left: PlanningAuthorizationEnvelope | Mapping[str, object] | None,
+    right: PlanningAuthorizationEnvelope | Mapping[str, object] | None,
+) -> PlanningAuthorizationEnvelope | None:
+    """Freeze the first admitted authorization scope and reject later conflicts."""
+
+    lhs = PlanningAuthorizationEnvelope.model_validate(left) if left is not None else None
+    rhs = PlanningAuthorizationEnvelope.model_validate(right) if right is not None else None
+    if lhs is None:
+        return rhs
+    if rhs is None or rhs == lhs:
+        return lhs
+    raise ValueError("conflicting planning authorization envelope")
+
+
+def merge_replacement_claims(
+    left: Mapping[str, ReplacementClaim | Mapping[str, object]] | None,
+    right: Mapping[str, ReplacementClaim | Mapping[str, object]] | None,
+) -> dict[str, ReplacementClaim]:
+    """Merge monotonic historical replacement claims without last-write-wins."""
+
+    return _merge_immutable_mapping(
+        _validated_replacement_claim_mapping(left),
+        _validated_replacement_claim_mapping(right),
+        conflict_message="conflicting historical replacement claim",
+    )
+
+
 def merge_wave_reservations(
     left: Mapping[str, WaveReservation | Mapping[str, object]] | None,
     right: Mapping[str, WaveReservation | Mapping[str, object]] | None,
@@ -380,6 +420,19 @@ def _validated_wave_reservation_mapping(
     return validated
 
 
+def _validated_replacement_claim_mapping(
+    values: Mapping[str, ReplacementClaim | Mapping[str, object]] | None,
+) -> dict[str, ReplacementClaim]:
+    validated: dict[str, ReplacementClaim] = {}
+    for key, value in (values or {}).items():
+        payload = value.model_dump() if isinstance(value, ReplacementClaim) else value
+        claim = ReplacementClaim.model_validate(payload)
+        if key != claim.replaced_node_id:
+            raise ValueError("replacement claim key does not match replaced_node_id")
+        validated[key] = claim
+    return validated
+
+
 __all__ = [
     "AgentPhase",
     "add_budget_usage",
@@ -392,6 +445,8 @@ __all__ = [
     "MemoryExtractionState",
     "MemoryStatus",
     "merge_frozen_worker_results",
+    "merge_planning_authorization_envelope",
+    "merge_replacement_claims",
     "merge_wave_reservations",
     "merge_worker_outcomes",
     "PlanningState",

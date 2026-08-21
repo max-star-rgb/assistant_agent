@@ -31,9 +31,12 @@ from assistant_agent.native_agent.models import (
     EvidenceLink,
     FailureFact,
     NativePlanProposal,
+    PlanningAuthorizationEnvelope,
     PlannerEvidence,
     PlannerOutcome,
     RecoveryDecision,
+    ReplacementClaim,
+    SkillReferenceGrant,
     WorkerCompletion,
     WorkerOutcome,
     WorkerResult,
@@ -49,9 +52,10 @@ from assistant_agent.native_agent.planning_recovery import (
     assess_workers_node,
     classify_operational_failure,
     controlled_finalize_node,
-    find_worker_control_failure,
+    find_control_flow_failure,
     prepare_replan_node,
     record_recovery_decision,
+    reject_unmaterialized_propagation,
     route_after_planner_assessment,
     route_after_worker_assessment,
     sanitize_finalizer_propagation,
@@ -130,6 +134,12 @@ _ADMISSION_ERROR_CODES = {
     "deliverable references unknown evidence": "unknown_deliverable_evidence_ref",
     "workflow plan exceeds dependency depth": "dependency_depth_exceeded",
     "workflow plan contains a cycle": "cycle",
+    "plan authorization exceeds the first admitted envelope": (
+        "authorization_expansion"
+    ),
+    "plan minimum execution demand exceeds remaining graph budget": (
+        "insufficient_graph_budget"
+    ),
     "planner did not produce a plan candidate": "missing_candidate",
     "admitted plan has no schedulable work item": "unschedulable_plan",
 }
@@ -179,10 +189,23 @@ def admit_native_plan(
     policy: PlanningAdmissionPolicy,
     evidence: Sequence[PlannerEvidence],
     active_skill_ids: Collection[str],
+    active_reference_grants: Mapping[str, Collection[str]] | None = None,
     plan_generation: int = 0,
     historical_node_ids: Collection[str] = (),
     replannable_node_ids: Collection[str] = (),
     frozen_result_ids: Collection[str] = (),
+    budget_policy: PlanningBudgetPolicy | None = None,
+    budget_usage: BudgetUsage | Mapping[str, object] | None = None,
+    wave_reservations: Mapping[
+        str, WaveReservation | Mapping[str, object]
+    ] | None = None,
+    reconciled_wave_reservation_ids: Collection[str] = (),
+    authorization_envelope: PlanningAuthorizationEnvelope
+    | Mapping[str, object]
+    | None = None,
+    replacement_claims: Mapping[
+        str, ReplacementClaim | Mapping[str, object]
+    ] | None = None,
 ) -> NativePlanProposal:
     """Validate a proposal against trusted inventory and captured evidence."""
 
@@ -208,6 +231,7 @@ def admit_native_plan(
             )
 
     replaced_nodes: set[str] = set()
+    existing_claims = _replacement_claim_mapping(replacement_claims)
     for node in proposal.nodes:
         for replacement in node.replaces_node_ids:
             if replacement in frozen_results:
@@ -222,6 +246,16 @@ def admit_native_plan(
                     "replacement references an unknown or non-replannable node"
                 )
             if replacement in replaced_nodes:
+                raise NativePlanAdmissionError(
+                    "a historical node can only be replaced once"
+                )
+            claim = ReplacementClaim(
+                replaced_node_id=replacement,
+                replacement_node_id=node.node_id,
+                plan_generation=plan_generation,
+            )
+            existing_claim = existing_claims.get(replacement)
+            if existing_claim is not None and existing_claim != claim:
                 raise NativePlanAdmissionError(
                     "a historical node can only be replaced once"
                 )
@@ -320,7 +354,148 @@ def admit_native_plan(
                 pending.append(child)
     if visited != len(known):
         raise NativePlanAdmissionError("workflow plan contains a cycle")
+    candidate_scope = _authorization_scope_for_plan(
+        proposal,
+        evidence=evidence,
+        active_reference_grants=active_reference_grants or {},
+    )
+    if authorization_envelope is not None and not _authorization_scope_is_subset(
+        candidate_scope,
+        PlanningAuthorizationEnvelope.model_validate(authorization_envelope),
+    ):
+        raise NativePlanAdmissionError(
+            "plan authorization exceeds the first admitted envelope"
+        )
+    if budget_policy is not None:
+        available = remaining_budget(
+            budget_usage,
+            budget_policy,
+            reservations=wave_reservations,
+            reconciled_execution_ids=reconciled_wave_reservation_ids,
+        )
+        minimum_demand = BudgetUsage(
+            model_calls=len(proposal.nodes) + 1,
+            node_attempts=len(proposal.nodes) + 1,
+        )
+        if not _budget_fits(minimum_demand, available):
+            raise NativePlanAdmissionError(
+                "plan minimum execution demand exceeds remaining graph budget"
+            )
     return proposal
+
+
+def _authorization_scope_for_plan(
+    proposal: NativePlanProposal,
+    *,
+    evidence: Sequence[PlannerEvidence],
+    active_reference_grants: Mapping[str, Collection[str]],
+) -> PlanningAuthorizationEnvelope:
+    skill_ids = tuple(
+        sorted(
+            {
+                skill_id
+                for node in proposal.nodes
+                for skill_id in node.required_skill_ids
+            }
+        )
+    )
+    referenced_evidence_ids = {
+        evidence_id
+        for node in proposal.nodes
+        for evidence_id in node.evidence_refs
+    }
+    referenced_evidence_ids.update(
+        evidence_id
+        for deliverable in proposal.deliverables
+        for evidence_id in deliverable.evidence_refs
+    )
+    evidence_tools = {
+        item.tool_name
+        for item in evidence
+        if item.evidence_id in referenced_evidence_ids
+    }
+    tool_names = tuple(
+        sorted(
+            {
+                *evidence_tools,
+                *(
+                    tool_name
+                    for node in proposal.nodes
+                    for tool_name in node.allowed_tool_names
+                ),
+            }
+        )
+    )
+    reference_grants: tuple[SkillReferenceGrant, ...] = ()
+    if LOAD_SKILL_REFERENCE_TOOL_NAME in tool_names:
+        reference_grants = tuple(
+            SkillReferenceGrant(
+                skill_id=skill_id,
+                reference_ids=tuple(
+                    sorted(
+                        {
+                            reference_id
+                            for reference_id in active_reference_grants.get(
+                                skill_id, ()
+                            )
+                            if isinstance(reference_id, str) and reference_id
+                        }
+                    )
+                ),
+            )
+            for skill_id in skill_ids
+            if active_reference_grants.get(skill_id)
+        )
+    return PlanningAuthorizationEnvelope(
+        skill_ids=skill_ids,
+        reference_grants=reference_grants,
+        tool_names=tool_names,
+    )
+
+
+def _authorization_scope_is_subset(
+    candidate: PlanningAuthorizationEnvelope,
+    frozen: PlanningAuthorizationEnvelope,
+) -> bool:
+    if not set(candidate.skill_ids).issubset(frozen.skill_ids):
+        return False
+    if not set(candidate.tool_names).issubset(frozen.tool_names):
+        return False
+    frozen_references = frozen.reference_grant_mapping()
+    return all(
+        set(grant.reference_ids).issubset(
+            frozen_references.get(grant.skill_id, ())
+        )
+        for grant in candidate.reference_grants
+    )
+
+
+def _replacement_claim_mapping(
+    claims: Mapping[str, ReplacementClaim | Mapping[str, object]] | None,
+) -> dict[str, ReplacementClaim]:
+    validated: dict[str, ReplacementClaim] = {}
+    for key, value in (claims or {}).items():
+        claim = ReplacementClaim.model_validate(value)
+        if key != claim.replaced_node_id:
+            raise ValueError("replacement claim key does not match replaced_node_id")
+        validated[key] = claim
+    return validated
+
+
+def _replacement_claims_for_plan(
+    proposal: NativePlanProposal,
+    *,
+    plan_generation: int,
+) -> dict[str, ReplacementClaim]:
+    return {
+        replaced_node_id: ReplacementClaim(
+            replaced_node_id=replaced_node_id,
+            replacement_node_id=node.node_id,
+            plan_generation=plan_generation,
+        )
+        for node in proposal.nodes
+        for replaced_node_id in node.replaces_node_ids
+    }
 
 
 def build_planning_graph(
@@ -420,6 +595,11 @@ def build_planning_graph(
             tool_calls=min(phase_limits.tool_calls, remaining.tool_calls),
             node_attempts=1,
         )
+        projected_skills, projected_references, envelope = (
+            _project_planner_authorization(state)
+        )
+        propagation_error: Exception | None = None
+        control_failure: BaseException | None = None
         try:
             planner_result = await fast_agent.ainvoke(
                 {
@@ -430,9 +610,12 @@ def build_planning_graph(
                     "trusted_runtime_facts": state.get("trusted_runtime_facts"),
                     "agent_phase": "planner",
                     "phase_budget_allowance": phase_allowance,
-                    "active_skill_ids": list(state.get("planner_active_skill_ids", ())),
-                    "skill_reference_grants": dict(
-                        state.get("planner_skill_reference_grants", {})
+                    "active_skill_ids": projected_skills,
+                    "skill_reference_grants": projected_references,
+                    **(
+                        {"authorization_envelope": envelope}
+                        if envelope is not None
+                        else {}
                     ),
                     "recovery_context": recovery_context,
                 },
@@ -504,7 +687,8 @@ def build_planning_graph(
         except (GraphBubbleUp, NodeCancelledError):
             raise
         except Exception as error:
-            if classify_operational_failure(error):
+            control_failure = find_control_flow_failure(error)
+            if control_failure is None and classify_operational_failure(error):
                 # The failed subgraph cannot expose a trustworthy partial delta.
                 # Charge the complete allowance so unknown completed calls can
                 # never be released and reused after recovery.
@@ -528,7 +712,12 @@ def build_planning_graph(
                     ),
                     "budget_usage": _add_usage(consumed, usage),
                 }
-            propagation_error = sanitize_planner_propagation(error)
+            if control_failure is None:
+                propagation_error = sanitize_planner_propagation(error)
+        if control_failure is not None:
+            raise control_failure
+        if propagation_error is None:
+            raise RuntimeError("planner propagation classification failed")
         raise propagation_error
 
     def admit_plan_node(state: PlanningState) -> dict[str, Any]:
@@ -543,10 +732,21 @@ def build_planning_graph(
                 policy=admission_policy,
                 evidence=state.get("planner_evidence", ()),
                 active_skill_ids=state.get("planner_active_skill_ids", ()),
+                active_reference_grants=state.get(
+                    "planner_skill_reference_grants", {}
+                ),
                 plan_generation=int(state.get("plan_generation", 0)),
                 historical_node_ids=state.get("historical_node_ids", ()),
                 replannable_node_ids=state.get("superseded_work_item_ids", ()),
                 frozen_result_ids=state.get("frozen_worker_results", {}).keys(),
+                budget_policy=resolved_budget_policy,
+                budget_usage=state.get("budget_usage"),
+                wave_reservations=state.get("wave_reservations"),
+                reconciled_wave_reservation_ids=state.get(
+                    "reconciled_wave_reservation_ids", ()
+                ),
+                authorization_envelope=state.get("authorization_envelope"),
+                replacement_claims=state.get("replacement_claims"),
             )
         except NativePlanAdmissionError as exc:
             revision_count = int(state.get("revision_count", 0)) + 1
@@ -559,7 +759,30 @@ def build_planning_graph(
                 "admission_error": exc.code,
                 "revision_count": revision_count,
             }
-        return {"plan": admitted, "admission_error": None}
+        existing_envelope = state.get("authorization_envelope")
+        envelope = (
+            PlanningAuthorizationEnvelope.model_validate(existing_envelope)
+            if existing_envelope is not None
+            else _authorization_scope_for_plan(
+                admitted,
+                evidence=state.get("planner_evidence", ()),
+                active_reference_grants=state.get(
+                    "planner_skill_reference_grants", {}
+                ),
+            )
+        )
+        claims = _replacement_claims_for_plan(
+            admitted,
+            plan_generation=int(state.get("plan_generation", 0)),
+        )
+        update: dict[str, Any] = {
+            "plan": admitted,
+            "admission_error": None,
+            "authorization_envelope": envelope,
+        }
+        if claims:
+            update["replacement_claims"] = claims
+        return update
 
     async def worker_node(
         state: WorkerState,
@@ -592,7 +815,7 @@ def build_planning_graph(
         except (GraphBubbleUp, NodeCancelledError):
             raise
         except Exception as error:
-            control_failure = find_worker_control_failure(error)
+            control_failure = find_control_flow_failure(error)
             if control_failure is None and _is_worker_operational_failure(error):
                 return _operational_worker_outcome_update(state)
             if control_failure is None:
@@ -654,6 +877,7 @@ def build_planning_graph(
             unresolved_failures=unresolved_failure_facts(state),
         )
         propagation_error: Exception | None = None
+        control_failure: BaseException | None = None
         try:
             result = await fast_agent.ainvoke(
                 {
@@ -674,7 +898,10 @@ def build_planning_graph(
         except (GraphBubbleUp, NodeCancelledError):
             raise
         except Exception as error:
-            if not classify_operational_failure(error):
+            control_failure = find_control_flow_failure(error)
+            if control_failure is not None:
+                pass
+            elif not classify_operational_failure(error):
                 propagation_error = sanitize_finalizer_propagation(error)
             else:
                 consumed_attempt = _checked_graph_usage(
@@ -737,6 +964,8 @@ def build_planning_graph(
                         limit=resolved_budget_policy.recovery_history_limit,
                     ),
                 }
+        if control_failure is not None:
+            raise control_failure
         if propagation_error is not None:
             raise propagation_error
         validation_reason: str | None = None
@@ -898,6 +1127,7 @@ def route_after_finalize(state: PlanningState) -> str:
     if decision is None:
         return END
     parsed = RecoveryDecision.model_validate(decision)
+    reject_unmaterialized_propagation(parsed)
     if parsed.action == "retry" and parsed.reason_code == "finalizer_operational_retry":
         return "finalize"
     if parsed.action == "finalize":
@@ -1147,6 +1377,7 @@ def route_scheduler(
     decision = state.get("recovery_decision")
     if decision is not None:
         parsed_decision = RecoveryDecision.model_validate(decision)
+        reject_unmaterialized_propagation(parsed_decision)
         if parsed_decision.action == "finalize":
             return "controlled_finalize"
 
@@ -1164,8 +1395,13 @@ def route_scheduler(
     evidence_by_id = {
         item.evidence_id: item for item in state.get("planner_evidence", ())
     }
-    planner_active_skills = frozenset(state.get("planner_active_skill_ids", ()))
-    planner_reference_grants = state.get("planner_skill_reference_grants", {})
+    projected_skills, planner_reference_grants, envelope = (
+        _project_planner_authorization(state)
+    )
+    planner_active_skills = frozenset(projected_skills)
+    authorized_tool_names = (
+        frozenset(envelope.tool_names) if envelope is not None else None
+    )
     frozen_results = {
         str(work_item_id): WorkerResult.model_validate(result)
         for work_item_id, result in state.get("frozen_worker_results", {}).items()
@@ -1246,7 +1482,12 @@ def route_scheduler(
                     ),
                     "agent_phase": "worker",
                     "provider_search_profile": node.search_profile,
-                    "worker_tool_allowlist": node.allowed_tool_names,
+                    "worker_tool_allowlist": tuple(
+                        tool_name
+                        for tool_name in node.allowed_tool_names
+                        if authorized_tool_names is None
+                        or tool_name in authorized_tool_names
+                    ),
                     "active_skill_ids": active_skill_ids,
                     "skill_reference_grants": {
                         skill_id: list(planner_reference_grants.get(skill_id, ()))
@@ -2397,6 +2638,38 @@ def _reference_grants(value: object) -> dict[str, list[str]]:
         for skill_id, reference_ids in value.items()
         if isinstance(skill_id, str)
     }
+
+
+def _project_planner_authorization(
+    state: Mapping[str, Any],
+) -> tuple[
+    list[str],
+    dict[str, list[str]],
+    PlanningAuthorizationEnvelope | None,
+]:
+    active_skills = _string_list(state.get("planner_active_skill_ids"))
+    reference_grants = _reference_grants(
+        state.get("planner_skill_reference_grants")
+    )
+    raw_envelope = state.get("authorization_envelope")
+    if raw_envelope is None:
+        return active_skills, reference_grants, None
+    envelope = PlanningAuthorizationEnvelope.model_validate(raw_envelope)
+    allowed_skills = frozenset(envelope.skill_ids)
+    allowed_references = envelope.reference_grant_mapping()
+    projected_skills = [
+        skill_id for skill_id in active_skills if skill_id in allowed_skills
+    ]
+    projected_references = {
+        skill_id: [
+            reference_id
+            for reference_id in reference_grants.get(skill_id, ())
+            if reference_id in frozenset(allowed_references.get(skill_id, ()))
+        ]
+        for skill_id in projected_skills
+        if skill_id in allowed_references
+    }
+    return projected_skills, projected_references, envelope
 
 
 __all__ = [

@@ -9,7 +9,13 @@ from typing import Any
 
 from langgraph_sdk import get_sync_client
 
-ASSISTANT_ID = "assistant-native-v1"
+from assistant_agent.agent_server.client import (
+    IncompatibleCheckpointGraphError,
+    require_current_checkpoint_graph,
+)
+from assistant_agent.agent_server.config import ASSISTANT_GRAPH_ID
+
+ASSISTANT_ID = ASSISTANT_GRAPH_ID
 
 
 def _context() -> dict[str, object]:
@@ -97,6 +103,23 @@ def _replay_checkpoint(
     checkpoint_id: str,
     confirm: Callable[[str], str] = input,
 ) -> int:
+    states = client.threads.get_history(thread_id, limit=100)
+    selected = next(
+        (
+            state
+            for state in states
+            if _state_checkpoint_id(state) == checkpoint_id
+        ),
+        None,
+    )
+    if selected is None:
+        print(f"Checkpoint not found: {checkpoint_id}")
+        return 1
+    try:
+        require_current_checkpoint_graph(selected)
+    except IncompatibleCheckpointGraphError as exc:
+        print(f"Replay rejected: {exc}")
+        return 1
     expected = f"REPLAY {checkpoint_id}"
     answer = confirm(
         "Replay re-executes nodes after the checkpoint and may repeat external "
@@ -115,6 +138,13 @@ def _replay_checkpoint(
     )
     print(_response_text(result))
     return 0
+
+
+def _state_checkpoint_id(state: Mapping[str, Any]) -> str | None:
+    checkpoint = state.get("checkpoint")
+    checkpoint = checkpoint if isinstance(checkpoint, Mapping) else {}
+    value = state.get("checkpoint_id") or checkpoint.get("checkpoint_id")
+    return str(value) if value is not None else None
 
 
 def _rollback_run(

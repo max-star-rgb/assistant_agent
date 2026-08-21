@@ -58,9 +58,11 @@ token 阈值，两者可由现有环境变量覆盖。DeepSeek V4 Flash 使用�
 自建 conversation、完整问答边界或 summary state。
 
 planning 的 planner、worker 与 finalizer 都通过 `agent_phase` 复用同一个 `AssistantFastAgent`，不是直接调用
-独立模型。Planner 在共享 Tool loop 中成功加载 Skill 后，后续 Planner call 获得上述受信完整正文；admission
-冻结实际激活的 Skill snapshot，worker 只继承节点 required Skill 与该 snapshot 的交集，不能从计划文本或
-worker 输出扩展 Skill scope。
+独立模型。Planner 在共享 Tool loop 中成功加载 Skill 后，后续 Planner call 获得上述受信完整正文；首次成功
+admission 冻结该计划实际声明或使用的 Skill ID、reference ID 与 Tool name 为 strict authorization envelope。
+generation 0 在首次成功前仍可 revision；成功后 planner prompt/context、scheduler 和 worker 只看到 envelope
+子集，不能从计划文本、完整 inventory 或 worker 输出扩展 scope。envelope 只 checkpoint 标识符，不保存 Tool
+参数、结果或 schema。
 
 planning worker 只获得自己的 objective、父图 Memory 与 TrustedRuntimeFacts 快照、调度器按 `depends_on` 派生的直接上游
 `dependency_results`、节点引用的 planner evidence、当次 phase allowance 和同一个 fast agent；objective 必须自包含并保留相关用户约束。

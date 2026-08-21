@@ -10,6 +10,10 @@ from langchain_core.messages import AIMessage
 
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.fast_agent import render_assistant_system_prompt
+from assistant_agent.native_agent.models import (
+    PlanningAuthorizationEnvelope,
+    SkillReferenceGrant,
+)
 from assistant_agent.native_agent.planning_phase import (
     PlanningPhaseMiddleware,
     worker_response_format,
@@ -33,6 +37,27 @@ def test_planner_preserves_all_upstream_visible_tools() -> None:
         "route_probe",
     }
     assert projected.response_format is not None
+
+
+def test_recovery_planner_exposes_only_first_admitted_tool_envelope() -> None:
+    """Catches later generations seeing load_skill or inventory outside the envelope."""
+
+    projected = project_phase_request(
+        phase="planner",
+        tool_names=("load_skill", "weather_probe", "route_probe"),
+        authorization_envelope=PlanningAuthorizationEnvelope(
+            skill_ids=("travel-sentinel",),
+            reference_grants=(
+                SkillReferenceGrant(
+                    skill_id="travel-sentinel",
+                    reference_ids=("route-guide",),
+                ),
+            ),
+            tool_names=("route_probe",),
+        ),
+    )
+
+    assert tool_names(projected) == {"route_probe"}
 
 
 def test_fast_and_planner_first_business_tool_names_match() -> None:
@@ -123,6 +148,34 @@ def test_unknown_active_skill_id_does_not_render_untrusted_guidance() -> None:
     assert "travel-sentinel-guidance" not in prompt
 
 
+def test_recovery_prompt_hides_skills_outside_first_admitted_envelope() -> None:
+    """Catches the prompt index offering a later planner unauthorized Skills."""
+
+    allowed = SkillDescriptor(
+        name="allowed-skill",
+        description="allowed description",
+        body="allowed body",
+        governed_tools=["allowed-probe"],
+    )
+    blocked = SkillDescriptor(
+        name="blocked-skill",
+        description="blocked description",
+        body="blocked body",
+        governed_tools=["blocked-probe"],
+    )
+
+    prompt = render_assistant_system_prompt(
+        AssistantRunContext(),
+        skill_descriptors=(allowed, blocked),
+        active_skill_ids=(allowed.name, blocked.name),
+        authorization_skill_ids=(allowed.name,),
+    )
+
+    assert "allowed body" in prompt
+    assert "blocked-skill" not in prompt
+    assert "blocked body" not in prompt
+
+
 def test_finalizer_has_no_tools_or_structured_plan_response() -> None:
     projected = project_phase_request(
         phase="finalizer",
@@ -138,12 +191,15 @@ def project_phase_request(
     phase: str,
     tool_names: tuple[str, ...],
     worker_tool_allowlist: tuple[str, ...] | None = None,
+    authorization_envelope: PlanningAuthorizationEnvelope | None = None,
 ) -> ModelRequest:
     """Capture the request received by the phase handler without invoking a model."""
 
     state: dict[str, object] = {"messages": [], "agent_phase": phase}
     if worker_tool_allowlist is not None:
         state["worker_tool_allowlist"] = worker_tool_allowlist
+    if authorization_envelope is not None:
+        state["authorization_envelope"] = authorization_envelope
     request = ModelRequest(
         model=cast(BaseChatModel, object()),
         messages=[],

@@ -99,6 +99,69 @@ class PlannerEvidence(BaseModel):
     artifact_ref: str | None = Field(default=None, max_length=2_000)
 
 
+class SkillReferenceGrant(BaseModel):
+    """One immutable Skill-to-reference slice in a planning authorization envelope."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    skill_id: str = Field(min_length=1, max_length=160)
+    reference_ids: tuple[str, ...] = Field(default=(), max_length=128)
+
+    @field_validator("reference_ids", mode="before")
+    @classmethod
+    def _tuple_reference_ids(cls, value):
+        return tuple(value) if isinstance(value, list) else value
+
+    @model_validator(mode="after")
+    def _unique_reference_ids(self) -> "SkillReferenceGrant":
+        if len(self.reference_ids) != len(set(self.reference_ids)):
+            raise ValueError("authorization reference ids must be unique")
+        return self
+
+
+class PlanningAuthorizationEnvelope(BaseModel):
+    """Strict upper bound frozen by the first successfully admitted plan."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    skill_ids: tuple[str, ...] = Field(default=(), max_length=128)
+    reference_grants: tuple[SkillReferenceGrant, ...] = Field(default=(), max_length=128)
+    tool_names: tuple[str, ...] = Field(default=(), max_length=256)
+
+    @field_validator("skill_ids", "reference_grants", "tool_names", mode="before")
+    @classmethod
+    def _tuple_collections(cls, value):
+        return tuple(value) if isinstance(value, list) else value
+
+    @model_validator(mode="after")
+    def _validate_scope(self) -> "PlanningAuthorizationEnvelope":
+        if len(self.skill_ids) != len(set(self.skill_ids)):
+            raise ValueError("authorization Skill ids must be unique")
+        if len(self.tool_names) != len(set(self.tool_names)):
+            raise ValueError("authorization Tool names must be unique")
+        grant_skill_ids = [grant.skill_id for grant in self.reference_grants]
+        if len(grant_skill_ids) != len(set(grant_skill_ids)):
+            raise ValueError("authorization reference Skill ids must be unique")
+        if not set(grant_skill_ids).issubset(self.skill_ids):
+            raise ValueError("authorization references require an authorized Skill")
+        return self
+
+    def reference_grant_mapping(self) -> dict[str, tuple[str, ...]]:
+        return {
+            grant.skill_id: grant.reference_ids for grant in self.reference_grants
+        }
+
+
+class ReplacementClaim(BaseModel):
+    """Checkpointed identity of one historical-node replacement claim."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    replaced_node_id: str = Field(min_length=1, max_length=120)
+    replacement_node_id: str = Field(min_length=1, max_length=120)
+    plan_generation: int = Field(ge=1)
+
+
 class PlanDeliverable(BaseModel):
     """A required final response item from current, evidence, or frozen output."""
 
@@ -321,10 +384,13 @@ __all__ = [
     "NativePlanNode",
     "NativePlanProposal",
     "PlanDeliverable",
+    "PlanningAuthorizationEnvelope",
     "PlannerEvidence",
     "PlannerOutcome",
     "ProviderSearchProfile",
     "RecoveryDecision",
+    "ReplacementClaim",
+    "SkillReferenceGrant",
     "WorkerCompletion",
     "WorkerOutcome",
     "WorkerResult",

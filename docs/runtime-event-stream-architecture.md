@@ -85,13 +85,21 @@ planning 分支是显式 `AssistantPlanningGraph`：production composition 从 `
 node 或实际 planner evidence。本地 admission 根据
 composition 注入的静态 Tool inventory 与同一份 Skill catalog 确定性校验节点 Tool、Planner 实际激活 Skill、
 节点 Skill grant、真实 planner evidence 引用、deliverable producer/evidence 引用、节点上限、DAG 无环和依赖深度；
+校验还读取 checkpointed global usage、未 reconciliation 的 wave reservation 与同一 policy：每个候选 worker
+至少预留一次 model call 和一次 node attempt，并始终为 finalizer 再保留一次 model call 和一次 node attempt；
+最小需求超过当前剩余 graph budget 时以稳定 `insufficient_graph_budget` 拒绝，Tool 最小需求为零。该计算只按
+checkpoint state 和稳定 ID 顺序完成，不依赖并行结果 arrival 顺序。
 未知或未授权事实一律 fail closed，且不读取用户文本或内置领域规则。admission 失败时把有界错误码写入
 planning state，并由原生 conditional edge 回到同一个 planner；最多允许两次 proposal revision，第三次失败以
 有界 `NativePlanAdmissionError` 终止 run。revision 输入只增加既有 `PlannerEvidence` 的只读投影和错误码；
 该投影以 `trust=tool-output` 标记，JSON 在嵌入标签前转义 `<>&`，并以最终渲染字符数硬限制为 48,000。
 预算先保留稳定顺序的 evidence ID、Tool 名与状态，再有界保留 content/artifact ref，不输出半个 JSON。
 它不注入旧 planner transcript、Tool schema 或原始异常；evidence、已激活 Skill 与 reference grant 沿用原生 state
-reducer，只有候选计划被覆盖。成功 admission 清除错误并进入 scheduler。`Send` 按依赖分 wave 并行派发 worker。调度器根据 `depends_on` 自动把直接上游
+reducer，只有候选计划被覆盖。generation 0 可在首次成功 admission 前通过 revision 修正 scope；首次成功
+admission 冻结该计划实际声明或使用的 Skill ID、reference ID 与 Tool name 为 checkpointed strict authorization
+envelope。后续 generation 只能使用它的子集，任一新增 scope 以稳定 `authorization_expansion` fail closed；planner
+prompt/context 与 scheduler projection 同时收窄到 envelope，且 checkpoint 不保存原始 Tool 参数或结果。
+成功 admission 清除错误并进入 scheduler。`Send` 按依赖分 wave 并行派发 worker。调度器根据 `depends_on` 自动把直接上游
 `WorkerResult` 组装为运行时 `dependency_results`，worker 将其作为明确的只读数据输入交给同一个 fast graph；
 该字段不是 planner 输出 schema。其 generation-aware 原生拓扑是
 `planner -> assess_planner -> admit_plan|planner|prepare_replan|controlled_finalize`，其中
@@ -100,9 +108,13 @@ reducer，只有候选计划被覆盖。成功 admission 清除错误并进入 s
 planner 和 worker 都把预期结果收敛为严格 `PlannerOutcome` / `WorkerOutcome`；明确可重试的超时、连接或临时
 HTTP 执行失败先在同一 generation 内有界 retry，业务不足、phase budget 耗尽或 operational retry 耗尽后经
 `assess_workers -> prepare_replan -> planner` 进入下一 generation。`prepare_replan` 先冻结已成功
-`WorkerResult`，新计划只能替换失败工作并显式引用 frozen result；scheduler 从 checkpointed generation、plan、
-outcome 与 frozen result 重算 ready wave，已成功 worker 不重放。`GraphBubbleUp` / interrupt / cancel、准入、
-鉴权与程序契约错误不进入该预期失败边界，仍保持 LangGraph 原生传播。零节点 plan 不派发 worker，沿
+`WorkerResult`，新计划只能替换失败工作并显式引用 frozen result；checkpointed 单调 replacement claim ledger
+允许相同 claim replay 幂等，但拒绝 later generation 用不同 replacement 再次 claim 同一 historical node。
+scheduler 从 checkpointed generation、plan、outcome 与 frozen result 重算 ready wave，已成功 worker不重放。
+`GraphBubbleUp` / interrupt / cancel、准入、鉴权与程序契约错误不进入该预期失败边界，仍保持 LangGraph 原生
+传播。planner、worker、finalizer 在 operational 分类与 sanitizer 前使用同一 cause/context chain 检查并原样
+抛出 control-flow；checkpoint 不写入外层 wrapper marker。checkpoint 中出现没有 live exception 的
+`RecoveryDecision(action="propagate")` 属于契约错误，明确 fail closed，不进入 controlled finalizer。零节点 plan 不派发 worker，沿
 `scheduler -> reserve_wave_budget -> finalize` 完成；`reserve_wave_budget` 的条件路线还会依据 ready wave 与预算
 进入 worker 或 `controlled_finalize`。worker 只能继承节点 required Skill 与
 Planner 实际快照的交集；admission 禁止节点把
@@ -140,7 +152,8 @@ fast agent 子图才增加由成功 `load_skill` 标准 Tool 结果产生的 `ac
 并在 `Send` 派发时从直接依赖结果派生窄 `dependency_results` worker 输入。
 其 `plan_candidate`、`admission_error` 与 `revision_count` 只服务原生 revision edge；recovery 另外保存有界的
 `plan_generation`、typed planner/worker outcome、budget usage、wave reservation、recovery decision/history/context、
-单调 `frozen_worker_results` 与 superseded ID，不建立数据库、队列、checkpoint adapter 或 shadow state。恢复后
+首次成功 admission 冻结的 strict authorization envelope、单调 replacement claim ledger、
+`frozen_worker_results` 与 superseded ID，不建立数据库、队列、checkpoint adapter 或 shadow state。恢复后
 scheduler 只从这些 checkpointed typed channels 重算下一 wave，不保存平行 ready/completed channel；冻结成功
 结果的 reducer 拒绝同 ID 冲突，replan/resume 都不会再次派发它。`WorkerResult.sources` 在 JsonPlus/msgpack 的 JSON list 边界
 规范化回 tuple，避免 strict Pydantic checkpoint 恢复退化为未校验构造。
@@ -160,7 +173,8 @@ planning 的 planner、worker 与 finalizer 都读取父图传入的同一份可
 项目自建 result/artifact runtime。Provider/Tool client、Memory backend、投递 Store、身份对象和 callback
 不写入 checkpoint。旧
 `AssistantTurnState` checkpoint 不迁移进新图；旧 assistant/thread 仅作只读历史或外围兼容，新图使用版本化
-assistant ID `assistant-native-v1`。
+assistant ID `assistant-native-v2`。`assistant-native-v1` checkpoint 同样只读，不能在 v2 resume/replay；该 graph
+ID 升级没有自动 migration。
 
 完整 Tool inventory 仍静态注册给 fast `create_agent` 的 `ToolNode`；每次 model call 的可见子集由原生 middleware
 从上述 Skill 激活状态与受信 manifest 派生。该过滤不创建第二套 Tool runtime，也不改变 ToolNode 对已注册 Tool

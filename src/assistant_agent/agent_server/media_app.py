@@ -22,6 +22,7 @@ from langchain_core.messages import AIMessage
 
 from assistant_agent.agent_server.client import SdkAgentServerClient
 from assistant_agent.agent_server.graph import close_native_assistant_graph
+from assistant_agent.agent_server.config import ASSISTANT_GRAPH_ID
 from assistant_agent.agent_server.media_protocol import (
     MediaProtocolError,
     envelope,
@@ -137,7 +138,7 @@ def _native_graph_warmup_url() -> str:
         "8000",
     )
     port = int(raw_port) if raw_port.isdigit() else 8000
-    return f"http://127.0.0.1:{port}/assistants/assistant-native-v1/graph"
+    return f"http://127.0.0.1:{port}/assistants/{ASSISTANT_GRAPH_ID}/graph"
 
 
 async def _await_native_graph_warmup(application: FastAPI) -> None:
@@ -801,7 +802,7 @@ async def _run_chat(
         }
         async for part in client.stream_run(
             thread_id=session.thread_id,
-            assistant_id="assistant-native-v1",
+            assistant_id=ASSISTANT_GRAPH_ID,
             input=media_graph_input(
                 chat,
                 video_ids=session.video_ids,

@@ -11,7 +11,11 @@ from langchain.agents.structured_output import ToolStrategy
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.tools import BaseTool
 
-from assistant_agent.native_agent.models import NativePlanProposal, WorkerCompletion
+from assistant_agent.native_agent.models import (
+    NativePlanProposal,
+    PlanningAuthorizationEnvelope,
+    WorkerCompletion,
+)
 from assistant_agent.tools.ids import LOAD_SKILL_TOOL_NAME
 
 
@@ -35,7 +39,16 @@ class PlanningPhaseMiddleware(AgentMiddleware):
     def _project(self, request: ModelRequest) -> ModelRequest:
         phase = request.state.get("agent_phase", "fast")
         if phase == "planner":
+            tools = request.tools
+            raw_envelope = request.state.get("authorization_envelope")
+            if raw_envelope is not None:
+                envelope = PlanningAuthorizationEnvelope.model_validate(raw_envelope)
+                allowed_names = frozenset(envelope.tool_names)
+                tools = [
+                    tool for tool in tools if _tool_name(tool) in allowed_names
+                ]
             return request.override(
+                tools=tools,
                 response_format=planner_response_format(),
                 system_message=_phase_system_message(request, planner_system_prompt()),
             )

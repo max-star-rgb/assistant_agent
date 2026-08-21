@@ -40,9 +40,12 @@ planning 不另建 Planner Tool executor。Planner 以 `agent_phase="planner"` �
 产生原生 interrupt，approve/resume 后沿 checkpoint 继续而不重放已经完成的 Planner Tool。
 
 成功的 `load_skill` 通过标准 `Command(update=...)` 写入受信 `active_skill_ids` 和 reference grant；后续 Planner
-model call 会从同一受信 catalog 将对应完整 Skill 正文加入 system prompt，并暴露其 `governed_tools`。admission
-冻结 Planner 实际激活的 Skill snapshot，scheduler 只把节点 `required_skill_ids` 与该 snapshot 的交集投影给
-worker；worker 的空 Tool allowlist 为 fail closed，且不能重新调用 `load_skill` 扩权。finalizer phase 则确定性
+model call 会从同一受信 catalog 将对应完整 Skill 正文加入 system prompt，并暴露其 `governed_tools`。首次成功
+admission 只冻结该计划实际声明或使用的 Skill ID、reference ID 与 Tool name 为 checkpointed strict
+authorization envelope，而不是冻结完整 inventory；后续 generation 只允许其子集。Planner prompt/context 与
+scheduler projection 都只暴露 envelope 内 scope，admission 对任何新增 scope 继续 fail closed。envelope reducer
+相同 replay 幂等、冲突拒绝，且只保存标识符，不保存原始 Tool 参数或结果。scheduler 只把节点
+`required_skill_ids` 与该 envelope 的交集投影给 worker；worker 的空 Tool allowlist 为 fail closed，且不能重新调用 `load_skill` 扩权。finalizer phase 则确定性
 使用空 Tool projection，不允许任何 Tool 调用。
 
 媒体 Tool 使用另一条与 Skill 正交的条件暴露链。`ConditionalToolExposureMiddleware` 只过滤已经静态注册在

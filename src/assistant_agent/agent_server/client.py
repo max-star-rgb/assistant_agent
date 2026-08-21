@@ -8,6 +8,34 @@ from typing import Any, Protocol
 from httpx import TransportError
 from langgraph_sdk import get_client
 
+from assistant_agent.agent_server.config import ASSISTANT_GRAPH_ID
+
+
+class IncompatibleCheckpointGraphError(ValueError):
+    """A checkpoint belongs to a graph definition that cannot be resumed here."""
+
+
+def require_current_checkpoint_graph(
+    checkpoint_state: Mapping[str, Any],
+) -> str:
+    """Fail closed unless checkpoint metadata names the current production graph."""
+
+    graph_id = checkpoint_state.get("graph_id")
+    metadata = checkpoint_state.get("metadata")
+    if graph_id is None and isinstance(metadata, Mapping):
+        graph_id = metadata.get("graph_id")
+    config = checkpoint_state.get("config")
+    if graph_id is None and isinstance(config, Mapping):
+        configurable = config.get("configurable")
+        if isinstance(configurable, Mapping):
+            graph_id = configurable.get("graph_id")
+    if graph_id != ASSISTANT_GRAPH_ID:
+        actual = graph_id if isinstance(graph_id, str) and graph_id else "unknown"
+        raise IncompatibleCheckpointGraphError(
+            f"checkpoint graph {actual!r} cannot resume under {ASSISTANT_GRAPH_ID!r}"
+        )
+    return ASSISTANT_GRAPH_ID
+
 
 class AgentServerClient(Protocol):
     async def create_thread(
@@ -110,4 +138,9 @@ class SdkAgentServerClient:
             yield {"event": part.event, "data": part.data, "id": part.id}
 
 
-__all__ = ["AgentServerClient", "SdkAgentServerClient"]
+__all__ = [
+    "AgentServerClient",
+    "IncompatibleCheckpointGraphError",
+    "require_current_checkpoint_graph",
+    "SdkAgentServerClient",
+]

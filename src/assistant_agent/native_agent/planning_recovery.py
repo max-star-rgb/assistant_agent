@@ -128,8 +128,8 @@ def sanitize_planner_propagation(error: Exception) -> PlannerPropagationError:
     return PlannerPropagationError("planner_unclassified_failure")
 
 
-def find_worker_control_failure(error: BaseException) -> BaseException | None:
-    """Find native control flow hidden in a provider wrapper without converting it."""
+def find_control_flow_failure(error: BaseException) -> BaseException | None:
+    """Find native interrupt/cancel control anywhere in a wrapper chain."""
 
     for current in _exception_chain(error):
         if isinstance(
@@ -348,11 +348,11 @@ def route_after_planner_assessment(state: PlanningState) -> str:
     decision = _recovery_decision(state)
     if decision is None:
         raise ValueError("failed planner outcome requires recovery_decision")
+    reject_unmaterialized_propagation(decision)
     return {
         "retry": "planner",
         "replan": "prepare_replan",
         "finalize": "controlled_finalize",
-        "propagate": "controlled_finalize",
     }[decision.action]
 
 
@@ -490,11 +490,11 @@ def route_after_worker_assessment(state: PlanningState) -> str:
 
     decision = _recovery_decision(state)
     if decision is not None:
+        reject_unmaterialized_propagation(decision)
         return {
             "retry": "scheduler",
             "replan": "prepare_replan",
             "finalize": "controlled_finalize",
-            "propagate": "controlled_finalize",
         }[decision.action]
     plan = _plan(state)
     latest = _latest_current_worker_outcomes(state, plan=plan)
@@ -515,6 +515,8 @@ def prepare_replan_node(
     """Preserve safe planner facts and create the next generation's context."""
 
     decision = _recovery_decision(state)
+    if decision is not None:
+        reject_unmaterialized_propagation(decision)
     if decision is None or decision.action != "replan":
         raise ValueError("replan preparation requires a replan decision")
     if _budget_usage(state).replans >= policy.max_replans:
@@ -599,6 +601,13 @@ def prepare_replan_node(
     return update
 
 
+def reject_unmaterialized_propagation(decision: RecoveryDecision) -> None:
+    if decision.action == "propagate":
+        raise ValueError(
+            "recovery propagate decision requires a live control-flow exception"
+        )
+
+
 def controlled_finalize_node(
     state: PlanningState,
     *,
@@ -607,6 +616,8 @@ def controlled_finalize_node(
     """Produce a local terminal message without exposing provider error payloads."""
 
     decision = _recovery_decision(state)
+    if decision is not None:
+        reject_unmaterialized_propagation(decision)
     fallback_reason = (
         decision.reason_code if decision is not None else "planner_recovery_unavailable"
     )
@@ -1037,8 +1048,9 @@ __all__ = [
     "controlled_finalize_node",
     "FinalizerPropagationError",
     "freeze_successful_worker_results",
-    "find_worker_control_failure",
+    "find_control_flow_failure",
     "prepare_replan_node",
+    "reject_unmaterialized_propagation",
     "record_recovery_decision",
     "recovery_transition_event",
     "route_after_planner_assessment",

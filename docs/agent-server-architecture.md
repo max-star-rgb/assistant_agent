@@ -104,11 +104,15 @@ source/target/result commit 进入 checkpoint，但宿主 path、Git process 和
 `langgraph.json` 只注册当前两张原生 Graph：
 
 ```text
-assistant-native-v1 -> assistant_agent.agent_server.graph:native_assistant_graph
+assistant-native-v2 -> assistant_agent.agent_server.graph:native_assistant_graph
 assistant-memory-v1 -> assistant_agent.agent_server.graph:native_memory_graph
 ```
 
-不注册旧 graph alias，因此新图不解释旧 thread/checkpoint。Agent Server 原生拥有 assistant、thread、run、
+`assistant-native-v1` 不作为指向当前图的 alias 注册：planning checkpoint schema 与恢复路由已经不兼容，v2
+不能解释或 replay v1 checkpoint。这是一次显式 graph ID 升级，不是 checkpoint 自动 migration。部署 v2 前，
+operator 必须按 graph ID 枚举 v1 的 pending/interrupt runs，并逐个 drain 或 cancel；v1 历史 checkpoint 只读，
+不得从 v2 resume/replay。新 assistant 与 run 必须选择 `assistant-native-v2`，Studio 用户也必须切换到该新 graph
+ID。Agent Server 原生拥有 assistant、thread、run、
 queue、checkpoint、interrupt/resume、cancel、stream 和 LangGraph Store。项目不再在生产入口维护第二份 run
 manager、cancel token、checkpoint facade 或产品状态机。
 
@@ -213,7 +217,7 @@ checkpoint 创建 replay 分支，`runs.cancel(action="rollback", wait=True)` �
 checkpoints。replay 与 rollback 都要求精确确认；项目不读取 saver、不维护 checkpoint facade，也不把 Graph
 state 回滚描述为已完成外部 Tool 副作用的自动撤销。
 
-所有 chat 入口最终调用同一个 `assistant-native-v1`，因此 Memory debounce 不散落在 Studio、CLI、HTTP 或
+所有当前 chat 入口最终调用同一个 `assistant-native-v2`，因此 Memory debounce 不散落在 Studio、CLI、HTTP 或
 WebSocket adapter：主图在回答后使用官方 SDK 查找并 rollback 同 thread、带专用 metadata 的旧 pending Memory
 run，随后 enqueue 一个新的 delayed `assistant-memory-v1` run。Agent Server 继续拥有真正的 delay 与
 queue；项目不创建 timer 或第二套队列。

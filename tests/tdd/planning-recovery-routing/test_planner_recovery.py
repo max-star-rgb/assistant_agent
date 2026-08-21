@@ -10,6 +10,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.errors import GraphInterrupt, NodeCancelledError
+from langgraph.runtime import Runtime
 
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.models import (
@@ -327,6 +328,19 @@ class _CancelledPlannerAgent:
         raise self.error
 
 
+class _WrappedControlPlannerAgent:
+    name = "AssistantFastAgent"
+
+    def __init__(self, control: BaseException) -> None:
+        self.control = control
+        self.wrapper = RuntimeError("raw-planner-wrapper-marker")
+        self.wrapper.__cause__ = control
+
+    async def ainvoke(self, input: dict[str, Any], *, context: Any) -> dict[str, Any]:
+        del input, context
+        raise self.wrapper
+
+
 class _RevisionThenTransientPlannerAgent:
     name = "AssistantFastAgent"
 
@@ -425,6 +439,62 @@ def test_node_cancelled_error_propagates_without_recovery_state() -> None:
     snapshots = list(graph.get_state_history(config))
     assert all("planner_outcome" not in snapshot.values for snapshot in snapshots)
     assert all("recovery_history" not in snapshot.values for snapshot in snapshots)
+
+
+@pytest.mark.parametrize(
+    "control_factory",
+    (GraphInterrupt, lambda: NodeCancelledError("planner")),
+    ids=("graph-interrupt", "node-cancelled"),
+)
+def test_planner_reraises_wrapped_control_identity_without_checkpoint_marker(
+    control_factory,
+) -> None:
+    """Catches planner sanitization swallowing control flow hidden by a wrapper."""
+
+    control = control_factory()
+    agent = _WrappedControlPlannerAgent(control)
+    saver = InMemorySaver()
+    graph = build_planning_graph(
+        object(),
+        agent,
+        tools=[_probe_tool()],
+        skill_catalog=SkillCatalog(),
+        checkpointer=saver,
+    )
+    config = {
+        "configurable": {
+            "thread_id": f"planner-wrapped-{type(control).__name__}"
+        }
+    }
+
+    planner_node = graph.get_graph().nodes["planner"].data
+    with pytest.raises(type(control)) as raised:
+        asyncio.run(
+            planner_node.afunc(
+                _planning_input(),
+                Runtime(context=AssistantRunContext()),
+            )
+        )
+
+    assert raised.value is control
+    if isinstance(control, GraphInterrupt):
+        asyncio.run(
+            graph.ainvoke(
+                _planning_input(),
+                config=config,
+                context=AssistantRunContext(),
+            )
+        )
+    else:
+        with pytest.raises(type(control)):
+            asyncio.run(
+                graph.ainvoke(
+                    _planning_input(),
+                    config=config,
+                    context=AssistantRunContext(),
+                )
+            )
+    assert "raw-planner-wrapper-marker" not in _saver_text(saver)
 
 
 def test_admission_revision_opens_a_new_operational_retry_window() -> None:

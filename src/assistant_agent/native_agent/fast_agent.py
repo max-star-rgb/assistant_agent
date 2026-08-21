@@ -35,6 +35,7 @@ from assistant_agent.media.visual_perception.history_probe import (
     VisualObservationHistoryProbe,
 )
 from assistant_agent.native_agent.state import FastAgentState
+from assistant_agent.native_agent.models import PlanningAuthorizationEnvelope
 from assistant_agent.native_agent.runtime_facts import (
     TrustedRuntimeFacts,
     trusted_runtime_facts_message,
@@ -92,10 +93,17 @@ def build_fast_agent(
 
     @dynamic_prompt
     def assistant_prompt(request: ModelRequest[AssistantRunContext]) -> str:
+        raw_envelope = request.state.get("authorization_envelope")
+        authorization_skill_ids = (
+            PlanningAuthorizationEnvelope.model_validate(raw_envelope).skill_ids
+            if raw_envelope is not None
+            else None
+        )
         return render_assistant_system_prompt(
             request.runtime.context,
             skill_descriptors=skill_index,
             active_skill_ids=tuple(request.state.get("active_skill_ids", ())),
+            authorization_skill_ids=authorization_skill_ids,
         )
 
     read_tool_names = _retryable_read_tool_names(tools)
@@ -289,8 +297,20 @@ def render_assistant_system_prompt(
     *,
     skill_descriptors: Sequence[SkillDescriptor] = (),
     active_skill_ids: Sequence[str] = (),
+    authorization_skill_ids: Sequence[str] | None = None,
 ) -> str:
     """Render concise instructions that directly affect model decisions."""
+
+    if authorization_skill_ids is not None:
+        authorized = frozenset(authorization_skill_ids)
+        skill_descriptors = tuple(
+            descriptor
+            for descriptor in skill_descriptors
+            if descriptor.name in authorized
+        )
+        active_skill_ids = tuple(
+            skill_id for skill_id in active_skill_ids if skill_id in authorized
+        )
 
     skill_lines = "\n".join(
         f"- {descriptor.name}：{descriptor.description}"

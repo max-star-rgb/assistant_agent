@@ -9,13 +9,18 @@ from assistant_agent.native_agent.models import (
     NativePlanNode,
     NativePlanProposal,
     PlanDeliverable,
+    PlanningAuthorizationEnvelope,
     PlannerOutcome,
+    ReplacementClaim,
+    SkillReferenceGrant,
     WorkerOutcome,
     WorkerResult,
 )
 from assistant_agent.native_agent.state import (
     add_budget_usage,
     merge_frozen_worker_results,
+    merge_planning_authorization_envelope,
+    merge_replacement_claims,
     merge_worker_outcomes,
 )
 
@@ -240,3 +245,58 @@ def test_worker_ledgers_reject_noncanonical_mapping_keys() -> None:
     invalid_copy = outcome.model_copy(update={"execution_id": "g0:other:a1"})
     with pytest.raises(ValidationError, match="canonical execution_id"):
         merge_worker_outcomes({}, {invalid_copy.execution_id: invalid_copy})
+
+
+def test_authorization_envelope_reducer_is_idempotent_and_conflicts_fail_closed() -> None:
+    """Catches checkpoint replay widening or replacing the first admitted scope."""
+
+    envelope = PlanningAuthorizationEnvelope(
+        skill_ids=("travel-sentinel",),
+        reference_grants=(
+            SkillReferenceGrant(
+                skill_id="travel-sentinel",
+                reference_ids=("route-guide",),
+            ),
+        ),
+        tool_names=("route-probe",),
+    )
+    assert merge_planning_authorization_envelope(None, envelope) == envelope
+    assert merge_planning_authorization_envelope(envelope, envelope) == envelope
+
+    widened = envelope.model_copy(
+        update={"tool_names": ("route-probe", "write-probe")}
+    )
+    with pytest.raises(ValueError, match="conflicting planning authorization envelope"):
+        merge_planning_authorization_envelope(envelope, widened)
+    assert set(envelope.model_dump()) == {
+        "skill_ids",
+        "reference_grants",
+        "tool_names",
+    }
+
+
+def test_replacement_claim_reducer_is_idempotent_and_rejects_new_claimant() -> None:
+    """Catches a later generation reclaiming one historical node."""
+
+    first = ReplacementClaim(
+        replaced_node_id="route-g0",
+        replacement_node_id="route-g1",
+        plan_generation=1,
+    )
+    assert merge_replacement_claims({}, {"route-g0": first}) == {
+        "route-g0": first
+    }
+    assert merge_replacement_claims(
+        {"route-g0": first}, {"route-g0": first}
+    ) == {"route-g0": first}
+
+    later = ReplacementClaim(
+        replaced_node_id="route-g0",
+        replacement_node_id="route-g2",
+        plan_generation=2,
+    )
+    with pytest.raises(ValueError, match="conflicting historical replacement claim"):
+        merge_replacement_claims(
+            {"route-g0": first},
+            {"route-g0": later},
+        )

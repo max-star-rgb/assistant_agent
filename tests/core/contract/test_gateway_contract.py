@@ -7,6 +7,12 @@ from pathlib import Path
 import pytest
 
 from assistant_agent.agent_server.auth import authenticate
+from assistant_agent.agent_server.client import (
+    IncompatibleCheckpointGraphError,
+    require_current_checkpoint_graph,
+)
+from assistant_agent.agent_server.config import ASSISTANT_GRAPH_ID
+from assistant_agent.agent_server.media_app import _native_graph_warmup_url
 from assistant_agent.agent_server.media_protocol import MediaProtocolError, parse_chat, parse_envelope
 from assistant_agent.agent_server.media_session import MediaConnectionSession
 from assistant_agent.native_agent.context import AssistantRunContext
@@ -17,7 +23,7 @@ def test_agent_server_owns_the_production_graph_and_authenticated_media_route() 
     root = Path(__file__).resolve().parents[3]
     manifest = json.loads((root / "langgraph.json").read_text(encoding="utf-8"))
     assert manifest["graphs"] == {
-        "assistant-native-v1": (
+        "assistant-native-v2": (
             "assistant_agent.agent_server.graph:native_assistant_graph"
         ),
         "assistant-memory-v1": (
@@ -28,6 +34,26 @@ def test_agent_server_owns_the_production_graph_and_authenticated_media_route() 
         "app": "assistant_agent.agent_server.media_app:app",
         "enable_custom_route_auth": True,
     }
+
+
+@pytest.mark.core_invariant("GATE-001")
+def test_current_clients_reject_v1_checkpoint_at_graph_id_boundary(
+    monkeypatch,
+) -> None:
+    """Catches a v1 checkpoint being replayed through the incompatible v2 graph."""
+
+    assert ASSISTANT_GRAPH_ID == "assistant-native-v2"
+    monkeypatch.setenv("ASSISTANT_AGENT_SERVER_PORT", "8089")
+    assert _native_graph_warmup_url() == (
+        "http://127.0.0.1:8089/assistants/assistant-native-v2/graph"
+    )
+    assert require_current_checkpoint_graph(
+        {"metadata": {"graph_id": "assistant-native-v2"}}
+    ) == "assistant-native-v2"
+    with pytest.raises(IncompatibleCheckpointGraphError):
+        require_current_checkpoint_graph(
+            {"metadata": {"graph_id": "assistant-native-v1"}}
+        )
 
 
 @pytest.mark.core_invariant("GATE-001")

@@ -22,7 +22,9 @@ from assistant_agent.native_agent.models import (
     NativePlanNode,
     NativePlanProposal,
     PlanDeliverable,
+    PlanningAuthorizationEnvelope,
     PlannerEvidence,
+    SkillReferenceGrant,
     WorkerOutcome,
     WorkerResult,
 )
@@ -118,9 +120,19 @@ def test_worker_receives_only_scoped_inputs() -> None:
             "messages": [HumanMessage(content="planner-history-must-not-leak")],
             "planner_active_skill_ids": ["travel-sentinel", "unrelated-sentinel"],
             "planner_skill_reference_grants": {
-                "travel-sentinel": ["route-guide"],
+                "travel-sentinel": ["route-guide", "later-guide"],
                 "unrelated-sentinel": ["unrelated-guide"],
             },
+            "authorization_envelope": PlanningAuthorizationEnvelope(
+                skill_ids=("travel-sentinel",),
+                reference_grants=(
+                    SkillReferenceGrant(
+                        skill_id="travel-sentinel",
+                        reference_ids=("route-guide",),
+                    ),
+                ),
+                tool_names=("route_probe",),
+            ),
         }
     )
 

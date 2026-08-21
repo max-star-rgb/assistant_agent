@@ -10,6 +10,8 @@ from typing import Any
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.errors import GraphInterrupt, NodeCancelledError
+from langgraph.runtime import Runtime
 
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.models import (
@@ -18,14 +20,22 @@ from assistant_agent.native_agent.models import (
     NativePlanNode,
     NativePlanProposal,
     PlanDeliverable,
+    PlannerOutcome,
     RecoveryDecision,
     WorkerCompletion,
     WorkerOutcome,
     WorkerResult,
 )
 from assistant_agent.native_agent.planning_budget import PlanningBudgetPolicy
-from assistant_agent.native_agent.planning_graph import build_planning_graph
-from assistant_agent.native_agent.planning_recovery import controlled_finalize_node
+from assistant_agent.native_agent.planning_graph import (
+    build_planning_graph,
+    route_after_finalize,
+)
+from assistant_agent.native_agent.planning_recovery import (
+    controlled_finalize_node,
+    route_after_planner_assessment,
+    route_after_worker_assessment,
+)
 from assistant_agent.skills.loading import SkillCatalog
 
 
@@ -167,6 +177,37 @@ def test_terminal_failure_codes_reserve_capacity_for_fallback_reason() -> None:
     ]
     assert len(duplicate_codes) == 32
     assert duplicate_codes.count("zzz_terminal_reason") == 1
+
+
+def test_propagate_decision_never_routes_or_degrades_to_controlled_finalizer() -> None:
+    """Catches an impossible propagate state being converted into a user terminal."""
+
+    decision = RecoveryDecision(
+        action="propagate",
+        reason_code="control_flow_must_propagate",
+    )
+    planner_state = {
+        "planner_outcome": PlannerOutcome(
+            status="operational_failed",
+            failure=FailureFact(
+                category="operational",
+                code="planner_operational_failure",
+                phase="planner",
+                plan_generation=0,
+                attempt=1,
+            ),
+            usage=BudgetUsage(node_attempts=1),
+        ),
+        "recovery_decision": decision,
+    }
+    for operation in (
+        lambda: route_after_planner_assessment(planner_state),
+        lambda: route_after_worker_assessment({"recovery_decision": decision}),
+        lambda: route_after_finalize({"recovery_decision": decision}),
+        lambda: controlled_finalize_node({"recovery_decision": decision}),
+    ):
+        with pytest.raises(ValueError, match="propagate"):
+            operation()
 
 
 def test_normal_finalizer_retries_one_operational_failure_with_zero_tool_budget() -> (
@@ -383,6 +424,67 @@ def test_checkpoint_resume_after_failed_finalizer_reuses_charged_terminal_attemp
     assert agent.calls_by_phase["finalizer"] == 1
 
 
+@pytest.mark.parametrize(
+    "control_factory",
+    (GraphInterrupt, lambda: NodeCancelledError("finalizer")),
+    ids=("graph-interrupt", "node-cancelled"),
+)
+def test_finalizer_reraises_wrapped_control_identity_without_checkpoint_marker(
+    control_factory,
+) -> None:
+    """Catches finalizer recovery swallowing control flow hidden by a wrapper."""
+
+    control = control_factory()
+    saver = InMemorySaver()
+    graph = build_planning_graph(
+        object(),
+        _WrappedControlFinalizerAgent(control),
+        skill_catalog=SkillCatalog(),
+        budget_policy=PlanningBudgetPolicy.from_base(1),
+        checkpointer=saver,
+    )
+    config = {
+        "configurable": {
+            "thread_id": f"finalizer-wrapped-{type(control).__name__}"
+        }
+    }
+
+    finalizer_node = graph.get_graph().nodes["finalize"].data
+    direct_state = _wrapped_finalizer_state()
+    with pytest.raises(type(control)) as raised:
+        asyncio.run(
+            finalizer_node.afunc(
+                direct_state,
+                Runtime(context=AssistantRunContext()),
+            )
+        )
+
+    assert raised.value is control
+    compiled_input = {
+        "messages": [HumanMessage(content="request-sentinel")],
+        "memory_context": (),
+        "memory_status": "empty",
+    }
+    if isinstance(control, GraphInterrupt):
+        asyncio.run(
+            graph.ainvoke(
+                compiled_input,
+                config=config,
+                context=AssistantRunContext(),
+            )
+        )
+    else:
+        with pytest.raises(type(control)):
+            asyncio.run(
+                graph.ainvoke(
+                    compiled_input,
+                    config=config,
+                    context=AssistantRunContext(),
+                )
+            )
+    assert "raw-finalizer-wrapper-marker" not in _saver_text(saver)
+
+
 class _FinalizerRetryAgent:
     name = "AssistantFastAgent"
 
@@ -465,3 +567,67 @@ class _FinalizerRetryAgent:
             "messages": [AIMessage(content="final-answer-sentinel")],
             "phase_budget_usage": BudgetUsage(model_calls=1),
         }
+
+
+class _WrappedControlFinalizerAgent(_FinalizerRetryAgent):
+    def __init__(self, control: BaseException) -> None:
+        super().__init__()
+        self.control = control
+        self.wrapper = RuntimeError("raw-finalizer-wrapper-marker")
+        self.wrapper.__cause__ = control
+
+    async def ainvoke(
+        self,
+        input: dict[str, Any],
+        *,
+        context: Any,
+    ) -> dict[str, Any]:
+        if input["agent_phase"] == "finalizer":
+            raise self.wrapper
+        return await super().ainvoke(input, context=context)
+
+
+def _wrapped_finalizer_state() -> dict[str, Any]:
+    plan = NativePlanProposal(
+        schema_version="native_plan_v2",
+        nodes=(NativePlanNode(node_id="worker", objective="worker"),),
+        deliverables=(
+            PlanDeliverable(
+                deliverable_id="answer",
+                description="answer",
+                producer_node_ids=("worker",),
+            ),
+        ),
+    )
+    return {
+        "messages": [HumanMessage(content="request-sentinel")],
+        "memory_context": (),
+        "memory_status": "empty",
+        "plan": plan,
+        "frozen_worker_results": {
+            "worker": WorkerResult(work_item_id="worker", content="worker-result")
+        },
+        "budget_usage": BudgetUsage(model_calls=2, node_attempts=2),
+    }
+
+
+def _saver_text(saver: InMemorySaver) -> str:
+    values: list[str] = []
+
+    def collect(value: object) -> None:
+        if isinstance(value, bytes):
+            values.append(value.decode("utf-8", errors="replace"))
+        elif isinstance(value, str):
+            values.append(value)
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                collect(key)
+                collect(item)
+        elif isinstance(value, (list, tuple, set)):
+            for item in value:
+                collect(item)
+
+    collect(saver.storage)
+    collect(saver.writes)
+    collect(saver.blobs)
+    return "\n".join(values)
