@@ -334,3 +334,27 @@ entry 在 rename 后立即消失，因此同 scope workspace 可在旧 admin tom
 tombstone 由相互独立、持久且常数状态的增量 DFS 按共享 entry/time budget 跨轮删除；deadline 或 I/O 失败只
 关闭 iterator 并保留 tombstone/state 供后续重试。workspace root 消失时必须清除其 descendant physical
 deletion state，并关闭外部 admin deletion handle；owner shutdown 关闭句柄后仍由持久 tombstone 支持下次发现。
+
+### Stage5B crash-safe retirement journal addendum
+
+expired workspace 的双 tombstone 事务由 configured repository common dir 下的受管 `0700` area 持久
+journal 驱动。journal 固定记录 schema、repo/workspace、expected admin 与 physical root 的 device/inode、两类
+tombstone name 及 `prepared|admin_renamed|physical_renamed` stage；创建和每次 stage transition 都通过同目录
+temporary ordinary file、`fsync(file)`、atomic replace、`fsync(area)` 完成。owner 在稳定 journal lock 与既有
+workspace lock 下先移动 admin registry entry，再移动 physical management root。任一 rename 或 journal fsync
+之间崩溃时，后续 process owner 只依据 configured common dir、journal 和 expected inode 幂等 forward-recover；
+不得依赖 workspace root marker，也不得因 rollback 失败丢失恢复事实。
+
+周期 owner 对 configured repositories 做连续 round 扫描，每个 repository 的 common dir 仍由 governed Git
+取得并以 dev/inode 复核的配置大小 cache 降低空扫描开销。单仓 page、跨仓 cursor、成功计数和 pending bit 均为
+有界状态；任一 repository scan failure 或 timeout 必须清空当前连续 round，只有所有 configured repositories 在
+同一连续 round 完整成功且未发现 journal/tombstone 时，才可进入短时空扫描 quiescence 或清理由旧版本遗留的
+workspace-root hint。workspace root 消失不影响 common-dir journal discovery。periodic cleanup、请求触发 cleanup
+和 `aclose` 通过 process-owned mutex 串行，避免取消 `asyncio.to_thread` 等待者后遗留线程与最终清理并发操作同一
+traversal。
+
+admin tombstone deletion 不复用 Path-based DFS。每轮从 canonical common dir 逐级 `O_NOFOLLOW` 打开 area，
+用 `fstatat` 语义核对 area/root 及已进入子目录的 expected device/inode，并只通过 dirfd-relative `open`、
+`fchmod`、`unlink`、`rmdir` 推进持久 directory-cookie DFS。root 或 nested directory 被 symlink/inode replacement
+时永久 fail closed 并保留 journal/tombstone；普通 deadline 或 I/O failure 仅关闭当轮 descriptor，后续 round
+重新安全打开并重试，绝不跟随被替换路径。
