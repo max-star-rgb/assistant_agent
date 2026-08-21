@@ -22,6 +22,9 @@ from assistant_agent.coding.models import (
     CodingPatchApplyResult,
     CodingPatchProposal,
     CodingPatchValidation,
+    CodingRepairApprovalContext,
+    CodingRepairAttempt,
+    CodingRepairFailureEvidence,
     CodingTerminalResult,
 )
 
@@ -124,7 +127,7 @@ class CodingState(AgentState):
     proposal: NotRequired[CodingPatchProposal | None]
     validation: NotRequired[CodingPatchValidation | None]
     approval_status: NotRequired[Literal["pending", "approved", "rejected"] | None]
-    approval_origin: NotRequired[Literal["model", "formatter"]]
+    approval_origin: NotRequired[Literal["model", "formatter", "repair"]]
     applied_result: NotRequired[CodingPatchApplyResult | None]
     approved_changed_paths: NotRequired[Annotated[list[str], _merge_unique_strings]]
     dependency_plan: NotRequired[CodingDependencyPlan | None]
@@ -147,6 +150,13 @@ class CodingState(AgentState):
     commit_result: NotRequired[CodingCommitResult | None]
     merge_preview: NotRequired[CodingMergePreview | None]
     merge_result: NotRequired[CodingMergeResult | None]
+    repair_round: NotRequired[int]
+    repair_status: NotRequired[
+        Literal["pending", "active", "passed", "exhausted", "no_progress"]
+    ]
+    repair_failure_evidence: NotRequired[CodingRepairFailureEvidence | None]
+    repair_history: NotRequired[Annotated[list[CodingRepairAttempt], operator.add]]
+    repair_approval_context: NotRequired[CodingRepairApprovalContext | None]
     coding_result: NotRequired[CodingTerminalResult]
 
 
