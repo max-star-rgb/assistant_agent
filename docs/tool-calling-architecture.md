@@ -28,22 +28,27 @@ fast agent 子图当前执行的 state/checkpoint namespace 内 `active_skill_id
 模型；成功执行 `load_skill` 后，middleware 把原 `ToolMessage` 与窄 Skill/reference grant 一起写入标准
 `Command(update=...)`，下一次模型调用才暴露对应 Tool。Skill/reference channel 不进入父图或 Memory
 Graph。Tool 名只从 `skill.toml` 重新解析，不接受模型或 Tool
-artifact 声明任意 grant；该可见性层不替代具体 Tool 的身份、授权、参数和副作用校验。planning 的 Planner phase
-可以调用 `load_skill`，但 admission 与 worker phase 都禁止 worker 调用它，避免 worker 扩大 Planner 冻结的 Skill
-快照。worker 可显式调用 `load_skill_reference`，但 ToolContext 只读取 scheduler 投影的既有
+artifact 声明任意 grant；该可见性层不替代具体 Tool 的身份、授权、参数和副作用校验。fast phase 在 Skill
+激活后可获得对应业务 Tool schema；planning 的 Planner phase 则始终只可调用 `load_skill` 与
+`load_skill_reference` 两个 Skill 控制 Tool，不能执行默认可见或 Skill 治理的业务 Tool。admission 与 worker phase
+都禁止 worker 调用 `load_skill`，避免 worker 扩大 Planner 冻结的 Skill 快照。worker 可显式调用
+`load_skill_reference`，但 ToolContext 只读取 scheduler 投影的既有
 `skill_reference_grants`，未投影 reference 必须 fail closed，调用本身不产生新 grant。
 
 planning 不另建 Planner Tool executor。Planner 以 `agent_phase="planner"` 复用同一个
-`AssistantFastAgent` model→ToolNode→model loop；在相同初始 state 与受信运行事实下，其首轮 Tool projection
-与 fast 首轮等价，Planner Tool 调用继续经过同一组 `ToolRetryMiddleware`、state-aware
-`HumanInTheLoopMiddleware` 和标准 `ToolNode`。因此 read Tool 保持有界 retry，planning 中非 read Tool 在执行前
-产生原生 interrupt，approve/resume 后沿 checkpoint 继续而不重放已经完成的 Planner Tool。
+`AssistantFastAgent` model→ToolNode→model loop，但 phase projection 会在每次 model call 把可执行 schema
+收窄到上述两个控制 Tool，并关闭 Provider-native search。Planner 只能通过标准 `ToolNode` 加载 Skill 正文或
+已授权 reference；业务执行从计划准入后才进入 worker。
 
 成功的 `load_skill` 通过标准 `Command(update=...)` 写入受信 `active_skill_ids` 和 reference grant；后续 Planner
-model call 会从同一受信 catalog 将对应完整 Skill 正文加入 system prompt，并暴露其 `governed_tools`。首次成功
-admission 只冻结该计划实际声明或使用的 Skill ID、reference ID 与 Tool name 为 checkpointed strict
+model call 会从同一受信 catalog 将对应完整 Skill 正文加入 system prompt，并把当前渐进式投影中的业务能力转换为
+不可执行、无参数 schema 的有界 worker capability catalog。Planner 只用其中的 Tool 名称、effect 和短用途说明
+做委派；Tool schema 仅在计划准入后按节点 allowlist 与 Skill grant 的交集投影给 worker。首次成功 admission
+只冻结该计划实际声明或使用的 Skill ID、reference ID 与 Tool name 为 checkpointed strict
 authorization envelope，而不是冻结完整 inventory；后续 generation 只允许其子集。Planner prompt/context 与
-scheduler projection 都只暴露 envelope 内 scope，admission 对任何新增 scope 继续 fail closed。envelope reducer
+scheduler projection 都只暴露 envelope 内 scope；replan 不再允许 `load_skill`，只有 frozen reference grant
+非空时才保留 `load_skill_reference`，capability catalog 也只列 envelope 中的 Tool。admission 对任何新增 scope
+继续 fail closed。envelope reducer
 相同 replay 幂等、冲突拒绝，且只保存标识符，不保存原始 Tool 参数或结果。scheduler 只把节点
 `required_skill_ids` 与该 envelope 的交集投影给 worker；worker 的空 Tool allowlist 为 fail closed，且不能重新调用 `load_skill` 扩权。finalizer phase 则确定性
 使用空 Tool projection，不允许任何 Tool 调用。
@@ -187,7 +192,8 @@ push、PR、fetch/pull、远程凭据和自动冲突修复没有注册或隐式�
 Qwen 等模型原生联网参数属于 `BaseChatModel` 请求能力，不伪装成本地 Tool。real 模式选择 qwen 且
 `QWEN_CHAT_API_PROTOCOL=dashscope` 时，生产主链构造实现标准 LangChain `BaseChatModel` 的
 `DashScopeNativeChatModel`，使用官方 text-generation Generation API；不得静默回退到 OpenAI-compatible。
-显式选择 `openai_compatible` 时才构造 `ChatOpenAI`。
+显式选择 `openai_compatible` 时才构造 `ChatOpenAI`。planning 的 planner phase 无论全局配置如何都强制关闭
+Provider-native search；联网检索若属于计划，只能委派给准入后的 worker。
 
 `QWEN_CHAT_ENABLE_SEARCH=true` 时原生请求设置 `enable_search=true`，默认使用 turbo、
 `forced_search=false`，同时设置 `enable_source=true`、`enable_citation=true` 和 `citation_format=[<number>]`。

@@ -25,26 +25,39 @@ from assistant_agent.tools.ids import (
 )
 
 
-def test_planner_preserves_all_upstream_visible_tools() -> None:
+def test_planner_exposes_only_skill_loading_controls() -> None:
     projected = project_phase_request(
         phase="planner",
-        tool_names=("load_skill", "weather_probe", "route_probe"),
+        tool_names=(
+            LOAD_SKILL_TOOL_NAME,
+            LOAD_SKILL_REFERENCE_TOOL_NAME,
+            "weather_probe",
+            "route_probe",
+        ),
     )
 
     assert tool_names(projected) == {
-        "load_skill",
-        "weather_probe",
-        "route_probe",
+        LOAD_SKILL_TOOL_NAME,
+        LOAD_SKILL_REFERENCE_TOOL_NAME,
     }
     assert projected.response_format is not None
+    assert projected.model_settings["provider_search_profile"] == "none"
+    assert projected.model_settings["extra_body"] == {"enable_search": False}
+    assert "weather_probe" in str(projected.system_message.content)
+    assert "route_probe" in str(projected.system_message.content)
 
 
-def test_recovery_planner_exposes_only_first_admitted_tool_envelope() -> None:
-    """Catches later generations seeing load_skill or inventory outside the envelope."""
+def test_recovery_planner_keeps_only_granted_skill_reference_control() -> None:
+    """Later generations cannot execute frozen-envelope business Tools."""
 
     projected = project_phase_request(
         phase="planner",
-        tool_names=("load_skill", "weather_probe", "route_probe"),
+        tool_names=(
+            LOAD_SKILL_TOOL_NAME,
+            LOAD_SKILL_REFERENCE_TOOL_NAME,
+            "weather_probe",
+            "route_probe",
+        ),
         authorization_envelope=PlanningAuthorizationEnvelope(
             skill_ids=("travel-sentinel",),
             reference_grants=(
@@ -57,10 +70,43 @@ def test_recovery_planner_exposes_only_first_admitted_tool_envelope() -> None:
         ),
     )
 
-    assert tool_names(projected) == {"route_probe"}
+    assert tool_names(projected) == {LOAD_SKILL_REFERENCE_TOOL_NAME}
+    assert "route_probe" in str(projected.system_message.content)
+    assert "weather_probe" not in str(projected.system_message.content)
 
 
-def test_fast_and_planner_first_business_tool_names_match() -> None:
+def test_recovery_planner_without_reference_grants_has_no_callable_tools() -> None:
+    projected = project_phase_request(
+        phase="planner",
+        tool_names=(
+            LOAD_SKILL_TOOL_NAME,
+            LOAD_SKILL_REFERENCE_TOOL_NAME,
+            "route_probe",
+        ),
+        authorization_envelope=PlanningAuthorizationEnvelope(
+            skill_ids=(),
+            reference_grants=(),
+            tool_names=("route_probe",),
+        ),
+    )
+
+    assert projected.tools == []
+    assert "route_probe" in str(projected.system_message.content)
+
+
+def test_planner_capability_catalog_is_stably_bounded() -> None:
+    projected = project_phase_request(
+        phase="planner",
+        tool_names=tuple(f"probe_{index:03d}" for index in reversed(range(140))),
+    )
+    prompt = str(projected.system_message.content)
+
+    assert "probe_000" in prompt
+    assert "probe_127" in prompt
+    assert "probe_128" not in prompt
+
+
+def test_fast_keeps_business_tools_while_planner_cannot_execute_them() -> None:
     inventory_names = {"weather_probe", "route_probe"}
     fast = project_phase_request(
         phase="fast",
@@ -71,7 +117,8 @@ def test_fast_and_planner_first_business_tool_names_match() -> None:
         tool_names=("load_skill", *sorted(inventory_names)),
     )
 
-    assert tool_names(planner) & inventory_names == tool_names(fast) & inventory_names
+    assert tool_names(fast) & inventory_names == inventory_names
+    assert tool_names(planner) & inventory_names == set()
 
 
 def test_worker_empty_allowlist_is_fail_closed() -> None:

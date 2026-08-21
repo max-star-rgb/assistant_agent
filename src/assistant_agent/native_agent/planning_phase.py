@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+import json
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from langchain.agents.middleware import ModelRequest
@@ -16,7 +17,13 @@ from assistant_agent.native_agent.models import (
     PlanningAuthorizationEnvelope,
     WorkerCompletion,
 )
-from assistant_agent.tools.ids import LOAD_SKILL_TOOL_NAME
+from assistant_agent.tools.ids import (
+    LOAD_SKILL_REFERENCE_TOOL_NAME,
+    LOAD_SKILL_TOOL_NAME,
+)
+
+_PLANNER_CAPABILITY_LIMIT = 128
+_PLANNER_CAPABILITY_PURPOSE_LIMIT = 320
 
 
 class PlanningPhaseMiddleware(AgentMiddleware):
@@ -39,18 +46,43 @@ class PlanningPhaseMiddleware(AgentMiddleware):
     def _project(self, request: ModelRequest) -> ModelRequest:
         phase = request.state.get("agent_phase", "fast")
         if phase == "planner":
-            tools = request.tools
             raw_envelope = request.state.get("authorization_envelope")
+            envelope: PlanningAuthorizationEnvelope | None = None
+            allowed_names = {
+                LOAD_SKILL_TOOL_NAME,
+                LOAD_SKILL_REFERENCE_TOOL_NAME,
+            }
             if raw_envelope is not None:
                 envelope = PlanningAuthorizationEnvelope.model_validate(raw_envelope)
-                allowed_names = frozenset(envelope.tool_names)
-                tools = [
-                    tool for tool in tools if _tool_name(tool) in allowed_names
-                ]
+                allowed_names = (
+                    {LOAD_SKILL_REFERENCE_TOOL_NAME}
+                    if envelope.reference_grants
+                    else set()
+                )
+            model_settings = dict(request.model_settings or {})
+            model_settings["provider_search_profile"] = "none"
+            extra_body = model_settings.get("extra_body")
+            model_settings["extra_body"] = {
+                **(extra_body if isinstance(extra_body, dict) else {}),
+                "enable_search": False,
+            }
+            phase_prompt = planner_system_prompt(
+                capability_catalog=_planner_capability_catalog(
+                    request.tools,
+                    allowed_names=(
+                        frozenset(envelope.tool_names)
+                        if envelope is not None
+                        else None
+                    ),
+                )
+            )
             return request.override(
-                tools=tools,
+                tools=[
+                    tool for tool in request.tools if _tool_name(tool) in allowed_names
+                ],
                 response_format=planner_response_format(),
-                system_message=_phase_system_message(request, planner_system_prompt()),
+                system_message=_phase_system_message(request, phase_prompt),
+                model_settings=model_settings,
             )
         if phase == "finalizer":
             return request.override(
@@ -94,14 +126,24 @@ def worker_response_format() -> ToolStrategy:
     return ToolStrategy(WorkerCompletion)
 
 
-def planner_system_prompt() -> str:
+def planner_system_prompt(
+    *,
+    capability_catalog: tuple[dict[str, str], ...] = (),
+) -> str:
     """Constrain the planner role without creating a separate agent loop."""
 
-    return (
-        "你是任务规划器。需要专业流程时先加载对应 Skill；可为澄清当前任务执行必要的业务探索，"
-        "复用共享的已完成业务工具证据，并把可独立的深入工作留给 DAG worker。"
+    prompt = (
+        "你是任务规划器。需要专业流程时先加载对应 Skill；你只能调用 Skill 加载能力，"
+        "不能直接执行任何业务工具或联网搜索。把业务工作拆给 DAG worker。"
+        "下方 capability catalog 只表示可以委派给 worker 的工具名称，不是你可调用的工具。"
         "evidence_refs 只能引用已完成业务 ToolCall 的原始 tool_call_id。"
         "最终只提交符合 NativePlanProposal schema 的最小可执行 native_plan_v2，不直接回答用户。"
+    )
+    if not capability_catalog:
+        return prompt
+    return (
+        f"{prompt}\n\nworker_capability_catalog="
+        f"{json.dumps(capability_catalog, ensure_ascii=False, separators=(',', ':'))}"
     )
 
 
@@ -144,6 +186,46 @@ def _tool_name(tool: BaseTool | dict[str, Any]) -> str | None:
         return name if isinstance(name, str) else None
     name = tool.get("name") if isinstance(tool, dict) else None
     return name if isinstance(name, str) else None
+
+
+def _planner_capability_catalog(
+    tools: Sequence[BaseTool | dict[str, Any]],
+    *,
+    allowed_names: frozenset[str] | None,
+) -> tuple[dict[str, str], ...]:
+    """Project non-executable worker capabilities without exposing Tool schemas."""
+
+    control_names = {
+        LOAD_SKILL_TOOL_NAME,
+        LOAD_SKILL_REFERENCE_TOOL_NAME,
+        "NativePlanProposal",
+        "WorkerCompletion",
+    }
+    projected: list[dict[str, str]] = []
+    for tool in tools:
+        name = _tool_name(tool)
+        if (
+            name is None
+            or name in control_names
+            or (allowed_names is not None and name not in allowed_names)
+        ):
+            continue
+        item = {"name": name}
+        if isinstance(tool, BaseTool):
+            effect = (tool.metadata or {}).get("effect")
+            if isinstance(effect, str) and effect:
+                item["effect"] = effect
+            purpose = " ".join(tool.description.split())[
+                :_PLANNER_CAPABILITY_PURPOSE_LIMIT
+            ]
+            if purpose:
+                item["purpose"] = purpose
+        projected.append(item)
+    return tuple(
+        sorted(projected, key=lambda item: item["name"])[
+            :_PLANNER_CAPABILITY_LIMIT
+        ]
+    )
 
 
 def _worker_tool_allowlist(request: ModelRequest) -> frozenset[str]:

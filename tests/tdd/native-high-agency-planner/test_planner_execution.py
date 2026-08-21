@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Literal
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool, tool
 from langgraph.prebuilt import ToolRuntime
 
@@ -28,25 +28,36 @@ class _PlannerExecutionModel(MockAssistantChatModel):
         visible_names = _visible_tool_names(kwargs.get("tools"))
         if "NativePlanProposal" not in visible_names:
             if "WorkerCompletion" in visible_names:
+                delegated_tool = (
+                    "weather_probe"
+                    if self.scenario == "default-tool"
+                    else "route_probe"
+                )
+                if delegated_tool in visible_names and not _has_tool_result(
+                    messages,
+                    delegated_tool,
+                ):
+                    return _tool_call(
+                        delegated_tool,
+                        f"{delegated_tool}-worker-call",
+                    )
                 return _tool_call(
                     "WorkerCompletion",
                     "worker-completion-call",
                     args={
                         "status": "completed",
-                        "content": "worker-or-finalizer-sentinel",
+                        "content": f"worker-completed-{delegated_tool}",
                     },
                 )
             return AIMessage(content="worker-or-finalizer-sentinel")
         if self.scenario == "default-tool":
-            if "weather_probe" in visible_names and not _has_tool_result(
-                messages,
-                "weather_probe",
-                tool_call_id="weather-call-1",
-            ):
-                return _tool_call("weather_probe", "weather-call-1")
+            if "weather_probe" in visible_names:
+                return _tool_call("weather_probe", "planner-weather-call")
+            if "weather_probe" not in _system_text(messages):
+                return AIMessage(content="weather-capability-not-visible")
             return _proposal_call(
-                evidence_id="weather-call-1",
                 producer_node_id="weather-worker",
+                allowed_tool_names=("weather_probe",),
             )
         if not _has_tool_result(messages, "load_skill"):
             if "load_skill" not in visible_names:
@@ -59,13 +70,14 @@ class _PlannerExecutionModel(MockAssistantChatModel):
                 "load-skill-call-1",
                 args={"skill_id": "travel-sentinel"},
             )
-        if not _has_tool_result(messages, "route_probe"):
-            if "route_probe" not in visible_names:
-                return AIMessage(content="governed-tool-not-visible")
-            return _tool_call("route_probe", "route-call-1")
+        if "route_probe" in visible_names:
+            return _tool_call("route_probe", "planner-route-call")
+        if "route_probe" not in _system_text(messages):
+            return AIMessage(content="governed-capability-not-visible")
         return _proposal_call(
-            evidence_id="route-call-1",
             producer_node_id="route-worker",
+            allowed_tool_names=("route_probe",),
+            required_skill_ids=("travel-sentinel",),
         )
 
 
@@ -114,7 +126,7 @@ class _CompactingFastAgent:
         }
 
 
-def test_planner_calls_default_tool_and_captures_real_evidence() -> None:
+def test_planner_delegates_default_tool_without_executing_it() -> None:
     model = _PlannerExecutionModel(scenario="default-tool")
     weather_probe = _create_probe_tool(
         "weather_probe",
@@ -143,22 +155,16 @@ def test_planner_calls_default_tool_and_captures_real_evidence() -> None:
         )
     )
 
-    assert [(item.tool_name, item.content) for item in result["planner_evidence"]] == [
-        ("weather_probe", "weather-sentinel")
-    ]
-    evidence = result["planner_evidence"][0]
-    assert evidence.evidence_id == "weather-call-1"
-    assert evidence.structured_content == {
-        "temperature": 23,
-        "output_ref": "artifact://weather-sentinel",
-    }
-    assert evidence.artifact_ref == "artifact://weather-sentinel"
-    assert result["plan_candidate"].deliverables[0].evidence_refs == (
-        evidence.evidence_id,
+    assert result["planner_evidence"] == []
+    assert result["plan_candidate"].nodes[0].allowed_tool_names == (
+        "weather_probe",
+    )
+    assert result["frozen_worker_results"]["weather-worker"].content == (
+        "worker-completed-weather_probe"
     )
 
 
-def test_planner_loads_skill_then_calls_governed_tool(tmp_path: Path) -> None:
+def test_planner_loads_skill_then_delegates_governed_tool(tmp_path: Path) -> None:
     _write_travel_skill(tmp_path)
     catalog = load_repo_skill_descriptors(tmp_path)
     model = _PlannerExecutionModel(scenario="skill-tool")
@@ -192,11 +198,17 @@ def test_planner_loads_skill_then_calls_governed_tool(tmp_path: Path) -> None:
     assert result["planner_skill_reference_grants"] == {
         "travel-sentinel": ["route-guide"]
     }
-    assert [item.tool_name for item in result["planner_evidence"]] == ["route_probe"]
-    assert result["planner_evidence"][0].content == "route-sentinel"
+    assert result["planner_evidence"] == []
+    assert result["plan_candidate"].nodes[0].required_skill_ids == (
+        "travel-sentinel",
+    )
+    assert result["plan_candidate"].nodes[0].allowed_tool_names == ("route_probe",)
+    assert result["frozen_worker_results"]["route-worker"].content == (
+        "worker-completed-route_probe"
+    )
 
 
-def test_planner_captures_new_evidence_after_history_replacement() -> None:
+def test_planner_does_not_capture_business_evidence_after_history_replacement() -> None:
     model = _PlannerExecutionModel(scenario="default-tool")
     weather_probe = _create_probe_tool(
         "weather_probe",
@@ -236,9 +248,13 @@ def test_planner_captures_new_evidence_after_history_replacement() -> None:
         )
     )
 
-    assert [
-        (item.evidence_id, item.content) for item in result["planner_evidence"]
-    ] == [("weather-call-1", "weather-sentinel")]
+    assert result["planner_evidence"] == []
+    assert result["plan_candidate"].nodes[0].allowed_tool_names == (
+        "weather_probe",
+    )
+    assert result["frozen_worker_results"]["weather-worker"].content == (
+        "worker-completed-weather_probe"
+    )
 
 
 def test_evidence_capture_rejects_unreferenceable_ids_and_bounds_artifacts() -> None:
@@ -458,7 +474,12 @@ def _tool_call(
     )
 
 
-def _proposal_call(*, evidence_id: str, producer_node_id: str) -> AIMessage:
+def _proposal_call(
+    *,
+    producer_node_id: str,
+    allowed_tool_names: tuple[str, ...] = (),
+    required_skill_ids: tuple[str, ...] = (),
+) -> AIMessage:
     return _tool_call(
         "NativePlanProposal",
         "proposal-call-1",
@@ -469,6 +490,8 @@ def _proposal_call(*, evidence_id: str, producer_node_id: str) -> AIMessage:
                     "node_id": producer_node_id,
                     "objective": "worker-sentinel",
                     "depends_on": [],
+                    "required_skill_ids": list(required_skill_ids),
+                    "allowed_tool_names": list(allowed_tool_names),
                 }
             ],
             "deliverables": [
@@ -476,10 +499,17 @@ def _proposal_call(*, evidence_id: str, producer_node_id: str) -> AIMessage:
                     "deliverable_id": "answer",
                     "description": "return the sentinel",
                     "producer_node_ids": [producer_node_id],
-                    "evidence_refs": [evidence_id],
                 }
             ],
         },
+    )
+
+
+def _system_text(messages: list[Any]) -> str:
+    return "\n".join(
+        str(message.content)
+        for message in messages
+        if isinstance(message, SystemMessage)
     )
 
 
