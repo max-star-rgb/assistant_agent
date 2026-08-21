@@ -8,6 +8,7 @@ import math
 import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from html import escape
 from types import MappingProxyType
 from typing import Any
@@ -26,11 +27,23 @@ from pydantic_core import to_jsonable_python
 
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.models import (
+    BudgetUsage,
     EvidenceLink,
+    FailureFact,
     NativePlanProposal,
     PlannerEvidence,
+    PlannerOutcome,
     WorkerCompletion,
     WorkerResult,
+)
+from assistant_agent.native_agent.planning_budget import PlanningBudgetPolicy
+from assistant_agent.native_agent.planning_recovery import (
+    assess_planner_node,
+    classify_operational_failure,
+    controlled_finalize_node,
+    planner_failure_node,
+    prepare_replan_node,
+    route_after_planner_assessment,
 )
 from assistant_agent.native_agent.state import PlanningState, WorkerState
 from assistant_agent.skills.loading import SkillCatalog
@@ -302,6 +315,7 @@ def build_planning_graph(
     *,
     tools: Sequence[BaseTool] = (),
     skill_catalog: SkillCatalog | None = None,
+    budget_policy: PlanningBudgetPolicy | None = None,
 ):
     """Build a minimal planner/wave-worker/finalize graph around one fast graph."""
 
@@ -313,6 +327,7 @@ def build_planning_graph(
         skill_catalog or SkillCatalog(),
     )
     inventory_names = admission_policy.inventory_tool_names
+    resolved_budget_policy = budget_policy or PlanningBudgetPolicy.from_base(8)
 
     async def planner_node(
         state: PlanningState,
@@ -325,6 +340,11 @@ def build_planning_graph(
         )
         if correction is not None:
             planner_messages.append(HumanMessage(content=correction))
+        recovery_context = state.get("recovery_context")
+        if isinstance(recovery_context, Mapping):
+            planner_messages.append(
+                HumanMessage(content=_planner_recovery_context(recovery_context))
+            )
         planner_result = await fast_agent.ainvoke(
             {
                 "messages": planner_messages,
@@ -337,11 +357,9 @@ def build_planning_graph(
                 "skill_reference_grants": dict(
                     state.get("planner_skill_reference_grants", {})
                 ),
+                "recovery_context": recovery_context,
             },
             context=runtime.context,
-        )
-        proposal = NativePlanProposal.model_validate(
-            planner_result["structured_response"]
         )
         result_messages = list(planner_result.get("messages", ()))
         new_evidence = capture_planner_evidence(
@@ -349,15 +367,62 @@ def build_planning_graph(
             inventory_names=inventory_names,
         )
         active_skill_ids = _string_list(planner_result.get("active_skill_ids"))
-        return {
-            "plan_candidate": proposal,
+        evidence_ids = tuple(
+            dict.fromkeys(
+                [
+                    *(
+                        item.evidence_id
+                        for item in state.get("planner_evidence", ())
+                    ),
+                    *(item.evidence_id for item in new_evidence),
+                ]
+            )
+        )
+        phase_usage = BudgetUsage.model_validate(
+            planner_result.get("phase_budget_usage") or {}
+        )
+        usage = BudgetUsage(
+            model_calls=phase_usage.model_calls,
+            tool_calls=phase_usage.tool_calls,
+            node_attempts=phase_usage.node_attempts + 1,
+            replans=phase_usage.replans,
+        )
+        update: dict[str, Any] = {
             "planner_active_skill_ids": active_skill_ids,
             "planner_skill_reference_grants": _reference_grants(
                 planner_result.get("skill_reference_grants")
             ),
             "planner_evidence": list(new_evidence),
             "worker_results": [],
+            "budget_usage": usage,
         }
+        candidate = planner_result.get("structured_response")
+        if candidate is not None:
+            proposal = NativePlanProposal.model_validate(candidate)
+            update["plan_candidate"] = proposal
+            update["planner_outcome"] = PlannerOutcome(
+                status="succeeded",
+                plan_candidate=proposal,
+                evidence_ids=evidence_ids,
+                usage=usage,
+            )
+            return update
+        if planner_result.get("phase_budget_status") == "exhausted":
+            update["plan_candidate"] = None
+            update["planner_outcome"] = PlannerOutcome(
+                status="budget_exhausted",
+                evidence_ids=evidence_ids,
+                failure=FailureFact(
+                    category="budget_exhausted",
+                    code="planner_tool_budget_exhausted",
+                    phase="planner",
+                    plan_generation=int(state.get("plan_generation", 0)),
+                    attempt=max(1, usage.node_attempts),
+                ),
+                usage=usage,
+            )
+            return update
+        raise ValueError("planner completed without a plan candidate")
 
     def admit_plan_node(state: PlanningState) -> dict[str, Any]:
         proposal = state.get("plan_candidate")
@@ -371,6 +436,10 @@ def build_planning_graph(
                 policy=admission_policy,
                 evidence=state.get("planner_evidence", ()),
                 active_skill_ids=state.get("planner_active_skill_ids", ()),
+                plan_generation=int(state.get("plan_generation", 0)),
+                historical_node_ids=state.get("historical_node_ids", ()),
+                replannable_node_ids=state.get("superseded_work_item_ids", ()),
+                frozen_result_ids=state.get("frozen_worker_results", {}).keys(),
             )
         except NativePlanAdmissionError as exc:
             revision_count = int(state.get("revision_count", 0)) + 1
@@ -494,7 +563,22 @@ def build_planning_graph(
     builder.add_node(
         "planner",
         planner_node,
-        retry_policy=RetryPolicy(max_attempts=2),
+        retry_policy=RetryPolicy(
+            initial_interval=0,
+            backoff_factor=0,
+            max_attempts=resolved_budget_policy.planner_attempts,
+            jitter=False,
+            retry_on=classify_operational_failure,
+        ),
+        error_handler=partial(planner_failure_node, policy=resolved_budget_policy),
+    )
+    builder.add_node(
+        "assess_planner",
+        partial(assess_planner_node, policy=resolved_budget_policy),
+    )
+    builder.add_node(
+        "prepare_replan",
+        partial(prepare_replan_node, policy=resolved_budget_policy),
     )
     builder.add_node("admit_plan", admit_plan_node)
     builder.add_node("scheduler", scheduler_node)
@@ -513,8 +597,15 @@ def build_planning_graph(
     )
     builder.add_node("join", join_node)
     builder.add_node("finalize", finalize_node)
+    builder.add_node("controlled_finalize", controlled_finalize_node)
     builder.add_edge(START, "planner")
-    builder.add_edge("planner", "admit_plan")
+    builder.add_edge("planner", "assess_planner")
+    builder.add_conditional_edges(
+        "assess_planner",
+        route_after_planner_assessment,
+        ["admit_plan", "planner", "prepare_replan", "controlled_finalize"],
+    )
+    builder.add_edge("prepare_replan", "planner")
     builder.add_conditional_edges(
         "admit_plan",
         route_after_admission,
@@ -528,6 +619,7 @@ def build_planning_graph(
     builder.add_edge("worker", "join")
     builder.add_edge("join", "scheduler")
     builder.add_edge("finalize", END)
+    builder.add_edge("controlled_finalize", END)
     return builder.compile(name="AssistantPlanningGraph")
 
 
@@ -1453,6 +1545,26 @@ def _bounded_admission_correction(
                 value=item.artifact_ref,
             )
     return _render_plan_revision_context(bounded_error, projection)
+
+
+def _planner_recovery_context(context: Mapping[str, Any]) -> str:
+    """Render only stable recovery facts for the next planner generation."""
+
+    payload = {
+        "failure_code": context.get("failure_code"),
+        "planner_evidence_ids": context.get("planner_evidence_ids", ()),
+        "plan_generation": context.get("plan_generation"),
+        "remaining_replans": context.get("remaining_replans"),
+    }
+    return (
+        '<planning_recovery_context format="json" trust="runtime-fact" '
+        'readonly="true">\n'
+        + escape(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")), quote=False
+        )
+        + "\n</planning_recovery_context>\n"
+        + "复用已捕获的 evidence_id，不要重复执行已经成功的 Tool。"
+    )
 
 
 def _render_plan_revision_context(

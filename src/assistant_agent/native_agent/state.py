@@ -32,10 +32,13 @@ from assistant_agent.native_agent.models import (
     BudgetUsage,
     NativePlanProposal,
     PlannerEvidence,
+    PlannerOutcome,
     ProviderSearchProfile,
+    RecoveryDecision,
     WorkerOutcome,
     WorkerResult,
 )
+from pydantic import JsonValue
 
 ExecutionMode = Literal["fast", "planning", "coding"]
 MemoryStatus = Literal["ready", "empty", "degraded"]
@@ -144,7 +147,7 @@ class PlanningState(AgentState):
     memory_status: Required[MemoryStatus]
     trusted_runtime_facts: NotRequired[dict[str, object]]
     plan: NotRequired[NativePlanProposal]
-    plan_candidate: NotRequired[NativePlanProposal]
+    plan_candidate: NotRequired[NativePlanProposal | None]
     planner_active_skill_ids: NotRequired[Annotated[list[str], _merge_unique_strings]]
     planner_skill_reference_grants: NotRequired[
         Annotated[dict[str, list[str]], _merge_reference_grants]
@@ -154,6 +157,16 @@ class PlanningState(AgentState):
     ]
     admission_error: NotRequired[str | None]
     revision_count: NotRequired[int]
+    plan_generation: NotRequired[int]
+    planner_outcome: NotRequired[PlannerOutcome | None]
+    recovery_decision: NotRequired[RecoveryDecision | None]
+    recovery_context: NotRequired[dict[str, JsonValue] | None]
+    recovery_history: NotRequired[list[RecoveryDecision]]
+    budget_usage: NotRequired[Annotated[BudgetUsage, add_budget_usage]]
+    historical_node_ids: NotRequired[Annotated[list[str], _merge_unique_strings]]
+    superseded_work_item_ids: NotRequired[
+        Annotated[list[str], _merge_unique_strings]
+    ]
     worker_results: NotRequired[Annotated[list[WorkerResult], operator.add]]
 
 
