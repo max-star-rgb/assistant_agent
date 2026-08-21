@@ -11,6 +11,7 @@ from pydantic import PrivateAttr, ValidationError
 import pytest
 
 from assistant_agent.agent_server.services import AgentServerExecutionOwner
+from assistant_agent.coding.config import CodingRepositoryConfig
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.fast_agent import build_fast_agent
 from assistant_agent.native_agent.planning_graph import build_planning_graph
@@ -197,6 +198,14 @@ def test_parent_graph_has_fast_planning_and_coding_native_branches(monkeypatch) 
         assert graph.nodes["fast_agent"].data.name == "AssistantFastAgent"
         assert graph.nodes["planning_graph"].data.name == "AssistantPlanningGraph"
         assert graph.nodes["coding_graph"].data.name == "AssistantCodingGraph"
+        assert (
+            CodingRepositoryConfig(
+                repo_id="core-probe",
+                path=owner.coding_workspace_service.config.workspace_root.parent,
+                target_branch="main",
+            ).parallel_analysis_enabled
+            is False
+        )
         planning_nodes = {
             name
             for name in graph.nodes["planning_graph"].data.get_graph().nodes

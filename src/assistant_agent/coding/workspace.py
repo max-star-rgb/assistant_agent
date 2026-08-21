@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import fcntl
 import hashlib
 import hmac
@@ -15,6 +16,7 @@ import tempfile
 import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -80,6 +82,50 @@ class _AnalysisSnapshotMetadata(BaseModel):
     active_lease: bool = True
 
 
+@dataclass(slots=True)
+class _AnalysisScanBudget:
+    config: CodingConfig
+    visited_entries: int = 0
+    visited_directories: int = 0
+    attempted_bytes: int = 0
+    read_bytes: int = 0
+    included_files: int = 0
+    included_bytes: int = 0
+
+    def visit_entry(self) -> None:
+        self.visited_entries += 1
+        self._enforce()
+
+    def visit_directory(self) -> None:
+        self.visited_directories += 1
+        self._enforce()
+
+    def attempt_file(self, size: int) -> None:
+        self.attempted_bytes += max(0, size)
+        self._enforce()
+
+    def consume_read(self, size: int) -> None:
+        self.read_bytes += max(0, size)
+        self._enforce()
+
+    def include_file(self, size: int) -> None:
+        self.included_files += 1
+        self.included_bytes += max(0, size)
+        self._enforce()
+
+    def _enforce(self) -> None:
+        if (
+            self.visited_entries > self.config.analysis_snapshot_max_scan_entries
+            or self.visited_directories
+            > self.config.analysis_snapshot_max_scan_directories
+            or self.attempted_bytes > self.config.analysis_snapshot_max_scan_bytes
+            or self.read_bytes > self.config.analysis_snapshot_max_scan_bytes
+            or self.included_files > self.config.analysis_snapshot_max_files
+            or self.included_bytes > self.config.analysis_snapshot_max_total_bytes
+        ):
+            raise CodingWorkspaceError("coding_analysis_snapshot_limit_exceeded")
+
+
 class CodingWorkspaceService:
     def __init__(
         self,
@@ -94,13 +140,16 @@ class CodingWorkspaceService:
         self._provided_secret = secret
         self._cached_secret: bytes | None = secret
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._snapshot_reaper_task: asyncio.Task[None] | None = None
+        self._cleanup_cursor = 0
+        self._snapshot_cleanup_cursors: dict[str, int] = {}
 
     def resolve(self, identity: str, thread_id: str, repo_id: str) -> CodingWorkspace:
         if not self.config.enabled or repo_id not in self.config.repositories:
             raise CodingWorkspaceError("workspace_not_allowed")
         if not identity.strip() or not thread_id.strip():
             raise CodingWorkspaceError("workspace_identity_mismatch")
-        self.cleanup_expired()
+        self.cleanup_expired(max_workspaces=32, max_snapshots_per_workspace=64)
         self.config.workspace_root.mkdir(parents=True, exist_ok=True)
         workspace_ref = self._workspace_ref(identity, thread_id, repo_id)
         management_root = self._management_root(workspace_ref)
@@ -211,7 +260,11 @@ class CodingWorkspaceService:
                     error_code="coding_analysis_snapshot_failed",
                     extra_env=git_env,
                 )
-                baseline_files = self._normalize_analysis_index(workspace, git_env)
+                baseline_files = self._normalize_analysis_index(
+                    workspace,
+                    git_env,
+                    _AnalysisScanBudget(self.config),
+                )
                 baseline_tree_object = self._run_git(
                     workspace.root,
                     "write-tree",
@@ -228,6 +281,7 @@ class CodingWorkspaceService:
                 current_files = self._build_analysis_worktree_index(
                     workspace,
                     git_env,
+                    _AnalysisScanBudget(self.config),
                 )
                 tree_object = self._run_git(
                     workspace.root,
@@ -1156,6 +1210,7 @@ class CodingWorkspaceService:
         self,
         workspace: CodingWorkspace,
         git_env: Mapping[str, str],
+        budget: _AnalysisScanBudget,
     ) -> dict[str, tuple[str, bytes]]:
         raw_entries = self._run_git_bytes(
             workspace.root,
@@ -1174,6 +1229,7 @@ class CodingWorkspaceService:
         for raw_entry in raw_entries.split(b"\0"):
             if not raw_entry:
                 continue
+            budget.visit_entry()
             try:
                 raw_metadata, raw_path = raw_entry.split(b"\t", 1)
                 mode_bytes, object_bytes, stage_bytes = raw_metadata.split(b" ", 2)
@@ -1195,13 +1251,14 @@ class CodingWorkspaceService:
                     workspace.root,
                     object_id,
                     git_env,
+                    budget,
                 )
             blob = blob_cache[object_id]
             if blob is None:
                 removed_paths.append(raw_path)
                 continue
             files[path] = (mode, blob)
-            self._enforce_analysis_tree_limits(files)
+            budget.include_file(len(blob))
 
         if removed_paths:
             self._run_git_bytes(
@@ -1214,7 +1271,6 @@ class CodingWorkspaceService:
                 extra_env=git_env,
                 input_bytes=b"\0".join(removed_paths) + b"\0",
             )
-        self._enforce_analysis_tree_limits(files)
         return files
 
     def _analysis_path_is_allowed(self, root: Path, path: str, mode: str) -> bool:
@@ -1233,6 +1289,7 @@ class CodingWorkspaceService:
         repo: Path,
         object_id: str,
         git_env: Mapping[str, str],
+        budget: _AnalysisScanBudget,
     ) -> bytes | None:
         try:
             size = int(
@@ -1247,6 +1304,7 @@ class CodingWorkspaceService:
             )
         except ValueError as exc:
             raise CodingWorkspaceError("coding_analysis_snapshot_failed") from exc
+        budget.attempt_file(size)
         if size > self.config.max_file_bytes:
             return None
         data = self._run_git_bytes(
@@ -1258,6 +1316,7 @@ class CodingWorkspaceService:
             extra_env=git_env,
             max_output_bytes=self.config.max_file_bytes,
         )
+        budget.consume_read(len(data))
         try:
             data.decode("utf-8")
         except UnicodeDecodeError:
@@ -1268,31 +1327,60 @@ class CodingWorkspaceService:
         self,
         workspace: CodingWorkspace,
         git_env: Mapping[str, str],
+        budget: _AnalysisScanBudget,
     ) -> dict[str, tuple[str, bytes]]:
         files: dict[str, tuple[str, bytes]] = {}
         index_records: list[bytes] = []
+        budget.visit_directory()
         for directory, child_directories, filenames in os.walk(
             workspace.root,
             followlinks=False,
         ):
             root = Path(directory)
-            child_directories[:] = [
-                name
-                for name in child_directories
-                if not (root / name).is_symlink()
-                and (root / name).name != ".git"
-            ]
-            for filename in filenames:
+            retained_directories: list[str] = []
+            for name in sorted(child_directories):
+                budget.visit_entry()
+                candidate = root / name
+                try:
+                    details = candidate.lstat()
+                except OSError:
+                    continue
+                budget.attempt_file(details.st_size)
+                if stat.S_ISDIR(details.st_mode):
+                    budget.visit_directory()
+                if candidate.is_symlink() or candidate.name == ".git":
+                    continue
+                try:
+                    self.policy.validate_relative_path(
+                        workspace.root,
+                        candidate.relative_to(workspace.root).as_posix(),
+                        operation="read",
+                    )
+                except CodingPolicyError:
+                    continue
+                retained_directories.append(name)
+            child_directories[:] = retained_directories
+            for filename in sorted(filenames):
                 candidate = root / filename
                 path = candidate.relative_to(workspace.root).as_posix()
-                mode = "100755" if os.access(candidate, os.X_OK) else "100644"
+                budget.visit_entry()
+                try:
+                    details = candidate.lstat()
+                except OSError:
+                    continue
+                budget.attempt_file(details.st_size)
+                mode = (
+                    "100755"
+                    if details.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+                    else "100644"
+                )
                 if not self._analysis_path_is_allowed(workspace.root, path, mode):
                     continue
-                data = self._read_analysis_worktree_file(candidate)
+                data = self._read_analysis_worktree_file(candidate, details, budget)
                 if data is None:
                     continue
                 files[path] = (mode, data)
-                self._enforce_analysis_tree_limits(files)
+                budget.include_file(len(data))
                 object_id = self._run_git_bytes(
                     workspace.root,
                     "hash-object",
@@ -1323,10 +1411,14 @@ class CodingWorkspaceService:
             )
         return files
 
-    def _read_analysis_worktree_file(self, path: Path) -> bytes | None:
+    def _read_analysis_worktree_file(
+        self,
+        path: Path,
+        initial: os.stat_result,
+        budget: _AnalysisScanBudget,
+    ) -> bytes | None:
         descriptor = -1
         try:
-            initial = path.lstat()
             if not stat.S_ISREG(initial.st_mode):
                 return None
             descriptor = os.open(
@@ -1334,7 +1426,13 @@ class CodingWorkspaceService:
                 os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
             )
             details = os.fstat(descriptor)
-            if not stat.S_ISREG(details.st_mode) or details.st_size > self.config.max_file_bytes:
+            if (
+                not stat.S_ISREG(details.st_mode)
+                or details.st_dev != initial.st_dev
+                or details.st_ino != initial.st_ino
+                or details.st_size != initial.st_size
+                or details.st_size > self.config.max_file_bytes
+            ):
                 return None
             chunks: list[bytes] = []
             remaining = self.config.max_file_bytes + 1
@@ -1342,6 +1440,7 @@ class CodingWorkspaceService:
                 chunk = os.read(descriptor, min(65_536, remaining))
                 if not chunk:
                     break
+                budget.consume_read(len(chunk))
                 chunks.append(chunk)
                 remaining -= len(chunk)
             data = b"".join(chunks)
@@ -1357,15 +1456,6 @@ class CodingWorkspaceService:
         finally:
             if descriptor >= 0:
                 os.close(descriptor)
-
-    def _enforce_analysis_tree_limits(
-        self,
-        files: Mapping[str, tuple[str, bytes]],
-    ) -> None:
-        if len(files) > self.config.analysis_snapshot_max_files or sum(
-            len(item[1]) for item in files.values()
-        ) > self.config.analysis_snapshot_max_total_bytes:
-            raise CodingWorkspaceError("coding_analysis_snapshot_limit_exceeded")
 
     def _analysis_git_environment(
         self,
@@ -1406,6 +1496,8 @@ class CodingWorkspaceService:
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_TERMINAL_PROMPT": "0",
+            "GIT_NO_LAZY_FETCH": "1",
+            "GIT_ATTR_NOSYSTEM": "1",
             "GIT_EXTERNAL_DIFF": "",
             **git_env,
         }
@@ -1417,11 +1509,26 @@ class CodingWorkspaceService:
             "diff.external=",
             "-c",
             f"core.attributesFile={os.devnull}",
+            "-c",
+            "core.abbrev=40",
+            "-c",
+            "diff.algorithm=myers",
+            "-c",
+            "diff.indentHeuristic=false",
+            "-c",
+            "diff.renames=false",
             "diff",
             "--no-ext-diff",
             "--no-textconv",
             "--no-color",
             "--no-renames",
+            "--full-index",
+            "--diff-algorithm=myers",
+            "--no-indent-heuristic",
+            "--unified=3",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "--no-relative",
             baseline_tree_object,
             current_tree_object,
             "--",
@@ -1719,11 +1826,26 @@ class CodingWorkspaceService:
         except OSError as exc:
             raise CodingWorkspaceError("repair_preview_cleanup_failed") from exc
 
-    def cleanup_expired(self) -> None:
+    def cleanup_expired(
+        self,
+        *,
+        max_workspaces: int | None = None,
+        max_snapshots_per_workspace: int | None = None,
+    ) -> None:
         root = self.config.workspace_root
         if not root.is_dir():
             return
-        for management_root in tuple(root.iterdir()):
+        all_management_roots = sorted(root.iterdir(), key=lambda item: item.name)
+        management_roots = all_management_roots
+        if max_workspaces is not None and all_management_roots:
+            start = self._cleanup_cursor % len(all_management_roots)
+            count = min(max_workspaces, len(all_management_roots))
+            management_roots = [
+                all_management_roots[(start + offset) % len(all_management_roots)]
+                for offset in range(count)
+            ]
+            self._cleanup_cursor = (start + count) % len(all_management_roots)
+        for management_root in management_roots:
             metadata_path = management_root / _METADATA_FILE
             if not management_root.is_dir() or not metadata_path.is_file():
                 continue
@@ -1739,7 +1861,10 @@ class CodingWorkspaceService:
                     fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
                     continue
-                self._reap_analysis_snapshots_locked(management_root)
+                self._reap_analysis_snapshots_locked(
+                    management_root,
+                    max_snapshots=max_snapshots_per_workspace,
+                )
                 if metadata.expires_at <= self._clock():
                     repository = self.config.repositories.get(metadata.repo_id)
                     if repository is None:
@@ -1756,10 +1881,32 @@ class CodingWorkspaceService:
             if remove_workspace:
                 shutil.rmtree(management_root, ignore_errors=False)
 
-    def _reap_analysis_snapshots_locked(self, management_root: Path) -> None:
+    def _reap_analysis_snapshots_locked(
+        self,
+        management_root: Path,
+        *,
+        max_snapshots: int | None = None,
+    ) -> None:
         snapshots_root = management_root / _ANALYSIS_SNAPSHOTS_DIR
         if snapshots_root.is_dir():
-            for snapshot_root in tuple(snapshots_root.iterdir()):
+            all_snapshot_roots = sorted(
+                snapshots_root.iterdir(), key=lambda item: item.name
+            )
+            snapshot_roots = all_snapshot_roots
+            cursor_key = str(management_root)
+            if max_snapshots is not None and all_snapshot_roots:
+                start = self._snapshot_cleanup_cursors.get(cursor_key, 0) % len(
+                    all_snapshot_roots
+                )
+                count = min(max_snapshots, len(all_snapshot_roots))
+                snapshot_roots = [
+                    all_snapshot_roots[(start + offset) % len(all_snapshot_roots)]
+                    for offset in range(count)
+                ]
+                self._snapshot_cleanup_cursors[cursor_key] = (
+                    start + count
+                ) % len(all_snapshot_roots)
+            for snapshot_root in snapshot_roots:
                 if not snapshot_root.is_dir():
                     continue
                 if snapshot_root.name.startswith(_ANALYSIS_BUILD_PREFIX):
@@ -1795,7 +1942,10 @@ class CodingWorkspaceService:
                     self._remove_analysis_snapshot_directory(snapshot_root)
                 except OSError:
                     continue
-        for index_path in management_root.glob(".analysis-index-*"):
+        index_paths = sorted(management_root.glob(".analysis-index-*"))
+        if max_snapshots is not None:
+            index_paths = index_paths[:max_snapshots]
+        for index_path in index_paths:
             try:
                 index_path.unlink(missing_ok=True)
                 Path(f"{index_path}.lock").unlink(missing_ok=True)
@@ -1823,8 +1973,60 @@ class CodingWorkspaceService:
         except OSError:
             return
 
+    def start_snapshot_reaper(
+        self,
+        *,
+        interval_seconds: float = 60.0,
+        max_workspaces: int = 32,
+        max_snapshots_per_workspace: int = 64,
+    ) -> None:
+        if interval_seconds <= 0 or max_workspaces <= 0 or max_snapshots_per_workspace <= 0:
+            raise ValueError("coding analysis reaper bounds must be positive")
+        if self._snapshot_reaper_task is not None and not self._snapshot_reaper_task.done():
+            return
+        self._snapshot_reaper_task = asyncio.create_task(
+            self._run_snapshot_reaper(
+                interval_seconds=interval_seconds,
+                max_workspaces=max_workspaces,
+                max_snapshots_per_workspace=max_snapshots_per_workspace,
+            ),
+            name="assistant-agent-coding-snapshot-reaper",
+        )
+
+    async def _run_snapshot_reaper(
+        self,
+        *,
+        interval_seconds: float,
+        max_workspaces: int,
+        max_snapshots_per_workspace: int,
+    ) -> None:
+        while True:
+            await asyncio.sleep(interval_seconds)
+            try:
+                await asyncio.to_thread(
+                    self.cleanup_expired,
+                    max_workspaces=max_workspaces,
+                    max_snapshots_per_workspace=max_snapshots_per_workspace,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                continue
+
     async def aclose(self) -> None:
-        return None
+        task = self._snapshot_reaper_task
+        self._snapshot_reaper_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        await asyncio.to_thread(
+            self.cleanup_expired,
+            max_workspaces=32,
+            max_snapshots_per_workspace=64,
+        )
 
     def _read_path(
         self,
@@ -1933,7 +2135,9 @@ class CodingWorkspaceService:
             "LANG": "C.UTF-8",
             "LC_ALL": "C.UTF-8",
             "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_TERMINAL_PROMPT": "0",
+            "GIT_NO_LAZY_FETCH": "1",
         }
         if extra_env is not None:
             env.update(extra_env)
@@ -1969,7 +2173,9 @@ class CodingWorkspaceService:
             "LANG": "C.UTF-8",
             "LC_ALL": "C.UTF-8",
             "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_TERMINAL_PROMPT": "0",
+            "GIT_NO_LAZY_FETCH": "1",
         }
         if extra_env is not None:
             env.update(extra_env)

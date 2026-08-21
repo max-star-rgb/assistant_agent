@@ -117,6 +117,8 @@ class AgentServerExecutionOwner:
         )
         coding_config = CodingConfig.from_env()
         coding_workspace_service = CodingWorkspaceService(coding_config)
+        if coding_config.enabled:
+            coding_workspace_service.start_snapshot_reaper()
         coding_sandbox_backend: CodingSandboxBackend | None = None
         coding_dependency_fetcher: DockerDependencyFetcher | None = None
         coding_artifact_backend: ArtifactIngressBackend | None = None

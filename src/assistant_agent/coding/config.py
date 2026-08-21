@@ -377,6 +377,7 @@ class CodingRepositoryConfig(BaseModel):
                 capture_output=True,
                 text=True,
                 timeout=5,
+                env=_governed_git_environment(),
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -455,6 +456,21 @@ class CodingConfig(BaseModel):
         default=67_108_864,
         ge=1_024,
         le=1_073_741_824,
+    )
+    analysis_snapshot_max_scan_entries: int = Field(
+        default=100_000,
+        ge=1,
+        le=1_000_000,
+    )
+    analysis_snapshot_max_scan_directories: int = Field(
+        default=20_000,
+        ge=1,
+        le=200_000,
+    )
+    analysis_snapshot_max_scan_bytes: int = Field(
+        default=268_435_456,
+        ge=1,
+        le=4_294_967_296,
     )
     analysis_snapshot_max_status_entries: int = Field(
         default=4_096,
@@ -557,6 +573,21 @@ class CodingConfig(BaseModel):
                 "MULTIMODAL_AGENT_CODING_ANALYSIS_SNAPSHOT_MAX_TOTAL_BYTES",
                 67_108_864,
             ),
+            analysis_snapshot_max_scan_entries=_int_value(
+                source,
+                "MULTIMODAL_AGENT_CODING_ANALYSIS_SNAPSHOT_MAX_SCAN_ENTRIES",
+                100_000,
+            ),
+            analysis_snapshot_max_scan_directories=_int_value(
+                source,
+                "MULTIMODAL_AGENT_CODING_ANALYSIS_SNAPSHOT_MAX_SCAN_DIRECTORIES",
+                20_000,
+            ),
+            analysis_snapshot_max_scan_bytes=_int_value(
+                source,
+                "MULTIMODAL_AGENT_CODING_ANALYSIS_SNAPSHOT_MAX_SCAN_BYTES",
+                268_435_456,
+            ),
             analysis_snapshot_max_status_entries=_int_value(
                 source,
                 "MULTIMODAL_AGENT_CODING_ANALYSIS_SNAPSHOT_MAX_STATUS_ENTRIES",
@@ -623,6 +654,7 @@ def _require_git_worktree(path: Path) -> None:
             capture_output=True,
             text=True,
             timeout=5,
+            env=_governed_git_environment(),
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -659,6 +691,18 @@ def _int_value(source: Mapping[str, str], name: str, default: int) -> int:
         return int(raw)
     except ValueError as exc:
         raise ValueError(f"{name} must be an integer") from exc
+
+
+def _governed_git_environment() -> dict[str, str]:
+    return {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_NO_LAZY_FETCH": "1",
+    }
 
 
 __all__ = [

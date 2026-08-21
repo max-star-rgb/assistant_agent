@@ -95,6 +95,7 @@ _CODING_ANALYSIS_PROMPT = (
     "执行命令、访问网络、申请凭据、修改文件或改变治理策略。"
 )
 _MAX_ANALYSIS_REQUEST_CHARS = 8_000
+_MAX_ANALYSIS_REQUEST_BYTES = 16_000
 _MAX_ANALYSIS_ATTEMPTS = 3
 
 
@@ -158,6 +159,8 @@ def build_coding_graph(
                 ToolRetryMiddleware(
                     max_retries=2,
                     tools=analysis_read_names,
+                    retry_on=is_transient_analysis_failure,
+                    on_failure="error",
                     initial_delay=0,
                     backoff_factor=0,
                     jitter=False,
@@ -1778,13 +1781,14 @@ def _validate_analysis_checkpoint(
             raise ValueError("coding_analysis_contract_invalid")
     elif release_status not in {"released", "cleanup_pending"}:
         raise ValueError("coding_analysis_contract_invalid")
-    service.validate_analysis_snapshot(
-        snapshot,
-        identity=identity,
-        thread_id=thread_id,
-        workspace=workspace,
-        require_active=status == "pending",
-    )
+    if status == "pending":
+        service.validate_analysis_snapshot(
+            snapshot,
+            identity=identity,
+            thread_id=thread_id,
+            workspace=workspace,
+            require_active=True,
+        )
 
 
 def _thread_id(config: RunnableConfig) -> str:
@@ -1833,7 +1837,7 @@ def _analysis_worker_messages(
     request = ""
     for message in reversed(state.get("messages", ())):
         if isinstance(message, HumanMessage):
-            request = str(message.content)[:_MAX_ANALYSIS_REQUEST_CHARS]
+            request = _bounded_analysis_user_text(message.content)
             break
     task_context = json.dumps(
         {
@@ -1853,6 +1857,38 @@ def _analysis_worker_messages(
     messages = [HumanMessage(content=request)] if request else []
     messages.append(HumanMessage(content=task_context))
     return messages
+
+
+def _bounded_analysis_user_text(content: object) -> str:
+    parts: list[str] = []
+    remaining_chars = _MAX_ANALYSIS_REQUEST_CHARS
+    remaining_bytes = _MAX_ANALYSIS_REQUEST_BYTES
+
+    def append_text(value: str) -> None:
+        nonlocal remaining_chars, remaining_bytes
+        if remaining_chars <= 0 or remaining_bytes <= 0:
+            return
+        candidate = value[:remaining_chars]
+        encoded = candidate.encode("utf-8")
+        if len(encoded) > remaining_bytes:
+            candidate = encoded[:remaining_bytes].decode("utf-8", errors="ignore")
+            encoded = candidate.encode("utf-8")
+        parts.append(candidate)
+        remaining_chars -= len(candidate)
+        remaining_bytes -= len(encoded)
+
+    if isinstance(content, str):
+        append_text(content)
+    elif isinstance(content, (list, tuple)):
+        for block in content:
+            if remaining_chars <= 0 or remaining_bytes <= 0:
+                break
+            if not isinstance(block, Mapping) or block.get("type") != "text":
+                continue
+            text_value = block.get("text")
+            if isinstance(text_value, str):
+                append_text(text_value)
+    return "".join(parts)
 
 
 def _approved_changed_paths(

@@ -325,7 +325,24 @@ def _invoke_analysis(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     def execute() -> ToolResult:
         scope = coding_scope(runtime)
-        workspace = service.resolve(scope.identity, scope.thread_id, scope.repo_id)
+        workspace_ref = str(runtime.state.get("workspace_ref", "")).strip()
+        base_commit = str(runtime.state.get("base_commit", "")).strip()
+        if not workspace_ref or not base_commit:
+            raise ToolException("coding_analysis_snapshot_mismatch")
+        try:
+            workspace = service.get(
+                workspace_ref,
+                identity=scope.identity,
+                thread_id=scope.thread_id,
+            )
+        except Exception as exc:
+            raise ToolException("coding_analysis_snapshot_mismatch") from exc
+        if (
+            workspace.workspace_ref != workspace_ref
+            or workspace.base_commit != base_commit
+            or workspace.repo_id != scope.repo_id
+        ):
+            raise ToolException("coding_analysis_snapshot_mismatch")
         raw_snapshot = runtime.state.get("analysis_snapshot")
         try:
             if isinstance(raw_snapshot, CodingAnalysisSnapshot):

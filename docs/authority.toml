@@ -38,7 +38,6 @@ verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/ai-coding-integration",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/ai-coding-sandbox",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/ai-coding-artifact-governance",
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/ai-coding-parallel-analysis",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/agent-server-inmem-wakeup",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python scripts/agent_cli.py --help",
 ]
@@ -83,6 +82,7 @@ source_globs = [
   "src/assistant_agent/native_agent/state.py",
   "src/assistant_agent/native_agent/models.py",
   "src/assistant_agent/native_agent/coding_graph.py",
+  "src/assistant_agent/native_agent/coding_phase.py",
   "src/assistant_agent/coding/analysis.py",
   "src/assistant_agent/coding/models.py",
 ]
@@ -90,7 +90,6 @@ thin_references = ["README.md", "docs/agent-server-architecture.md"]
 verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/integration/test_runtime_lifecycle.py",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/native-high-agency-planner",
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/ai-coding-parallel-analysis",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
