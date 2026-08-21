@@ -27,8 +27,11 @@ snapshot 覆盖创建时允许访问的已跟踪修改和新增文本文件，�
 worker 只借用 snapshot-bound read 接口。join 后 owner 释放 active lease；释放清理失败只登记
 `cleanup_pending`，已释放 snapshot 仍保留到 TTL，并由 workspace owner 的受管 reaper 清理过期、构建残留或隔离
 异常目录。process owner 在 coding 启用时启动唯一有界周期 reaper，每轮只从增量 `scandir` cursor 读取配置上限内的
-workspace/snapshot entry，不预收集或排序完整目录；cursor 使用硬上限 LRU map，目录消失、workspace 删除与 shutdown
-都会关闭并清除对应句柄。`aclose` 会取消该 task 并执行一次安全有界清理；它不创建 Graph、run 或第二套 Runtime。pending checkpoint
+management root/snapshot entry，不预收集或排序完整目录；root traversal 与每个 workspace 的固定大小 directory cookie
+保证跨任意数量 workspace 的有界轮转，目录消失与 shutdown 都会关闭并清除对应句柄。该周期入口只删除
+`analysis-snapshots` 下的受管目录，不调用 Git、不删除 workspace repo，也不读取或修改 `.git/worktrees` admin metadata。
+workspace TTL 仍沿用 resolve 触发的既有 `cleanup_expired()` 生命周期。`aclose` 会取消该 task 并执行一次安全有界的
+snapshot-only 清理；它不创建 Graph、run 或第二套 Runtime。pending checkpoint
 恢复严格校验既有物理 snapshot，过期、身份或 digest 不匹配时不静默重建；join 后的 approval/repair resume 只校验
 checkpoint contract 与 workspace/base，不要求 released snapshot 仍在物理 TTL 内，因此 snapshot 不是 mutation gate。
 
@@ -300,11 +303,12 @@ Coding analysis 的 baseline index 不得通过 `subprocess.run(capture_output=T
 prompt、隔离 system/global config 的 `git rev-parse --show-object-format` 获得，并且只接受
 `sha1` 或 `sha256`；canonical bare metadata 根据该枚举生成全新 config，不复制源仓库 config。
 
-周期 reaper 只保留常数数量的分层 cursor：完成当前 workspace 的 snapshots 与临时 index
-枚举后才推进 workspace root，从而对任意数量 workspace 保持 eventual progress。目录回收先在
-同一文件系统 atomic rename 为 tombstone，再由跨轮保留的单一增量 DFS cursor 按共享 entry/time
-budget 执行 `scandir`、`unlink` 与 `rmdir`；不得把任意大小目录作为一次 `rmtree` 操作。
-workspace/root 消失、进程关闭或 traversal 重置时必须关闭并清除所有 descendant cursor。
+周期 reaper 只保留常数数量的 root traversal 与单一 active snapshot deletion cursor；每个 round 对当前
+management root 只读取固定 snapshot child slice 后立即推进下一个 root，各 workspace 的固定大小 directory
+cookie 保存 snapshot 枚举进度，从而对任意数量 workspace 保持 eventual progress。过期 snapshot 目录先在其
+`analysis-snapshots` 父目录内 atomic rename 为固定前缀 tombstone，再由跨轮单一增量 DFS cursor 按共享
+entry/time budget 执行 `scandir`、`unlink` 与 `rmdir`；不得把任意大小 snapshot 目录作为一次 `rmtree`
+操作。workspace root 消失、进程关闭或 traversal 重置时必须关闭并清除所有 descendant cursor。
 
 ### Stage5B reaper fairness and process-deadline addendum
 
@@ -313,48 +317,13 @@ workspace/root 消失、进程关闭或 traversal 重置时必须关闭并清除
 输出预算超限或 parser/budget 失败时，owner 必须 terminate、bounded wait、必要时 kill/wait，
 随后关闭 selector 与全部 pipe。不得在 deadline 检查后调用可能阻塞的 file-object `read`。
 
-周期 reaper 对 workspace root 使用 round-robin traversal；每个 cleanup round 对单个 active
-workspace 只消费固定 child slice，然后推进下一个 workspace。workspace 的 snapshot/management
-phase 与 Linux directory cookie 通过固定大小、atomic replace 的受管 progress metadata 跨轮保存，
-避免关闭 cursor 后从大目录开头重扫；内存只保留 root traversal、当前 page 和至多一个 active
-tombstone DFS。root 消失时必须同时清理 hierarchical traversal 与兼容 cursor 的全部 descendant
-iterator。
+周期 reaper 对 workspace root 使用 round-robin traversal；每个 cleanup round 对单个受管 management root
+只消费固定 snapshot child slice，然后推进下一个 root。snapshot Linux directory cookie 通过固定大小、atomic
+replace 的受管 progress metadata 跨轮保存，避免关闭 cursor 后从大目录开头重扫；内存只保留 root traversal、
+当前 page 和至多一个 active snapshot tombstone DFS。root 消失时必须同时清理 hierarchical traversal 与兼容
+cursor 的全部 descendant iterator。periodic cleanup 与 `aclose` 通过 process-owned mutex 串行。
 
-expired workspace 在 workspace lock 与 metadata ownership 校验后，先通过受治理、禁止 lazy fetch 的
-`git rev-parse --git-common-dir` 从配置仓库取得唯一 expected common dir；worktree 自报的
-`commondir` 不具有授权效力。`.git` back-reference、`worktrees`、精确 admin entry、`commondir`、
-`gitdir` 以及 admin 内的 `logs/refs` 必须通过 dirfd、`lstat` 和 `O_NOFOLLOW` 做有界验证；任一目录为
-symlink、绑定不精确、超出 entry/depth budget 或 deadline 时，必须在 physical management root 迁移前
-fail closed。
-
-验证通过后，完整 management root 与精确 Git admin entry 分别在各自文件系统 atomic rename 到固定前缀的
-受管 tombstone；admin tombstone area 位于 configured common dir、权限固定为 `0700`，原 active registry
-entry 在 rename 后立即消失，因此同 scope workspace 可在旧 admin tombstone 待清理时安全重建。reaper 不得调用
-`git worktree remove --force`，也不得在 active registry 中逐项 unlink admin metadata。physical 与 admin
-tombstone 由相互独立、持久且常数状态的增量 DFS 按共享 entry/time budget 跨轮删除；deadline 或 I/O 失败只
-关闭 iterator 并保留 tombstone/state 供后续重试。workspace root 消失时必须清除其 descendant physical
-deletion state，并关闭外部 admin deletion handle；owner shutdown 关闭句柄后仍由持久 tombstone 支持下次发现。
-
-### Stage5B crash-safe retirement journal addendum
-
-expired workspace 的双 tombstone 事务由 configured repository common dir 下的受管 `0700` area 持久
-journal 驱动。journal 固定记录 schema、repo/workspace、expected admin 与 physical root 的 device/inode、两类
-tombstone name 及 `prepared|admin_renamed|physical_renamed` stage；创建和每次 stage transition 都通过同目录
-temporary ordinary file、`fsync(file)`、atomic replace、`fsync(area)` 完成。owner 在稳定 journal lock 与既有
-workspace lock 下先移动 admin registry entry，再移动 physical management root。任一 rename 或 journal fsync
-之间崩溃时，后续 process owner 只依据 configured common dir、journal 和 expected inode 幂等 forward-recover；
-不得依赖 workspace root marker，也不得因 rollback 失败丢失恢复事实。
-
-周期 owner 对 configured repositories 做连续 round 扫描，每个 repository 的 common dir 仍由 governed Git
-取得并以 dev/inode 复核的配置大小 cache 降低空扫描开销。单仓 page、跨仓 cursor、成功计数和 pending bit 均为
-有界状态；任一 repository scan failure 或 timeout 必须清空当前连续 round，只有所有 configured repositories 在
-同一连续 round 完整成功且未发现 journal/tombstone 时，才可进入短时空扫描 quiescence 或清理由旧版本遗留的
-workspace-root hint。workspace root 消失不影响 common-dir journal discovery。periodic cleanup、请求触发 cleanup
-和 `aclose` 通过 process-owned mutex 串行，避免取消 `asyncio.to_thread` 等待者后遗留线程与最终清理并发操作同一
-traversal。
-
-admin tombstone deletion 不复用 Path-based DFS。每轮从 canonical common dir 逐级 `O_NOFOLLOW` 打开 area，
-用 `fstatat` 语义核对 area/root 及已进入子目录的 expected device/inode，并只通过 dirfd-relative `open`、
-`fchmod`、`unlink`、`rmdir` 推进持久 directory-cookie DFS。root 或 nested directory 被 symlink/inode replacement
-时永久 fail closed 并保留 journal/tombstone；普通 deadline 或 I/O failure 仅关闭当轮 descriptor，后续 round
-重新安全打开并重试，绝不跟随被替换路径。
+本 Stage 不改变 Git worktree retirement 协议。周期 owner 和 `aclose` 不得调用 `cleanup_expired()`、
+`git worktree remove` 或任何 Git common-dir/admin registry 清理，也不得 tombstone 或递归删除 management root；
+workspace 到期仍由后续 `resolve()` 进入既有同步 cleanup 路径处理。该边界避免 advisory snapshot TTL cleanup
+引入第二套 workspace/admin 事务。
