@@ -310,8 +310,17 @@ def assess_workers_node(
         if outcome.status == "operational_failed"
         and outcome.attempt < worker_attempt_limit
     ]
+    all_succeeded = all(
+        (outcome := latest.get(node.node_id)) is not None
+        and outcome.status == "succeeded"
+        for node in plan.nodes
+    )
     decision: RecoveryDecision | None = None
-    exhausted = _assess_execution_budget(_budget_usage(state), policy)
+    exhausted = (
+        None
+        if all_succeeded
+        else _assess_execution_budget(_budget_usage(state), policy)
+    )
     if exhausted is not None:
         decision = exhausted
     elif terminal_failures:

@@ -315,6 +315,58 @@ def test_planner_preserves_the_last_attempt_for_controlled_finalizer() -> None:
     assert result["budget_usage"].node_attempts == 32
 
 
+def test_success_at_attempt_31_uses_last_slot_for_normal_finalizer() -> None:
+    agent = _SuccessfulSingleWorkerAgent()
+    graph = build_planning_graph(
+        object(),
+        agent,
+        skill_catalog=SkillCatalog(),
+        budget_policy=PlanningBudgetPolicy.from_base(8),
+    )
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {
+                **_planning_input(),
+                "budget_usage": BudgetUsage(node_attempts=29),
+            },
+            context=AssistantRunContext(),
+        )
+    )
+
+    assert agent.finalizer_calls == 1
+    assert result["budget_usage"].node_attempts == 32
+    assert result["messages"][-1].content == "final-ok"
+
+
+def test_failure_at_attempt_31_uses_last_slot_for_controlled_finalizer() -> None:
+    policy = PlanningBudgetPolicy.from_base(2)
+    agent = _PartialWorkerFailureAgent(policy=policy)
+    graph = build_planning_graph(
+        object(),
+        agent,
+        tools=[agent.probe_tool],
+        skill_catalog=SkillCatalog(),
+        budget_policy=policy,
+    )
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {
+                **_planning_input(),
+                "budget_usage": BudgetUsage(node_attempts=29),
+            },
+            context=AssistantRunContext(),
+        )
+    )
+
+    assert agent.finalizer_calls == 0
+    assert result["budget_usage"].node_attempts == 32
+    assert result["messages"][-1].content == (
+        "Planning stopped: graph_node_attempt_budget_exhausted."
+    )
+
+
 def _ready_wave_state(
     *,
     node_ids: tuple[str, ...],
@@ -385,6 +437,7 @@ class _PartialWorkerFailureAgent:
 
     def __init__(self, *, policy: PlanningBudgetPolicy) -> None:
         self.successful_tool_calls = 0
+        self.finalizer_calls = 0
 
         @tool
         def probe_tool() -> str:
@@ -415,8 +468,14 @@ class _PartialWorkerFailureAgent:
                 ),
                 "phase_budget_usage": BudgetUsage(model_calls=1),
             }
-        assert input["agent_phase"] == "worker"
-        return await self.worker_agent.ainvoke(input, context=context)
+        if input["agent_phase"] == "worker":
+            return await self.worker_agent.ainvoke(input, context=context)
+        assert input["agent_phase"] == "finalizer"
+        self.finalizer_calls += 1
+        return {
+            "messages": [AIMessage(content="unexpected-normal-finalizer")],
+            "phase_budget_usage": BudgetUsage(model_calls=1),
+        }
 
 
 class _ProbeThenTimeoutModel(MockAssistantChatModel):
@@ -474,6 +533,9 @@ class _PartialPlannerFailureAgent:
 class _SuccessfulSingleWorkerAgent:
     name = "AssistantFastAgent"
 
+    def __init__(self) -> None:
+        self.finalizer_calls = 0
+
     async def ainvoke(
         self,
         input: dict[str, Any],
@@ -497,6 +559,7 @@ class _SuccessfulSingleWorkerAgent:
                 "phase_budget_usage": BudgetUsage(model_calls=1),
             }
         assert input["agent_phase"] == "finalizer"
+        self.finalizer_calls += 1
         return {
             "messages": [AIMessage(content="final-ok")],
             "phase_budget_usage": BudgetUsage(model_calls=1),
