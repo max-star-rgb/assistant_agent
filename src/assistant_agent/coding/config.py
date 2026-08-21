@@ -345,6 +345,7 @@ class CodingRepositoryConfig(BaseModel):
     repo_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$")
     path: Path
     target_branch: str = Field(min_length=1, max_length=160)
+    parallel_analysis_enabled: bool = False
     commands: dict[str, CodingCommandConfig] = Field(default_factory=dict)
     verification_sequence: tuple[str, ...] = ()
     integration_enabled: bool = False
