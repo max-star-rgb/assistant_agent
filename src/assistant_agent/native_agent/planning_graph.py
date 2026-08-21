@@ -51,10 +51,14 @@ from assistant_agent.native_agent.planning_recovery import (
     controlled_finalize_node,
     find_worker_control_failure,
     prepare_replan_node,
+    record_recovery_decision,
     route_after_planner_assessment,
     route_after_worker_assessment,
+    sanitize_finalizer_propagation,
     sanitize_planner_propagation,
     sanitize_worker_propagation,
+    unresolved_failure_facts,
+    write_recovery_transition,
 )
 from assistant_agent.native_agent.state import PlanningState, WorkerState
 from assistant_agent.skills.loading import SkillCatalog
@@ -83,6 +87,7 @@ MAX_PLAN_REVISION_CONTEXT_CHARS = 48_000
 MAX_WORKER_CONTEXT_CHARS = 48_000
 MAX_FINALIZER_CONTEXT_CHARS = 96_000
 MAX_PLAN_REVISIONS = 2
+MAX_FINALIZER_ATTEMPTS = 2
 
 _PLAN_REVISION_CONTEXT_OPEN = (
     '<plan_revision_context format="json" trust="tool-output" readonly="true">\n'
@@ -622,6 +627,8 @@ def build_planning_graph(
             reason_code = (
                 execution_exhausted.reason_code
                 if execution_exhausted is not None
+                else "graph_node_attempt_budget_exhausted"
+                if remaining.node_attempts < 1
                 else "graph_model_budget_exhausted"
             )
             return controlled_finalize_node(
@@ -640,33 +647,109 @@ def build_planning_graph(
             deliverables=state["plan"].deliverables,
             evidence=state.get("planner_evidence", ()),
             worker_results=ordered,
+            unresolved_failures=unresolved_failure_facts(state),
         )
-        result = await fast_agent.ainvoke(
-            {
-                "messages": [HumanMessage(content=payload)],
-                "memory_context": tuple(state.get("memory_context", ())),
-                "memory_status": state.get("memory_status", "empty"),
-                "execution_mode": "planning",
-                "trusted_runtime_facts": state.get("trusted_runtime_facts"),
-                "agent_phase": "finalizer",
-                "phase_budget_allowance": BudgetUsage(
-                    model_calls=1,
-                    node_attempts=1,
+        propagation_error: Exception | None = None
+        try:
+            result = await fast_agent.ainvoke(
+                {
+                    "messages": [HumanMessage(content=payload)],
+                    "memory_context": tuple(state.get("memory_context", ())),
+                    "memory_status": state.get("memory_status", "empty"),
+                    "execution_mode": "planning",
+                    "trusted_runtime_facts": state.get("trusted_runtime_facts"),
+                    "agent_phase": "finalizer",
+                    "phase_budget_allowance": BudgetUsage(
+                        model_calls=1,
+                        tool_calls=0,
+                        node_attempts=1,
+                    ),
+                },
+                context=runtime.context,
+            )
+        except (GraphBubbleUp, NodeCancelledError):
+            raise
+        except Exception as error:
+            if not classify_operational_failure(error):
+                propagation_error = sanitize_finalizer_propagation(error)
+            else:
+                consumed_model = _add_usage(
+                    consumed,
+                    BudgetUsage(model_calls=1),
+                )
+                prior_retries = sum(
+                    1
+                    for raw in state.get("recovery_history", ())
+                    if (decision := RecoveryDecision.model_validate(raw)).reason_code
+                    == "finalizer_operational_retry"
+                )
+                remaining_after_attempt = remaining_budget(
+                    _add_usage(consumed_model, BudgetUsage(node_attempts=1)),
+                    resolved_budget_policy,
+                )
+                if (
+                    prior_retries + 1 < MAX_FINALIZER_ATTEMPTS
+                    and remaining_after_attempt.model_calls >= 1
+                    and remaining_after_attempt.node_attempts >= 1
+                ):
+                    decision = RecoveryDecision(
+                        action="retry",
+                        reason_code="finalizer_operational_retry",
+                    )
+                    write_recovery_transition(
+                        source="finalizer_failed",
+                        target="retry",
+                        reason_code=decision.reason_code,
+                        plan_generation=int(state.get("plan_generation", 0)),
+                    )
+                    return {
+                        "budget_usage": _add_usage(
+                            consumed_model,
+                            BudgetUsage(node_attempts=1),
+                        ),
+                        "recovery_decision": decision,
+                        "recovery_history": record_recovery_decision(
+                            state.get("recovery_history", ()),
+                            decision,
+                            limit=resolved_budget_policy.recovery_history_limit,
+                        ),
+                    }
+                return controlled_finalize_node(
+                    {
+                        **state,
+                        # The model call belongs to this finalizer node; the controlled
+                        # fallback accounts the attempt without creating another slot.
+                        "budget_usage": consumed_model,
+                        "recovery_decision": RecoveryDecision(
+                            action="finalize",
+                            reason_code="finalizer_operational_exhausted",
+                        ),
+                    },
+                    policy=resolved_budget_policy,
+                )
+        if propagation_error is not None:
+            raise propagation_error
+        validation_error: Exception | None = None
+        try:
+            final_message = next(
+                (
+                    message
+                    for message in reversed(result.get("messages", ()))
+                    if isinstance(message, AIMessage)
                 ),
-            },
-            context=runtime.context,
-        )
-        final_message = next(
-            (
-                message
-                for message in reversed(result.get("messages", ()))
-                if isinstance(message, AIMessage)
-            ),
-            None,
-        )
-        if final_message is None:
-            raise RuntimeError("finalizer completed without a terminal AIMessage")
-        phase_usage = BudgetUsage.model_validate(result.get("phase_budget_usage") or {})
+                None,
+            )
+            if final_message is None:
+                raise ValueError("finalizer completed without a terminal AIMessage")
+            phase_usage = BudgetUsage.model_validate(
+                result.get("phase_budget_usage") or {}
+            )
+            if phase_usage.tool_calls:
+                raise ValueError("finalizer reported Tool usage")
+        except Exception as error:
+            validation_error = sanitize_finalizer_propagation(error)
+        if validation_error is not None:
+            raise validation_error
         usage = BudgetUsage(
             model_calls=max(phase_usage.model_calls, 1),
             tool_calls=phase_usage.tool_calls,
@@ -675,6 +758,7 @@ def build_planning_graph(
         return {
             "messages": [final_message],
             "budget_usage": _add_usage(consumed, usage),
+            "recovery_decision": None,
         }
 
     builder = StateGraph(PlanningState, context_schema=AssistantRunContext)
@@ -752,7 +836,11 @@ def build_planning_graph(
         route_after_worker_assessment,
         ["scheduler", "prepare_replan", "finalize", "controlled_finalize"],
     )
-    builder.add_edge("finalize", END)
+    builder.add_conditional_edges(
+        "finalize",
+        route_after_finalize,
+        ["finalize", END],
+    )
     builder.add_edge("controlled_finalize", END)
     return builder.compile(name="AssistantPlanningGraph", checkpointer=checkpointer)
 
@@ -761,6 +849,18 @@ def route_after_admission(state: PlanningState) -> str:
     """Revise an invalid candidate or enter the deterministic scheduler."""
 
     return "planner" if state.get("admission_error") else "scheduler"
+
+
+def route_after_finalize(state: PlanningState) -> str:
+    """Retry only an explicitly bounded operational finalizer attempt."""
+
+    decision = state.get("recovery_decision")
+    if decision is None:
+        return END
+    parsed = RecoveryDecision.model_validate(decision)
+    if parsed.action == "retry" and parsed.reason_code == "finalizer_operational_retry":
+        return "finalize"
+    return END
 
 
 def scheduler_node(
@@ -933,6 +1033,12 @@ def reserve_wave_budget_node(
         decision = RecoveryDecision(
             action="finalize",
             reason_code=_insufficient_worker_budget_reason(remaining, required),
+        )
+        write_recovery_transition(
+            source="wave_budget",
+            target="finalize",
+            reason_code=decision.reason_code,
+            plan_generation=generation,
         )
     return {
         "wave_reservations": selected,
@@ -1428,12 +1534,16 @@ def _finalizer_prompt(
     deliverables: Sequence[Any],
     evidence: Sequence[PlannerEvidence],
     worker_results: Sequence[WorkerResult],
+    unresolved_failures: Sequence[FailureFact] = (),
 ) -> str:
     payload: dict[str, Any] = {
         "request": request,
         "deliverables": [item.model_dump(mode="json") for item in deliverables],
         "planner_evidence": [item.model_dump(mode="json") for item in evidence],
         "worker_results": [item.model_dump(mode="json") for item in worker_results],
+        "unresolved_failures": [
+            item.model_dump(mode="json") for item in unresolved_failures
+        ],
     }
 
     def render() -> str:
@@ -1643,11 +1753,13 @@ def _minimal_finalizer_context(payload: Mapping[str, Any]) -> str:
         "deliverables": [],
         "planner_evidence": [],
         "worker_results": [],
+        "unresolved_failures": [],
     }
     collections = (
         ("deliverables", "deliverable_id"),
         ("planner_evidence", "evidence_id"),
         ("worker_results", "work_item_id"),
+        ("unresolved_failures", "code"),
     )
     for collection_name, id_field in collections:
         source = payload.get(collection_name, ())

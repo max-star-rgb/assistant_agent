@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 from collections.abc import Mapping, Sequence
 from urllib.error import HTTPError, URLError
 
 import httpx
 from langchain_core.messages import AIMessage
+from langgraph.config import get_stream_writer
 from langgraph.errors import GraphBubbleUp, NodeCancelledError
 
 from assistant_agent.native_agent.models import (
     BudgetUsage,
+    FailureFact,
     NativePlanProposal,
     PlannerOutcome,
     RecoveryDecision,
@@ -20,6 +24,11 @@ from assistant_agent.native_agent.models import (
 )
 from assistant_agent.native_agent.planning_budget import PlanningBudgetPolicy
 from assistant_agent.native_agent.state import PlanningState
+
+
+_RECOVERY_EVENT_CODE = re.compile(r"^[a-z][a-z0-9_]{0,119}$")
+_MAX_TERMINAL_DELIVERABLE_IDS = 64
+_MAX_TERMINAL_FAILURE_CODES = 32
 
 
 class PlannerPropagationError(RuntimeError):
@@ -32,6 +41,15 @@ class PlannerPropagationError(RuntimeError):
 
 class WorkerPropagationError(RuntimeError):
     """A stable worker boundary error without provider exception references."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+        self.__suppress_context__ = True
+
+
+class FinalizerPropagationError(RuntimeError):
+    """A stable finalizer boundary error without provider exception references."""
 
     def __init__(self, code: str) -> None:
         self.code = code
@@ -151,6 +169,85 @@ def sanitize_worker_propagation(error: Exception) -> WorkerPropagationError:
     return WorkerPropagationError("worker_unclassified_failure")
 
 
+def sanitize_finalizer_propagation(error: Exception) -> FinalizerPropagationError:
+    """Classify nonrecoverable finalizer failures using stable local codes only."""
+
+    chain = tuple(_exception_chain(error))
+    if any(isinstance(item, PermissionError) for item in chain):
+        return FinalizerPropagationError("finalizer_authorization_failure")
+    if any(
+        isinstance(
+            item,
+            (
+                AssertionError,
+                TypeError,
+                ValueError,
+                LookupError,
+                ArithmeticError,
+                ImportError,
+                NameError,
+                SyntaxError,
+                AttributeError,
+            ),
+        )
+        for item in chain
+    ):
+        return FinalizerPropagationError("finalizer_contract_failure")
+    if any(_exception_status_code(item) is not None for item in chain):
+        return FinalizerPropagationError("finalizer_nonretryable_provider_failure")
+    return FinalizerPropagationError("finalizer_unclassified_failure")
+
+
+def recovery_transition_event(
+    *,
+    source: str,
+    target: str,
+    reason_code: str,
+    plan_generation: int,
+) -> dict[str, str | int]:
+    """Build the complete allowlisted payload for one recovery transition."""
+
+    for field_name, value in (
+        ("source", source),
+        ("target", target),
+        ("reason_code", reason_code),
+    ):
+        if _RECOVERY_EVENT_CODE.fullmatch(value) is None:
+            raise ValueError(f"invalid recovery event {field_name}")
+    if plan_generation < 0:
+        raise ValueError("recovery event plan_generation must be nonnegative")
+    return {
+        "type": "recovery_transition",
+        "from": source,
+        "to": target,
+        "reason_code": reason_code,
+        "plan_generation": plan_generation,
+    }
+
+
+def write_recovery_transition(
+    *,
+    source: str,
+    target: str,
+    reason_code: str,
+    plan_generation: int,
+) -> None:
+    """Write one native custom event when executing inside a graph node."""
+
+    event = recovery_transition_event(
+        source=source,
+        target=target,
+        reason_code=reason_code,
+        plan_generation=plan_generation,
+    )
+    try:
+        writer = get_stream_writer()
+    except RuntimeError:
+        # Pure deterministic unit calls intentionally run without Runnable config.
+        return
+    writer(event)
+
+
 def _exception_chain(error: BaseException):
     pending: list[BaseException] = [error]
     visited: set[int] = set()
@@ -224,7 +321,20 @@ def assess_planner_node(
         )
     else:
         decision = RecoveryDecision(action="replan", reason_code=failure.code)
-    return {"recovery_decision": decision}
+    write_recovery_transition(
+        source="planner_failed",
+        target=decision.action,
+        reason_code=decision.reason_code,
+        plan_generation=_plan_generation(state),
+    )
+    update: dict[str, object] = {"recovery_decision": decision}
+    if decision.action in {"retry", "finalize"}:
+        update["recovery_history"] = _bounded_history(
+            state.get("recovery_history", ()),
+            decision,
+            limit=policy.recovery_history_limit,
+        )
+    return update
 
 
 def route_after_planner_assessment(state: PlanningState) -> str:
@@ -365,6 +475,13 @@ def assess_workers_node(
             decision,
             limit=policy.recovery_history_limit,
         )
+    if decision is not None:
+        write_recovery_transition(
+            source="worker_failed",
+            target=decision.action,
+            reason_code=decision.reason_code,
+            plan_generation=_plan_generation(state),
+        )
     return update
 
 
@@ -473,6 +590,12 @@ def prepare_replan_node(
             frozen_results,
             plan=plan,
         )
+    write_recovery_transition(
+        source="replan",
+        target="planner",
+        reason_code=decision.reason_code,
+        plan_generation=generation,
+    )
     return update
 
 
@@ -484,18 +607,170 @@ def controlled_finalize_node(
     """Produce a local terminal message without exposing provider error payloads."""
 
     decision = _recovery_decision(state)
-    reason_code = (
+    fallback_reason = (
         decision.reason_code if decision is not None else "planner_recovery_unavailable"
     )
+    completed_ids, missing_ids = _terminal_deliverable_ids(state)
+    failure_codes = _terminal_failure_codes(state, fallback_reason=fallback_reason)
+    recovery_status = (
+        "partial" if completed_ids else "failed" if missing_ids else "partial"
+    )
+    content = json.dumps(
+        {
+            "recovery_status": recovery_status,
+            "completed_deliverable_ids": completed_ids,
+            "missing_deliverable_ids": missing_ids,
+            "failure_codes": failure_codes,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    response_metadata = {
+        "recovery_status": recovery_status,
+        "failure_codes": failure_codes,
+        "plan_generation": _plan_generation(state),
+        "completed_deliverable_ids": completed_ids,
+        "missing_deliverable_ids": missing_ids,
+        "completed_deliverable_count": len(completed_ids),
+        "missing_deliverable_count": len(missing_ids),
+    }
     usage = _budget_usage(state)
     node_attempts = usage.node_attempts + 1
     if policy is not None:
         node_attempts = min(node_attempts, policy.graph_node_attempt_limit)
-    return {
-        "messages": [AIMessage(content=f"Planning stopped: {reason_code}.")],
+    terminal_decision = decision or RecoveryDecision(
+        action="finalize",
+        reason_code=fallback_reason,
+    )
+    update: dict[str, object] = {
+        "messages": [AIMessage(content=content, response_metadata=response_metadata)],
         "admission_error": None,
         "budget_usage": usage.model_copy(update={"node_attempts": node_attempts}),
+        "recovery_decision": terminal_decision,
     }
+    if policy is not None:
+        update["recovery_history"] = _bounded_history(
+            state.get("recovery_history", ()),
+            terminal_decision,
+            limit=policy.recovery_history_limit,
+        )
+    write_recovery_transition(
+        source="recovery_terminal",
+        target="end",
+        reason_code=fallback_reason,
+        plan_generation=_plan_generation(state),
+    )
+    return update
+
+
+def record_recovery_decision(
+    existing: Sequence[RecoveryDecision] | Sequence[Mapping[str, object]],
+    decision: RecoveryDecision,
+    *,
+    limit: int,
+) -> list[RecoveryDecision]:
+    """Expose the bounded idempotent history reducer to sequential graph nodes."""
+
+    return _bounded_history(existing, decision, limit=limit)
+
+
+def unresolved_failure_facts(
+    state: Mapping[str, object],
+) -> tuple[FailureFact, ...]:
+    """Return current stable failures not closed by a frozen success."""
+
+    facts: list[FailureFact] = []
+    planner_outcome = _planner_outcome(state)
+    if (
+        planner_outcome is not None
+        and planner_outcome.status != "succeeded"
+        and planner_outcome.failure is not None
+    ):
+        facts.append(planner_outcome.failure)
+    generation = _plan_generation(state)
+    frozen_ids = frozenset(_frozen_worker_results(state))
+    outcomes = sorted(
+        _worker_outcomes(state).values(),
+        key=lambda item: (
+            item.plan_generation,
+            item.work_item_id,
+            item.attempt,
+            item.execution_id,
+        ),
+    )
+    latest: dict[str, WorkerOutcome] = {}
+    for outcome in outcomes:
+        if outcome.plan_generation != generation:
+            continue
+        current = latest.get(outcome.work_item_id)
+        if current is None or outcome.attempt > current.attempt:
+            latest[outcome.work_item_id] = outcome
+    for work_item_id in sorted(latest):
+        outcome = latest[work_item_id]
+        if (
+            work_item_id not in frozen_ids
+            and outcome.status != "succeeded"
+            and outcome.failure is not None
+        ):
+            facts.append(outcome.failure)
+    return tuple(facts[:_MAX_TERMINAL_FAILURE_CODES])
+
+
+def _terminal_deliverable_ids(
+    state: Mapping[str, object],
+) -> tuple[list[str], list[str]]:
+    plan = _optional_plan(state)
+    if plan is None:
+        context = state.get("recovery_context")
+        raw_missing = (
+            context.get("unfinished_deliverable_ids", ())
+            if isinstance(context, Mapping)
+            else ()
+        )
+        return [], list(_bounded_string_ids(raw_missing))
+    successful_worker_ids = set(_frozen_worker_results(state))
+    successful_worker_ids.update(
+        outcome.work_item_id
+        for outcome in _worker_outcomes(state).values()
+        if outcome.status == "succeeded" and outcome.result is not None
+    )
+    successful_evidence_ids = {
+        item.evidence_id
+        for item in state.get("planner_evidence", ())
+        if hasattr(item, "evidence_id") and getattr(item, "status", None) == "succeeded"
+    }
+    completed: list[str] = []
+    missing: list[str] = []
+    for deliverable in plan.deliverables[:_MAX_TERMINAL_DELIVERABLE_IDS]:
+        is_complete = (
+            set(deliverable.producer_node_ids).issubset(successful_worker_ids)
+            and set(deliverable.frozen_result_refs).issubset(successful_worker_ids)
+            and set(deliverable.evidence_refs).issubset(successful_evidence_ids)
+        )
+        (completed if is_complete else missing).append(deliverable.deliverable_id)
+    return completed, missing
+
+
+def _terminal_failure_codes(
+    state: Mapping[str, object],
+    *,
+    fallback_reason: str,
+) -> list[str]:
+    codes = {
+        fallback_reason,
+        *(fact.code for fact in unresolved_failure_facts(state)),
+    }
+    return sorted(codes)[:_MAX_TERMINAL_FAILURE_CODES]
+
+
+def _bounded_string_ids(values: object) -> tuple[str, ...]:
+    if not isinstance(values, Sequence) or isinstance(values, (str, bytes, bytearray)):
+        return ()
+    return tuple(
+        value
+        for value in dict.fromkeys(values)
+        if isinstance(value, str) and 0 < len(value) <= 120
+    )[:_MAX_TERMINAL_DELIVERABLE_IDS]
 
 
 def _bounded_history(
@@ -733,13 +1008,19 @@ __all__ = [
     "assess_workers_node",
     "classify_operational_failure",
     "controlled_finalize_node",
+    "FinalizerPropagationError",
     "freeze_successful_worker_results",
     "find_worker_control_failure",
     "prepare_replan_node",
+    "record_recovery_decision",
+    "recovery_transition_event",
     "route_after_planner_assessment",
     "route_after_worker_assessment",
     "PlannerPropagationError",
     "sanitize_planner_propagation",
     "sanitize_worker_propagation",
+    "sanitize_finalizer_propagation",
+    "unresolved_failure_facts",
+    "write_recovery_transition",
     "WorkerPropagationError",
 ]

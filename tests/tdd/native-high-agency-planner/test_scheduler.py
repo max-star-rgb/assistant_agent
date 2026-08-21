@@ -174,6 +174,7 @@ def test_zero_node_plan_routes_directly_to_shared_agent_finalizer() -> None:
         ],
         "planner_evidence": [evidence.model_dump(mode="json")],
         "worker_results": [],
+        "unresolved_failures": [],
     }
 
 
@@ -221,9 +222,18 @@ def test_compiled_worker_exhaustion_blocks_dependents_before_finalizing() -> Non
     )
     assert result["worker_results"] == []
     assert sum(isinstance(message, AIMessage) for message in result["messages"]) == 1
-    assert result["messages"][-1].content == (
-        "Planning stopped: worker_recovery_budget_exhausted."
-    )
+    terminal = result["messages"][-1]
+    assert json.loads(str(terminal.content)) == {
+        "recovery_status": "failed",
+        "completed_deliverable_ids": [],
+        "missing_deliverable_ids": ["answer"],
+        "failure_codes": [
+            "worker_operational_failure",
+            "worker_recovery_budget_exhausted",
+        ],
+    }
+    assert terminal.response_metadata["recovery_status"] == "failed"
+    assert terminal.response_metadata["missing_deliverable_ids"] == ["answer"]
 
 
 def _operational_wrapper_with_cause(cause: Exception) -> TimeoutError:

@@ -16,11 +16,17 @@ from assistant_agent.native_agent.fast_agent import (
     build_fast_agent,
 )
 from assistant_agent.native_agent.models import (
+    BudgetUsage,
+    FailureFact,
     NativePlanNode,
     NativePlanProposal,
     PlannerEvidence,
+    PlannerOutcome,
+    RecoveryDecision,
+    WorkerOutcome,
     WorkerResult,
 )
+from assistant_agent.native_agent.planning_budget import WaveReservation
 from assistant_agent.native_agent.planning_graph import build_planning_graph
 from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.native_agent.state import PlanningState
@@ -80,7 +86,10 @@ class _HitlPlanningModel(MockAssistantChatModel):
             )
         if _last_human_text(messages).startswith("worker-write-sentinel"):
             if any(isinstance(message, ToolMessage) for message in messages):
-                return AIMessage(content="completed:worker-write-sentinel")
+                return _worker_completion_message(
+                    "completed:worker-write-sentinel",
+                    "worker-write-completion",
+                )
             return AIMessage(
                 content="",
                 tool_calls=[
@@ -93,7 +102,10 @@ class _HitlPlanningModel(MockAssistantChatModel):
                 ],
             )
         if _last_human_text(messages).startswith("dependent-sentinel"):
-            return AIMessage(content="completed:dependent-sentinel")
+            return _worker_completion_message(
+                "completed:dependent-sentinel",
+                "dependent-completion",
+            )
         return super()._response_message(messages, **kwargs)
 
 
@@ -150,10 +162,16 @@ class _CompletedWorkerResumeModel(MockAssistantChatModel):
         current = _last_human_text(messages)
         if current.startswith("completed-worker-sentinel"):
             self.first_worker_runs += 1
-            return AIMessage(content="completed-worker-result")
+            return _worker_completion_message(
+                "completed-worker-result",
+                "completed-worker-completion",
+            )
         if current.startswith("dependent-write-sentinel"):
             if any(isinstance(message, ToolMessage) for message in messages):
-                return AIMessage(content="write-worker-result")
+                return _worker_completion_message(
+                    "write-worker-result",
+                    "write-worker-completion",
+                )
             return AIMessage(
                 content="",
                 tool_calls=[
@@ -166,7 +184,10 @@ class _CompletedWorkerResumeModel(MockAssistantChatModel):
                 ],
             )
         if current.startswith("after-resume-sentinel"):
-            return AIMessage(content="after-resume-result")
+            return _worker_completion_message(
+                "after-resume-result",
+                "after-resume-completion",
+            )
         return AIMessage(content="final-answer-sentinel")
 
 
@@ -187,6 +208,20 @@ def _tool_names(raw_tools: object) -> set[str]:
         and isinstance((function := item.get("function")), dict)
         and isinstance(function.get("name"), str)
     }
+
+
+def _worker_completion_message(content: str, call_id: str) -> AIMessage:
+    return AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "WorkerCompletion",
+                "args": {"status": "completed", "content": content},
+                "id": call_id,
+                "type": "tool_call",
+            }
+        ],
+    )
 
 
 @pytest.mark.core_invariant("CTX-001")
@@ -238,8 +273,7 @@ def test_create_agent_owns_limits_summary_and_hitl_middleware() -> None:
     graph = build_fast_agent(MockAssistantChatModel(), [tool])
     nodes = set(graph.get_graph().nodes)
 
-    assert any("ModelCallLimitMiddleware" in node for node in nodes)
-    assert any("ToolCallLimitMiddleware" in node for node in nodes)
+    assert any("PhaseBudgetMiddleware" in node for node in nodes)
     assert any("SummarizationMiddleware" in node for node in nodes)
     assert any("HumanInTheLoopMiddleware" in node for node in nodes)
 
@@ -280,7 +314,13 @@ def test_planning_write_tools_interrupt_and_resume_without_replaying_completed_w
                     NativePlanNode,
                     NativePlanProposal,
                     PlannerEvidence,
+                    BudgetUsage,
+                    FailureFact,
+                    PlannerOutcome,
+                    RecoveryDecision,
+                    WorkerOutcome,
                     WorkerResult,
+                    WaveReservation,
                 ]
             )
         )
@@ -381,7 +421,13 @@ def test_checkpoint_resume_does_not_replay_a_completed_worker() -> None:
                 allowed_msgpack_modules=[
                     NativePlanNode,
                     NativePlanProposal,
+                    BudgetUsage,
+                    FailureFact,
+                    PlannerOutcome,
+                    RecoveryDecision,
+                    WorkerOutcome,
                     WorkerResult,
+                    WaveReservation,
                 ]
             )
         )

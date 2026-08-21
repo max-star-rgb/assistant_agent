@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import replace
 from typing import Any
 
@@ -362,9 +363,19 @@ def test_failure_at_attempt_31_uses_last_slot_for_controlled_finalizer() -> None
 
     assert agent.finalizer_calls == 0
     assert result["budget_usage"].node_attempts == 32
-    assert result["messages"][-1].content == (
-        "Planning stopped: graph_node_attempt_budget_exhausted."
-    )
+    terminal = result["messages"][-1]
+    assert json.loads(str(terminal.content)) == {
+        "recovery_status": "failed",
+        "completed_deliverable_ids": [],
+        "missing_deliverable_ids": ["answer"],
+        "failure_codes": [
+            "graph_node_attempt_budget_exhausted",
+            "worker_operational_failure",
+        ],
+    }
+    assert terminal.response_metadata["recovery_status"] == "failed"
+    assert terminal.response_metadata["completed_deliverable_count"] == 0
+    assert terminal.response_metadata["missing_deliverable_count"] == 1
 
 
 def _ready_wave_state(
