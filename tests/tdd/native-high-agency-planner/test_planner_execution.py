@@ -27,6 +27,15 @@ class _PlannerExecutionModel(MockAssistantChatModel):
     def _response_message(self, messages, **kwargs):
         visible_names = _visible_tool_names(kwargs.get("tools"))
         if "NativePlanProposal" not in visible_names:
+            if "WorkerCompletion" in visible_names:
+                return _tool_call(
+                    "WorkerCompletion",
+                    "worker-completion-call",
+                    args={
+                        "status": "completed",
+                        "content": "worker-or-finalizer-sentinel",
+                    },
+                )
             return AIMessage(content="worker-or-finalizer-sentinel")
         if self.scenario == "default-tool":
             if "weather_probe" in visible_names and not _has_tool_result(

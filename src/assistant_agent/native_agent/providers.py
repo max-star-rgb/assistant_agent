@@ -252,6 +252,11 @@ def _mock_structured_tool_call(tools: Any) -> tuple[str, dict[str, Any]] | None:
                     }
                 ],
             }
+        if name == "WorkerCompletion":
+            return name, {
+                "status": "completed",
+                "content": "mock worker completion",
+            }
     return None
 
 

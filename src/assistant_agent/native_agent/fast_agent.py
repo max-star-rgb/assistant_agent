@@ -119,7 +119,10 @@ def build_fast_agent(
             visual_history_probe,
             live_view_resolver,
         ),
-        PhaseBudgetMiddleware(resolved_budget_policy),
+        PhaseBudgetMiddleware(
+            resolved_budget_policy,
+            business_tool_names=frozenset(tool.name for tool in tools),
+        ),
     ]
     tool_retry_middleware = (
         ToolRetryMiddleware(

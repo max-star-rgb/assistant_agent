@@ -52,9 +52,15 @@ class PlanningBudgetPolicy:
 class PhaseBudgetMiddleware(AgentMiddleware):
     """End a phase cleanly when its model or Tool allowance is exhausted."""
 
-    def __init__(self, policy: PlanningBudgetPolicy) -> None:
+    def __init__(
+        self,
+        policy: PlanningBudgetPolicy,
+        *,
+        business_tool_names: frozenset[str],
+    ) -> None:
         super().__init__()
         self.policy = policy
+        self.business_tool_names = business_tool_names
 
     @hook_config(can_jump_to=["end"])
     def before_model(self, state, runtime) -> dict[str, Any] | None:
@@ -75,7 +81,10 @@ class PhaseBudgetMiddleware(AgentMiddleware):
     @hook_config(can_jump_to=["end"])
     def after_model(self, state, runtime) -> dict[str, Any] | None:
         del runtime
-        pending_calls = _last_ai_tool_calls(state.get("messages", ()))
+        pending_calls = _pending_business_tool_calls(
+            state.get("messages", ()),
+            business_tool_names=self.business_tool_names,
+        )
         if not pending_calls:
             return None
         phase = _agent_phase(state)
@@ -103,12 +112,26 @@ def _agent_phase(state: dict[str, Any]) -> AgentPhase:
     return "fast"
 
 
-def _last_ai_tool_calls(messages: object) -> list[dict[str, Any]]:
+def _pending_business_tool_calls(
+    messages: object,
+    *,
+    business_tool_names: frozenset[str],
+) -> list[dict[str, Any]]:
     if not isinstance(messages, (list, tuple)):
         return []
+    closed_call_ids = {
+        message.tool_call_id
+        for message in messages
+        if isinstance(message, ToolMessage)
+    }
     for message in reversed(messages):
         if isinstance(message, AIMessage):
-            return list(message.tool_calls)
+            return [
+                call
+                for call in message.tool_calls
+                if call.get("name") in business_tool_names
+                and call.get("id") not in closed_call_ids
+            ]
     return []
 
 

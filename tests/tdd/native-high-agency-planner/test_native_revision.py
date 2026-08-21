@@ -23,6 +23,7 @@ from assistant_agent.native_agent.models import (
     NativePlanProposal,
     PlanDeliverable,
     PlannerEvidence,
+    WorkerCompletion,
     WorkerResult,
 )
 from assistant_agent.native_agent.planning_graph import (
@@ -81,7 +82,11 @@ class _RevisionFastAgent:
                 "messages": [
                     *input["messages"],
                     AIMessage(content="worker-complete-sentinel"),
-                ]
+                ],
+                "structured_response": WorkerCompletion(
+                    status="completed",
+                    content="worker-complete-sentinel",
+                ),
             }
         return {
             "messages": [
@@ -311,6 +316,37 @@ class _CheckpointPlanningModel(MockAssistantChatModel):
                             ],
                         },
                         "id": "checkpoint-plan-proposal",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        if "WorkerCompletion" in _tool_names(kwargs.get("tools")):
+            current = _last_human_text(messages)
+            if current.startswith("write-worker-sentinel") and not any(
+                isinstance(message, ToolMessage) and message.name == "write_probe"
+                for message in messages
+            ):
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "write_probe",
+                            "args": {"value": "write-worker"},
+                            "id": "checkpoint-write-call",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "WorkerCompletion",
+                        "args": {
+                            "status": "completed",
+                            "content": f"{current}-complete",
+                        },
+                        "id": f"checkpoint-{current}-completion",
                         "type": "tool_call",
                     }
                 ],

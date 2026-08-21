@@ -29,6 +29,7 @@ from assistant_agent.native_agent.models import (
     EvidenceLink,
     NativePlanProposal,
     PlannerEvidence,
+    WorkerCompletion,
     WorkerResult,
 )
 from assistant_agent.native_agent.state import PlanningState, WorkerState
@@ -403,7 +404,7 @@ def build_planning_graph(
             },
             context=runtime.context,
         )
-        content = _last_ai_text(result)
+        completion = WorkerCompletion.model_validate(result["structured_response"])
         terminal = next(
             (
                 message
@@ -416,7 +417,9 @@ def build_planning_graph(
         sources = extract_worker_sources(metadata)
         profile = metadata.get("provider_search_profile", "none")
         verification = (
-            "unverified"
+            "failed"
+            if completion.status == "insufficient"
+            else "unverified"
             if not sources and isinstance(profile, str) and profile != "none"
             else "verified"
             if sources
@@ -424,7 +427,7 @@ def build_planning_graph(
         )
         worker_result = WorkerResult(
             work_item_id=state["work_item_id"],
-            content=content or "worker completed without textual output",
+            content=completion.content,
             verification_status=verification,  # type: ignore[arg-type]
             sources=sources,
         )
@@ -1025,13 +1028,6 @@ def _last_human_text(state: PlanningState) -> str:
     for message in reversed(state.get("messages", ())):
         if isinstance(message, HumanMessage):
             return str(message.content)
-    return ""
-
-
-def _last_ai_text(state: Any) -> str:
-    for message in reversed(state.get("messages", ())):
-        if isinstance(message, AIMessage) and str(message.content).strip():
-            return str(message.content).strip()
     return ""
 
 

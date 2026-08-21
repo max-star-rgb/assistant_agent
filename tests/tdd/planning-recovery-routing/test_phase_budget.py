@@ -10,7 +10,8 @@ from langchain_core.tools import tool
 
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.fast_agent import build_fast_agent
-from assistant_agent.native_agent.models import BudgetUsage
+from assistant_agent.native_agent.models import BudgetUsage, WorkerCompletion
+from assistant_agent.native_agent.planning_graph import build_planning_graph
 from assistant_agent.native_agent.planning_budget import PhaseLimits, PlanningBudgetPolicy
 from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.native_agent.state import add_budget_usage
@@ -48,6 +49,47 @@ def test_budget_usage_reducer_accepts_checkpoint_safe_mapping() -> None:
     ) == BudgetUsage(model_calls=1, tool_calls=1)
 
 
+def test_worker_consumes_mock_structured_completion() -> None:
+    result = asyncio.run(_run_mock_worker(MockAssistantChatModel()))
+
+    worker = result["worker_results"][0]
+    assert worker.content == "mock worker completion"
+    assert worker.verification_status == "advisory"
+
+
+def test_worker_preserves_insufficient_completion_as_failed_result() -> None:
+    result = asyncio.run(_run_mock_worker(_InsufficientWorkerModel()))
+
+    worker = result["worker_results"][0]
+    assert worker.content == "mock worker insufficient"
+    assert worker.verification_status == "failed"
+
+
+def test_structured_completion_does_not_consume_tool_budget() -> None:
+    result = asyncio.run(_run_budget_completion_loop())
+
+    assert result["phase_tool_call_count"] == 2
+    assert result["phase_budget_usage"].tool_calls == 2
+    assert "phase_budget_status" not in result
+    assert result["structured_response"] == WorkerCompletion(
+        status="completed",
+        content="budget completion",
+    )
+    tool_call_ids = [
+        call["id"]
+        for message in result["messages"]
+        if isinstance(message, AIMessage)
+        for call in message.tool_calls
+    ]
+    closed_ids = [
+        message.tool_call_id
+        for message in result["messages"]
+        if isinstance(message, ToolMessage)
+    ]
+    assert sorted(closed_ids) == sorted(tool_call_ids)
+    assert len(closed_ids) == len(set(closed_ids))
+
+
 async def _run_budget_loop(*, phase: str, base: int) -> dict[str, Any]:
     @tool
     def probe_tool() -> str:
@@ -70,6 +112,45 @@ async def _run_budget_loop(*, phase: str, base: int) -> dict[str, Any]:
     )
 
 
+async def _run_mock_worker(model: MockAssistantChatModel) -> dict[str, Any]:
+    agent = build_fast_agent(model, [], skill_catalog=SkillCatalog())
+    graph = build_planning_graph(
+        model,
+        agent,
+        tools=[],
+        skill_catalog=SkillCatalog(),
+    )
+    return await graph.ainvoke(
+        {
+            "messages": [HumanMessage(content="mock worker request")],
+            "memory_context": (),
+            "memory_status": "empty",
+        },
+        context=AssistantRunContext(),
+    )
+
+
+async def _run_budget_completion_loop() -> dict[str, Any]:
+    @tool
+    def probe_tool() -> str:
+        """Return deterministic probe evidence."""
+
+        return "probe-ok"
+
+    agent = build_fast_agent(
+        _TwoProbeThenCompletionModel(),
+        [probe_tool],
+        budget_policy=PlanningBudgetPolicy.from_base(2),
+        skill_catalog=SkillCatalog(),
+    )
+    return await agent.ainvoke(
+        {
+            "messages": [HumanMessage(content="budget-completion-loop")],
+            "agent_phase": "worker",
+            "worker_tool_allowlist": ("probe_tool",),
+        },
+        context=AssistantRunContext(),
+    )
 class _ThreeProbeCallsModel(MockAssistantChatModel):
     def _response_message(self, messages, **kwargs):
         completed = sum(
@@ -89,6 +170,62 @@ class _ThreeProbeCallsModel(MockAssistantChatModel):
                 ],
             )
         return AIMessage(content="unreachable")
+
+
+class _InsufficientWorkerModel(MockAssistantChatModel):
+    def _response_message(self, messages, **kwargs):
+        message = super()._response_message(messages, **kwargs)
+        if any(call["name"] == "WorkerCompletion" for call in message.tool_calls):
+            return message.model_copy(
+                update={
+                    "tool_calls": [
+                        {
+                            "name": "WorkerCompletion",
+                            "args": {
+                                "status": "insufficient",
+                                "content": "mock worker insufficient",
+                            },
+                            "id": "mock-insufficient-worker-completion",
+                            "type": "tool_call",
+                        }
+                    ]
+                }
+            )
+        return message
+
+
+class _TwoProbeThenCompletionModel(MockAssistantChatModel):
+    def _response_message(self, messages, **kwargs):
+        completed = sum(
+            isinstance(message, ToolMessage) and message.name == "probe_tool"
+            for message in messages
+        )
+        if completed < 2:
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "probe_tool",
+                        "args": {},
+                        "id": f"budget-probe-{completed + 1}",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "WorkerCompletion",
+                    "args": {
+                        "status": "completed",
+                        "content": "budget completion",
+                    },
+                    "id": "budget-worker-completion",
+                    "type": "tool_call",
+                }
+            ],
+        )
 
 
 def _successful_tool_message_ids(messages: list[Any]) -> list[str]:
