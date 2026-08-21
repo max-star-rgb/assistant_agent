@@ -142,9 +142,7 @@ class AgentServerExecutionOwner:
         ):
             coding_artifact_backend = DockerArtifactIngressBackend(
                 managed_bundle_root=(
-                    coding_config.workspace_root
-                    / "validation"
-                    / "artifact-bundles"
+                    coding_config.workspace_root / "validation" / "artifact-bundles"
                 )
             )
         coding_validation_service = CodingValidationService(
@@ -221,9 +219,7 @@ def _compose_sync(
         visual_semantic_store_pool=(visual_resources.visual_semantic_store_pool),
         visual_memory_text_index=visual_resources.visual_memory_text_index,
         visual_history_probe=visual_resources.visual_history_probe,
-        embedding_coordinator_store=(
-            visual_resources.embedding_coordinator_store
-        ),
+        embedding_coordinator_store=(visual_resources.embedding_coordinator_store),
         visual_reminder_registry=visual_resources.visual_reminder_registry,
         live_view_resolver=visual_perception.resolve_frozen_live_view,
     )
