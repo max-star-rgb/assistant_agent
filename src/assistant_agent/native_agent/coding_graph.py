@@ -306,6 +306,12 @@ def build_coding_graph(
             snapshot,
             state.get("analysis_results", ()),
         )
+        if {result.task_id for result in results} != set(ANALYSIS_TASK_IDS):
+            return {
+                "analysis_results": list(results),
+                "analysis_status": "pending",
+                "analysis_snapshot_release_status": "active",
+            }
         workspace = _resolve_workspace(state, runtime, config, workspace_service)
         release_status = "released"
         try:
@@ -1656,6 +1662,13 @@ def _resolve_workspace(state, runtime, config, service):
 
 
 def _has_checkpointed_cycle_state(state: CodingState) -> bool:
+    if (
+        state.get("analysis_tasks")
+        or state.get("analysis_results")
+        or state.get("analysis_snapshot_release_status") is not None
+        or state.get("analysis_context_consumed", False)
+    ):
+        return True
     return any(
         state.get(field) is not None
         for field in (
@@ -1686,6 +1699,13 @@ def _validate_analysis_checkpoint(
     status = state.get("analysis_status")
     snapshot_value = state.get("analysis_snapshot")
     if status is None and snapshot_value is None:
+        if (
+            state.get("analysis_tasks")
+            or state.get("analysis_results")
+            or state.get("analysis_snapshot_release_status") is not None
+            or state.get("analysis_context_consumed", False)
+        ):
+            raise ValueError("coding_analysis_contract_invalid")
         return
     if status not in {"pending", "completed", "partial", "unavailable"}:
         raise ValueError("coding_analysis_contract_invalid")
@@ -1709,6 +1729,8 @@ def _validate_analysis_checkpoint(
     if len(task_ids) != len(set(task_ids)) or any(
         task_id not in ANALYSIS_TASK_IDS for task_id in task_ids
     ):
+        raise ValueError("coding_analysis_contract_invalid")
+    if status != "pending" and set(task_ids) != set(ANALYSIS_TASK_IDS):
         raise ValueError("coding_analysis_contract_invalid")
     joined_status, _ = join_analysis_results(snapshot, results)
     if status != "pending" and joined_status != status:
