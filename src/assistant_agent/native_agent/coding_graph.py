@@ -138,7 +138,7 @@ def build_coding_graph(
         call_messages = list(state.get("messages", ()))
         if state.get("repair_status") == "active":
             repair_model_calls = int(state.get("repair_model_calls", 0))
-            if repair_model_calls >= MAX_REPAIR_ROUNDS:
+            if repair_model_calls < 1 or repair_model_calls > MAX_REPAIR_ROUNDS:
                 return {
                     "repair_status": "no_progress",
                     "coding_result": _failed(
@@ -191,8 +191,6 @@ def build_coding_graph(
             "messages": new_messages,
             "draft_artifact": artifact,
         }
-        if state.get("repair_status") == "active":
-            update["repair_model_calls"] = int(state.get("repair_model_calls", 0)) + 1
         return update
 
     def validate_proposal_node(
@@ -333,11 +331,41 @@ def build_coding_graph(
             "coding_result": None,
         }
 
+    def consume_repair_budget_node(state: CodingState) -> dict[str, object]:
+        """Persist one active-repair model-call attempt before invoking the model."""
+        if state.get("coding_result") is not None:
+            return {}
+        if state.get("repair_status") != "active":
+            return {
+                "coding_result": _failed(
+                    state,
+                    "coding_repair_evidence_required",
+                )
+            }
+        repair_model_calls = int(state.get("repair_model_calls", 0))
+        if repair_model_calls >= MAX_REPAIR_ROUNDS:
+            return {
+                "repair_status": "no_progress",
+                "coding_result": _failed(
+                    state,
+                    "coding_repair_no_progress",
+                    repair_status="no_progress",
+                ),
+            }
+        return {"repair_model_calls": repair_model_calls + 1}
+
     def approval_node(
         state: CodingState,
         runtime: Runtime[AssistantRunContext],
         config: RunnableConfig,
-    ) -> Command[Literal["inspect_and_draft", "apply_patch", "summarize"]]:
+    ) -> Command[
+        Literal[
+            "consume_repair_budget",
+            "inspect_and_draft",
+            "apply_patch",
+            "summarize",
+        ]
+    ]:
         validation = state.get("validation")
         if validation is None:
             return Command(goto="summarize")
@@ -452,7 +480,7 @@ def build_coding_graph(
                         "approval_origin": "repair",
                         "repair_approval_context": None,
                     },
-                    goto="inspect_and_draft",
+                    goto="consume_repair_budget",
                 )
             return Command(
                 update={
@@ -529,7 +557,7 @@ def build_coding_graph(
                         "repair_approval_context"
                     ),
                 },
-                goto="inspect_and_draft",
+                goto=("consume_repair_budget" if active_repair else "inspect_and_draft"),
             )
         return Command(
             update={
@@ -983,6 +1011,24 @@ def build_coding_graph(
             )
             if terminal_repair_status is not None:
                 update["repair_status"] = terminal_repair_status
+            elif state.get("repair_status") == "active":
+                update.update(
+                    repair_status=None,
+                    repair_failure_evidence=None,
+                    repair_approval_context=None,
+                    draft_artifact=None,
+                    proposal=None,
+                    validation=None,
+                    approval_status=None,
+                    applied_result=None,
+                    dependency_plan=None,
+                    dependency_approval_status=None,
+                    credential_request=None,
+                    credential_approval_status=None,
+                    artifact_ingress_plan=None,
+                    artifact_approval_status=None,
+                    integration_required=False,
+                )
             update["coding_result"] = CodingTerminalResult(
                 status="failed",
                 workspace_ref=state.get("workspace_ref"),
@@ -1226,6 +1272,7 @@ def build_coding_graph(
     builder.add_node("inspect_and_draft", inspect_and_draft_node)
     builder.add_node("validate_proposal", validate_proposal_node)
     builder.add_node("prepare_repair", prepare_repair_node)
+    builder.add_node("consume_repair_budget", consume_repair_budget_node)
     builder.add_node("approval", approval_node)
     builder.add_node("apply_patch", apply_patch_node)
     builder.add_node("plan_dependencies", plan_dependencies_node)
@@ -1244,7 +1291,8 @@ def build_coding_graph(
     builder.add_conditional_edges("resolve_workspace", after_resolve)
     builder.add_edge("inspect_and_draft", "validate_proposal")
     builder.add_conditional_edges("validate_proposal", after_validation)
-    builder.add_edge("prepare_repair", "inspect_and_draft")
+    builder.add_edge("prepare_repair", "consume_repair_budget")
+    builder.add_edge("consume_repair_budget", "inspect_and_draft")
     builder.add_edge("apply_patch", "plan_dependencies")
     builder.add_conditional_edges("plan_dependencies", after_dependency_plan)
     builder.add_conditional_edges("plan_credentials", after_credential_plan)

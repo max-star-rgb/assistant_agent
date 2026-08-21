@@ -153,7 +153,7 @@ class CodingState(AgentState):
     merge_result: NotRequired[CodingMergeResult | None]
     repair_round: NotRequired[int]
     repair_status: NotRequired[
-        Literal["pending", "active", "passed", "exhausted", "no_progress"]
+        Literal["pending", "active", "passed", "exhausted", "no_progress"] | None
     ]
     repair_failure_evidence: NotRequired[CodingRepairFailureEvidence | None]
     repair_history: NotRequired[Annotated[list[CodingRepairAttempt], operator.add]]
