@@ -308,7 +308,12 @@ management root 只读取固定 snapshot child slice 后立即推进下一个 ro
 cookie 保存 snapshot 枚举进度，从而对任意数量 workspace 保持 eventual progress。过期 snapshot 目录先在其
 `analysis-snapshots` 父目录内 atomic rename 为固定前缀 tombstone，再由跨轮单一增量 DFS cursor 按共享
 entry/time budget 执行 `scandir`、`unlink` 与 `rmdir`；不得把任意大小 snapshot 目录作为一次 `rmtree`
-操作。workspace root 消失、进程关闭或 traversal 重置时必须关闭并清除所有 descendant cursor。
+操作。DFS 每轮从受管 `analysis-snapshots` parent dirfd 重新开始，只以 relative component、directory cookie
+和 expected device/inode 保存有界跨轮状态，不跨轮持有 fd、Path iterator 或 `scandir` handle；每层必须通过
+`openat(O_DIRECTORY|O_NOFOLLOW)` 与 `fstat` 复核，所有 `stat`、`unlink`、`rmdir` 都使用 parent dirfd-relative
+操作，并在 mutation 前重新校验完整 ancestor/target inode chain。root 或 nested replacement 必须 fail closed，
+不得跟随 symlink 或操作受管 parent 之外的对象。workspace root 消失、进程关闭或 traversal 重置时必须关闭并
+清除所有 descendant cursor。
 
 ### Stage5B reaper fairness and process-deadline addendum
 
@@ -321,7 +326,16 @@ entry/time budget 执行 `scandir`、`unlink` 与 `rmdir`；不得把任意大�
 只消费固定 snapshot child slice，然后推进下一个 root。snapshot Linux directory cookie 通过固定大小、atomic
 replace 的受管 progress metadata 跨轮保存，避免关闭 cursor 后从大目录开头重扫；内存只保留 root traversal、
 当前 page 和至多一个 active snapshot tombstone DFS。root 消失时必须同时清理 hierarchical traversal 与兼容
-cursor 的全部 descendant iterator。periodic cleanup 与 `aclose` 通过 process-owned mutex 串行。
+cursor 的全部 descendant iterator。progress metadata 只能由 management-root dirfd 通过
+`O_RDONLY|O_NONBLOCK|O_NOFOLLOW` 打开，且必须是当前 uid 所有、大小不超过固定上限的 ordinary file；读取循环
+受 absolute deadline 与 byte limit 约束。FIFO、symlink、directory、oversize、I/O error 或 schema 错误一律安全
+回到 cookie `0`，不得阻塞或传播卡死；写入继续使用 no-follow temporary file、`fsync` 与同 parent dirfd atomic
+replace。periodic cleanup 与 `aclose` 通过 process-owned mutex 串行。
+
+snapshot tombstone DFS 一旦发现 root/nested inode replacement，必须立即关闭并释放全局 deletion slot，不删除
+可疑对象。owner 以常数上限 LRU cooldown 和 tombstone 同目录、ordinary/no-follow/atomic 写入的 poison marker
+避免每轮重新抢占同一可疑目录；其他 snapshot 仍须获得 eventual cleanup。workspace root 消失时同步清空进程内
+deny/cooldown state。
 
 本 Stage 不改变 Git worktree retirement 协议。周期 owner 和 `aclose` 不得调用 `cleanup_expired()`、
 `git worktree remove` 或任何 Git common-dir/admin registry 清理，也不得 tombstone 或递归删除 management root；

@@ -66,6 +66,11 @@ _MAX_GIT_OUTPUT = 262_144
 _REAPER_CURSOR_LIMIT = 4
 _ANALYSIS_REAPER_TOMBSTONE_PREFIX = ".analysis-reap-"
 _ANALYSIS_REAPER_PROGRESS_FILE = ".analysis-cleanup-progress.json"
+_ANALYSIS_REAPER_POISON_PREFIX = ".analysis-reap-poison-"
+_ANALYSIS_REAPER_METADATA_MAX_BYTES = 1_024
+_ANALYSIS_REAPER_POISON_LIMIT = 64
+_ANALYSIS_REAPER_POISON_COOLDOWN_SECONDS = 300.0
+_ANALYSIS_REAPER_MAX_DEPTH = 128
 _REAPER_TIME_BUDGET_SECONDS = 0.25
 _REAPER_MAX_TIME_BUDGET_SECONDS = 1.0
 _REAPER_DEFAULT_WORKSPACE_BUDGET = 32
@@ -178,6 +183,7 @@ class CodingWorkspaceService:
             child_directories=(),
         )
         self._incremental_reaper_deletion: _IncrementalTombstoneDeletion | None = None
+        self._snapshot_reaper_deny: OrderedDict[str, float] = OrderedDict()
 
     def resolve(self, identity: str, thread_id: str, repo_id: str) -> CodingWorkspace:
         if not self.config.enabled or repo_id not in self.config.repositories:
@@ -1954,6 +1960,7 @@ class CodingWorkspaceService:
         if root_details is None or not stat.S_ISDIR(root_details.st_mode):
             self._drop_reaper_cursors_under(root)
             self._close_incremental_snapshot_deletion()
+            self._snapshot_reaper_deny.clear()
             return
 
         deadline = time.monotonic() + min(
@@ -1968,11 +1975,15 @@ class CodingWorkspaceService:
             self._hierarchical_reaper.restart()
 
         scanned_root_entries = 0
+        restarted_root = False
         while scanned_root_entries < max_workspaces and time.monotonic() < deadline:
             entry = self._hierarchical_reaper.next_entry()
             if entry is None:
+                if restarted_root:
+                    break
                 self._hierarchical_reaper.restart()
-                break
+                restarted_root = True
+                continue
             scanned_root_entries += 1
             if entry.kind != "workspace_start":
                 continue
@@ -2069,23 +2080,63 @@ class CodingWorkspaceService:
                 os.close(descriptor)
             return None
 
-    def _load_snapshot_cleanup_cookie(self, management_root: Path) -> int:
-        progress_path = management_root / _ANALYSIS_REAPER_PROGRESS_FILE
+    def _load_snapshot_cleanup_cookie(
+        self,
+        management_root: Path,
+        *,
+        absolute_deadline: float,
+    ) -> int:
+        parent_descriptor = -1
+        descriptor = -1
+        payload = bytearray()
         try:
-            descriptor = os.open(
-                progress_path,
+            parent_descriptor = os.open(
+                management_root,
                 os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
                 | getattr(os, "O_NOFOLLOW", 0)
                 | getattr(os, "O_CLOEXEC", 0),
             )
+            descriptor = os.open(
+                _ANALYSIS_REAPER_PROGRESS_FILE,
+                os.O_RDONLY
+                | getattr(os, "O_NONBLOCK", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=parent_descriptor,
+            )
+            details = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(details.st_mode)
+                or details.st_uid != os.getuid()
+                or details.st_size > _ANALYSIS_REAPER_METADATA_MAX_BYTES
+            ):
+                return 0
+            while len(payload) <= _ANALYSIS_REAPER_METADATA_MAX_BYTES:
+                if time.monotonic() >= absolute_deadline:
+                    return 0
+                try:
+                    chunk = os.read(
+                        descriptor,
+                        min(
+                            256,
+                            _ANALYSIS_REAPER_METADATA_MAX_BYTES + 1 - len(payload),
+                        ),
+                    )
+                except BlockingIOError:
+                    return 0
+                if not chunk:
+                    break
+                payload.extend(chunk)
+            if len(payload) > _ANALYSIS_REAPER_METADATA_MAX_BYTES:
+                return 0
         except OSError:
             return 0
-        try:
-            payload = os.read(descriptor, 1_025)
         finally:
-            os.close(descriptor)
-        if len(payload) > 1_024:
-            return 0
+            if descriptor >= 0:
+                os.close(descriptor)
+            if parent_descriptor >= 0:
+                os.close(parent_descriptor)
         try:
             decoded = json.loads(payload.decode("utf-8"))
             phase = decoded.get("phase", "snapshot")
@@ -2105,20 +2156,26 @@ class CodingWorkspaceService:
         management_root: Path,
         *,
         cookie: int,
+        absolute_deadline: float,
     ) -> None:
         if not 0 <= cookie <= (2**63 - 1):
             return
-        progress_path = management_root / _ANALYSIS_REAPER_PROGRESS_FILE
-        temporary = management_root / (
-            f".{_ANALYSIS_REAPER_PROGRESS_FILE}.{os.getpid()}.{time.monotonic_ns()}"
-        )
+        temporary = f".{_ANALYSIS_REAPER_PROGRESS_FILE}.{os.getpid()}.{time.monotonic_ns()}"
         payload = json.dumps(
             {"schema_version": 1, "phase": "snapshot", "cookie": cookie},
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
+        parent_descriptor = -1
         descriptor = -1
         try:
+            parent_descriptor = os.open(
+                management_root,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+            )
             descriptor = os.open(
                 temporary,
                 os.O_WRONLY
@@ -2127,25 +2184,49 @@ class CodingWorkspaceService:
                 | getattr(os, "O_NOFOLLOW", 0)
                 | getattr(os, "O_CLOEXEC", 0),
                 0o600,
+                dir_fd=parent_descriptor,
             )
             view = memoryview(payload)
             while view:
+                if time.monotonic() >= absolute_deadline:
+                    return
                 written = os.write(descriptor, view)
                 if written <= 0:
                     return
                 view = view[written:]
+            if time.monotonic() >= absolute_deadline:
+                return
+            os.fsync(descriptor)
             os.close(descriptor)
             descriptor = -1
-            os.replace(temporary, progress_path)
+            try:
+                existing = os.stat(
+                    _ANALYSIS_REAPER_PROGRESS_FILE,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                existing = None
+            if existing is not None and stat.S_ISDIR(existing.st_mode):
+                return
+            os.replace(
+                temporary,
+                _ANALYSIS_REAPER_PROGRESS_FILE,
+                src_dir_fd=parent_descriptor,
+                dst_dir_fd=parent_descriptor,
+            )
+            os.fsync(parent_descriptor)
         except OSError:
             return
         finally:
             if descriptor >= 0:
                 os.close(descriptor)
-            try:
-                temporary.unlink(missing_ok=True)
-            except OSError:
-                pass
+            if parent_descriptor >= 0:
+                try:
+                    os.unlink(temporary, dir_fd=parent_descriptor)
+                except OSError:
+                    pass
+                os.close(parent_descriptor)
 
     def _cleanup_snapshot_workspace_slice(
         self,
@@ -2171,7 +2252,10 @@ class CodingWorkspaceService:
                 return
             if not stat.S_ISDIR(snapshots_details.st_mode):
                 return
-            cookie = self._load_snapshot_cleanup_cookie(management_root)
+            cookie = self._load_snapshot_cleanup_cookie(
+                management_root,
+                absolute_deadline=absolute_deadline,
+            )
             try:
                 page = _read_persistent_directory_page(
                     snapshots_root,
@@ -2188,6 +2272,7 @@ class CodingWorkspaceService:
             self._write_snapshot_cleanup_cookie(
                 management_root,
                 cookie=0 if page.done else page.cookie,
+                absolute_deadline=absolute_deadline,
             )
         finally:
             handle.close()
@@ -2206,8 +2291,167 @@ class CodingWorkspaceService:
             return False
         return stat.S_ISDIR(snapshots_details.st_mode) and stat.S_ISDIR(path_details.st_mode)
 
+    def _snapshot_reaper_deny_key(self, path: Path) -> str:
+        return os.path.abspath(os.fspath(path))
+
+    def _snapshot_poison_marker_name(self, path: Path) -> str:
+        return f"{_ANALYSIS_REAPER_POISON_PREFIX}{_digest(path.name)}.json"
+
+    def _remember_snapshot_reaper_denial(self, path: Path) -> None:
+        key = self._snapshot_reaper_deny_key(path)
+        self._snapshot_reaper_deny[key] = (
+            time.monotonic() + _ANALYSIS_REAPER_POISON_COOLDOWN_SECONDS
+        )
+        self._snapshot_reaper_deny.move_to_end(key)
+        while len(self._snapshot_reaper_deny) > _ANALYSIS_REAPER_POISON_LIMIT:
+            self._snapshot_reaper_deny.popitem(last=False)
+
+    def _has_snapshot_poison_marker(self, path: Path) -> bool:
+        parent_descriptor = -1
+        descriptor = -1
+        try:
+            parent_descriptor = os.open(
+                path.parent,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+            )
+            descriptor = os.open(
+                self._snapshot_poison_marker_name(path),
+                os.O_RDONLY
+                | getattr(os, "O_NONBLOCK", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=parent_descriptor,
+            )
+            details = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(details.st_mode)
+                or details.st_uid != os.getuid()
+                or details.st_size > _ANALYSIS_REAPER_METADATA_MAX_BYTES
+            ):
+                return False
+            payload = os.read(descriptor, _ANALYSIS_REAPER_METADATA_MAX_BYTES + 1)
+            if len(payload) > _ANALYSIS_REAPER_METADATA_MAX_BYTES:
+                return False
+            decoded = json.loads(payload.decode("utf-8"))
+            return (
+                decoded.get("schema_version") == 1
+                and decoded.get("tombstone_name") == path.name
+                and isinstance(decoded.get("device"), int)
+                and isinstance(decoded.get("inode"), int)
+            )
+        except (OSError, TypeError, ValueError, UnicodeDecodeError):
+            return False
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if parent_descriptor >= 0:
+                os.close(parent_descriptor)
+
+    def _snapshot_reaper_denied(self, path: Path) -> bool:
+        key = self._snapshot_reaper_deny_key(path)
+        denied_until = self._snapshot_reaper_deny.get(key)
+        if denied_until is not None:
+            if denied_until > time.monotonic():
+                self._snapshot_reaper_deny.move_to_end(key)
+                return True
+            self._snapshot_reaper_deny.pop(key, None)
+        if self._has_snapshot_poison_marker(path):
+            self._remember_snapshot_reaper_denial(path)
+            return True
+        return False
+
+    def _poison_snapshot_deletion(
+        self,
+        deletion: _IncrementalTombstoneDeletion,
+    ) -> None:
+        path = deletion.tombstone_root
+        self._remember_snapshot_reaper_denial(path)
+        parent_descriptor = -1
+        descriptor = -1
+        temporary = (
+            f".{self._snapshot_poison_marker_name(path)}."
+            f"{os.getpid()}.{time.monotonic_ns()}"
+        )
+        payload = json.dumps(
+            {
+                "schema_version": 1,
+                "tombstone_name": deletion.tombstone_name,
+                "device": deletion.root_device,
+                "inode": deletion.root_inode,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        try:
+            parent_descriptor = os.open(
+                deletion.snapshots_root,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+            )
+            parent_details = os.fstat(parent_descriptor)
+            if (
+                parent_details.st_dev != deletion.parent_device
+                or parent_details.st_ino != deletion.parent_inode
+            ):
+                return
+            descriptor = os.open(
+                temporary,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+                dir_fd=parent_descriptor,
+            )
+            view = memoryview(payload)
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:
+                    return
+                view = view[written:]
+            os.fsync(descriptor)
+            os.close(descriptor)
+            descriptor = -1
+            marker_name = self._snapshot_poison_marker_name(path)
+            try:
+                existing = os.stat(
+                    marker_name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                existing = None
+            if existing is not None and stat.S_ISDIR(existing.st_mode):
+                return
+            os.replace(
+                temporary,
+                marker_name,
+                src_dir_fd=parent_descriptor,
+                dst_dir_fd=parent_descriptor,
+            )
+            os.fsync(parent_descriptor)
+        except OSError:
+            return
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if parent_descriptor >= 0:
+                try:
+                    os.unlink(temporary, dir_fd=parent_descriptor)
+                except OSError:
+                    pass
+                os.close(parent_descriptor)
+
     def _schedule_incremental_removal(self, path: Path, *, advance: bool) -> Path | None:
         if not self._managed_snapshot_path(path):
+            return None
+        if self._snapshot_reaper_denied(path):
             return None
         current = self._incremental_reaper_deletion
         if current is not None:
@@ -2222,10 +2466,18 @@ class CodingWorkspaceService:
                     )
                 if self._incremental_reaper_deletion is not None:
                     return None
-        if path.name.startswith(_ANALYSIS_REAPER_TOMBSTONE_PREFIX):
-            deletion = _IncrementalTombstoneDeletion.from_existing(path)
-        else:
-            deletion = _IncrementalTombstoneDeletion.rename(path)
+        try:
+            if path.name.startswith(_ANALYSIS_REAPER_TOMBSTONE_PREFIX):
+                deletion = _IncrementalTombstoneDeletion.from_existing(path)
+            else:
+                deletion = _IncrementalTombstoneDeletion.rename(path)
+        except CodingWorkspaceError:
+            self._remember_snapshot_reaper_denial(path)
+            return None
+        if deletion.failed_closed:
+            self._poison_snapshot_deletion(deletion)
+            deletion.close()
+            return None
         self._drop_reaper_cursors_under(path)
         self._incremental_reaper_deletion = deletion
         if advance:
@@ -2251,6 +2503,11 @@ class CodingWorkspaceService:
             )
         except OSError:
             deletion.close()
+            return
+        if deletion.failed_closed:
+            self._poison_snapshot_deletion(deletion)
+            deletion.close()
+            self._incremental_reaper_deletion = None
             return
         if deletion.done:
             deletion.close()
@@ -2419,6 +2676,7 @@ class CodingWorkspaceService:
             cursor.close()
         self._hierarchical_reaper.close()
         self._close_incremental_snapshot_deletion()
+        self._snapshot_reaper_deny.clear()
 
     def start_snapshot_reaper(
         self,
@@ -3160,130 +3418,453 @@ class _HierarchicalReaperTraversal:
         self._exhausted = True
 
 
+@dataclass(frozen=True, slots=True)
+class _FdDirectoryEntry:
+    name: str
+    directory_type: int
+
+
+@dataclass(frozen=True, slots=True)
+class _FdDirectoryPage:
+    entries: tuple[_FdDirectoryEntry, ...]
+    cookie: int
+    done: bool
+
+
+@dataclass(slots=True)
+class _SnapshotDeletionFrame:
+    components: tuple[str, ...]
+    cookie: int
+    device: int
+    inode: int
+
+
+def _read_fd_directory_page(
+    directory_fd: int,
+    *,
+    cookie: int,
+    max_entries: int,
+    absolute_deadline: float,
+) -> _FdDirectoryPage:
+    if max_entries <= 0 or time.monotonic() >= absolute_deadline:
+        return _FdDirectoryPage((), cookie, False)
+    if _GETDENTS64 is None:
+        raise OSError("getdents64 is unavailable on this platform")
+    os.lseek(directory_fd, cookie, os.SEEK_SET)
+    entries: list[_FdDirectoryEntry] = []
+    current_cookie = cookie
+    while len(entries) < max_entries:
+        if time.monotonic() >= absolute_deadline:
+            return _FdDirectoryPage(tuple(entries), current_cookie, False)
+        buffer = ctypes.create_string_buffer(4_096)
+        received = _GETDENTS64(directory_fd, buffer, len(buffer))
+        if received < 0:
+            error_number = ctypes.get_errno()
+            raise OSError(error_number, os.strerror(error_number))
+        if received == 0:
+            return _FdDirectoryPage(tuple(entries), current_cookie, True)
+        offset = 0
+        while offset < received:
+            if time.monotonic() >= absolute_deadline:
+                return _FdDirectoryPage(tuple(entries), current_cookie, False)
+            if received - offset < 19:
+                raise OSError("invalid getdents64 record")
+            _inode, next_cookie, record_length, directory_type = struct.unpack_from(
+                "=QqHB",
+                buffer.raw,
+                offset,
+            )
+            if record_length < 19 or offset + record_length > received or next_cookie < 0:
+                raise OSError("invalid getdents64 record")
+            name_start = offset + 19
+            name_end = buffer.raw.find(b"\0", name_start, offset + record_length)
+            if name_end < 0:
+                raise OSError("invalid getdents64 name")
+            raw_name = buffer.raw[name_start:name_end]
+            current_cookie = int(next_cookie)
+            offset += record_length
+            if raw_name in {b"", b".", b".."}:
+                continue
+            name = os.fsdecode(raw_name)
+            if not name or name in {".", ".."} or "/" in name or "\0" in name:
+                raise OSError("unsafe directory entry")
+            entries.append(
+                _FdDirectoryEntry(
+                    name=name,
+                    directory_type=int(directory_type),
+                )
+            )
+            if len(entries) >= max_entries:
+                return _FdDirectoryPage(tuple(entries), current_cookie, False)
+    return _FdDirectoryPage(tuple(entries), current_cookie, False)
+
+
 class _IncrementalTombstoneDeletion:
-    def __init__(self, tombstone_root: Path) -> None:
-        self.tombstone_root = tombstone_root
-        self._current_directory = tombstone_root
-        self._iterator: os.ScandirIterator[str] | None = None
+    def __init__(
+        self,
+        *,
+        snapshots_root: Path,
+        parent_device: int,
+        parent_inode: int,
+        tombstone_name: str,
+        root_device: int,
+        root_inode: int,
+    ) -> None:
+        self.snapshots_root = snapshots_root
+        self.parent_device = parent_device
+        self.parent_inode = parent_inode
+        self.tombstone_name = tombstone_name
+        self.root_device = root_device
+        self.root_inode = root_inode
+        self.tombstone_root = snapshots_root / tombstone_name
         self.done = False
         self.failed_closed = False
-        self.device = -1
-        self.inode = -1
-        try:
-            details = tombstone_root.lstat()
-        except FileNotFoundError:
-            self.done = True
-        except OSError:
-            self.failed_closed = True
-        else:
-            if not stat.S_ISDIR(details.st_mode):
-                self.failed_closed = True
-            else:
-                self.device = details.st_dev
-                self.inode = details.st_ino
+        self._frames = [
+            _SnapshotDeletionFrame(
+                components=(),
+                cookie=0,
+                device=root_device,
+                inode=root_inode,
+            )
+        ]
+        self._before_mutation_hook: (
+            Callable[[str, tuple[str, ...], str], None] | None
+        ) = None
+
+    @staticmethod
+    def _directory_flags() -> int:
+        return (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
 
     @classmethod
     def rename(cls, source: Path) -> _IncrementalTombstoneDeletion:
-        for attempt in range(8):
-            tombstone = source.with_name(
-                f"{_ANALYSIS_REAPER_TOMBSTONE_PREFIX}{source.name}-{os.getpid()}-{time.monotonic_ns()}-{attempt}"
+        if source.parent.name != _ANALYSIS_SNAPSHOTS_DIR:
+            raise CodingWorkspaceError("coding_analysis_snapshot_failed")
+        parent_descriptor = -1
+        try:
+            parent_descriptor = os.open(source.parent, cls._directory_flags())
+            parent_details = os.fstat(parent_descriptor)
+            source_details = os.stat(
+                source.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
             )
-            try:
-                os.replace(source, tombstone)
-                return cls(tombstone)
-            except FileExistsError:
-                continue
+            if not stat.S_ISDIR(source_details.st_mode):
+                raise CodingWorkspaceError("coding_analysis_snapshot_failed")
+            for attempt in range(8):
+                tombstone_name = (
+                    f"{_ANALYSIS_REAPER_TOMBSTONE_PREFIX}{source.name}-"
+                    f"{os.getpid()}-{time.monotonic_ns()}-{attempt}"
+                )
+                try:
+                    os.stat(
+                        tombstone_name,
+                        dir_fd=parent_descriptor,
+                        follow_symlinks=False,
+                    )
+                except FileNotFoundError:
+                    pass
+                else:
+                    continue
+                try:
+                    os.rename(
+                        source.name,
+                        tombstone_name,
+                        src_dir_fd=parent_descriptor,
+                        dst_dir_fd=parent_descriptor,
+                    )
+                except FileExistsError:
+                    continue
+                tombstone_details = os.stat(
+                    tombstone_name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+                if (
+                    not stat.S_ISDIR(tombstone_details.st_mode)
+                    or tombstone_details.st_dev != source_details.st_dev
+                    or tombstone_details.st_ino != source_details.st_ino
+                ):
+                    raise CodingWorkspaceError("coding_analysis_snapshot_failed")
+                return cls(
+                    snapshots_root=source.parent,
+                    parent_device=parent_details.st_dev,
+                    parent_inode=parent_details.st_ino,
+                    tombstone_name=tombstone_name,
+                    root_device=tombstone_details.st_dev,
+                    root_inode=tombstone_details.st_ino,
+                )
+        except (CodingWorkspaceError, OSError) as exc:
+            if isinstance(exc, CodingWorkspaceError):
+                raise
+            raise CodingWorkspaceError("coding_analysis_snapshot_failed") from exc
+        finally:
+            if parent_descriptor >= 0:
+                os.close(parent_descriptor)
         raise CodingWorkspaceError("coding_analysis_snapshot_failed")
 
     @classmethod
     def from_existing(cls, tombstone: Path) -> _IncrementalTombstoneDeletion:
-        return cls(tombstone)
+        if (
+            tombstone.parent.name != _ANALYSIS_SNAPSHOTS_DIR
+            or not tombstone.name.startswith(_ANALYSIS_REAPER_TOMBSTONE_PREFIX)
+        ):
+            raise CodingWorkspaceError("coding_analysis_snapshot_failed")
+        parent_descriptor = -1
+        try:
+            parent_descriptor = os.open(tombstone.parent, cls._directory_flags())
+            parent_details = os.fstat(parent_descriptor)
+            root_details = os.stat(
+                tombstone.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            if not stat.S_ISDIR(root_details.st_mode):
+                raise CodingWorkspaceError("coding_analysis_snapshot_failed")
+            return cls(
+                snapshots_root=tombstone.parent,
+                parent_device=parent_details.st_dev,
+                parent_inode=parent_details.st_ino,
+                tombstone_name=tombstone.name,
+                root_device=root_details.st_dev,
+                root_inode=root_details.st_ino,
+            )
+        except (CodingWorkspaceError, OSError) as exc:
+            if isinstance(exc, CodingWorkspaceError):
+                raise
+            raise CodingWorkspaceError("coding_analysis_snapshot_failed") from exc
+        finally:
+            if parent_descriptor >= 0:
+                os.close(parent_descriptor)
 
-    def _close_iterator(self) -> None:
-        if self._iterator is not None:
-            self._iterator.close()
-        self._iterator = None
+    def _fail_closed(self) -> None:
+        self.failed_closed = True
+
+    def _open_snapshots_root(self) -> int:
+        try:
+            descriptor = os.open(self.snapshots_root, self._directory_flags())
+            details = os.fstat(descriptor)
+            if (
+                details.st_dev != self.parent_device
+                or details.st_ino != self.parent_inode
+            ):
+                os.close(descriptor)
+                self._fail_closed()
+                return -1
+            return descriptor
+        except OSError:
+            self._fail_closed()
+            return -1
+
+    def _open_current_directory(
+        self,
+        snapshots_descriptor: int,
+    ) -> tuple[int, int, str] | None:
+        parent_descriptor = os.dup(snapshots_descriptor)
+        try:
+            for index, frame in enumerate(self._frames):
+                name = self.tombstone_name if index == 0 else frame.components[-1]
+                details = os.stat(
+                    name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+                if (
+                    not stat.S_ISDIR(details.st_mode)
+                    or details.st_dev != frame.device
+                    or details.st_ino != frame.inode
+                ):
+                    self._fail_closed()
+                    return None
+                child_descriptor = os.open(
+                    name,
+                    self._directory_flags(),
+                    dir_fd=parent_descriptor,
+                )
+                opened = os.fstat(child_descriptor)
+                if (
+                    opened.st_dev != details.st_dev
+                    or opened.st_ino != details.st_ino
+                ):
+                    os.close(child_descriptor)
+                    self._fail_closed()
+                    return None
+                if index == len(self._frames) - 1:
+                    result = (child_descriptor, parent_descriptor, name)
+                    parent_descriptor = -1
+                    return result
+                os.close(parent_descriptor)
+                parent_descriptor = child_descriptor
+        except OSError:
+            self._fail_closed()
+            return None
+        finally:
+            if parent_descriptor >= 0:
+                os.close(parent_descriptor)
+        self._fail_closed()
+        return None
+
+    def _verify_current_chain(self, snapshots_descriptor: int) -> bool:
+        opened = self._open_current_directory(snapshots_descriptor)
+        if opened is None:
+            return False
+        current_descriptor, parent_descriptor, _name = opened
+        os.close(current_descriptor)
+        os.close(parent_descriptor)
+        return True
+
+    def _call_mutation_hook(
+        self,
+        operation: str,
+        components: tuple[str, ...],
+        name: str,
+    ) -> None:
+        hook = self._before_mutation_hook
+        if hook is not None:
+            hook(operation, components, name)
 
     def step(self, *, max_entries: int, absolute_deadline: float | None = None) -> int:
         deadline = float("inf") if absolute_deadline is None else absolute_deadline
         consumed = 0
-        if self.done or self.failed_closed:
+        if self.done or self.failed_closed or max_entries <= 0:
             return consumed
-        try:
-            details = self.tombstone_root.lstat()
-        except FileNotFoundError:
-            self.done = True
-            self._close_iterator()
-            return consumed
-        except OSError:
-            self.failed_closed = True
-            self._close_iterator()
-            return consumed
-        if (
-            not stat.S_ISDIR(details.st_mode)
-            or details.st_dev != self.device
-            or details.st_ino != self.inode
+        while (
+            not self.done
+            and not self.failed_closed
+            and consumed < max_entries
+            and time.monotonic() < deadline
         ):
-            self.failed_closed = True
-            self._close_iterator()
-            return consumed
-        while not self.done and not self.failed_closed and consumed < max_entries:
-            if time.monotonic() >= deadline:
+            snapshots_descriptor = self._open_snapshots_root()
+            if snapshots_descriptor < 0:
                 break
-            if self._iterator is None:
-                try:
-                    if time.monotonic() >= deadline:
-                        break
-                    self._current_directory.chmod(0o700)
-                    if time.monotonic() >= deadline:
-                        break
-                    self._iterator = os.scandir(self._current_directory)
-                except (FileNotFoundError, NotADirectoryError):
-                    if self._current_directory == self.tombstone_root:
-                        self.done = True
-                    else:
-                        self._current_directory = self._current_directory.parent
-                    continue
-            if time.monotonic() >= deadline:
+            opened = self._open_current_directory(snapshots_descriptor)
+            if opened is None:
+                os.close(snapshots_descriptor)
                 break
+            current_descriptor, parent_descriptor, current_name = opened
+            frame = self._frames[-1]
             try:
-                entry = next(self._iterator)
-            except StopIteration:
-                self._close_iterator()
-                current = self._current_directory
+                self._call_mutation_hook("chmod", frame.components, current_name)
+                if not self._verify_current_chain(snapshots_descriptor):
+                    break
                 if time.monotonic() >= deadline:
                     break
-                try:
-                    current.rmdir()
-                except FileNotFoundError:
-                    pass
-                except OSError:
-                    continue
-                consumed += 1
-                if current == self.tombstone_root:
-                    self.done = True
-                else:
-                    self._current_directory = current.parent
-                continue
-            consumed += 1
-            entry_path = Path(entry.path)
-            if time.monotonic() >= deadline:
-                break
-            try:
-                if entry.is_dir(follow_symlinks=False):
-                    self._close_iterator()
-                    self._current_directory = entry_path
-                else:
+                current_details = os.fstat(current_descriptor)
+                if (
+                    current_details.st_dev != frame.device
+                    or current_details.st_ino != frame.inode
+                ):
+                    self._fail_closed()
+                    break
+                os.fchmod(current_descriptor, 0o700)
+                page = _read_fd_directory_page(
+                    current_descriptor,
+                    cookie=frame.cookie,
+                    max_entries=1,
+                    absolute_deadline=deadline,
+                )
+                if page.entries:
+                    entry = page.entries[0]
+                    entry_details = os.stat(
+                        entry.name,
+                        dir_fd=current_descriptor,
+                        follow_symlinks=False,
+                    )
+                    if stat.S_ISDIR(entry_details.st_mode):
+                        child_descriptor = os.open(
+                            entry.name,
+                            self._directory_flags(),
+                            dir_fd=current_descriptor,
+                        )
+                        try:
+                            opened_child = os.fstat(child_descriptor)
+                            if (
+                                opened_child.st_dev != entry_details.st_dev
+                                or opened_child.st_ino != entry_details.st_ino
+                            ):
+                                self._fail_closed()
+                                break
+                        finally:
+                            os.close(child_descriptor)
+                        if len(self._frames) >= _ANALYSIS_REAPER_MAX_DEPTH:
+                            self._fail_closed()
+                            break
+                        frame.cookie = page.cookie
+                        self._frames.append(
+                            _SnapshotDeletionFrame(
+                                components=frame.components + (entry.name,),
+                                cookie=0,
+                                device=entry_details.st_dev,
+                                inode=entry_details.st_ino,
+                            )
+                        )
+                        consumed += 1
+                        continue
+                    self._call_mutation_hook(
+                        "unlink",
+                        frame.components,
+                        entry.name,
+                    )
+                    if not self._verify_current_chain(snapshots_descriptor):
+                        break
                     if time.monotonic() >= deadline:
                         break
-                    entry_path.unlink(missing_ok=True)
-            except FileNotFoundError:
-                continue
+                    confirmed = os.stat(
+                        entry.name,
+                        dir_fd=current_descriptor,
+                        follow_symlinks=False,
+                    )
+                    if (
+                        confirmed.st_dev != entry_details.st_dev
+                        or confirmed.st_ino != entry_details.st_ino
+                        or stat.S_IFMT(confirmed.st_mode)
+                        != stat.S_IFMT(entry_details.st_mode)
+                    ):
+                        self._fail_closed()
+                        break
+                    os.unlink(entry.name, dir_fd=current_descriptor)
+                    frame.cookie = page.cookie
+                    consumed += 1
+                    continue
+                if not page.done:
+                    break
+                self._call_mutation_hook("rmdir", frame.components, current_name)
+                if not self._verify_current_chain(snapshots_descriptor):
+                    break
+                if time.monotonic() >= deadline:
+                    break
+                confirmed = os.stat(
+                    current_name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+                if (
+                    not stat.S_ISDIR(confirmed.st_mode)
+                    or confirmed.st_dev != frame.device
+                    or confirmed.st_ino != frame.inode
+                ):
+                    self._fail_closed()
+                    break
+                os.rmdir(current_name, dir_fd=parent_descriptor)
+                consumed += 1
+                if len(self._frames) == 1:
+                    self.done = True
+                else:
+                    self._frames.pop()
+            except OSError:
+                self._fail_closed()
+            finally:
+                os.close(current_descriptor)
+                os.close(parent_descriptor)
+                os.close(snapshots_descriptor)
         return consumed
 
-
     def close(self) -> None:
-        self._close_iterator()
+        return None
 
 
 def _iter_nul_records(payload: bytes) -> Iterator[bytes]:
