@@ -51,7 +51,8 @@ scheduler projection 都只暴露 envelope 内 scope，admission 对任何新增
 媒体 Tool 使用另一条与 Skill 正交的条件暴露链。`ConditionalToolExposureMiddleware` 只过滤已经静态注册在
 `request.tools` 中的 Tool，并按 Tool metadata 的封闭 `availability` 枚举读取可信运行事实：
 `uploaded_media_inspect` 要求最新用户消息含 `source=uploaded` 的图片或视频；`live_view_inspect` 要求当前
-WebSocket 已成功完成 `callType=VIDEO` 的 control 握手；`visual_memory_search` 还要求当前
+WebSocket 已成功完成 `callType=VIDEO` 的 control 握手，且本轮冻结投影已经包含 selector 选中的目标关键帧；
+`visual_memory_search` 还要求当前
 `user/thread/as-of sequence` 已存在可检索视觉文本；`visual_reminder_manage` 要求媒体侧至少已有一个视频包
 成功解码并绑定到该连接，不能只靠 VIDEO 握手出现。它不读取 `active_skill_ids` 或
 `skill_reference_grants`，不根据用户关键词推断意图，探针异常时 fail closed。Tool 自身在执行时再次校验
@@ -83,6 +84,8 @@ WebSocket 已成功完成 `callType=VIDEO` 的 control 握手；`visual_memory_s
 该边界内成为有界、可解释的 `ToolException`。fast 模式不触发 HITL；planning 模式的非 read Tool 由
 `HumanInTheLoopMiddleware` 在执行前产生原生 interrupt。schema、身份与授权仍由具体 Tool/业务 adapter 校验；
 外部副作用幂等属于具体 Tool 或业务 API，主链不再维护通用 operation ledger。
+`live_view_inspect` 为避免重复当前画面调用而不进入 read retry 清单，但仍单独启用同一个
+`BaseTool.handle_tool_error` 边界；关键帧 capability 在暴露后失效时只返回一次 error `ToolMessage`。
 
 `PhaseBudgetMiddleware` 位于同一个 fast agent 的 model→ToolNode loop 中，按当前 phase 对 model call 与已注册
 业务 Tool call 计数。Tool 预算超限时，它不调用实际 Tool，而是为每个被阻止的 tool call 生成标准

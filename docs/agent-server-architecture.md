@@ -269,8 +269,9 @@ best-effort cancel 当前连接仍活动的 reactive runs；delivery ACK 不改�
 durable 行只有匹配 ACK 才完成，断线或超时释放为
 queued，ephemeral 离线时直接 skipped。当前 SQLite 实现面向单实例或共享受控卷，不宣称多主机一致性。
 
-H.264 解码与 3D callback 属于媒体边缘资源。解码后的有界 JPEG 引用保存在 SQLite frame index，Graph State
-只携带稳定引用。解码帧提交后的并发观察、关键帧、文本发布和目标帧等待全部由视觉 authority 负责；Agent
+H.264 解码与 3D callback 属于媒体边缘资源。解码后的 JPEG 保存在连接级有界临时目录，最近帧引用只进入
+进程级有界内存 frame index，断线时索引与临时 JPEG 一并清理；Graph State 只携带稳定引用，不为实时帧建立
+SQLite 热路径。解码帧提交后的并发观察、关键帧、文本发布和目标帧等待全部由视觉 authority 负责；Agent
 Server 只传递稳定引用与可信目标边界。3D callback 只向当前在线连接发布中性 artifact，不启动第二次 Graph。
 
 ## 验证

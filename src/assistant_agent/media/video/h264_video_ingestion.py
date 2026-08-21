@@ -175,18 +175,18 @@ class H264VideoIngestionService:
                 fingerprint_width=decoded.width if decoded and decoded.width > 0 else None,
                 fingerprint_height=decoded.height if decoded and decoded.height > 0 else None,
             )
-            persist_started_ns = self.clock_ns()
+            index_started_ns = self.clock_ns()
             self.store.append_frame(frame)
-            persisted_ns = self.clock_ns()
-            persist_latency_ms = _elapsed_ms(persist_started_ns, persisted_ns)
-            ingest_latency_ms = _elapsed_ms(ingress_ns, persisted_ns)
+            indexed_ns = self.clock_ns()
+            index_latency_ms = _elapsed_ms(index_started_ns, indexed_ns)
+            ingest_latency_ms = _elapsed_ms(ingress_ns, indexed_ns)
             logger.info(
-                "media_video_sqlite_persisted video=%s sequence=%s video_index=%s "
-                "persist_ms=%s ingest_ms=%s captured_at_ms=%s",
+                "media_video_context_indexed video=%s sequence=%s video_index=%s "
+                "index_ms=%s ingest_ms=%s captured_at_ms=%s",
                 video_id,
                 sequence,
                 _safe_log_identifier(frame_index),
-                persist_latency_ms,
+                index_latency_ms,
                 ingest_latency_ms,
                 captured_at_ms,
             )
@@ -194,7 +194,7 @@ class H264VideoIngestionService:
                 frame,
                 metadata={
                     **(frame.metadata or {}),
-                    "media_video_persist_latency_ms": persist_latency_ms,
+                    "media_video_index_latency_ms": index_latency_ms,
                     "media_video_ingest_latency_ms": ingest_latency_ms,
                 },
             )

@@ -33,8 +33,7 @@ from assistant_agent.media.video.semantic_store_pool import (
     SessionVisualSemanticStorePool,
 )
 from assistant_agent.media.video.video_context import (
-    REALTIME_VISUAL_TARGET_WINDOW_SIZE,
-    SQLiteVideoContextStore,
+    InMemoryVideoContextStore,
     VideoContextStore,
     VideoFrame,
 )
@@ -312,7 +311,7 @@ class VisualPerceptionModule:
     ) -> None:
         self.config = config or ProviderConfig.from_env()
         self.data_root = Path(data_root)
-        self.video_context_store = video_context_store or SQLiteVideoContextStore()
+        self.video_context_store = video_context_store or InMemoryVideoContextStore()
         self.realtime_video_memory_store = (
             realtime_video_memory_store or RealtimeVideoMemoryStore()
         )

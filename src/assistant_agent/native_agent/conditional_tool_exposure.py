@@ -76,6 +76,16 @@ class ConditionalToolExposureMiddleware(AgentMiddleware):
                 and live is not None
                 and bool(live.live_video_ids)
             )
+        if availability is ToolAvailability.VISUAL_KEYFRAME_AVAILABLE:
+            return (
+                video_handshake_completed
+                and live is not None
+                and bool(live.live_video_ids)
+                and live.target_video_id in live.live_video_ids
+                and live.target_sequence is not None
+                and bool(live.window_sequences)
+                and live.window_sequences[-1] == live.target_sequence
+            )
         if availability is ToolAvailability.VISUAL_HISTORY_AVAILABLE:
             return (
                 video_handshake_completed

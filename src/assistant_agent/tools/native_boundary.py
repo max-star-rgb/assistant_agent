@@ -76,11 +76,12 @@ def configure_builtin_tool(
     effect: ToolCategory,
     *,
     availability: str | None = None,
+    bounded_expected_errors: bool = False,
 ) -> BaseTool:
     """Apply standard metadata and the production ToolException policy."""
 
     tool.metadata = builtin_tool_metadata(effect, availability=availability)
-    if effect != "read":
+    if effect != "read" or bounded_expected_errors:
         tool.handle_tool_error = _bounded_tool_error
     return tool
 

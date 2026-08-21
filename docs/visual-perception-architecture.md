@@ -71,6 +71,7 @@ ImageObservation / TextObservation
 
 Realtime frame
         -> VisualPerceptionModule / connection session
+        -> 进程级有界内存 frame index（JPEG 仍在连接级临时目录，断线清理）
         -> queue 1：one embedding in-flight + one latest pending raw frame
              -> SigLIP2 image embedding
              -> shared image EmbeddingEvent
@@ -288,7 +289,8 @@ hard gate。
 `visual_memory_search` 是 read Tool，但只在当前连接已完成 VIDEO 握手且可信
 `user/session/as-of sequence` 已有可检索视觉文本时对模型可见；视频断线后不会继续暴露。生产 composition
 在进程级视觉资源可用时静态构造该 `BaseTool`，再由统一条件 middleware 缩小每轮可见集合，不按请求关键词
-建立动态 catalog。`live_view_inspect` 在 VIDEO 握手成功后立即可见，不等待第一帧；
+建立动态 catalog。`live_view_inspect` 只有在本轮冻结投影已经包含 selector 选中的目标关键帧时才可见；
+仅完成 VIDEO 握手、仅收到尚未成为关键帧的原始帧或冻结窗口为空时都不暴露；
 `visual_memory_search` 的可检索历史判定以 backend-neutral 的 `index_status=ready` 为准；Qdrant 持有文本向量时，
 不得再要求进程内 `VisualSemanticRecord.search_embedding` 非空。
 媒体入口在创建 run 时冻结当前视觉投影，并通过 `Runtime.context` 只传递 server-issued opaque capability token；
@@ -298,6 +300,8 @@ hard gate。
 其描述把实时视频会话中的“这是什么/这个呢/它在做什么”等指示性问题视为视觉请求，不要求用户必须说出
 “摄像头”或“画面”，但问候和无关纯文本任务不调用。实时画面是瞬时事实：每个新的当前画面问题都必须重新调用，
 历史视觉 Tool observation 不能替代本轮证据；同一用户问题失败后不以相同参数重试。
+如果工具暴露后因连接关闭或 capability 失效发生竞态，预期的 `ToolException` 必须由标准
+`BaseTool.handle_tool_error` 转为有界 error `ToolMessage`，不得终止 Graph。
 `uploaded_media_inspect` 只在最新用户消息含明确 `source=uploaded` 的图片或视频时可见。这三条条件与 Skill
 渐进加载正交。执行经过标准
 `BaseTool -> ToolNode` 路径，owner、session 与 as-of 边界由 `ToolRuntime` 注入，模型不可提交。

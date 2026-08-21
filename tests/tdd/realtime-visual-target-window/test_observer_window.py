@@ -4,6 +4,8 @@ import asyncio
 from pathlib import Path
 from threading import Event, Lock
 
+from blockbuster import blockbuster_ctx
+
 from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
 from assistant_agent.media.embedding.provider import MockMultimodalEmbeddingProvider
 from assistant_agent.media.visual_perception.module import VisualPerceptionSession  # noqa: F401
@@ -133,6 +135,23 @@ def _observer(
         visual_reminder_registry=visual_reminder_registry,
         keyframe_root=tmp_path / "keyframes",
     )
+
+
+def test_close_does_not_block_the_event_loop(tmp_path: Path) -> None:
+    """Regression: a normal disconnect must not run filesystem cleanup inline."""
+
+    async def scenario() -> None:
+        observer = _observer(tmp_path, BlockingObservationService(expected_count=0))
+        retained_directory = observer.keyframe_root / "retained"
+        retained_directory.mkdir(parents=True)
+        (retained_directory / "marker.txt").write_text("retained")
+
+        with blockbuster_ctx(scanned_modules=["assistant_agent"]):
+            await observer.close()
+
+        assert observer.closed is True
+
+    asyncio.run(scenario())
 
 
 def test_chat_ignores_current_frame_until_it_has_become_a_keyframe(

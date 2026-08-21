@@ -46,7 +46,7 @@ from assistant_agent.api.rendering_3d_callback import (
 )
 from assistant_agent.config import ProviderConfig
 from assistant_agent.media.video.h264_video_ingestion import H264VideoIngestionService
-from assistant_agent.media.video.video_context import SQLiteVideoContextStore
+from assistant_agent.media.video.video_context import InMemoryVideoContextStore
 from assistant_agent.media.video.video_context import VideoFrame
 from assistant_agent.media.visual_perception import get_visual_perception_module
 from assistant_agent.media.artifact_delivery import get_media_artifact_delivery_hub
@@ -1482,7 +1482,7 @@ def _agent_server_identity(websocket: WebSocket) -> str:
 
 
 def _create_video_ingestion() -> H264VideoIngestionService:
-    return H264VideoIngestionService(store=SQLiteVideoContextStore())
+    return H264VideoIngestionService(store=InMemoryVideoContextStore())
 
 
 __all__ = ["app", "media_graph_input", "native_response_from_state"]

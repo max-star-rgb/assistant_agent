@@ -198,6 +198,8 @@ class RealtimeVideoObserver:
         self._enqueue_lock = asyncio.Lock()
         self._promotion_tasks: set[asyncio.Task[Any]] = set()
         self._close_task: asyncio.Task[None] | None = None
+        self._closed_path_cleanup_tasks: set[asyncio.Task[None]] = set()
+        self._resource_finalization_task: asyncio.Task[None] | None = None
         self._semantic_pending_count = 0
         self._semantic_in_flight = False
         self.semantic_pipeline = SemanticFramePipeline(
@@ -617,6 +619,8 @@ class RealtimeVideoObserver:
             tasks = tuple(self._observation_tasks.values())
             await asyncio.gather(*tasks, return_exceptions=True)
         await self._idle.wait()
+        if self.closed:
+            await self._await_closed_resource_finalization()
 
     async def wait_for_first_terminal_snapshot(self) -> None:
         """Wait for the pending first observation, not later queued refreshes."""
@@ -823,12 +827,28 @@ class RealtimeVideoObserver:
             self._snapshot_updated.set()
         finally:
             if not self._observation_tasks:
-                self._finalize_closed_resources()
+                await self._await_closed_resource_finalization()
 
-    def _finalize_closed_resources(self) -> None:
+    def _ensure_closed_resource_finalization(self) -> asyncio.Task[None]:
+        if self._resource_finalization_task is None:
+            self._resource_finalization_task = asyncio.create_task(
+                self._finalize_closed_resources()
+            )
+        return self._resource_finalization_task
+
+    async def _await_closed_resource_finalization(self) -> None:
+        await asyncio.shield(self._ensure_closed_resource_finalization())
+
+    async def _finalize_closed_resources(self) -> None:
         if self._close_resources_finalized:
             return
+        while self._closed_path_cleanup_tasks:
+            tasks = tuple(self._closed_path_cleanup_tasks)
+            await asyncio.gather(*tasks)
+        await asyncio.to_thread(self._finalize_closed_resources_sync)
         self._close_resources_finalized = True
+
+    def _finalize_closed_resources_sync(self) -> None:
         if self.video_id is not None:
             self.memory_store.remove_video(self.video_id)
         if self._owns_semantic_store:
@@ -838,6 +858,11 @@ class RealtimeVideoObserver:
             self._owned_paths.discard(path)
         _remove_empty_tree(self.keyframe_root)
         self._release_external_resources()
+
+    async def _cleanup_closed_paths(self, paths: tuple[Path, ...]) -> None:
+        await asyncio.to_thread(_unlink_paths, paths)
+        for path in paths:
+            self._owned_paths.discard(path)
 
     def _release_external_resources(self) -> None:
         if self._resources_released:
@@ -1014,18 +1039,20 @@ class RealtimeVideoObserver:
                 for active_item in self._observation_items.values()
                 for record in active_item.records
             }
-            for record in item.records:
-                path = Path(record.uri)
-                if path in still_referenced:
-                    continue
-                path.unlink(missing_ok=True)
-                self._owned_paths.discard(path)
-            _remove_empty_tree(self.keyframe_root)
+            paths = tuple(
+                Path(record.uri)
+                for record in item.records
+                if Path(record.uri) not in still_referenced
+            )
+            if paths:
+                cleanup_task = asyncio.create_task(self._cleanup_closed_paths(paths))
+                self._closed_path_cleanup_tasks.add(cleanup_task)
+                cleanup_task.add_done_callback(self._closed_path_cleanup_tasks.discard)
         self._update_pending_state()
         if not self._observation_tasks:
             self._idle.set()
             if self.closed:
-                self._finalize_closed_resources()
+                self._ensure_closed_resource_finalization()
 
     def _publish_visual_semantic_record(
         self,
@@ -1431,3 +1458,8 @@ def _remove_empty_tree(root: Path) -> None:
         root.rmdir()
     except OSError:
         pass
+
+
+def _unlink_paths(paths: Sequence[Path]) -> None:
+    for path in paths:
+        path.unlink(missing_ok=True)
