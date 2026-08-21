@@ -21,7 +21,17 @@ from assistant_agent.coding.models import (
     CodingApprovalDecision,
     CodingMergeApprovalDecision,
     CodingPatchValidation,
+    CodingRepairAttempt,
+    CodingRepairFailureEvidence,
     CodingTerminalResult,
+)
+from assistant_agent.coding.repair import (
+    MAX_REPAIR_ROUNDS,
+    ensure_repair_progress,
+    repair_interrupt_payload,
+    render_repair_context,
+    select_repairable_failure,
+    validate_repair_approval,
 )
 from assistant_agent.coding.dependencies import (
     build_dependency_plan,
@@ -124,8 +134,49 @@ def build_coding_graph(
     ) -> dict[str, object]:
         if state.get("coding_result") is not None:
             return {}
-        before = len(state.get("messages", ()))
-        result = await inspect_agent.ainvoke(dict(state), config=config)
+        call_state = dict(state)
+        call_messages = list(state.get("messages", ()))
+        if state.get("repair_status") == "active":
+            repair_model_calls = int(state.get("repair_model_calls", 0))
+            if repair_model_calls < 1 or repair_model_calls > MAX_REPAIR_ROUNDS:
+                return {
+                    "repair_status": "no_progress",
+                    "coding_result": _failed(
+                        state,
+                        "coding_repair_no_progress",
+                        repair_status="no_progress",
+                    ),
+                }
+            evidence = state.get("repair_failure_evidence")
+            if evidence is None:
+                return {
+                    "coding_result": _failed(
+                        state,
+                        "coding_repair_evidence_required",
+                    )
+                }
+            try:
+                normalized_evidence = CodingRepairFailureEvidence.model_validate(
+                    evidence
+                )
+            except Exception:
+                return {
+                    "coding_result": _failed(
+                        state,
+                        "coding_repair_evidence_required",
+                    )
+                }
+            call_messages.append(
+                HumanMessage(
+                    content=render_repair_context(
+                        normalized_evidence,
+                        int(state.get("repair_round", 0)),
+                    )
+                )
+            )
+        call_state["messages"] = call_messages
+        before = len(call_messages)
+        result = await inspect_agent.ainvoke(call_state, config=config)
         new_messages = list(result.get("messages", ()))[before:]
         artifact = None
         for message in reversed(new_messages):
@@ -136,13 +187,30 @@ def build_coding_graph(
             ):
                 artifact = message.artifact
                 break
-        return {"messages": new_messages, "draft_artifact": artifact}
+        update: dict[str, object] = {
+            "messages": new_messages,
+            "draft_artifact": artifact,
+        }
+        return update
 
-    def validate_proposal_node(state: CodingState) -> dict[str, object]:
+    def validate_proposal_node(
+        state: CodingState,
+        runtime: Runtime[AssistantRunContext],
+        config: RunnableConfig,
+    ) -> dict[str, object]:
         if state.get("coding_result") is not None:
             return {}
         artifact = state.get("draft_artifact")
         if not isinstance(artifact, dict):
+            if state.get("repair_status") == "active":
+                return {
+                    "repair_status": "no_progress",
+                    "coding_result": _failed(
+                        state,
+                        "coding_repair_no_progress",
+                        repair_status="no_progress",
+                    ),
+                }
             return {
                 "coding_result": CodingTerminalResult(
                     status="failed",
@@ -154,6 +222,15 @@ def build_coding_graph(
         try:
             validation = CodingPatchValidation.model_validate(artifact)
         except Exception:
+            if state.get("repair_status") == "active":
+                return {
+                    "repair_status": "no_progress",
+                    "coding_result": _failed(
+                        state,
+                        "coding_repair_no_progress",
+                        repair_status="no_progress",
+                    ),
+                }
             return {
                 "coding_result": CodingTerminalResult(
                     status="failed",
@@ -162,21 +239,262 @@ def build_coding_graph(
                     error_code="patch_invalid",
                 )
             }
-        return {
+        update: dict[str, object] = {
             "proposal": validation.proposal,
             "validation": validation,
             "approval_status": "pending",
-            "approval_origin": "model",
-            "format_round": 0,
         }
+        if state.get("repair_status") != "active":
+            update.update(approval_origin="model", format_round=0)
+            return update
+        try:
+            if validation.proposal.patch_digest in state.get(
+                "repair_proposal_digests", ()
+            ):
+                raise ValueError("coding_repair_no_progress")
+            workspace = _resolve_workspace(state, runtime, config, workspace_service)
+            if workspace.workspace_ref != state.get("workspace_ref"):
+                raise CodingWorkspaceError("workspace_identity_mismatch")
+            context = workspace_service.preview_repair_patch(
+                workspace,
+                validation,
+                int(state.get("repair_round", 0)),
+            )
+            history = tuple(
+                CodingRepairAttempt.model_validate(item)
+                for item in state.get("repair_history", ())
+            )
+            ensure_repair_progress(context, validation.proposal, history)
+        except ValueError:
+            return {
+                "proposal": validation.proposal,
+                "validation": validation,
+                "approval_status": None,
+                "approval_origin": "repair",
+                "repair_approval_context": None,
+                "repair_status": "no_progress",
+                "coding_result": _failed(
+                    state,
+                    "coding_repair_no_progress",
+                    repair_status="no_progress",
+                ),
+            }
+        except CodingWorkspaceError as exc:
+            return {
+                "proposal": validation.proposal,
+                "validation": validation,
+                "approval_status": None,
+                "approval_origin": "repair",
+                "repair_approval_context": None,
+                "coding_result": _failed(state, exc.code),
+            }
+        update.update(
+            approval_origin="repair",
+            repair_approval_context=context,
+            repair_proposal_digests=[validation.proposal.patch_digest],
+        )
+        return update
+
+    def prepare_repair_node(state: CodingState) -> dict[str, object]:
+        evidence = state.get("repair_failure_evidence")
+        try:
+            normalized_evidence = CodingRepairFailureEvidence.model_validate(evidence)
+        except Exception:
+            return {
+                "coding_result": _failed(
+                    state,
+                    "coding_repair_evidence_required",
+                ),
+            }
+        return {
+            "repair_round": int(state.get("repair_round", 0)) + 1,
+            "repair_status": "active",
+            "repair_failure_evidence": normalized_evidence,
+            "draft_artifact": None,
+            "proposal": None,
+            "validation": None,
+            "approval_status": None,
+            "approval_origin": "repair",
+            "applied_result": None,
+            "dependency_plan": None,
+            "dependency_approval_status": None,
+            "credential_request": None,
+            "credential_approval_status": None,
+            "artifact_ingress_plan": None,
+            "artifact_approval_status": None,
+            "format_round": int(state.get("format_round", 0)),
+            "integration_required": False,
+            "commit_result": None,
+            "merge_preview": None,
+            "merge_result": None,
+            "repair_approval_context": None,
+            "coding_result": None,
+        }
+
+    def consume_repair_budget_node(state: CodingState) -> dict[str, object]:
+        """Persist one active-repair model-call attempt before invoking the model."""
+        if state.get("coding_result") is not None:
+            return {}
+        if state.get("repair_status") != "active":
+            return {
+                "coding_result": _failed(
+                    state,
+                    "coding_repair_evidence_required",
+                )
+            }
+        repair_model_calls = int(state.get("repair_model_calls", 0))
+        if repair_model_calls >= MAX_REPAIR_ROUNDS:
+            return {
+                "repair_status": "no_progress",
+                "coding_result": _failed(
+                    state,
+                    "coding_repair_no_progress",
+                    repair_status="no_progress",
+                ),
+            }
+        return {"repair_model_calls": repair_model_calls + 1}
 
     def approval_node(
         state: CodingState,
-    ) -> Command[Literal["inspect_and_draft", "apply_patch", "summarize"]]:
+        runtime: Runtime[AssistantRunContext],
+        config: RunnableConfig,
+    ) -> Command[
+        Literal[
+            "consume_repair_budget",
+            "inspect_and_draft",
+            "apply_patch",
+            "summarize",
+        ]
+    ]:
         validation = state.get("validation")
         if validation is None:
             return Command(goto="summarize")
         proposal = validation.proposal
+        if state.get("approval_origin") == "repair":
+            context = state.get("repair_approval_context")
+            if context is None:
+                return Command(
+                    update={
+                        "coding_result": _failed(
+                            state,
+                            "approval_digest_mismatch",
+                        )
+                    },
+                    goto="summarize",
+                )
+            raw = interrupt(
+                repair_interrupt_payload(
+                    context,
+                    workspace_ref=str(state.get("workspace_ref", "")),
+                    base_commit=proposal.base_commit,
+                    changed_paths=proposal.changed_paths,
+                    summary=proposal.summary,
+                    diff_preview=validation.diff_preview,
+                )
+            )
+            try:
+                decision_kind = validate_repair_approval(context, raw)
+                workspace = _resolve_workspace(
+                    state,
+                    runtime,
+                    config,
+                    workspace_service,
+                )
+                if workspace.workspace_ref != state.get("workspace_ref"):
+                    raise CodingWorkspaceError("workspace_identity_mismatch")
+                fresh_validation = workspace_service.validate_patch(
+                    workspace,
+                    proposal.patch,
+                    proposal.summary,
+                )
+                fresh_context = workspace_service.preview_repair_patch(
+                    workspace,
+                    fresh_validation,
+                    int(state.get("repair_round", 0)),
+                )
+                history = tuple(
+                    CodingRepairAttempt.model_validate(item)
+                    for item in state.get("repair_history", ())
+                )
+                ensure_repair_progress(
+                    fresh_context,
+                    fresh_validation.proposal,
+                    history,
+                )
+                if (
+                    fresh_context.patch_digest != context.patch_digest
+                    or fresh_context.workspace_diff_digest
+                    != context.workspace_diff_digest
+                    or fresh_context.candidate_diff_digest
+                    != context.candidate_diff_digest
+                ):
+                    raise ValueError("approval_digest_mismatch")
+            except (CodingWorkspaceError, ValueError):
+                return Command(
+                    update={
+                        "coding_result": _failed(
+                            state,
+                            "approval_digest_mismatch",
+                        )
+                    },
+                    goto="summarize",
+                )
+            if decision_kind == "approve":
+                return Command(
+                    update={
+                        "proposal": fresh_validation.proposal,
+                        "validation": fresh_validation,
+                        "repair_approval_context": fresh_context,
+                        "approval_status": "approved",
+                    },
+                    goto="apply_patch",
+                )
+            if decision_kind == "respond":
+                response = str(raw.get("response", "")).strip()
+                if not response:
+                    return Command(
+                        update={
+                            "coding_result": _failed(state, "invalid_tool_input")
+                        },
+                        goto="summarize",
+                    )
+                if int(state.get("repair_model_calls", 0)) >= MAX_REPAIR_ROUNDS:
+                    return Command(
+                        update={
+                            "repair_status": "no_progress",
+                            "coding_result": _failed(
+                                state,
+                                "coding_repair_no_progress",
+                                repair_status="no_progress",
+                            ),
+                        },
+                        goto="summarize",
+                    )
+                return Command(
+                    update={
+                        "messages": [HumanMessage(content=response)],
+                        "draft_artifact": None,
+                        "proposal": None,
+                        "validation": None,
+                        "approval_status": None,
+                        "approval_origin": "repair",
+                        "repair_approval_context": None,
+                    },
+                    goto="consume_repair_budget",
+                )
+            return Command(
+                update={
+                    "approval_status": "rejected",
+                    "coding_result": CodingTerminalResult(
+                        status="rejected",
+                        workspace_ref=state.get("workspace_ref"),
+                        base_commit=state.get("base_commit"),
+                        patch_digest=fresh_validation.proposal.patch_digest,
+                        changed_paths=fresh_validation.proposal.changed_paths,
+                    ),
+                },
+                goto="summarize",
+            )
         raw = interrupt(
             {
                 "action": "coding_patch_apply",
@@ -211,6 +529,22 @@ def build_coding_graph(
                     update={"coding_result": _failed(state, "invalid_tool_input")},
                     goto="summarize",
                 )
+            if (
+                state.get("repair_status") == "active"
+                and int(state.get("repair_model_calls", 0)) >= MAX_REPAIR_ROUNDS
+            ):
+                return Command(
+                    update={
+                        "repair_status": "no_progress",
+                        "coding_result": _failed(
+                            state,
+                            "coding_repair_no_progress",
+                            repair_status="no_progress",
+                        ),
+                    },
+                    goto="summarize",
+                )
+            active_repair = state.get("repair_status") == "active"
             return Command(
                 update={
                     "messages": [HumanMessage(content=decision.response.strip())],
@@ -218,9 +552,12 @@ def build_coding_graph(
                     "proposal": None,
                     "validation": None,
                     "approval_status": None,
-                    "approval_origin": "model",
+                    "approval_origin": "repair" if active_repair else "model",
+                    "repair_approval_context": None if active_repair else state.get(
+                        "repair_approval_context"
+                    ),
                 },
-                goto="inspect_and_draft",
+                goto=("consume_repair_budget" if active_repair else "inspect_and_draft"),
             )
         return Command(
             update={
@@ -277,7 +614,7 @@ def build_coding_graph(
             plan = build_dependency_plan(
                 repository,
                 workspace.root,
-                changed_paths=applied.changed_paths,
+                changed_paths=_approved_changed_paths(state, applied),
             )
         except CodingWorkspaceError as exc:
             return {"coding_result": _failed(state, exc.code)}
@@ -330,8 +667,9 @@ def build_coding_graph(
                         workspace_ref=state.get("workspace_ref"),
                         base_commit=state.get("base_commit"),
                         patch_digest=applied.patch_digest,
-                        changed_paths=applied.changed_paths,
+                        changed_paths=_approved_changed_paths(state, applied),
                         error_code="dependency_install_rejected",
+                        **_repair_terminal_fields(state),
                     ),
                 },
                 goto="summarize",
@@ -344,7 +682,7 @@ def build_coding_graph(
             fresh_plan = build_dependency_plan(
                 repository,
                 workspace.root,
-                changed_paths=applied.changed_paths,
+                changed_paths=_approved_changed_paths(state, applied),
             )
         except (CodingWorkspaceError, ValueError):
             fresh_plan = None
@@ -434,8 +772,9 @@ def build_coding_graph(
                         workspace_ref=state.get("workspace_ref"),
                         base_commit=state.get("base_commit"),
                         patch_digest=applied.patch_digest,
-                        changed_paths=applied.changed_paths,
+                        changed_paths=_approved_changed_paths(state, applied),
                         error_code="credential_lease_rejected",
+                        **_repair_terminal_fields(state),
                     ),
                 },
                 goto="summarize",
@@ -449,7 +788,7 @@ def build_coding_graph(
             fresh_plan = build_dependency_plan(
                 repository,
                 workspace.root,
-                changed_paths=applied.changed_paths,
+                changed_paths=_approved_changed_paths(state, applied),
             )
             if fresh_plan is None or credential is None or dependency is None:
                 raise ValueError("credential_approval_mismatch")
@@ -486,7 +825,7 @@ def build_coding_graph(
             plan = build_artifact_ingress_plan(
                 repository,
                 workspace.root,
-                changed_paths=applied.changed_paths,
+                changed_paths=_approved_changed_paths(state, applied),
             )
         except CodingWorkspaceError as exc:
             return {"coding_result": _failed(state, exc.code)}
@@ -530,8 +869,9 @@ def build_coding_graph(
                         workspace_ref=state.get("workspace_ref"),
                         base_commit=state.get("base_commit"),
                         patch_digest=applied.patch_digest,
-                        changed_paths=applied.changed_paths,
+                        changed_paths=_approved_changed_paths(state, applied),
                         error_code="artifact_ingress_rejected",
+                        **_repair_terminal_fields(state),
                     ),
                 },
                 goto="summarize",
@@ -542,7 +882,7 @@ def build_coding_graph(
             fresh_plan = build_artifact_ingress_plan(
                 repository,
                 workspace.root,
-                changed_paths=applied.changed_paths,
+                changed_paths=_approved_changed_paths(state, applied),
             )
         except (CodingWorkspaceError, ValueError, AttributeError):
             fresh_plan = None
@@ -610,6 +950,8 @@ def build_coding_graph(
         except CodingWorkspaceError as exc:
             return {"coding_result": _failed(state, exc.code)}
         update: dict[str, object] = {"verification_evidence": list(result.evidence)}
+        if result.status in {"passed", "failed"}:
+            update["last_verification_status"] = result.status
         if result.status == "format_approval_required":
             validation = result.formatter_validation
             if validation is None:
@@ -623,18 +965,102 @@ def build_coding_graph(
             )
             return update
         all_evidence = (*state.get("verification_evidence", ()), *result.evidence)
+        repair_history = _repair_history(state)
         if result.status == "failed":
+            current_repair_round = int(state.get("repair_round", 0))
+            current_attempt = None
+            if state.get("repair_status") == "active":
+                context = state.get("repair_approval_context")
+                failure = state.get("repair_failure_evidence")
+                if context is not None and failure is not None:
+                    current_attempt = CodingRepairAttempt(
+                        round=current_repair_round,
+                        failure_output_digest=failure.output_digest,
+                        patch_digest=context.patch_digest,
+                        workspace_diff_digest=context.workspace_diff_digest,
+                        candidate_diff_digest=context.candidate_diff_digest,
+                        status="failed",
+                    )
+                    update["repair_history"] = [current_attempt]
+            terminal_history = (
+                (*repair_history, current_attempt)
+                if current_attempt is not None
+                else repair_history
+            )
+            eligible_failure = select_repairable_failure(result, 0)
+            repairable = select_repairable_failure(result, current_repair_round)
+            repair_budget_exhausted = (
+                state.get("repair_status") == "active"
+                and int(state.get("repair_model_calls", 0)) >= MAX_REPAIR_ROUNDS
+            )
+            if repairable is not None and not repair_budget_exhausted:
+                update.update(
+                    repair_failure_evidence=repairable,
+                    repair_status="pending",
+                )
+                return update
+            terminal_repair_status = (
+                "exhausted"
+                if state.get("repair_status") == "active"
+                and eligible_failure is not None
+                and (
+                    current_repair_round >= MAX_REPAIR_ROUNDS
+                    or repair_budget_exhausted
+                )
+                else None
+            )
+            if terminal_repair_status is not None:
+                update["repair_status"] = terminal_repair_status
+            elif state.get("repair_status") == "active":
+                update.update(
+                    repair_status=None,
+                    repair_failure_evidence=None,
+                    repair_approval_context=None,
+                    draft_artifact=None,
+                    proposal=None,
+                    validation=None,
+                    approval_status=None,
+                    applied_result=None,
+                    dependency_plan=None,
+                    dependency_approval_status=None,
+                    credential_request=None,
+                    credential_approval_status=None,
+                    artifact_ingress_plan=None,
+                    artifact_approval_status=None,
+                    integration_required=False,
+                )
             update["coding_result"] = CodingTerminalResult(
                 status="failed",
                 workspace_ref=state.get("workspace_ref"),
                 base_commit=state.get("base_commit"),
                 patch_digest=applied.patch_digest,
-                changed_paths=applied.changed_paths,
+                changed_paths=_approved_changed_paths(state, applied),
                 error_code=result.error_code or "verification_command_failed",
                 verification_status="failed",
                 verification_evidence=all_evidence,
+                repair_status=terminal_repair_status,
+                repair_history=terminal_history,
             )
             return update
+        terminal_history = repair_history
+        terminal_repair_status = None
+        if state.get("repair_status") == "active":
+            context = state.get("repair_approval_context")
+            failure = state.get("repair_failure_evidence")
+            if context is not None and failure is not None:
+                current_attempt = CodingRepairAttempt(
+                    round=int(state.get("repair_round", 0)),
+                    failure_output_digest=failure.output_digest,
+                    patch_digest=context.patch_digest,
+                    workspace_diff_digest=context.workspace_diff_digest,
+                    candidate_diff_digest=context.candidate_diff_digest,
+                    status="passed",
+                )
+                update["repair_history"] = [current_attempt]
+                terminal_history = (*repair_history, current_attempt)
+            terminal_repair_status = "passed"
+            update["repair_status"] = terminal_repair_status
+            update["repair_failure_evidence"] = None
         if repository.integration_enabled:
             update["integration_required"] = True
             return update
@@ -643,9 +1069,11 @@ def build_coding_graph(
             workspace_ref=applied.workspace_ref,
             base_commit=applied.base_commit,
             patch_digest=applied.patch_digest,
-            changed_paths=applied.changed_paths,
+            changed_paths=_approved_changed_paths(state, applied),
             verification_status="passed",
             verification_evidence=all_evidence,
+            repair_status=terminal_repair_status,
+            repair_history=terminal_history,
         )
         return update
 
@@ -732,6 +1160,7 @@ def build_coding_graph(
                         expected_target_head=preview.expected_target_head,
                         result_commit=preview.result_commit,
                         merge_preview_digest=preview.merge_preview_digest,
+                        **_repair_terminal_fields(state),
                     )
                 },
                 goto="summarize",
@@ -776,6 +1205,7 @@ def build_coding_graph(
                 expected_target_head=merged.previous_target_head,
                 result_commit=merged.result_commit,
                 merge_preview_digest=merged.merge_preview_digest,
+                **_repair_terminal_fields(state),
             ),
         }
 
@@ -794,7 +1224,11 @@ def build_coding_graph(
         }
 
     def after_resolve(state: CodingState) -> str:
-        return "summarize" if state.get("coding_result") is not None else "inspect_and_draft"
+        if state.get("coding_result") is not None:
+            return "summarize"
+        if state.get("repair_status") == "active":
+            return "consume_repair_budget"
+        return "inspect_and_draft"
 
     def after_validation(state: CodingState) -> str:
         return "summarize" if state.get("coding_result") is not None else "approval"
@@ -802,6 +1236,8 @@ def build_coding_graph(
     def after_run_validation(state: CodingState) -> str:
         if state.get("coding_result") is not None:
             return "summarize"
+        if state.get("repair_status") == "pending":
+            return "prepare_repair"
         if state.get("approval_status") == "pending":
             return "approval"
         if state.get("integration_required"):
@@ -813,7 +1249,7 @@ def build_coding_graph(
             return "summarize"
         if state.get("dependency_plan") is not None:
             return "dependency_approval"
-        return "plan_artifacts"
+        return "plan_credentials"
 
     def after_credential_plan(state: CodingState) -> str:
         if state.get("coding_result") is not None:
@@ -839,6 +1275,8 @@ def build_coding_graph(
     builder.add_node("resolve_workspace", resolve_workspace_node)
     builder.add_node("inspect_and_draft", inspect_and_draft_node)
     builder.add_node("validate_proposal", validate_proposal_node)
+    builder.add_node("prepare_repair", prepare_repair_node)
+    builder.add_node("consume_repair_budget", consume_repair_budget_node)
     builder.add_node("approval", approval_node)
     builder.add_node("apply_patch", apply_patch_node)
     builder.add_node("plan_dependencies", plan_dependencies_node)
@@ -857,6 +1295,8 @@ def build_coding_graph(
     builder.add_conditional_edges("resolve_workspace", after_resolve)
     builder.add_edge("inspect_and_draft", "validate_proposal")
     builder.add_conditional_edges("validate_proposal", after_validation)
+    builder.add_edge("prepare_repair", "consume_repair_budget")
+    builder.add_edge("consume_repair_budget", "inspect_and_draft")
     builder.add_edge("apply_patch", "plan_dependencies")
     builder.add_conditional_edges("plan_dependencies", after_dependency_plan)
     builder.add_conditional_edges("plan_credentials", after_credential_plan)
@@ -878,7 +1318,39 @@ def _resolve_workspace(state, runtime, config, service):
     return service.resolve(identity, thread_id, repo_id)
 
 
-def _failed(state: CodingState, code: str) -> CodingTerminalResult:
+def _approved_changed_paths(
+    state: CodingState,
+    applied: object | None = None,
+) -> tuple[str, ...]:
+    changed_paths = tuple(state.get("approved_changed_paths", ()))
+    if changed_paths:
+        return changed_paths
+    return tuple(getattr(applied, "changed_paths", ()))
+
+
+def _repair_history(state: CodingState) -> tuple[CodingRepairAttempt, ...]:
+    return tuple(
+        CodingRepairAttempt.model_validate(item)
+        for item in state.get("repair_history", ())
+    )
+
+
+def _repair_terminal_fields(state: CodingState) -> dict[str, object]:
+    status = state.get("repair_status")
+    return {
+        "repair_status": (
+            status if status in {"passed", "exhausted", "no_progress"} else None
+        ),
+        "repair_history": _repair_history(state),
+    }
+
+
+def _failed(
+    state: CodingState,
+    code: str,
+    *,
+    repair_status: Literal["passed", "exhausted", "no_progress"] | None = None,
+) -> CodingTerminalResult:
     validation = state.get("validation")
     proposal = validation.proposal if validation is not None else None
     preview = state.get("merge_preview")
@@ -888,12 +1360,21 @@ def _failed(state: CodingState, code: str) -> CodingTerminalResult:
         workspace_ref=state.get("workspace_ref"),
         base_commit=state.get("base_commit"),
         patch_digest=(proposal.patch_digest if proposal is not None else None),
-        changed_paths=(proposal.changed_paths if proposal is not None else ()),
+        changed_paths=(
+            _approved_changed_paths(state)
+            or (proposal.changed_paths if proposal is not None else ())
+        ),
         error_code=code,
         verification_status=(
-            "passed" if state.get("verification_evidence") else None
+            state.get("last_verification_status")
         ),
         verification_evidence=tuple(state.get("verification_evidence", ())),
+        repair_status=(
+            repair_status
+            if repair_status is not None
+            else _repair_terminal_fields(state)["repair_status"]
+        ),
+        repair_history=_repair_history(state),
         source_commit=(
             preview.source_commit
             if preview is not None

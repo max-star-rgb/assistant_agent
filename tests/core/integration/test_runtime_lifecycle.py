@@ -228,6 +228,7 @@ def test_parent_graph_has_fast_planning_and_coding_native_branches(monkeypatch) 
             ("finalize", "__end__"),
         }
         coding_nodes = set(graph.nodes["coding_graph"].data.get_graph().nodes)
+        assert "prepare_repair" in coding_nodes
         assert {
             "approval",
             "apply_patch",

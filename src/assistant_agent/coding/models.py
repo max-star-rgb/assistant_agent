@@ -539,6 +539,56 @@ class CodingVerificationResult(BaseModel):
     error_code: str | None = None
 
 
+class CodingRepairFailureEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    command_id: str
+    kind: Literal["test", "lint", "build"]
+    exit_code: int
+    error_code: Literal["verification_command_failed"]
+    output_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    stdout: str = Field(max_length=16_777_216)
+    stderr: str = Field(max_length=16_777_216)
+    truncated: bool = False
+
+
+class CodingRepairAttempt(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    round: int = Field(ge=1, le=2)
+    failure_output_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    patch_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    workspace_diff_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    candidate_diff_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    status: Literal["passed", "failed"]
+
+
+class CodingRepairApprovalContext(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    repair_round: int = Field(ge=1, le=2)
+    patch_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    workspace_diff_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    candidate_diff_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    cumulative_diff_preview: str = Field(max_length=32_000)
+
+
+class CodingRepairApprovalDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    decision: Literal["approve", "reject", "respond"]
+    patch_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    workspace_diff_digest: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    candidate_diff_digest: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    response: str | None = Field(default=None, max_length=4_000)
+
+
 class CodingApprovalDecision(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -640,6 +690,8 @@ class CodingTerminalResult(BaseModel):
     error_code: str | None = None
     verification_status: Literal["passed", "failed"] | None = None
     verification_evidence: tuple[CodingCommandEvidence, ...] = ()
+    repair_status: Literal["passed", "exhausted", "no_progress"] | None = None
+    repair_history: tuple[CodingRepairAttempt, ...] = ()
     source_commit: str | None = Field(default=None, pattern=r"^[0-9a-f]{40,64}$")
     expected_target_head: str | None = Field(
         default=None,
@@ -651,9 +703,9 @@ class CodingTerminalResult(BaseModel):
         pattern=r"^[0-9a-f]{64}$",
     )
 
-    @field_validator("changed_paths", mode="before")
+    @field_validator("changed_paths", "repair_history", mode="before")
     @classmethod
-    def _tuple_paths(cls, value: object) -> object:
+    def _tuple_values(cls, value: object) -> object:
         return tuple(value) if isinstance(value, list) else value
 
 
@@ -736,6 +788,10 @@ __all__ = [
     "CodingPatchApplyResult",
     "CodingPatchProposal",
     "CodingPatchValidation",
+    "CodingRepairApprovalContext",
+    "CodingRepairApprovalDecision",
+    "CodingRepairAttempt",
+    "CodingRepairFailureEvidence",
     "CodingDiffResult",
     "CodingListEntry",
     "CodingListResult",
