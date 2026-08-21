@@ -2,8 +2,16 @@
 
 from __future__ import annotations
 
-import pytest
+import asyncio
+from dataclasses import replace
+from typing import Any
 
+import pytest
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.tools import tool
+
+from assistant_agent.native_agent.context import AssistantRunContext
+from assistant_agent.native_agent.fast_agent import build_fast_agent
 from assistant_agent.native_agent.models import (
     BudgetUsage,
     FailureFact,
@@ -11,6 +19,7 @@ from assistant_agent.native_agent.models import (
     NativePlanProposal,
     PlanDeliverable,
     RecoveryDecision,
+    WorkerCompletion,
     WorkerOutcome,
     WorkerResult,
 )
@@ -19,6 +28,7 @@ from assistant_agent.native_agent.planning_budget import (
     remaining_budget,
 )
 from assistant_agent.native_agent.planning_graph import (
+    build_planning_graph,
     reconcile_wave_budget_node,
     reserve_wave_budget_node,
     route_scheduler,
@@ -28,7 +38,9 @@ from assistant_agent.native_agent.planning_recovery import (
     assess_recovery_budget,
     assess_workers_node,
 )
+from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.native_agent.state import merge_wave_reservations
+from assistant_agent.skills.loading import SkillCatalog
 
 
 def test_wave_reservation_uses_stable_prefix_without_exceeding_graph_budget() -> None:
@@ -181,6 +193,128 @@ def test_reservation_refuses_a_partial_worker_allowance() -> None:
     )
 
 
+def test_partial_worker_operational_failure_consumes_full_reservation() -> None:
+    policy = replace(
+        PlanningBudgetPolicy.from_base(2),
+        worker_attempts=1,
+        max_replans=0,
+    )
+    agent = _PartialWorkerFailureAgent(policy=policy)
+    graph = build_planning_graph(
+        object(),
+        agent,
+        tools=[agent.probe_tool],
+        skill_catalog=SkillCatalog(),
+        budget_policy=policy,
+    )
+
+    result = asyncio.run(
+        graph.ainvoke(_planning_input(), context=AssistantRunContext())
+    )
+
+    outcome = next(iter(result["worker_outcomes"].values()))
+    assert agent.successful_tool_calls == 1
+    assert outcome.usage == BudgetUsage(
+        model_calls=3,
+        tool_calls=2,
+        node_attempts=1,
+    )
+    assert result["budget_usage"] == BudgetUsage(
+        model_calls=4,
+        tool_calls=2,
+        node_attempts=3,
+    )
+
+
+def test_partial_planner_operational_failure_consumes_full_phase_allowance() -> None:
+    policy = replace(
+        PlanningBudgetPolicy.from_base(1),
+        planner_attempts=1,
+        max_replans=0,
+    )
+    agent = _PartialPlannerFailureAgent(policy=policy)
+    graph = build_planning_graph(
+        object(),
+        agent,
+        tools=[agent.probe_tool],
+        skill_catalog=SkillCatalog(),
+        budget_policy=policy,
+    )
+
+    result = asyncio.run(
+        graph.ainvoke(_planning_input(), context=AssistantRunContext())
+    )
+
+    assert agent.successful_tool_calls == 1
+    assert result["planner_outcome"].usage == BudgetUsage(
+        model_calls=3,
+        tool_calls=2,
+        node_attempts=1,
+    )
+    assert result["budget_usage"] == BudgetUsage(
+        model_calls=3,
+        tool_calls=2,
+        node_attempts=2,
+    )
+
+
+def test_successful_planner_worker_finalizer_counts_three_phase_attempts() -> None:
+    graph = build_planning_graph(
+        object(),
+        _SuccessfulSingleWorkerAgent(),
+        skill_catalog=SkillCatalog(),
+        budget_policy=PlanningBudgetPolicy.from_base(1),
+    )
+
+    result = asyncio.run(
+        graph.ainvoke(_planning_input(), context=AssistantRunContext())
+    )
+
+    assert result["budget_usage"] == BudgetUsage(
+        model_calls=3,
+        node_attempts=3,
+    )
+
+
+def test_worker_reservation_preserves_the_last_attempt_for_finalizer() -> None:
+    state = _ready_wave_state(node_ids=("a",), remaining_tool_calls=64)
+    state["budget_usage"] = BudgetUsage(node_attempts=31)
+
+    update = reserve_wave_budget_node(
+        state,
+        policy=PlanningBudgetPolicy.from_base(8),
+    )
+
+    assert update["wave_reservations"] == {}
+    assert update["recovery_decision"] == RecoveryDecision(
+        action="finalize",
+        reason_code="graph_node_attempt_budget_exhausted",
+    )
+
+
+def test_planner_preserves_the_last_attempt_for_controlled_finalizer() -> None:
+    agent = _MustNotInvokeAgent()
+    graph = build_planning_graph(
+        object(),
+        agent,
+        skill_catalog=SkillCatalog(),
+        budget_policy=PlanningBudgetPolicy.from_base(8),
+    )
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {
+                **_planning_input(),
+                "budget_usage": BudgetUsage(node_attempts=31),
+            },
+            context=AssistantRunContext(),
+        )
+    )
+
+    assert agent.calls == 0
+    assert result["budget_usage"].node_attempts == 32
+
+
 def _ready_wave_state(
     *,
     node_ids: tuple[str, ...],
@@ -213,6 +347,177 @@ def _ready_wave_state(
         ),
     }
     return {**state, **scheduler_node(state)}
+
+
+def _planning_input() -> dict[str, object]:
+    return {
+        "messages": [HumanMessage(content="budget-request")],
+        "memory_context": (),
+        "memory_status": "empty",
+    }
+
+
+def _single_worker_plan(
+    *,
+    allowed_tool_names: tuple[str, ...] = (),
+) -> NativePlanProposal:
+    return NativePlanProposal(
+        schema_version="native_plan_v2",
+        nodes=(
+            NativePlanNode(
+                node_id="worker",
+                objective="worker",
+                allowed_tool_names=allowed_tool_names,
+            ),
+        ),
+        deliverables=(
+            PlanDeliverable(
+                deliverable_id="answer",
+                description="answer",
+                producer_node_ids=("worker",),
+            ),
+        ),
+    )
+
+
+class _PartialWorkerFailureAgent:
+    name = "AssistantFastAgent"
+
+    def __init__(self, *, policy: PlanningBudgetPolicy) -> None:
+        self.successful_tool_calls = 0
+
+        @tool
+        def probe_tool() -> str:
+            """Record one real offline Tool execution before timeout."""
+
+            self.successful_tool_calls += 1
+            return "probe-ok"
+
+        self.probe_tool = probe_tool
+        self.worker_agent = build_fast_agent(
+            _ProbeThenTimeoutModel(),
+            [probe_tool],
+            budget_policy=policy,
+            skill_catalog=SkillCatalog(),
+        )
+
+    async def ainvoke(
+        self,
+        input: dict[str, Any],
+        *,
+        context: Any,
+    ) -> dict[str, Any]:
+        if input["agent_phase"] == "planner":
+            return {
+                "messages": list(input["messages"]),
+                "structured_response": _single_worker_plan(
+                    allowed_tool_names=("probe_tool",)
+                ),
+                "phase_budget_usage": BudgetUsage(model_calls=1),
+            }
+        assert input["agent_phase"] == "worker"
+        return await self.worker_agent.ainvoke(input, context=context)
+
+
+class _ProbeThenTimeoutModel(MockAssistantChatModel):
+    def _response_message(self, messages, **kwargs):
+        completed = any(
+            isinstance(message, ToolMessage) and message.name == "probe_tool"
+            for message in messages
+        )
+        if completed:
+            raise TimeoutError("raw-worker-timeout-after-tool")
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "probe_tool",
+                    "args": {},
+                    "id": "partial-worker-probe",
+                    "type": "tool_call",
+                }
+            ],
+        )
+
+
+class _PartialPlannerFailureAgent:
+    name = "AssistantFastAgent"
+
+    def __init__(self, *, policy: PlanningBudgetPolicy) -> None:
+        self.successful_tool_calls = 0
+
+        @tool
+        def probe_tool() -> str:
+            """Record one real planner Tool execution before timeout."""
+
+            self.successful_tool_calls += 1
+            return "probe-ok"
+
+        self.probe_tool = probe_tool
+        self.planner_agent = build_fast_agent(
+            _ProbeThenTimeoutModel(),
+            [probe_tool],
+            budget_policy=policy,
+            skill_catalog=SkillCatalog(),
+        )
+
+    async def ainvoke(
+        self,
+        input: dict[str, Any],
+        *,
+        context: Any,
+    ) -> dict[str, Any]:
+        assert input["agent_phase"] == "planner"
+        return await self.planner_agent.ainvoke(input, context=context)
+
+
+class _SuccessfulSingleWorkerAgent:
+    name = "AssistantFastAgent"
+
+    async def ainvoke(
+        self,
+        input: dict[str, Any],
+        *,
+        context: Any,
+    ) -> dict[str, Any]:
+        del context
+        if input["agent_phase"] == "planner":
+            return {
+                "messages": list(input["messages"]),
+                "structured_response": _single_worker_plan(),
+                "phase_budget_usage": BudgetUsage(model_calls=1),
+            }
+        if input["agent_phase"] == "worker":
+            return {
+                "messages": [AIMessage(content="worker-ok")],
+                "structured_response": WorkerCompletion(
+                    status="completed",
+                    content="worker-ok",
+                ),
+                "phase_budget_usage": BudgetUsage(model_calls=1),
+            }
+        assert input["agent_phase"] == "finalizer"
+        return {
+            "messages": [AIMessage(content="final-ok")],
+            "phase_budget_usage": BudgetUsage(model_calls=1),
+        }
+
+
+class _MustNotInvokeAgent:
+    name = "AssistantFastAgent"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def ainvoke(
+        self,
+        input: dict[str, Any],
+        *,
+        context: Any,
+    ) -> dict[str, Any]:
+        del input, context
+        self.calls += 1
+        raise AssertionError("agent invocation consumed the terminal attempt slot")
 
 
 def _worker_outcome(

@@ -382,12 +382,14 @@ def build_planning_graph(
         )
         if (
             execution_exhausted is not None
-            or remaining.node_attempts < 1
+            or remaining.node_attempts <= 1
             or remaining.model_calls < 1
         ):
             reason_code = (
                 execution_exhausted.reason_code
                 if execution_exhausted is not None
+                else "graph_node_attempt_budget_exhausted"
+                if remaining.node_attempts <= 1
                 else "graph_model_budget_exhausted"
             )
             return {
@@ -498,7 +500,10 @@ def build_planning_graph(
             raise
         except Exception as error:
             if classify_operational_failure(error):
-                usage = BudgetUsage(model_calls=1, node_attempts=1)
+                # The failed subgraph cannot expose a trustworthy partial delta.
+                # Charge the complete allowance so unknown completed calls can
+                # never be released and reused after recovery.
+                usage = phase_allowance
                 return {
                     "planner_attempt_count": attempt,
                     "planner_outcome": PlannerOutcome(
@@ -626,7 +631,8 @@ def build_planning_graph(
                         action="finalize",
                         reason_code=reason_code,
                     ),
-                }
+                },
+                policy=resolved_budget_policy,
             )
         ordered = _ordered_final_worker_results(state)
         payload = _finalizer_prompt(
@@ -664,6 +670,7 @@ def build_planning_graph(
         usage = BudgetUsage(
             model_calls=max(phase_usage.model_calls, 1),
             tool_calls=phase_usage.tool_calls,
+            node_attempts=1,
         )
         return {
             "messages": [final_message],
@@ -710,7 +717,10 @@ def build_planning_graph(
         partial(assess_workers_node, policy=resolved_budget_policy),
     )
     builder.add_node("finalize", finalize_node)
-    builder.add_node("controlled_finalize", controlled_finalize_node)
+    builder.add_node(
+        "controlled_finalize",
+        partial(controlled_finalize_node, policy=resolved_budget_policy),
+    )
     builder.add_edge(START, "planner")
     builder.add_edge("planner", "assess_planner")
     builder.add_conditional_edges(
@@ -893,7 +903,11 @@ def reserve_wave_budget_node(
     generation = int(state.get("plan_generation", 0))
     attempts = state.get("worker_attempts", {})
     selected: dict[str, WaveReservation] = {}
-    available = remaining
+    # Every terminal route executes one finalizer phase. Keep its node-attempt
+    # slot out of worker reservations so accounting never has to exceed the cap.
+    available = remaining.model_copy(
+        update={"node_attempts": max(remaining.node_attempts - 1, 0)}
+    )
     for node in ready:
         previous = latest.get(node.node_id)
         previous_attempt = previous.attempt if previous is not None else 0
@@ -1196,7 +1210,9 @@ def _worker_result_outcome_update(
 
 
 def _operational_worker_outcome_update(state: WorkerState) -> dict[str, Any]:
-    usage = BudgetUsage(model_calls=1, node_attempts=1)
+    # An exception discards the FastAgent subgraph's partial state, so settle the
+    # entire trusted reservation rather than guessing how far its loop progressed.
+    usage = BudgetUsage.model_validate(state["budget_allowance"])
     outcome = WorkerOutcome(
         execution_id=state["execution_id"],
         plan_generation=state["plan_generation"],

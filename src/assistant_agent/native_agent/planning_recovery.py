@@ -467,16 +467,25 @@ def prepare_replan_node(
     return update
 
 
-def controlled_finalize_node(state: PlanningState) -> dict[str, object]:
+def controlled_finalize_node(
+    state: PlanningState,
+    *,
+    policy: PlanningBudgetPolicy | None = None,
+) -> dict[str, object]:
     """Produce a local terminal message without exposing provider error payloads."""
 
     decision = _recovery_decision(state)
     reason_code = (
         decision.reason_code if decision is not None else "planner_recovery_unavailable"
     )
+    usage = _budget_usage(state)
+    node_attempts = usage.node_attempts + 1
+    if policy is not None:
+        node_attempts = min(node_attempts, policy.graph_node_attempt_limit)
     return {
         "messages": [AIMessage(content=f"Planning stopped: {reason_code}.")],
         "admission_error": None,
+        "budget_usage": usage.model_copy(update={"node_attempts": node_attempts}),
     }
 
 
@@ -507,6 +516,11 @@ def _assess_execution_budget(
     usage: BudgetUsage,
     policy: PlanningBudgetPolicy,
 ) -> RecoveryDecision | None:
+    if usage.node_attempts >= policy.graph_node_attempt_limit - 1:
+        return RecoveryDecision(
+            action="finalize",
+            reason_code="graph_node_attempt_budget_exhausted",
+        )
     decision = assess_recovery_budget(usage, policy)
     if decision is not None and decision.reason_code != "replan_budget_exhausted":
         return decision

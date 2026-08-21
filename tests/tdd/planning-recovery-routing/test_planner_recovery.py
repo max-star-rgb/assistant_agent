@@ -287,7 +287,7 @@ def test_transient_planner_failure_retries_through_state_and_counts_attempts() -
     assert agent.planner_calls == 2
     assert result["planner_attempt_count"] == 2
     assert result["planner_outcome"].usage.node_attempts == 1
-    assert result["budget_usage"].node_attempts == 2
+    assert result["budget_usage"].node_attempts == 3
     assert "operational-body-marker" not in _saver_text(saver)
     assert "operational-credential-marker" not in _saver_text(saver)
 
@@ -444,7 +444,7 @@ def test_admission_revision_opens_a_new_operational_retry_window() -> None:
     assert agent.planner_calls == 3
     assert result["revision_count"] == 1
     assert result["planner_attempt_count"] == 2
-    assert result["budget_usage"].node_attempts == 3
+    assert result["budget_usage"].node_attempts == 4
     assert result["planner_outcome"].status == "succeeded"
 
 
@@ -464,7 +464,7 @@ def test_admission_revisions_reset_only_the_operational_window() -> None:
     assert agent.planner_calls == 3
     assert result["revision_count"] == 2
     assert result["planner_attempt_count"] == 1
-    assert result["budget_usage"].node_attempts == 3
+    assert result["budget_usage"].node_attempts == 4
 
 
 class _CorrectionSensitivePlannerAgent:
@@ -544,7 +544,7 @@ def test_admission_correction_survives_operational_retry_window() -> None:
     assert agent.correction_seen == [True, True]
     assert result["revision_count"] == 1
     assert result["planner_attempt_count"] == 2
-    assert result["budget_usage"].node_attempts == 3
+    assert result["budget_usage"].node_attempts == 4
     assert result["admission_error"] is None
 
 
@@ -633,7 +633,7 @@ def test_admission_correction_clears_before_next_replan_generation() -> None:
     assert agent.planner_calls == 4
     assert agent.correction_seen == [True, True, False]
     assert result["plan_generation"] == 1
-    assert result["budget_usage"].node_attempts == 4
+    assert result["budget_usage"].node_attempts == 5
 
 
 def _saver_text(saver: InMemorySaver) -> str:
