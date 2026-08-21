@@ -11,7 +11,11 @@ from langchain_core.messages import AnyMessage
 from langgraph.graph import MessagesState
 from pydantic import BaseModel, ConfigDict, model_validator
 
+from assistant_agent.coding.analysis import AnalysisStatus, merge_analysis_results
 from assistant_agent.coding.models import (
+    CodingAnalysisResult,
+    CodingAnalysisSnapshot,
+    CodingAnalysisTask,
     CodingCommandEvidence,
     CodingCommitResult,
     CodingArtifactIngressPlan,
@@ -115,6 +119,16 @@ class WorkerState(AgentState):
     planner_evidence: Required[tuple[PlannerEvidence, ...]]
 
 
+class CodingAnalysisWorkerState(AgentState):
+    """Narrow input state for one snapshot-bound coding analysis branch."""
+
+    coding_repo_id: Required[str]
+    workspace_ref: Required[str]
+    base_commit: Required[str]
+    analysis_snapshot: Required[CodingAnalysisSnapshot]
+    analysis_task: Required[CodingAnalysisTask]
+
+
 class PlanningState(AgentState):
     """Planning-only channels kept out of the fast branch."""
 
@@ -145,6 +159,13 @@ class CodingState(AgentState):
     coding_repo_id: Required[str]
     workspace_ref: NotRequired[str]
     base_commit: NotRequired[str]
+    analysis_snapshot: NotRequired[CodingAnalysisSnapshot | None]
+    analysis_tasks: NotRequired[tuple[CodingAnalysisTask, ...]]
+    analysis_results: NotRequired[
+        Annotated[list[CodingAnalysisResult], merge_analysis_results]
+    ]
+    analysis_status: NotRequired[AnalysisStatus | Literal["pending"] | None]
+    analysis_context_consumed: NotRequired[bool]
     draft_artifact: NotRequired[dict[str, object] | None]
     proposal: NotRequired[CodingPatchProposal | None]
     validation: NotRequired[CodingPatchValidation | None]
@@ -227,6 +248,7 @@ __all__ = [
     "AgentPhase",
     "AssistantRootInput",
     "AssistantRootState",
+    "CodingAnalysisWorkerState",
     "CodingState",
     "ExecutionMode",
     "FastAgentState",
