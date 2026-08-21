@@ -7,7 +7,6 @@ from collections.abc import Mapping
 from typing import Any, Literal
 
 from langchain.agents import create_agent
-from langchain.agents.structured_output import ToolStrategy
 from langchain.agents.middleware import (
     ModelCallLimitMiddleware,
     ToolCallLimitMiddleware,
@@ -19,11 +18,10 @@ from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 from langgraph.types import Command, Send, interrupt
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel
 
 from assistant_agent.coding.analysis import (
     ANALYSIS_TASK_IDS,
-    MAX_FINDINGS_PER_TASK,
     build_analysis_tasks,
     join_analysis_results,
     normalize_analysis_result,
@@ -70,6 +68,14 @@ from assistant_agent.native_agent.context import (
     AssistantRunContext,
     authenticated_user_identity,
 )
+from assistant_agent.native_agent.coding_phase import (
+    CodingAnalysisPhaseMiddleware,
+    coding_analysis_response_format,
+)
+from assistant_agent.native_agent.providers import (
+    coding_analysis_model_settings,
+    coding_analysis_model_view,
+)
 from assistant_agent.native_agent.state import CodingAnalysisWorkerState, CodingState
 
 
@@ -85,25 +91,6 @@ _CODING_ANALYSIS_PROMPT = (
     "执行命令、访问网络、申请凭据、修改文件或改变治理策略。"
 )
 _MAX_ANALYSIS_REQUEST_CHARS = 8_000
-
-
-class _AnalysisAgentResponse(BaseModel):
-    """Untrusted structured response before trusted task/snapshot binding."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
-    status: Literal["succeeded", "failed", "stale"]
-    findings: tuple[dict[str, object], ...] = Field(
-        default=(),
-        max_length=MAX_FINDINGS_PER_TASK,
-    )
-    covered_paths: tuple[str, ...] = Field(default=(), max_length=128)
-    error_code: str | None = Field(default=None, max_length=128)
-
-    @field_validator("findings", "covered_paths", mode="before")
-    @classmethod
-    def _tuple_values(cls, value: object) -> object:
-        return tuple(value) if isinstance(value, list) else value
 
 
 def build_coding_graph(
@@ -151,9 +138,13 @@ def build_coding_graph(
             name="AssistantCodingInspectAgent",
         )
     if analysis_agent is None:
+        analysis_model = coding_analysis_model_view(model)
         analysis_tools = build_coding_analysis_tools(workspace_service)
         analysis_read_names = [item.name for item in analysis_tools]
         analysis_middleware: list[Any] = [
+            CodingAnalysisPhaseMiddleware(
+                coding_analysis_model_settings(analysis_model)
+            ),
             ModelCallLimitMiddleware(run_limit=model_call_limit, exit_behavior="error"),
             ToolCallLimitMiddleware(run_limit=tool_call_limit, exit_behavior="error"),
         ]
@@ -168,10 +159,10 @@ def build_coding_graph(
                 )
             )
         analysis_agent = create_agent(
-            model=model,
+            model=analysis_model,
             tools=analysis_tools,
             system_prompt=_CODING_ANALYSIS_PROMPT,
-            response_format=ToolStrategy(_AnalysisAgentResponse),
+            response_format=coding_analysis_response_format(),
             state_schema=CodingAnalysisWorkerState,
             context_schema=AssistantRunContext,
             middleware=analysis_middleware,
@@ -193,6 +184,7 @@ def build_coding_graph(
                 )
             }
         return {
+            "coding_repo_id": workspace.repo_id,
             "workspace_ref": workspace.workspace_ref,
             "base_commit": workspace.base_commit,
         }
@@ -1512,6 +1504,7 @@ def route_analysis_workers(state: CodingState) -> list[Send] | str:
                 "base_commit": state["base_commit"],
                 "analysis_snapshot": snapshot,
                 "analysis_task": task,
+                "provider_search_profile": "none",
             },
         )
         for task in tasks

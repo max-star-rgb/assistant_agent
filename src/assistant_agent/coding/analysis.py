@@ -26,7 +26,9 @@ MAX_ANALYSIS_CONTEXT_CHARS = 24_000
 AnalysisStatus = Literal["completed", "partial", "unavailable"]
 
 
-class _RawAnalysisResult(BaseModel):
+class CodingAnalysisResponse(BaseModel):
+    """Public untrusted structured response before trusted worker binding."""
+
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     status: Literal["succeeded", "failed", "stale"]
@@ -63,7 +65,7 @@ def normalize_analysis_result(
 ) -> CodingAnalysisResult:
     """Bind untrusted model output to trusted task and snapshot facts."""
 
-    raw = _RawAnalysisResult.model_validate(raw_result)
+    raw = CodingAnalysisResponse.model_validate(raw_result)
     findings: list[CodingAnalysisFinding] = []
     for raw_finding in raw.findings:
         payload = dict(raw_finding)
@@ -238,6 +240,7 @@ __all__ = [
     "MAX_ANALYSIS_CONTEXT_CHARS",
     "MAX_FINDINGS_PER_TASK",
     "MAX_TASK_CONTEXT_CHARS",
+    "CodingAnalysisResponse",
     "build_analysis_tasks",
     "join_analysis_results",
     "merge_analysis_results",

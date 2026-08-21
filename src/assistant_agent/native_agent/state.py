@@ -127,6 +127,7 @@ class CodingAnalysisWorkerState(AgentState):
     base_commit: Required[str]
     analysis_snapshot: Required[CodingAnalysisSnapshot]
     analysis_task: Required[CodingAnalysisTask]
+    provider_search_profile: Required[Literal["none"]]
 
 
 class PlanningState(AgentState):
