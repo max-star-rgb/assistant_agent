@@ -9,15 +9,18 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.checkpoint.memory import InMemorySaver
 
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.models import (
     BudgetUsage,
+    FailureFact,
     NativePlanNode,
     NativePlanProposal,
     PlanDeliverable,
     RecoveryDecision,
     WorkerCompletion,
+    WorkerOutcome,
     WorkerResult,
 )
 from assistant_agent.native_agent.planning_budget import PlanningBudgetPolicy
@@ -95,6 +98,77 @@ def test_recovery_exhaustion_returns_standard_bounded_ai_message_without_model()
     assert result["budget_usage"].node_attempts == 32
 
 
+def test_terminal_failure_codes_reserve_capacity_for_fallback_reason() -> None:
+    """Catches a terminal reason being truncated by earlier sorted failures."""
+
+    outcomes = {
+        f"g0:worker-{index}:a1": WorkerOutcome(
+            execution_id=f"g0:worker-{index}:a1",
+            plan_generation=0,
+            work_item_id=f"worker-{index}",
+            attempt=1,
+            status="business_failed",
+            failure=FailureFact(
+                category="business_failure",
+                code=f"aaa_failure_{index:02d}",
+                phase="worker",
+                plan_generation=0,
+                work_item_id=f"worker-{index}",
+                attempt=1,
+            ),
+            usage=BudgetUsage(),
+        )
+        for index in range(32)
+    }
+    result = controlled_finalize_node(
+        {
+            "messages": [HumanMessage(content="request-sentinel")],
+            "memory_context": (),
+            "memory_status": "empty",
+            "worker_outcomes": outcomes,
+            "recovery_decision": RecoveryDecision(
+                action="finalize",
+                reason_code="zzz_terminal_reason",
+            ),
+        },
+        policy=PlanningBudgetPolicy.from_base(8),
+    )
+
+    failure_codes = result["messages"][-1].response_metadata["failure_codes"]
+    assert len(failure_codes) == 32
+    assert failure_codes.count("zzz_terminal_reason") == 1
+    assert failure_codes[:31] == [f"aaa_failure_{index:02d}" for index in range(31)]
+    assert failure_codes[-1] == "zzz_terminal_reason"
+
+    duplicate_outcomes = dict(outcomes)
+    duplicate = duplicate_outcomes["g0:worker-31:a1"]
+    duplicate_outcomes[duplicate.execution_id] = duplicate.model_copy(
+        update={
+            "failure": duplicate.failure.model_copy(
+                update={"code": "zzz_terminal_reason"}
+            )
+        }
+    )
+    duplicate_result = controlled_finalize_node(
+        {
+            "messages": [HumanMessage(content="request-sentinel")],
+            "memory_context": (),
+            "memory_status": "empty",
+            "worker_outcomes": duplicate_outcomes,
+            "recovery_decision": RecoveryDecision(
+                action="finalize",
+                reason_code="zzz_terminal_reason",
+            ),
+        },
+        policy=PlanningBudgetPolicy.from_base(8),
+    )
+    duplicate_codes = duplicate_result["messages"][-1].response_metadata[
+        "failure_codes"
+    ]
+    assert len(duplicate_codes) == 32
+    assert duplicate_codes.count("zzz_terminal_reason") == 1
+
+
 def test_normal_finalizer_retries_one_operational_failure_with_zero_tool_budget() -> (
     None
 ):
@@ -134,8 +208,8 @@ def test_normal_finalizer_retries_one_operational_failure_with_zero_tool_budget(
     ]
 
 
-def test_malformed_finalizer_result_is_sanitized_before_graph_boundary() -> None:
-    """Catches provider result values escaping through local finalizer validation."""
+def test_malformed_finalizer_result_routes_through_controlled_terminal() -> None:
+    """Catches provider result values escaping through finalizer validation."""
 
     agent = _FinalizerRetryAgent(malformed=True)
     graph = build_planning_graph(
@@ -145,32 +219,182 @@ def test_malformed_finalizer_result_is_sanitized_before_graph_boundary() -> None
         budget_policy=PlanningBudgetPolicy.from_base(1),
     )
 
-    with pytest.raises(Exception) as raised:
-        asyncio.run(
-            graph.ainvoke(
+    result = asyncio.run(
+        graph.ainvoke(
+            {
+                "messages": [HumanMessage(content="request-sentinel")],
+                "memory_context": (),
+                "memory_status": "empty",
+            },
+            context=AssistantRunContext(),
+        )
+    )
+
+    terminal = result["messages"][-1]
+    assert terminal.response_metadata["failure_codes"] == [
+        "finalizer_usage_contract_failure"
+    ]
+    assert "provider-secret-sentinel" not in str(terminal)
+    assert result["budget_usage"] == BudgetUsage(model_calls=3, node_attempts=3)
+
+
+@pytest.mark.parametrize(
+    ("mode", "initial_usage", "expected_reason", "expected_usage"),
+    [
+        (
+            "timeout",
+            BudgetUsage(node_attempts=29),
+            "finalizer_operational_exhausted",
+            BudgetUsage(model_calls=3, node_attempts=32),
+        ),
+        (
+            "overreported_usage",
+            BudgetUsage(),
+            "finalizer_usage_contract_failure",
+            BudgetUsage(model_calls=3, node_attempts=3),
+        ),
+        (
+            "budget_exhausted",
+            BudgetUsage(),
+            "finalizer_model_budget_exhausted",
+            BudgetUsage(model_calls=3, node_attempts=3),
+        ),
+    ],
+)
+def test_finalizer_fallback_streams_explicit_controlled_node_without_double_charge(
+    mode: str,
+    initial_usage: BudgetUsage,
+    expected_reason: str,
+    expected_usage: BudgetUsage,
+) -> None:
+    """Catches hidden fallback projection, duplicate messages, and cap overspend."""
+
+    agent = _FinalizerRetryAgent(mode=mode)
+    graph = build_planning_graph(
+        object(),
+        agent,
+        skill_catalog=SkillCatalog(),
+        budget_policy=PlanningBudgetPolicy.from_base(1),
+    )
+
+    async def collect() -> list[dict[str, Any]]:
+        return [
+            part
+            async for part in graph.astream(
                 {
                     "messages": [HumanMessage(content="request-sentinel")],
                     "memory_context": (),
                     "memory_status": "empty",
+                    "budget_usage": initial_usage,
                 },
                 context=AssistantRunContext(),
+                stream_mode=["updates", "values", "messages"],
+                version="v2",
             )
-        )
+        ]
 
-    assert type(raised.value).__name__ == "FinalizerPropagationError"
-    assert getattr(raised.value, "code", None) == "finalizer_contract_failure"
-    assert "provider-secret-sentinel" not in str(raised.value)
-    assert raised.value.__cause__ is None
-    assert raised.value.__context__ is None
+    parts = asyncio.run(collect())
+    update_nodes = [
+        node for part in parts if part["type"] == "updates" for node in part["data"]
+    ]
+    terminal_messages = [
+        part["data"][0]
+        for part in parts
+        if part["type"] == "messages"
+        and isinstance(part["data"][0], AIMessage)
+        and part["data"][0].response_metadata.get("recovery_status")
+    ]
+    final_state = [part["data"] for part in parts if part["type"] == "values"][-1]
+
+    assert update_nodes.index("finalize") < update_nodes.index("controlled_finalize")
+    assert len(terminal_messages) == 1
+    assert terminal_messages[0].response_metadata["failure_codes"] == [expected_reason]
+    assert final_state["budget_usage"] == expected_usage
+    assert final_state["budget_usage"].model_calls <= 10
+    assert final_state["budget_usage"].node_attempts <= 32
+
+
+def test_checkpoint_resume_after_failed_finalizer_reuses_charged_terminal_attempt() -> (
+    None
+):
+    """Catches resume charging the mechanical controlled projection again."""
+
+    agent = _FinalizerRetryAgent(mode="timeout")
+    graph = build_planning_graph(
+        object(),
+        agent,
+        skill_catalog=SkillCatalog(),
+        budget_policy=PlanningBudgetPolicy.from_base(1),
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "finalizer-resume-sentinel"}}
+
+    async def run_and_resume() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        first = [
+            part
+            async for part in graph.astream(
+                {
+                    "messages": [HumanMessage(content="request-sentinel")],
+                    "memory_context": (),
+                    "memory_status": "empty",
+                    "budget_usage": BudgetUsage(node_attempts=29),
+                },
+                config=config,
+                context=AssistantRunContext(),
+                stream_mode=["updates", "values", "messages"],
+                interrupt_after=["finalize"],
+                version="v2",
+            )
+        ]
+        resumed = [
+            part
+            async for part in graph.astream(
+                None,
+                config=config,
+                context=AssistantRunContext(),
+                stream_mode=["updates", "values", "messages"],
+                version="v2",
+            )
+        ]
+        return first, resumed
+
+    first, resumed = asyncio.run(run_and_resume())
+    interrupted_state = [part["data"] for part in first if part["type"] == "values"][-1]
+    resumed_state = [part["data"] for part in resumed if part["type"] == "values"][-1]
+    resumed_updates = [
+        node for part in resumed if part["type"] == "updates" for node in part["data"]
+    ]
+    terminal_messages = [
+        part["data"][0]
+        for part in resumed
+        if part["type"] == "messages"
+        and isinstance(part["data"][0], AIMessage)
+        and part["data"][0].response_metadata.get("recovery_status")
+    ]
+
+    assert interrupted_state["terminal_attempt_charged"] is True
+    assert interrupted_state["budget_usage"] == BudgetUsage(
+        model_calls=3,
+        node_attempts=32,
+    )
+    assert resumed_updates == ["controlled_finalize"]
+    assert resumed_state["budget_usage"] == interrupted_state["budget_usage"]
+    assert len(terminal_messages) == 1
+    assert agent.calls_by_phase["finalizer"] == 1
 
 
 class _FinalizerRetryAgent:
     name = "AssistantFastAgent"
 
-    def __init__(self, *, malformed: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        malformed: bool = False,
+        mode: str | None = None,
+    ) -> None:
         self.calls_by_phase: Counter[str] = Counter()
         self.finalizer_allowances: list[BudgetUsage] = []
-        self.malformed = malformed
+        self.mode = "malformed" if malformed else mode or "retry_then_success"
 
     async def ainvoke(
         self,
@@ -215,14 +439,27 @@ class _FinalizerRetryAgent:
         self.finalizer_allowances.append(
             BudgetUsage.model_validate(input["phase_budget_allowance"])
         )
-        if self.malformed:
+        if self.mode == "malformed":
             return {
                 "messages": [],
                 "phase_budget_usage": {
                     "model_calls": "provider-secret-sentinel",
                 },
             }
-        if self.calls_by_phase["finalizer"] == 1:
+        if self.mode == "overreported_usage":
+            return {
+                "messages": [AIMessage(content="must-not-be-terminal")],
+                "phase_budget_usage": BudgetUsage(model_calls=2),
+            }
+        if self.mode == "budget_exhausted":
+            return {
+                "messages": [AIMessage(content="must-not-be-terminal")],
+                "phase_budget_status": "exhausted",
+                "phase_budget_usage": BudgetUsage(model_calls=1),
+            }
+        if self.mode in {"timeout", "retry_then_success"} and (
+            self.mode == "timeout" or self.calls_by_phase["finalizer"] == 1
+        ):
             raise TimeoutError("provider-body-must-not-cross-boundary")
         return {
             "messages": [AIMessage(content="final-answer-sentinel")],

@@ -635,9 +635,19 @@ def controlled_finalize_node(
         "missing_deliverable_count": len(missing_ids),
     }
     usage = _budget_usage(state)
-    node_attempts = usage.node_attempts + 1
-    if policy is not None:
-        node_attempts = min(node_attempts, policy.graph_node_attempt_limit)
+    terminal_attempt_charged = bool(state.get("terminal_attempt_charged", False))
+    terminal_usage = (
+        usage
+        if terminal_attempt_charged
+        else _add_usage(usage, BudgetUsage(node_attempts=1))
+    )
+    if policy is not None and (
+        terminal_usage.tool_calls > policy.graph_tool_limit
+        or terminal_usage.model_calls > policy.graph_model_limit
+        or terminal_usage.node_attempts > policy.graph_node_attempt_limit
+        or terminal_usage.replans > policy.max_replans
+    ):
+        raise ValueError("controlled finalizer usage exceeds graph budget")
     terminal_decision = decision or RecoveryDecision(
         action="finalize",
         reason_code=fallback_reason,
@@ -645,8 +655,9 @@ def controlled_finalize_node(
     update: dict[str, object] = {
         "messages": [AIMessage(content=content, response_metadata=response_metadata)],
         "admission_error": None,
-        "budget_usage": usage.model_copy(update={"node_attempts": node_attempts}),
+        "budget_usage": terminal_usage,
         "recovery_decision": terminal_decision,
+        "terminal_attempt_charged": True,
     }
     if policy is not None:
         update["recovery_history"] = _bounded_history(
@@ -678,6 +689,14 @@ def unresolved_failure_facts(
     state: Mapping[str, object],
 ) -> tuple[FailureFact, ...]:
     """Return current stable failures not closed by a frozen success."""
+
+    return _all_unresolved_failure_facts(state)[:_MAX_TERMINAL_FAILURE_CODES]
+
+
+def _all_unresolved_failure_facts(
+    state: Mapping[str, object],
+) -> tuple[FailureFact, ...]:
+    """Collect unresolved facts before terminal-code deduplication and bounding."""
 
     facts: list[FailureFact] = []
     planner_outcome = _planner_outcome(state)
@@ -713,7 +732,7 @@ def unresolved_failure_facts(
             and outcome.failure is not None
         ):
             facts.append(outcome.failure)
-    return tuple(facts[:_MAX_TERMINAL_FAILURE_CODES])
+    return tuple(facts)
 
 
 def _terminal_deliverable_ids(
@@ -756,11 +775,19 @@ def _terminal_failure_codes(
     *,
     fallback_reason: str,
 ) -> list[str]:
-    codes = {
-        fallback_reason,
-        *(fact.code for fact in unresolved_failure_facts(state)),
-    }
-    return sorted(codes)[:_MAX_TERMINAL_FAILURE_CODES]
+    unresolved_codes = sorted(
+        {
+            fact.code
+            for fact in _all_unresolved_failure_facts(state)
+            if fact.code != fallback_reason
+        }
+    )
+    return sorted(
+        [
+            fallback_reason,
+            *unresolved_codes[: _MAX_TERMINAL_FAILURE_CODES - 1],
+        ]
+    )
 
 
 def _bounded_string_ids(values: object) -> tuple[str, ...]:

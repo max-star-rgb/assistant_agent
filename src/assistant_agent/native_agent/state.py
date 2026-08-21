@@ -168,6 +168,9 @@ class PlanningState(AgentState):
     planner_attempt_count: NotRequired[int]
     planner_outcome: NotRequired[PlannerOutcome | None]
     recovery_decision: NotRequired[RecoveryDecision | None]
+    # True once the terminal phase's single node attempt has been settled.  A
+    # controlled projection after a failed model finalizer reuses that attempt.
+    terminal_attempt_charged: NotRequired[bool]
     recovery_context: NotRequired[dict[str, JsonValue] | None]
     recovery_history: NotRequired[list[RecoveryDecision]]
     # Sequential graph nodes publish an absolute total. Worker branches only emit

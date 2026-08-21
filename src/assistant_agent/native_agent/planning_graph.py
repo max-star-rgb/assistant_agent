@@ -631,16 +631,20 @@ def build_planning_graph(
                 if remaining.node_attempts < 1
                 else "graph_model_budget_exhausted"
             )
-            return controlled_finalize_node(
-                {
-                    **state,
-                    "recovery_decision": RecoveryDecision(
-                        action="finalize",
-                        reason_code=reason_code,
-                    ),
-                },
-                policy=resolved_budget_policy,
+            decision = RecoveryDecision(
+                action="finalize",
+                reason_code=reason_code,
             )
+            write_recovery_transition(
+                source="finalizer_budget_exhausted",
+                target="controlled_finalize",
+                reason_code=decision.reason_code,
+                plan_generation=int(state.get("plan_generation", 0)),
+            )
+            return {
+                "recovery_decision": decision,
+                "terminal_attempt_charged": False,
+            }
         ordered = _ordered_final_worker_results(state)
         payload = _finalizer_prompt(
             request=_last_human_text(state),
@@ -673,9 +677,10 @@ def build_planning_graph(
             if not classify_operational_failure(error):
                 propagation_error = sanitize_finalizer_propagation(error)
             else:
-                consumed_model = _add_usage(
+                consumed_attempt = _checked_graph_usage(
                     consumed,
-                    BudgetUsage(model_calls=1),
+                    BudgetUsage(model_calls=1, node_attempts=1),
+                    policy=resolved_budget_policy,
                 )
                 prior_retries = sum(
                     1
@@ -684,7 +689,7 @@ def build_planning_graph(
                     == "finalizer_operational_retry"
                 )
                 remaining_after_attempt = remaining_budget(
-                    _add_usage(consumed_model, BudgetUsage(node_attempts=1)),
+                    consumed_attempt,
                     resolved_budget_policy,
                 )
                 if (
@@ -703,34 +708,41 @@ def build_planning_graph(
                         plan_generation=int(state.get("plan_generation", 0)),
                     )
                     return {
-                        "budget_usage": _add_usage(
-                            consumed_model,
-                            BudgetUsage(node_attempts=1),
-                        ),
+                        "budget_usage": consumed_attempt,
                         "recovery_decision": decision,
+                        "terminal_attempt_charged": False,
                         "recovery_history": record_recovery_decision(
                             state.get("recovery_history", ()),
                             decision,
                             limit=resolved_budget_policy.recovery_history_limit,
                         ),
                     }
-                return controlled_finalize_node(
-                    {
-                        **state,
-                        # The model call belongs to this finalizer node; the controlled
-                        # fallback accounts the attempt without creating another slot.
-                        "budget_usage": consumed_model,
-                        "recovery_decision": RecoveryDecision(
-                            action="finalize",
-                            reason_code="finalizer_operational_exhausted",
-                        ),
-                    },
-                    policy=resolved_budget_policy,
+                decision = RecoveryDecision(
+                    action="finalize",
+                    reason_code="finalizer_operational_exhausted",
                 )
+                write_recovery_transition(
+                    source="finalizer_failed",
+                    target="controlled_finalize",
+                    reason_code=decision.reason_code,
+                    plan_generation=int(state.get("plan_generation", 0)),
+                )
+                return {
+                    "budget_usage": consumed_attempt,
+                    "recovery_decision": decision,
+                    "terminal_attempt_charged": True,
+                    "recovery_history": record_recovery_decision(
+                        state.get("recovery_history", ()),
+                        decision,
+                        limit=resolved_budget_policy.recovery_history_limit,
+                    ),
+                }
         if propagation_error is not None:
             raise propagation_error
-        validation_error: Exception | None = None
+        validation_reason: str | None = None
         try:
+            if result.get("phase_budget_status") == "exhausted":
+                validation_reason = "finalizer_model_budget_exhausted"
             final_message = next(
                 (
                     message
@@ -739,26 +751,54 @@ def build_planning_graph(
                 ),
                 None,
             )
-            if final_message is None:
-                raise ValueError("finalizer completed without a terminal AIMessage")
+            if final_message is None and validation_reason is None:
+                validation_reason = "finalizer_result_contract_failure"
             phase_usage = BudgetUsage.model_validate(
                 result.get("phase_budget_usage") or {}
             )
-            if phase_usage.tool_calls:
-                raise ValueError("finalizer reported Tool usage")
-        except Exception as error:
-            validation_error = sanitize_finalizer_propagation(error)
-        if validation_error is not None:
-            raise validation_error
-        usage = BudgetUsage(
-            model_calls=max(phase_usage.model_calls, 1),
-            tool_calls=phase_usage.tool_calls,
-            node_attempts=1,
+            if validation_reason is None and (
+                phase_usage.tool_calls != 0
+                or phase_usage.model_calls > 1
+                or phase_usage.node_attempts != 0
+                or phase_usage.replans != 0
+                or (final_message is not None and final_message.tool_calls)
+            ):
+                validation_reason = "finalizer_usage_contract_failure"
+        except Exception:
+            validation_reason = "finalizer_usage_contract_failure"
+        usage = BudgetUsage(model_calls=1, node_attempts=1)
+        total_usage = _checked_graph_usage(
+            consumed,
+            usage,
+            policy=resolved_budget_policy,
         )
+        if validation_reason is not None:
+            decision = RecoveryDecision(
+                action="finalize",
+                reason_code=validation_reason,
+            )
+            write_recovery_transition(
+                source="finalizer_failed",
+                target="controlled_finalize",
+                reason_code=decision.reason_code,
+                plan_generation=int(state.get("plan_generation", 0)),
+            )
+            return {
+                "budget_usage": total_usage,
+                "recovery_decision": decision,
+                "terminal_attempt_charged": True,
+                "recovery_history": record_recovery_decision(
+                    state.get("recovery_history", ()),
+                    decision,
+                    limit=resolved_budget_policy.recovery_history_limit,
+                ),
+            }
+        assert final_message is not None
         return {
             "messages": [final_message],
-            "budget_usage": _add_usage(consumed, usage),
+            "budget_usage": total_usage,
             "recovery_decision": None,
+            "terminal_attempt_charged": True,
         }
 
     builder = StateGraph(PlanningState, context_schema=AssistantRunContext)
@@ -839,7 +879,7 @@ def build_planning_graph(
     builder.add_conditional_edges(
         "finalize",
         route_after_finalize,
-        ["finalize", END],
+        ["finalize", "controlled_finalize", END],
     )
     builder.add_edge("controlled_finalize", END)
     return builder.compile(name="AssistantPlanningGraph", checkpointer=checkpointer)
@@ -860,6 +900,8 @@ def route_after_finalize(state: PlanningState) -> str:
     parsed = RecoveryDecision.model_validate(decision)
     if parsed.action == "retry" and parsed.reason_code == "finalizer_operational_retry":
         return "finalize"
+    if parsed.action == "finalize":
+        return "controlled_finalize"
     return END
 
 
@@ -1424,6 +1466,25 @@ def _add_usage(left: BudgetUsage, right: BudgetUsage) -> BudgetUsage:
         node_attempts=left.node_attempts + right.node_attempts,
         replans=left.replans + right.replans,
     )
+
+
+def _checked_graph_usage(
+    consumed: BudgetUsage,
+    delta: BudgetUsage,
+    *,
+    policy: PlanningBudgetPolicy,
+) -> BudgetUsage:
+    """Add trusted usage only when the resulting global counters remain valid."""
+
+    total = _add_usage(consumed, delta)
+    if (
+        total.tool_calls > policy.graph_tool_limit
+        or total.model_calls > policy.graph_model_limit
+        or total.node_attempts > policy.graph_node_attempt_limit
+        or total.replans > policy.max_replans
+    ):
+        raise ValueError("finalizer usage exceeds graph budget")
+    return total
 
 
 def _subtract_usage(left: BudgetUsage, right: BudgetUsage) -> BudgetUsage:
