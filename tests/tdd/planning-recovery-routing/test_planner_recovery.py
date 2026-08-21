@@ -548,6 +548,75 @@ def test_admission_correction_survives_operational_retry_window() -> None:
     assert result["admission_error"] is None
 
 
+def test_replacement_candidate_checkpoint_clears_admission_correction() -> None:
+    """Catches a completed revision correction surviving the replacement update."""
+
+    saver = InMemorySaver()
+    agent = _CorrectionSensitivePlannerAgent()
+    graph = build_planning_graph(
+        object(),
+        agent,
+        tools=[_probe_tool()],
+        skill_catalog=SkillCatalog(),
+        checkpointer=saver,
+    )
+    config = {"configurable": {"thread_id": "planner-replacement-cleanup"}}
+
+    asyncio.run(
+        graph.ainvoke(
+            _input_with_evidence(),
+            config=config,
+            context=AssistantRunContext(),
+        )
+    )
+
+    replacement_snapshots = [
+        snapshot
+        for snapshot in graph.get_state_history(config)
+        if snapshot.next == ("assess_planner",)
+        and snapshot.values.get("revision_count") == 1
+        and getattr(snapshot.values.get("planner_outcome"), "status", None)
+        == "succeeded"
+    ]
+    assert len(replacement_snapshots) == 1
+    assert replacement_snapshots[0].values["admission_error"] is None
+
+
+class _AlwaysTransientPlannerAgent:
+    name = "AssistantFastAgent"
+
+    async def ainvoke(self, input: dict[str, Any], *, context: Any) -> dict[str, Any]:
+        del context
+        assert input["agent_phase"] == "planner"
+        raise TimeoutError()
+
+
+def test_controlled_finalize_clears_active_admission_correction() -> None:
+    """Catches a bounded revision correction leaking into terminal state."""
+
+    graph = build_planning_graph(
+        object(),
+        _AlwaysTransientPlannerAgent(),
+        tools=[_probe_tool()],
+        skill_catalog=SkillCatalog(),
+        budget_policy=PlanningBudgetPolicy.from_base(1),
+    )
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {
+                **_input_with_evidence(),
+                "admission_error": "unknown_tool",
+                "revision_count": 1,
+                "budget_usage": BudgetUsage(replans=2),
+            },
+            context=AssistantRunContext(),
+        )
+    )
+
+    assert result["admission_error"] is None
+
+
 def test_admission_correction_clears_before_next_replan_generation() -> None:
     """Catches a revision correction leaking into an unrelated replan generation."""
 

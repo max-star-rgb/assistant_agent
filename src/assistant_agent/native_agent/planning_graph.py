@@ -419,6 +419,7 @@ def build_planning_graph(
             candidate = planner_result.get("structured_response")
             if candidate is not None:
                 proposal = NativePlanProposal.model_validate(candidate)
+                update["admission_error"] = None
                 update["plan_candidate"] = proposal
                 update["planner_outcome"] = PlannerOutcome(
                     status="succeeded",

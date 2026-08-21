@@ -194,7 +194,10 @@ def controlled_finalize_node(state: PlanningState) -> dict[str, object]:
     reason_code = (
         decision.reason_code if decision is not None else "planner_recovery_unavailable"
     )
-    return {"messages": [AIMessage(content=f"Planning stopped: {reason_code}.")]}
+    return {
+        "messages": [AIMessage(content=f"Planning stopped: {reason_code}.")],
+        "admission_error": None,
+    }
 
 
 def _bounded_history(
