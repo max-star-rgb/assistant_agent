@@ -690,6 +690,8 @@ class CodingTerminalResult(BaseModel):
     error_code: str | None = None
     verification_status: Literal["passed", "failed"] | None = None
     verification_evidence: tuple[CodingCommandEvidence, ...] = ()
+    repair_status: Literal["passed", "exhausted", "no_progress"] | None = None
+    repair_history: tuple[CodingRepairAttempt, ...] = ()
     source_commit: str | None = Field(default=None, pattern=r"^[0-9a-f]{40,64}$")
     expected_target_head: str | None = Field(
         default=None,
@@ -701,9 +703,9 @@ class CodingTerminalResult(BaseModel):
         pattern=r"^[0-9a-f]{64}$",
     )
 
-    @field_validator("changed_paths", mode="before")
+    @field_validator("changed_paths", "repair_history", mode="before")
     @classmethod
-    def _tuple_paths(cls, value: object) -> object:
+    def _tuple_values(cls, value: object) -> object:
         return tuple(value) if isinstance(value, list) else value
 
 

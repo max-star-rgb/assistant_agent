@@ -236,7 +236,11 @@ def build_coding_graph(
                 "approval_origin": "repair",
                 "repair_approval_context": None,
                 "repair_status": "no_progress",
-                "coding_result": _failed(state, "coding_repair_no_progress"),
+                "coding_result": _failed(
+                    state,
+                    "coding_repair_no_progress",
+                    repair_status="no_progress",
+                ),
             }
         except CodingWorkspaceError as exc:
             return {
@@ -263,6 +267,7 @@ def build_coding_graph(
                 "coding_result": _failed(
                     state,
                     "coding_repair_evidence_required",
+                    repair_status="exhausted",
                 ),
             }
         return {
@@ -281,7 +286,7 @@ def build_coding_graph(
             "credential_approval_status": None,
             "artifact_ingress_plan": None,
             "artifact_approval_status": None,
-            "format_round": 0,
+            "format_round": int(state.get("format_round", 0)),
             "integration_required": False,
             "commit_result": None,
             "merge_preview": None,
@@ -503,7 +508,7 @@ def build_coding_graph(
             plan = build_dependency_plan(
                 repository,
                 workspace.root,
-                changed_paths=applied.changed_paths,
+                changed_paths=_approved_changed_paths(state, applied),
             )
         except CodingWorkspaceError as exc:
             return {"coding_result": _failed(state, exc.code)}
@@ -556,8 +561,9 @@ def build_coding_graph(
                         workspace_ref=state.get("workspace_ref"),
                         base_commit=state.get("base_commit"),
                         patch_digest=applied.patch_digest,
-                        changed_paths=applied.changed_paths,
+                        changed_paths=_approved_changed_paths(state, applied),
                         error_code="dependency_install_rejected",
+                        **_repair_terminal_fields(state),
                     ),
                 },
                 goto="summarize",
@@ -570,7 +576,7 @@ def build_coding_graph(
             fresh_plan = build_dependency_plan(
                 repository,
                 workspace.root,
-                changed_paths=applied.changed_paths,
+                changed_paths=_approved_changed_paths(state, applied),
             )
         except (CodingWorkspaceError, ValueError):
             fresh_plan = None
@@ -660,8 +666,9 @@ def build_coding_graph(
                         workspace_ref=state.get("workspace_ref"),
                         base_commit=state.get("base_commit"),
                         patch_digest=applied.patch_digest,
-                        changed_paths=applied.changed_paths,
+                        changed_paths=_approved_changed_paths(state, applied),
                         error_code="credential_lease_rejected",
+                        **_repair_terminal_fields(state),
                     ),
                 },
                 goto="summarize",
@@ -675,7 +682,7 @@ def build_coding_graph(
             fresh_plan = build_dependency_plan(
                 repository,
                 workspace.root,
-                changed_paths=applied.changed_paths,
+                changed_paths=_approved_changed_paths(state, applied),
             )
             if fresh_plan is None or credential is None or dependency is None:
                 raise ValueError("credential_approval_mismatch")
@@ -712,7 +719,7 @@ def build_coding_graph(
             plan = build_artifact_ingress_plan(
                 repository,
                 workspace.root,
-                changed_paths=applied.changed_paths,
+                changed_paths=_approved_changed_paths(state, applied),
             )
         except CodingWorkspaceError as exc:
             return {"coding_result": _failed(state, exc.code)}
@@ -756,8 +763,9 @@ def build_coding_graph(
                         workspace_ref=state.get("workspace_ref"),
                         base_commit=state.get("base_commit"),
                         patch_digest=applied.patch_digest,
-                        changed_paths=applied.changed_paths,
+                        changed_paths=_approved_changed_paths(state, applied),
                         error_code="artifact_ingress_rejected",
+                        **_repair_terminal_fields(state),
                     ),
                 },
                 goto="summarize",
@@ -768,7 +776,7 @@ def build_coding_graph(
             fresh_plan = build_artifact_ingress_plan(
                 repository,
                 workspace.root,
-                changed_paths=applied.changed_paths,
+                changed_paths=_approved_changed_paths(state, applied),
             )
         except (CodingWorkspaceError, ValueError, AttributeError):
             fresh_plan = None
@@ -849,22 +857,28 @@ def build_coding_graph(
             )
             return update
         all_evidence = (*state.get("verification_evidence", ()), *result.evidence)
+        repair_history = _repair_history(state)
         if result.status == "failed":
             current_repair_round = int(state.get("repair_round", 0))
+            current_attempt = None
             if state.get("repair_status") == "active":
                 context = state.get("repair_approval_context")
                 failure = state.get("repair_failure_evidence")
                 if context is not None and failure is not None:
-                    update["repair_history"] = [
-                        CodingRepairAttempt(
-                            round=current_repair_round,
-                            failure_output_digest=failure.output_digest,
-                            patch_digest=context.patch_digest,
-                            workspace_diff_digest=context.workspace_diff_digest,
-                            candidate_diff_digest=context.candidate_diff_digest,
-                            status="failed",
-                        )
-                    ]
+                    current_attempt = CodingRepairAttempt(
+                        round=current_repair_round,
+                        failure_output_digest=failure.output_digest,
+                        patch_digest=context.patch_digest,
+                        workspace_diff_digest=context.workspace_diff_digest,
+                        candidate_diff_digest=context.candidate_diff_digest,
+                        status="failed",
+                    )
+                    update["repair_history"] = [current_attempt]
+            terminal_history = (
+                (*repair_history, current_attempt)
+                if current_attempt is not None
+                else repair_history
+            )
             repairable = select_repairable_failure(result, current_repair_round)
             if repairable is not None:
                 update.update(
@@ -872,34 +886,42 @@ def build_coding_graph(
                     repair_status="pending",
                 )
                 return update
-            if state.get("repair_status") == "active":
-                update["repair_status"] = "exhausted"
+            terminal_repair_status = (
+                "exhausted" if state.get("repair_status") == "active" else None
+            )
+            if terminal_repair_status is not None:
+                update["repair_status"] = terminal_repair_status
             update["coding_result"] = CodingTerminalResult(
                 status="failed",
                 workspace_ref=state.get("workspace_ref"),
                 base_commit=state.get("base_commit"),
                 patch_digest=applied.patch_digest,
-                changed_paths=applied.changed_paths,
+                changed_paths=_approved_changed_paths(state, applied),
                 error_code=result.error_code or "verification_command_failed",
                 verification_status="failed",
                 verification_evidence=all_evidence,
+                repair_status=terminal_repair_status,
+                repair_history=terminal_history,
             )
             return update
+        terminal_history = repair_history
+        terminal_repair_status = None
         if state.get("repair_status") == "active":
             context = state.get("repair_approval_context")
             failure = state.get("repair_failure_evidence")
             if context is not None and failure is not None:
-                update["repair_history"] = [
-                    CodingRepairAttempt(
-                        round=int(state.get("repair_round", 0)),
-                        failure_output_digest=failure.output_digest,
-                        patch_digest=context.patch_digest,
-                        workspace_diff_digest=context.workspace_diff_digest,
-                        candidate_diff_digest=context.candidate_diff_digest,
-                        status="passed",
-                    )
-                ]
-            update["repair_status"] = "passed"
+                current_attempt = CodingRepairAttempt(
+                    round=int(state.get("repair_round", 0)),
+                    failure_output_digest=failure.output_digest,
+                    patch_digest=context.patch_digest,
+                    workspace_diff_digest=context.workspace_diff_digest,
+                    candidate_diff_digest=context.candidate_diff_digest,
+                    status="passed",
+                )
+                update["repair_history"] = [current_attempt]
+                terminal_history = (*repair_history, current_attempt)
+            terminal_repair_status = "passed"
+            update["repair_status"] = terminal_repair_status
         if repository.integration_enabled:
             update["integration_required"] = True
             return update
@@ -908,9 +930,11 @@ def build_coding_graph(
             workspace_ref=applied.workspace_ref,
             base_commit=applied.base_commit,
             patch_digest=applied.patch_digest,
-            changed_paths=applied.changed_paths,
+            changed_paths=_approved_changed_paths(state, applied),
             verification_status="passed",
             verification_evidence=all_evidence,
+            repair_status=terminal_repair_status,
+            repair_history=terminal_history,
         )
         return update
 
@@ -997,6 +1021,7 @@ def build_coding_graph(
                         expected_target_head=preview.expected_target_head,
                         result_commit=preview.result_commit,
                         merge_preview_digest=preview.merge_preview_digest,
+                        **_repair_terminal_fields(state),
                     )
                 },
                 goto="summarize",
@@ -1041,6 +1066,7 @@ def build_coding_graph(
                 expected_target_head=merged.previous_target_head,
                 result_commit=merged.result_commit,
                 merge_preview_digest=merged.merge_preview_digest,
+                **_repair_terminal_fields(state),
             ),
         }
 
@@ -1080,7 +1106,7 @@ def build_coding_graph(
             return "summarize"
         if state.get("dependency_plan") is not None:
             return "dependency_approval"
-        return "plan_artifacts"
+        return "plan_credentials"
 
     def after_credential_plan(state: CodingState) -> str:
         if state.get("coding_result") is not None:
@@ -1147,7 +1173,39 @@ def _resolve_workspace(state, runtime, config, service):
     return service.resolve(identity, thread_id, repo_id)
 
 
-def _failed(state: CodingState, code: str) -> CodingTerminalResult:
+def _approved_changed_paths(
+    state: CodingState,
+    applied: object | None = None,
+) -> tuple[str, ...]:
+    changed_paths = tuple(state.get("approved_changed_paths", ()))
+    if changed_paths:
+        return changed_paths
+    return tuple(getattr(applied, "changed_paths", ()))
+
+
+def _repair_history(state: CodingState) -> tuple[CodingRepairAttempt, ...]:
+    return tuple(
+        CodingRepairAttempt.model_validate(item)
+        for item in state.get("repair_history", ())
+    )
+
+
+def _repair_terminal_fields(state: CodingState) -> dict[str, object]:
+    status = state.get("repair_status")
+    return {
+        "repair_status": (
+            status if status in {"passed", "exhausted", "no_progress"} else None
+        ),
+        "repair_history": _repair_history(state),
+    }
+
+
+def _failed(
+    state: CodingState,
+    code: str,
+    *,
+    repair_status: Literal["passed", "exhausted", "no_progress"] | None = None,
+) -> CodingTerminalResult:
     validation = state.get("validation")
     proposal = validation.proposal if validation is not None else None
     preview = state.get("merge_preview")
@@ -1157,12 +1215,21 @@ def _failed(state: CodingState, code: str) -> CodingTerminalResult:
         workspace_ref=state.get("workspace_ref"),
         base_commit=state.get("base_commit"),
         patch_digest=(proposal.patch_digest if proposal is not None else None),
-        changed_paths=(proposal.changed_paths if proposal is not None else ()),
+        changed_paths=(
+            _approved_changed_paths(state)
+            or (proposal.changed_paths if proposal is not None else ())
+        ),
         error_code=code,
         verification_status=(
             "passed" if state.get("verification_evidence") else None
         ),
         verification_evidence=tuple(state.get("verification_evidence", ())),
+        repair_status=(
+            repair_status
+            if repair_status is not None
+            else _repair_terminal_fields(state)["repair_status"]
+        ),
+        repair_history=_repair_history(state),
         source_commit=(
             preview.source_commit
             if preview is not None
