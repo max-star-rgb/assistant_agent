@@ -320,9 +320,17 @@ phase 与 Linux directory cookie 通过固定大小、atomic replace 的受管 p
 tombstone DFS。root 消失时必须同时清理 hierarchical traversal 与兼容 cursor 的全部 descendant
 iterator。
 
-expired workspace 在 workspace lock 与 metadata ownership 校验后，先把包含 repo tree 的完整
-management root 在同一文件系统 atomic rename 为受管 tombstone，再按 entry/time budget 增量删除。
-reaper 不得调用会递归删除 physical tree 的 `git worktree remove --force`。对应 Git administrative
-metadata 只能在验证 `.git` back-reference、common-dir direct-child ownership 与固定小型 entry
-allowlist 后做常数次精确 unlink/rmdir；验证不成立时 fail closed。tombstone DFS 每个 entry 与文件
-系统操作前都必须检查同一 absolute deadline，并把未完成状态留给后续 owner round。
+expired workspace 在 workspace lock 与 metadata ownership 校验后，先通过受治理、禁止 lazy fetch 的
+`git rev-parse --git-common-dir` 从配置仓库取得唯一 expected common dir；worktree 自报的
+`commondir` 不具有授权效力。`.git` back-reference、`worktrees`、精确 admin entry、`commondir`、
+`gitdir` 以及 admin 内的 `logs/refs` 必须通过 dirfd、`lstat` 和 `O_NOFOLLOW` 做有界验证；任一目录为
+symlink、绑定不精确、超出 entry/depth budget 或 deadline 时，必须在 physical management root 迁移前
+fail closed。
+
+验证通过后，完整 management root 与精确 Git admin entry 分别在各自文件系统 atomic rename 到固定前缀的
+受管 tombstone；admin tombstone area 位于 configured common dir、权限固定为 `0700`，原 active registry
+entry 在 rename 后立即消失，因此同 scope workspace 可在旧 admin tombstone 待清理时安全重建。reaper 不得调用
+`git worktree remove --force`，也不得在 active registry 中逐项 unlink admin metadata。physical 与 admin
+tombstone 由相互独立、持久且常数状态的增量 DFS 按共享 entry/time budget 跨轮删除；deadline 或 I/O 失败只
+关闭 iterator 并保留 tombstone/state 供后续重试。workspace root 消失时必须清除其 descendant physical
+deletion state，并关闭外部 admin deletion handle；owner shutdown 关闭句柄后仍由持久 tombstone 支持下次发现。

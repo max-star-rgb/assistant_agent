@@ -65,8 +65,16 @@ _ANALYSIS_METADATA_TEMP_PREFIX = ".metadata-"
 _MAX_GIT_OUTPUT = 262_144
 _REAPER_CURSOR_LIMIT = 4
 _REAPER_TOMBSTONE_PREFIX = ".assistant-agent-reap-"
+_ADMIN_TOMBSTONE_AREA = ".assistant-agent-worktree-tombstones"
+_ADMIN_TOMBSTONE_PREFIX = ".assistant-agent-admin-reap-"
+_ADMIN_REAPER_PENDING_FILE = ".admin-cleanup-pending"
+_ADMIN_VALIDATION_ENTRY_LIMIT = 512
+_ADMIN_VALIDATION_DEPTH_LIMIT = 16
+_ADMIN_DISCOVERY_ENTRY_BUDGET = 8
+_ADMIN_REAPER_TIME_SLICE_SECONDS = 0.025
 _REAPER_PROGRESS_FILE = ".cleanup-progress.json"
 _REAPER_TIME_BUDGET_SECONDS = 0.25
+_REAPER_MAX_TIME_BUDGET_SECONDS = 1.0
 _REAPER_DEFAULT_WORKSPACE_BUDGET = 32
 _REAPER_DEFAULT_CHILD_BUDGET = 64
 _ANALYSIS_INDEX_ENTRY_MAX_BYTES = 1_152
@@ -152,6 +160,22 @@ class _ReaperCursor:
             closer()
 
 
+@dataclass(slots=True)
+class _ValidatedWorktreeAdmin:
+    common_root: Path
+    common_fd: int
+    worktrees_fd: int
+    admin_fd: int
+    admin_name: str
+
+    def close(self) -> None:
+        for descriptor in (self.admin_fd, self.worktrees_fd, self.common_fd):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
 class CodingWorkspaceService:
     _REAPER_CURSOR_LIMIT = _REAPER_CURSOR_LIMIT
 
@@ -176,6 +200,9 @@ class CodingWorkspaceService:
             child_directories=(("snapshot", _ANALYSIS_SNAPSHOTS_DIR), ("management", ".")),
         )
         self._incremental_reaper_deletion: _IncrementalTombstoneDeletion | None = None
+        self._incremental_admin_deletion: _IncrementalTombstoneDeletion | None = None
+        self._admin_repository_cursor = 0
+        self._admin_empty_repository_scans = 0
 
     def resolve(self, identity: str, thread_id: str, repo_id: str) -> CodingWorkspace:
         if not self.config.enabled or repo_id not in self.config.repositories:
@@ -1897,9 +1924,15 @@ class CodingWorkspaceService:
         max_snapshots_per_workspace: int | None = None,
     ) -> None:
         root = self.config.workspace_root
-        if not root.is_dir():
+        try:
+            root_metadata = root.lstat()
+            root_is_directory = stat.S_ISDIR(root_metadata.st_mode)
+        except OSError:
+            root_is_directory = False
+        if not root_is_directory:
             self._hierarchical_reaper.drop_under(root)
             self._drop_reaper_cursors_under(root)
+            self._close_incremental_deletions_under(root)
             return
         if self._hierarchical_reaper.exhausted:
             self._hierarchical_reaper.restart()
@@ -1913,10 +1946,24 @@ class CodingWorkspaceService:
         )
         if workspace_budget <= 0:
             return
-        deadline = time.monotonic() + _REAPER_TIME_BUDGET_SECONDS
+        deadline = time.monotonic() + min(
+            _REAPER_MAX_TIME_BUDGET_SECONDS,
+            _REAPER_TIME_BUDGET_SECONDS * max(1, workspace_budget),
+        )
+        admin_deadline = min(
+            deadline,
+            time.monotonic() + _ADMIN_REAPER_TIME_SLICE_SECONDS,
+        )
+        self._advance_admin_deletion(
+            max_entries=max(1, child_slice),
+            absolute_deadline=admin_deadline,
+        )
         deletion = self._incremental_reaper_deletion
         if deletion is not None and time.monotonic() < deadline:
-            deletion.step(max_entries=max(1, child_slice), absolute_deadline=deadline)
+            try:
+                deletion.step(max_entries=max(1, child_slice), absolute_deadline=deadline)
+            except OSError:
+                deletion.close()
             if deletion.done:
                 deletion.close()
                 self._incremental_reaper_deletion = None
@@ -1943,11 +1990,22 @@ class CodingWorkspaceService:
                 self._hierarchical_reaper.skip_current_workspace()
                 continue
             management_root = entry.workspace
+            workspace_started_at = time.monotonic()
+            remaining_workspace_slots = max(
+                1,
+                workspace_budget - processed_workspaces,
+            )
+            workspace_deadline = min(
+                deadline,
+                workspace_started_at
+                + max(0.0, deadline - workspace_started_at)
+                / remaining_workspace_slots,
+            )
             try:
                 self._cleanup_workspace_round(
                     management_root,
                     max_child_entries=child_slice,
-                    absolute_deadline=deadline,
+                    absolute_deadline=workspace_deadline,
                 )
             finally:
                 if self._hierarchical_reaper.current_workspace is not None:
@@ -2147,6 +2205,10 @@ class CodingWorkspaceService:
         self._incremental_reaper_deletion = None
         if deletion is not None:
             deletion.close()
+        admin_deletion = self._incremental_admin_deletion
+        self._incremental_admin_deletion = None
+        if admin_deletion is not None:
+            admin_deletion.close()
     def start_snapshot_reaper(
         self,
         *,
@@ -2433,14 +2495,40 @@ class CodingWorkspaceService:
             handle.close()
 
 
-    def _read_small_regular_file(self, path: Path, *, max_bytes: int = 4_096) -> str | None:
+    def _read_small_regular_file_at(
+        self,
+        parent_fd: int,
+        name: str,
+        *,
+        max_bytes: int = 4_096,
+    ) -> str | None:
+        if not name or name in {".", ".."} or "/" in name:
+            return None
         try:
-            metadata = path.lstat()
+            metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
             if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > max_bytes:
                 return None
-            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            descriptor = os.open(
+                name,
+                os.O_RDONLY
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=parent_fd,
+            )
             try:
-                payload = os.read(descriptor, max_bytes + 1)
+                opened = os.fstat(descriptor)
+                if (
+                    not stat.S_ISREG(opened.st_mode)
+                    or opened.st_dev != metadata.st_dev
+                    or opened.st_ino != metadata.st_ino
+                ):
+                    return None
+                payload = bytearray()
+                while len(payload) <= max_bytes:
+                    chunk = os.read(descriptor, min(4_096, max_bytes + 1 - len(payload)))
+                    if not chunk:
+                        break
+                    payload.extend(chunk)
             finally:
                 os.close(descriptor)
         except OSError:
@@ -2453,84 +2541,521 @@ class CodingWorkspaceService:
             return None
 
 
-    def _owned_worktree_admin_path(self, repo_root: Path) -> Path | None:
-        git_file = repo_root / ".git"
-        raw_gitdir = self._read_small_regular_file(git_file)
-        if raw_gitdir is None or not raw_gitdir.startswith("gitdir:"):
+    def _open_absolute_directory_no_follow(self, path: Path) -> tuple[Path, int] | None:
+        absolute = Path(os.path.abspath(os.fspath(path)))
+        if not absolute.is_absolute():
             return None
-        raw_path = raw_gitdir.removeprefix("gitdir:").strip()
-        admin_path = Path(raw_path)
-        if not admin_path.is_absolute():
-            admin_path = (repo_root / admin_path).resolve()
-        else:
-            admin_path = admin_path.resolve()
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        descriptor = -1
         try:
-            if admin_path.is_symlink() or not admin_path.is_dir():
-                return None
+            descriptor = os.open(absolute.anchor, flags)
+            for component in absolute.parts[1:]:
+                if component in {"", ".", ".."}:
+                    raise OSError("unsafe directory component")
+                child = os.open(component, flags, dir_fd=descriptor)
+                try:
+                    details = os.fstat(child)
+                    if not stat.S_ISDIR(details.st_mode):
+                        raise OSError("not a directory")
+                except Exception:
+                    os.close(child)
+                    raise
+                os.close(descriptor)
+                descriptor = child
+            return absolute, descriptor
         except OSError:
+            if descriptor >= 0:
+                os.close(descriptor)
             return None
-        raw_common = self._read_small_regular_file(admin_path / "commondir")
-        raw_backref = self._read_small_regular_file(admin_path / "gitdir")
-        if raw_common is None or raw_backref is None:
-            return None
-        common = (admin_path / raw_common).resolve()
-        backref = Path(raw_backref)
-        if not backref.is_absolute():
-            backref = (admin_path / backref).resolve()
-        else:
-            backref = backref.resolve()
-        expected_backref = git_file.resolve(strict=False)
-        if backref != expected_backref:
-            return None
-        if admin_path.parent.name != "worktrees" or admin_path.parent.parent.resolve() != common:
-            return None
-        return admin_path
 
 
-    def _remove_owned_worktree_admin_metadata(
+    def _configured_repository_common_dir(
         self,
-        admin_path: Path,
+        repository,
         *,
         absolute_deadline: float,
-    ) -> None:
-        allowed_files = {"HEAD", "ORIG_HEAD", "commondir", "gitdir", "index", "locked", "config.worktree"}
+    ) -> tuple[Path, int] | None:
+        remaining = absolute_deadline - time.monotonic()
+        if remaining <= 0:
+            return None
         try:
-            entries: list[os.DirEntry[str]] = []
-            with os.scandir(admin_path) as iterator:
-                for entry in iterator:
-                    if len(entries) >= 16:
-                        return
-                    entries.append(entry)
-            names = {entry.name for entry in entries}
-            if not names.issubset(allowed_files | {"logs"}):
-                return
-            logs = admin_path / "logs"
-            if "logs" in names:
-                log_entries: list[os.DirEntry[str]] = []
-                with os.scandir(logs) as iterator:
+            payload = _run_git_bytes_process(
+                (
+                    "git",
+                    "-C",
+                    str(repository.path),
+                    "rev-parse",
+                    "--path-format=absolute",
+                    "--git-common-dir",
+                ),
+                cwd=repository.path,
+                env=_governed_git_environment(),
+                timeout_seconds=remaining,
+                max_output_bytes=4_096,
+            )
+            decoded = payload.decode("utf-8").strip()
+        except (
+            OSError,
+            UnicodeDecodeError,
+            subprocess.TimeoutExpired,
+            _GitOutputLimitExceeded,
+            _GitProcessFailed,
+        ):
+            return None
+        if not decoded or "\0" in decoded or "\n" in decoded or "\r" in decoded:
+            return None
+        common_path = Path(decoded)
+        if not common_path.is_absolute():
+            common_path = repository.path / common_path
+        return self._open_absolute_directory_no_follow(common_path)
+
+
+    def _validate_admin_directory_tree(
+        self,
+        admin_fd: int,
+        *,
+        absolute_deadline: float,
+    ) -> bool:
+        visited = 0
+        directory_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+
+        def validate(directory_fd: int, depth: int) -> bool:
+            nonlocal visited
+            if depth > _ADMIN_VALIDATION_DEPTH_LIMIT:
+                return False
+            try:
+                with os.scandir(directory_fd) as iterator:
                     for entry in iterator:
-                        if len(log_entries) >= 4:
-                            return
-                        log_entries.append(entry)
-                if {entry.name for entry in log_entries} - {"HEAD"}:
-                    return
-            for name in allowed_files:
-                if time.monotonic() >= absolute_deadline:
-                    return
-                candidate = admin_path / name
-                if candidate.exists():
-                    if candidate.is_symlink() or not candidate.is_file():
-                        return
-                    candidate.unlink()
-            if "logs" in names:
-                if time.monotonic() >= absolute_deadline:
-                    return
-                (logs / "HEAD").unlink(missing_ok=True)
-                logs.rmdir()
-            if time.monotonic() < absolute_deadline:
-                admin_path.rmdir()
+                        if time.monotonic() >= absolute_deadline:
+                            return False
+                        visited += 1
+                        if visited > _ADMIN_VALIDATION_ENTRY_LIMIT:
+                            return False
+                        name = entry.name
+                        if not name or name in {".", ".."} or "/" in name:
+                            return False
+                        details = os.stat(
+                            name,
+                            dir_fd=directory_fd,
+                            follow_symlinks=False,
+                        )
+                        if stat.S_ISREG(details.st_mode):
+                            descriptor = os.open(
+                                name,
+                                os.O_RDONLY
+                                | getattr(os, "O_NOFOLLOW", 0)
+                                | getattr(os, "O_CLOEXEC", 0),
+                                dir_fd=directory_fd,
+                            )
+                            try:
+                                opened = os.fstat(descriptor)
+                                if (
+                                    not stat.S_ISREG(opened.st_mode)
+                                    or opened.st_dev != details.st_dev
+                                    or opened.st_ino != details.st_ino
+                                ):
+                                    return False
+                            finally:
+                                os.close(descriptor)
+                            continue
+                        if not stat.S_ISDIR(details.st_mode):
+                            return False
+                        if depth == 0 and name not in {"logs", "refs"}:
+                            return False
+                        child_fd = os.open(
+                            name,
+                            directory_flags,
+                            dir_fd=directory_fd,
+                        )
+                        try:
+                            opened = os.fstat(child_fd)
+                            if (
+                                not stat.S_ISDIR(opened.st_mode)
+                                or opened.st_dev != details.st_dev
+                                or opened.st_ino != details.st_ino
+                                or not validate(child_fd, depth + 1)
+                            ):
+                                return False
+                        finally:
+                            os.close(child_fd)
+            except OSError:
+                return False
+            return True
+
+        return validate(admin_fd, 0)
+
+
+    def _validated_worktree_admin(
+        self,
+        repo_root: Path,
+        repository,
+        *,
+        absolute_deadline: float,
+    ) -> _ValidatedWorktreeAdmin | None:
+        configured_common = self._configured_repository_common_dir(
+            repository,
+            absolute_deadline=absolute_deadline,
+        )
+        if configured_common is None:
+            return None
+        common_root, common_fd = configured_common
+        repo_opened = self._open_absolute_directory_no_follow(repo_root)
+        if repo_opened is None:
+            os.close(common_fd)
+            return None
+        normalized_repo_root, repo_fd = repo_opened
+        worktrees_fd = -1
+        admin_fd = -1
+        try:
+            raw_gitdir = self._read_small_regular_file_at(repo_fd, ".git")
+            if raw_gitdir is None or not raw_gitdir.startswith("gitdir:"):
+                return None
+            raw_admin_path = raw_gitdir.removeprefix("gitdir:").strip()
+            if not raw_admin_path or "\n" in raw_admin_path or "\r" in raw_admin_path:
+                return None
+            admin_path = Path(raw_admin_path)
+            if not admin_path.is_absolute():
+                admin_path = normalized_repo_root / admin_path
+            admin_path = Path(os.path.abspath(os.fspath(admin_path)))
+            expected_worktrees = common_root / "worktrees"
+            if admin_path.parent != expected_worktrees:
+                return None
+            admin_name = admin_path.name
+            if not admin_name or admin_name in {".", ".."} or "/" in admin_name:
+                return None
+
+            worktrees_metadata = os.stat(
+                "worktrees",
+                dir_fd=common_fd,
+                follow_symlinks=False,
+            )
+            if not stat.S_ISDIR(worktrees_metadata.st_mode):
+                return None
+            directory_flags = (
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+            )
+            worktrees_fd = os.open("worktrees", directory_flags, dir_fd=common_fd)
+            opened_worktrees = os.fstat(worktrees_fd)
+            if (
+                opened_worktrees.st_dev != worktrees_metadata.st_dev
+                or opened_worktrees.st_ino != worktrees_metadata.st_ino
+            ):
+                return None
+            admin_metadata = os.stat(
+                admin_name,
+                dir_fd=worktrees_fd,
+                follow_symlinks=False,
+            )
+            if not stat.S_ISDIR(admin_metadata.st_mode):
+                return None
+            admin_fd = os.open(admin_name, directory_flags, dir_fd=worktrees_fd)
+            opened_admin = os.fstat(admin_fd)
+            if (
+                opened_admin.st_dev != admin_metadata.st_dev
+                or opened_admin.st_ino != admin_metadata.st_ino
+            ):
+                return None
+
+            raw_common = self._read_small_regular_file_at(admin_fd, "commondir")
+            raw_backref = self._read_small_regular_file_at(admin_fd, "gitdir")
+            if raw_common is None or raw_backref is None:
+                return None
+            if any(character in raw_common for character in ("\0", "\n", "\r")):
+                return None
+            if any(character in raw_backref for character in ("\0", "\n", "\r")):
+                return None
+            declared_common = Path(raw_common)
+            if not declared_common.is_absolute():
+                declared_common = admin_path / declared_common
+            declared_common = Path(os.path.abspath(os.fspath(declared_common)))
+            declared_backref = Path(raw_backref)
+            if not declared_backref.is_absolute():
+                declared_backref = admin_path / declared_backref
+            declared_backref = Path(os.path.abspath(os.fspath(declared_backref)))
+            if declared_common != common_root:
+                return None
+            if declared_backref != normalized_repo_root / ".git":
+                return None
+            if not self._validate_admin_directory_tree(
+                admin_fd,
+                absolute_deadline=absolute_deadline,
+            ):
+                return None
+            result = _ValidatedWorktreeAdmin(
+                common_root=common_root,
+                common_fd=common_fd,
+                worktrees_fd=worktrees_fd,
+                admin_fd=admin_fd,
+                admin_name=admin_name,
+            )
+            common_fd = -1
+            worktrees_fd = -1
+            admin_fd = -1
+            return result
         except OSError:
+            return None
+        finally:
+            os.close(repo_fd)
+            for descriptor in (admin_fd, worktrees_fd, common_fd):
+                if descriptor >= 0:
+                    os.close(descriptor)
+
+
+    def _open_admin_tombstone_area(self, binding: _ValidatedWorktreeAdmin) -> int | None:
+        try:
+            try:
+                os.mkdir(_ADMIN_TOMBSTONE_AREA, 0o700, dir_fd=binding.common_fd)
+            except FileExistsError:
+                pass
+            metadata = os.stat(
+                _ADMIN_TOMBSTONE_AREA,
+                dir_fd=binding.common_fd,
+                follow_symlinks=False,
+            )
+            if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid():
+                return None
+            flags = (
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+            )
+            area_fd = os.open(_ADMIN_TOMBSTONE_AREA, flags, dir_fd=binding.common_fd)
+            opened = os.fstat(area_fd)
+            if (
+                opened.st_dev != metadata.st_dev
+                or opened.st_ino != metadata.st_ino
+                or opened.st_dev != os.fstat(binding.worktrees_fd).st_dev
+            ):
+                os.close(area_fd)
+                return None
+            os.fchmod(area_fd, 0o700)
+            return area_fd
+        except OSError:
+            return None
+
+
+    def _choose_admin_tombstone_name(self, area_fd: int, admin_name: str) -> str | None:
+        for _attempt in range(8):
+            candidate = (
+                f"{_ADMIN_TOMBSTONE_PREFIX}{admin_name}-{os.getpid()}-"
+                f"{time.monotonic_ns()}-{secrets.token_hex(16)}"
+            )
+            try:
+                os.stat(candidate, dir_fd=area_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                return candidate
+            except OSError:
+                return None
+        return None
+
+
+    def _register_workspace_deletion(
+        self,
+        deletion: _IncrementalTombstoneDeletion,
+    ) -> None:
+        if self._incremental_reaper_deletion is None:
+            self._incremental_reaper_deletion = deletion
+        else:
+            deletion.close()
+
+
+    def _register_admin_deletion(self, tombstone: Path) -> None:
+        deletion = _IncrementalTombstoneDeletion.from_existing(tombstone)
+        if self._incremental_admin_deletion is None:
+            self._incremental_admin_deletion = deletion
+        else:
+            deletion.close()
+
+
+    def _admin_cleanup_pending(self) -> bool:
+        marker = self.config.workspace_root / _ADMIN_REAPER_PENDING_FILE
+        try:
+            return stat.S_ISREG(marker.lstat().st_mode)
+        except OSError:
+            return False
+
+
+    def _mark_admin_cleanup_pending(self) -> bool:
+        marker = self.config.workspace_root / _ADMIN_REAPER_PENDING_FILE
+        try:
+            descriptor = os.open(
+                marker,
+                os.O_WRONLY
+                | os.O_CREAT
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+            )
+            try:
+                metadata = os.fstat(descriptor)
+                if not stat.S_ISREG(metadata.st_mode):
+                    return False
+                os.fchmod(descriptor, 0o600)
+            finally:
+                os.close(descriptor)
+            return True
+        except OSError:
+            return False
+
+
+    def _clear_admin_cleanup_pending(self) -> None:
+        marker = self.config.workspace_root / _ADMIN_REAPER_PENDING_FILE
+        try:
+            if stat.S_ISREG(marker.lstat().st_mode):
+                marker.unlink()
+        except OSError:
+            pass
+
+
+    def _discover_admin_tombstone(
+        self,
+        *,
+        absolute_deadline: float,
+    ) -> tuple[_IncrementalTombstoneDeletion | None, bool]:
+        repositories = tuple(self.config.repositories.values())
+        if not repositories or time.monotonic() >= absolute_deadline:
+            return None, False
+        index = self._admin_repository_cursor % len(repositories)
+        self._admin_repository_cursor = (index + 1) % len(repositories)
+        configured_common = self._configured_repository_common_dir(
+            repositories[index],
+            absolute_deadline=absolute_deadline,
+        )
+        if configured_common is None:
+            return None, False
+        common_root, common_fd = configured_common
+        area_fd = -1
+        try:
+            metadata = os.stat(
+                _ADMIN_TOMBSTONE_AREA,
+                dir_fd=common_fd,
+                follow_symlinks=False,
+            )
+            if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid():
+                return None, False
+            flags = (
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+            )
+            area_fd = os.open(_ADMIN_TOMBSTONE_AREA, flags, dir_fd=common_fd)
+            opened = os.fstat(area_fd)
+            if opened.st_dev != metadata.st_dev or opened.st_ino != metadata.st_ino:
+                return None, False
+            with os.scandir(area_fd) as iterator:
+                for enumerated, entry in enumerate(iterator, start=1):
+                    if enumerated > _ADMIN_DISCOVERY_ENTRY_BUDGET:
+                        return None, False
+                    if time.monotonic() >= absolute_deadline:
+                        return None, False
+                    if not entry.name.startswith(_ADMIN_TOMBSTONE_PREFIX):
+                        continue
+                    details = os.stat(
+                        entry.name,
+                        dir_fd=area_fd,
+                        follow_symlinks=False,
+                    )
+                    if not stat.S_ISDIR(details.st_mode):
+                        continue
+                    child_fd = os.open(entry.name, flags, dir_fd=area_fd)
+                    try:
+                        opened_child = os.fstat(child_fd)
+                        if (
+                            opened_child.st_dev != details.st_dev
+                            or opened_child.st_ino != details.st_ino
+                        ):
+                            continue
+                    finally:
+                        os.close(child_fd)
+                    return (
+                        _IncrementalTombstoneDeletion.from_existing(
+                            common_root / _ADMIN_TOMBSTONE_AREA / entry.name
+                        ),
+                        True,
+                    )
+            return None, True
+        except FileNotFoundError:
+            return None, True
+        except (NotADirectoryError, OSError):
+            return None, False
+        finally:
+            if area_fd >= 0:
+                os.close(area_fd)
+            os.close(common_fd)
+        return None, True
+
+
+    def _advance_admin_deletion(
+        self,
+        *,
+        max_entries: int,
+        absolute_deadline: float,
+    ) -> None:
+        deletion = self._incremental_admin_deletion
+        if deletion is None:
+            if not self._admin_cleanup_pending():
+                self._admin_empty_repository_scans = 0
+                return
+            deletion, scan_complete = self._discover_admin_tombstone(
+                absolute_deadline=absolute_deadline,
+            )
+            if deletion is None:
+                if scan_complete:
+                    self._admin_empty_repository_scans += 1
+                    if self._admin_empty_repository_scans >= max(
+                        1,
+                        len(self.config.repositories),
+                    ):
+                        self._clear_admin_cleanup_pending()
+                        self._admin_empty_repository_scans = 0
+                return
+            self._admin_empty_repository_scans = 0
+            self._incremental_admin_deletion = deletion
+        if time.monotonic() >= absolute_deadline:
+            deletion.close()
             return
+        try:
+            deletion.step(
+                max_entries=max(1, max_entries),
+                absolute_deadline=absolute_deadline,
+            )
+        except OSError:
+            deletion.close()
+            return
+        if deletion.done:
+            deletion.close()
+            self._incremental_admin_deletion = None
+
+
+    def _close_incremental_deletions_under(self, root: Path) -> None:
+        normalized_root = Path(os.path.abspath(os.fspath(root)))
+        workspace_deletion = self._incremental_reaper_deletion
+        if workspace_deletion is not None:
+            workspace_deletion.close()
+            normalized = Path(os.path.abspath(os.fspath(workspace_deletion.tombstone_root)))
+            if normalized == normalized_root or normalized.is_relative_to(normalized_root):
+                self._incremental_reaper_deletion = None
+        admin_deletion = self._incremental_admin_deletion
+        if admin_deletion is not None:
+            admin_deletion.close()
+            normalized = Path(os.path.abspath(os.fspath(admin_deletion.tombstone_root)))
+            if normalized == normalized_root or normalized.is_relative_to(normalized_root):
+                self._incremental_admin_deletion = None
 
 
     def _retire_expired_workspace(
@@ -2541,18 +3066,58 @@ class CodingWorkspaceService:
         absolute_deadline: float,
     ) -> None:
         repository = self.config.repositories.get(metadata.repo_id)
-        if repository is None:
+        if repository is None or time.monotonic() >= absolute_deadline:
             return
-        admin_path = self._owned_worktree_admin_path(management_root / _REPO_DIR)
-        if admin_path is None:
-            return
-        tombstone = self._schedule_incremental_removal(management_root, advance=False)
-        if tombstone is None:
-            return
-        self._remove_owned_worktree_admin_metadata(
-            admin_path,
+        binding = self._validated_worktree_admin(
+            management_root / _REPO_DIR,
+            repository,
             absolute_deadline=absolute_deadline,
         )
+        if binding is None:
+            return
+        area_fd = -1
+        workspace_deletion: _IncrementalTombstoneDeletion | None = None
+        try:
+            area_fd = self._open_admin_tombstone_area(binding)
+            if area_fd is None or time.monotonic() >= absolute_deadline:
+                return
+            admin_tombstone_name = self._choose_admin_tombstone_name(
+                area_fd,
+                binding.admin_name,
+            )
+            if admin_tombstone_name is None or time.monotonic() >= absolute_deadline:
+                return
+            if not self._mark_admin_cleanup_pending():
+                return
+            workspace_deletion = _IncrementalTombstoneDeletion.rename(management_root)
+            try:
+                if time.monotonic() >= absolute_deadline:
+                    raise TimeoutError
+                os.rename(
+                    binding.admin_name,
+                    admin_tombstone_name,
+                    src_dir_fd=binding.worktrees_fd,
+                    dst_dir_fd=area_fd,
+                )
+            except (OSError, TimeoutError):
+                workspace_deletion.close()
+                try:
+                    os.rename(workspace_deletion.tombstone_root, management_root)
+                except OSError:
+                    pass
+                return
+            self._drop_reaper_cursors_under(management_root)
+            self._register_workspace_deletion(workspace_deletion)
+            workspace_deletion = None
+            self._register_admin_deletion(
+                binding.common_root / _ADMIN_TOMBSTONE_AREA / admin_tombstone_name
+            )
+        finally:
+            if workspace_deletion is not None:
+                workspace_deletion.close()
+            if area_fd is not None and area_fd >= 0:
+                os.close(area_fd)
+            binding.close()
 
 
     async def _run_snapshot_reaper(
