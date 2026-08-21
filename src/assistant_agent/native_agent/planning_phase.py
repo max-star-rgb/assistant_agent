@@ -11,7 +11,7 @@ from langchain.agents.structured_output import ToolStrategy
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.tools import BaseTool
 
-from assistant_agent.native_agent.models import NativePlanProposal
+from assistant_agent.native_agent.models import NativePlanProposal, WorkerCompletion
 from assistant_agent.tools.ids import LOAD_SKILL_TOOL_NAME
 
 
@@ -57,7 +57,7 @@ class PlanningPhaseMiddleware(AgentMiddleware):
                 tools=[
                     tool for tool in request.tools if _tool_name(tool) in allowed_names
                 ],
-                response_format=None,
+                response_format=worker_response_format(),
                 model_settings=model_settings,
             )
         return request.override(response_format=None)
@@ -67,6 +67,18 @@ def planner_response_format() -> ToolStrategy:
     """Return the public structured-output strategy for a native plan proposal."""
 
     return ToolStrategy(NativePlanProposal)
+
+
+def shared_response_format() -> ToolStrategy:
+    """Declare every phase-specific schema before compiling the shared agent."""
+
+    return ToolStrategy(NativePlanProposal | WorkerCompletion)
+
+
+def worker_response_format() -> ToolStrategy:
+    """Return the strict completion schema for a planning worker."""
+
+    return ToolStrategy(WorkerCompletion)
 
 
 def planner_system_prompt() -> str:
@@ -141,4 +153,6 @@ __all__ = [
     "finalizer_system_prompt",
     "planner_response_format",
     "planner_system_prompt",
+    "shared_response_format",
+    "worker_response_format",
 ]

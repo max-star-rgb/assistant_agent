@@ -8,7 +8,6 @@ from typing import Any
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
     HumanInTheLoopMiddleware,
-    ModelCallLimitMiddleware,
     ModelRequest,
     SummarizationMiddleware,
     ToolCallLimitMiddleware,
@@ -46,7 +45,11 @@ from assistant_agent.native_agent.conditional_tool_exposure import (
 )
 from assistant_agent.native_agent.planning_phase import (
     PlanningPhaseMiddleware,
-    planner_response_format,
+    shared_response_format,
+)
+from assistant_agent.native_agent.planning_budget import (
+    PhaseBudgetMiddleware,
+    PlanningBudgetPolicy,
 )
 from assistant_agent.native_agent.tool_exposure import (
     ProgressiveToolExposureMiddleware,
@@ -66,6 +69,7 @@ def build_fast_agent(
     *,
     model_call_limit: int = 12,
     tool_call_limit: int = 16,
+    budget_policy: PlanningBudgetPolicy | None = None,
     context_window_tokens: int = 128_000,
     compaction_trigger_ratio: float = 0.75,
     compaction_target_ratio: float = 0.15,
@@ -87,6 +91,7 @@ def build_fast_agent(
     resolved_skill_catalog = skill_catalog or load_repo_skill_descriptors(
         default_repo_root()
     )
+    resolved_budget_policy = budget_policy or PlanningBudgetPolicy.from_base(8)
     skill_index = discoverable_skill_descriptors(resolved_skill_catalog)
 
     @dynamic_prompt
@@ -114,14 +119,7 @@ def build_fast_agent(
             visual_history_probe,
             live_view_resolver,
         ),
-        ModelCallLimitMiddleware(
-            run_limit=model_call_limit,
-            exit_behavior="error",
-        ),
-        ToolCallLimitMiddleware(
-            run_limit=tool_call_limit,
-            exit_behavior="error",
-        ),
+        PhaseBudgetMiddleware(resolved_budget_policy),
     ]
     tool_retry_middleware = (
         ToolRetryMiddleware(
@@ -172,7 +170,7 @@ def build_fast_agent(
         state_schema=state_schema,
         context_schema=AssistantRunContext,
         middleware=middleware,
-        response_format=planner_response_format(),
+        response_format=shared_response_format(),
         name="AssistantFastAgent",
     )
 

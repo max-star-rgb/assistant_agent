@@ -10,7 +10,10 @@ from langchain_core.messages import AIMessage
 
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.fast_agent import render_assistant_system_prompt
-from assistant_agent.native_agent.planning_phase import PlanningPhaseMiddleware
+from assistant_agent.native_agent.planning_phase import (
+    PlanningPhaseMiddleware,
+    worker_response_format,
+)
 from assistant_agent.skills.loading import SkillDescriptor
 from assistant_agent.tools.ids import (
     LOAD_SKILL_REFERENCE_TOOL_NAME,
@@ -73,6 +76,17 @@ def test_worker_never_exposes_load_skill_but_keeps_scoped_reference_tool() -> No
     )
 
     assert tool_names(projected) == {LOAD_SKILL_REFERENCE_TOOL_NAME}
+
+
+def test_worker_requires_structured_completion_without_widening_allowlist() -> None:
+    projected = project_phase_request(
+        phase="worker",
+        tool_names=(LOAD_SKILL_TOOL_NAME, "route_probe"),
+        worker_tool_allowlist=(LOAD_SKILL_TOOL_NAME,),
+    )
+
+    assert projected.tools == []
+    assert projected.response_format == worker_response_format()
 
 
 def test_active_skill_body_is_rendered_from_trusted_catalog() -> None:

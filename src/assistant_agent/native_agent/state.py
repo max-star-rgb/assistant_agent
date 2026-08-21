@@ -77,6 +77,22 @@ class AssistantRootState(MessagesState):
     coding_result: NotRequired[CodingTerminalResult]
 
 
+def add_budget_usage(
+    left: BudgetUsage | Mapping[str, object] | None,
+    right: BudgetUsage | Mapping[str, object] | None,
+) -> BudgetUsage:
+    """Add phase usage counters without mutating either input model."""
+
+    lhs = BudgetUsage.model_validate(left or {})
+    rhs = BudgetUsage.model_validate(right or {})
+    return BudgetUsage(
+        model_calls=lhs.model_calls + rhs.model_calls,
+        tool_calls=lhs.tool_calls + rhs.tool_calls,
+        node_attempts=lhs.node_attempts + rhs.node_attempts,
+        replans=lhs.replans + rhs.replans,
+    )
+
+
 class FastAgentState(AgentState):
     """State consumed inside the reusable create_agent subgraph."""
 
@@ -85,6 +101,10 @@ class FastAgentState(AgentState):
     execution_mode: NotRequired[ExecutionMode]
     trusted_runtime_facts: NotRequired[dict[str, object]]
     agent_phase: NotRequired[AgentPhase]
+    phase_model_call_count: NotRequired[int]
+    phase_tool_call_count: NotRequired[int]
+    phase_budget_status: NotRequired[Literal["exhausted"]]
+    phase_budget_usage: NotRequired[Annotated[BudgetUsage, add_budget_usage]]
     worker_tool_allowlist: NotRequired[tuple[str, ...]]
     provider_search_profile: NotRequired[ProviderSearchProfile]
     active_skill_ids: NotRequired[Annotated[list[str], _merge_unique_strings]]
@@ -265,21 +285,6 @@ def merge_frozen_worker_results(
 
     return _merge_immutable_mapping(
         left, right, conflict_message="conflicting frozen worker result"
-    )
-
-
-def add_budget_usage(
-    left: BudgetUsage | None,
-    right: BudgetUsage | None,
-) -> BudgetUsage:
-    """Add phase usage counters without mutating either input model."""
-
-    lhs, rhs = left or BudgetUsage(), right or BudgetUsage()
-    return BudgetUsage(
-        model_calls=lhs.model_calls + rhs.model_calls,
-        tool_calls=lhs.tool_calls + rhs.tool_calls,
-        node_attempts=lhs.node_attempts + rhs.node_attempts,
-        replans=lhs.replans + rhs.replans,
     )
 
 
