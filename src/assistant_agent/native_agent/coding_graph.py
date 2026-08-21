@@ -18,7 +18,7 @@ from langchain_core.tools import BaseTool
 from langgraph.errors import NodeError
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
-from langgraph.types import Command, RetryPolicy, Send, interrupt
+from langgraph.types import Command, Overwrite, RetryPolicy, Send, interrupt
 from pydantic import BaseModel
 
 from assistant_agent.coding.analysis import (
@@ -327,10 +327,12 @@ def build_coding_graph(
 
     async def inspect_and_draft_node(
         state: CodingState,
+        runtime: Runtime[AssistantRunContext],
         config: RunnableConfig,
     ) -> dict[str, object]:
         if state.get("coding_result") is not None:
             return {}
+        _resolve_workspace(state, runtime, config, workspace_service)
         call_state = dict(state)
         call_messages = list(state.get("messages", ()))
         analysis_context_added = False
@@ -413,6 +415,7 @@ def build_coding_graph(
     ) -> dict[str, object]:
         if state.get("coding_result") is not None:
             return {}
+        _resolve_workspace(state, runtime, config, workspace_service)
         artifact = state.get("draft_artifact")
         if not isinstance(artifact, dict):
             if state.get("repair_status") == "active":
@@ -508,7 +511,12 @@ def build_coding_graph(
         )
         return update
 
-    def prepare_repair_node(state: CodingState) -> dict[str, object]:
+    def prepare_repair_node(
+        state: CodingState,
+        runtime: Runtime[AssistantRunContext],
+        config: RunnableConfig,
+    ) -> dict[str, object]:
+        _resolve_workspace(state, runtime, config, workspace_service)
         evidence = state.get("repair_failure_evidence")
         try:
             normalized_evidence = CodingRepairFailureEvidence.model_validate(evidence)
@@ -544,10 +552,15 @@ def build_coding_graph(
             "coding_result": None,
         }
 
-    def consume_repair_budget_node(state: CodingState) -> dict[str, object]:
+    def consume_repair_budget_node(
+        state: CodingState,
+        runtime: Runtime[AssistantRunContext],
+        config: RunnableConfig,
+    ) -> dict[str, object]:
         """Persist one active-repair model-call attempt before invoking the model."""
         if state.get("coding_result") is not None:
             return {}
+        _resolve_workspace(state, runtime, config, workspace_service)
         if state.get("repair_status") != "active":
             return {
                 "coding_result": _failed(
@@ -579,6 +592,7 @@ def build_coding_graph(
             "summarize",
         ]
     ]:
+        _resolve_workspace(state, runtime, config, workspace_service)
         validation = state.get("validation")
         if validation is None:
             return Command(goto="summarize")
@@ -849,6 +863,7 @@ def build_coding_graph(
         runtime: Runtime[AssistantRunContext],
         config: RunnableConfig,
     ) -> Command[Literal["plan_credentials", "summarize"]]:
+        _resolve_workspace(state, runtime, config, workspace_service)
         plan = state.get("dependency_plan")
         applied = state.get("applied_result")
         if plan is None or applied is None:
@@ -960,6 +975,7 @@ def build_coding_graph(
         runtime: Runtime[AssistantRunContext],
         config: RunnableConfig,
     ) -> Command[Literal["run_validation", "summarize"]]:
+        _resolve_workspace(state, runtime, config, workspace_service)
         request = state.get("credential_request")
         plan = state.get("dependency_plan")
         applied = state.get("applied_result")
@@ -1058,6 +1074,7 @@ def build_coding_graph(
         runtime: Runtime[AssistantRunContext],
         config: RunnableConfig,
     ) -> Command[Literal["run_validation", "summarize"]]:
+        _resolve_workspace(state, runtime, config, workspace_service)
         plan = state.get("artifact_ingress_plan")
         applied = state.get("applied_result")
         if plan is None or applied is None:
@@ -1330,7 +1347,10 @@ def build_coding_graph(
 
     def merge_approval_node(
         state: CodingState,
+        runtime: Runtime[AssistantRunContext],
+        config: RunnableConfig,
     ) -> Command[Literal["apply_merge", "summarize"]]:
+        _resolve_workspace(state, runtime, config, workspace_service)
         preview = state.get("merge_preview")
         if preview is None:
             return Command(
@@ -1494,6 +1514,7 @@ def build_coding_graph(
         return "summarize" if state.get("coding_result") is not None else "merge_approval"
 
     builder = StateGraph(CodingState, context_schema=AssistantRunContext)
+    builder.add_node("begin_coding_cycle", begin_coding_cycle_node)
     builder.add_node("resolve_workspace", resolve_workspace_node)
     builder.add_node("prepare_analysis", prepare_analysis_node)
     builder.add_node(
@@ -1528,7 +1549,8 @@ def build_coding_graph(
     builder.add_node("merge_approval", merge_approval_node)
     builder.add_node("apply_merge", apply_merge_node)
     builder.add_node("summarize", summarize_node)
-    builder.add_edge(START, "resolve_workspace")
+    builder.add_edge(START, "begin_coding_cycle")
+    builder.add_edge("begin_coding_cycle", "resolve_workspace")
     builder.add_conditional_edges("resolve_workspace", after_resolve)
     builder.add_conditional_edges(
         "prepare_analysis",
@@ -1553,25 +1575,157 @@ def build_coding_graph(
     return builder.compile(name="AssistantCodingGraph", checkpointer=checkpointer)
 
 
+def begin_coding_cycle_node(state: CodingState) -> dict[str, object]:
+    """Start a plain-input cycle and atomically discard prior local state."""
+
+    return {
+        "coding_cycle_generation": int(state.get("coding_cycle_generation") or 0) + 1,
+        "workspace_ref": None,
+        "base_commit": None,
+        "analysis_snapshot": None,
+        "analysis_tasks": (),
+        "analysis_results": Overwrite([]),
+        "analysis_status": None,
+        "analysis_snapshot_release_status": None,
+        "analysis_context_consumed": False,
+        "draft_artifact": None,
+        "proposal": None,
+        "validation": None,
+        "approval_status": None,
+        "approval_origin": None,
+        "applied_result": None,
+        "approved_changed_paths": Overwrite([]),
+        "dependency_plan": None,
+        "dependency_approval_status": None,
+        "credential_request": None,
+        "credential_approval_status": None,
+        "artifact_ingress_plan": None,
+        "artifact_approval_status": None,
+        "format_round": 0,
+        "verification_evidence": Overwrite([]),
+        "last_verification_status": None,
+        "integration_required": False,
+        "commit_result": None,
+        "merge_preview": None,
+        "merge_result": None,
+        "repair_round": 0,
+        "repair_status": None,
+        "repair_failure_evidence": None,
+        "repair_history": Overwrite([]),
+        "repair_model_calls": 0,
+        "repair_proposal_digests": Overwrite([]),
+        "repair_approval_context": None,
+        "coding_result": None,
+    }
+
+
 def _resolve_workspace(state, runtime, config, service):
     identity = authenticated_user_identity(runtime)
     thread_id = _thread_id(config)
     repo_id = str(state.get("coding_repo_id", "")).strip()
     if not thread_id or not repo_id:
         raise CodingWorkspaceError("workspace_not_allowed")
-    if state.get("analysis_status") == "pending":
-        snapshot = CodingAnalysisSnapshot.model_validate(
-            state.get("analysis_snapshot")
+    workspace_ref = state.get("workspace_ref")
+    base_commit = state.get("base_commit")
+    binding_required = _has_checkpointed_cycle_state(state)
+    if workspace_ref is None and base_commit is None:
+        if binding_required:
+            raise CodingWorkspaceError("workspace_identity_mismatch")
+        return service.resolve(identity, thread_id, repo_id)
+    if not workspace_ref or not base_commit:
+        raise CodingWorkspaceError("workspace_identity_mismatch")
+    workspace = service.get(
+        str(workspace_ref),
+        identity=identity,
+        thread_id=thread_id,
+    )
+    if (
+        workspace.workspace_ref != workspace_ref
+        or workspace.base_commit != base_commit
+        or workspace.repo_id != repo_id
+    ):
+        raise CodingWorkspaceError("workspace_identity_mismatch")
+    _validate_analysis_checkpoint(
+        state,
+        identity=identity,
+        thread_id=thread_id,
+        workspace=workspace,
+        service=service,
+    )
+    return workspace
+
+
+def _has_checkpointed_cycle_state(state: CodingState) -> bool:
+    return any(
+        state.get(field) is not None
+        for field in (
+            "analysis_snapshot",
+            "analysis_status",
+            "draft_artifact",
+            "proposal",
+            "validation",
+            "approval_status",
+            "applied_result",
+            "dependency_plan",
+            "credential_request",
+            "artifact_ingress_plan",
+            "repair_status",
+            "coding_result",
         )
-        workspace = service.get(
-            snapshot.workspace_ref,
-            identity=identity,
-            thread_id=thread_id,
-        )
-        if workspace.repo_id != repo_id:
-            raise CodingWorkspaceError("coding_analysis_snapshot_mismatch")
-        return workspace
-    return service.resolve(identity, thread_id, repo_id)
+    )
+
+
+def _validate_analysis_checkpoint(
+    state: CodingState,
+    *,
+    identity: str,
+    thread_id: str,
+    workspace,
+    service: CodingWorkspaceService,
+) -> None:
+    status = state.get("analysis_status")
+    snapshot_value = state.get("analysis_snapshot")
+    if status is None and snapshot_value is None:
+        return
+    if status not in {"pending", "completed", "partial", "unavailable"}:
+        raise ValueError("coding_analysis_contract_invalid")
+    snapshot = CodingAnalysisSnapshot.model_validate(snapshot_value)
+    if (
+        snapshot.workspace_ref != state.get("workspace_ref")
+        or snapshot.base_commit != state.get("base_commit")
+    ):
+        raise CodingWorkspaceError("coding_analysis_snapshot_mismatch")
+    tasks = tuple(
+        CodingAnalysisTask.model_validate(task)
+        for task in state.get("analysis_tasks", ())
+    )
+    if tasks != build_analysis_tasks():
+        raise ValueError("coding_analysis_contract_invalid")
+    results = tuple(
+        CodingAnalysisResult.model_validate(result)
+        for result in state.get("analysis_results", ())
+    )
+    task_ids = tuple(result.task_id for result in results)
+    if len(task_ids) != len(set(task_ids)) or any(
+        task_id not in ANALYSIS_TASK_IDS for task_id in task_ids
+    ):
+        raise ValueError("coding_analysis_contract_invalid")
+    joined_status, _ = join_analysis_results(snapshot, results)
+    if status != "pending" and joined_status != status:
+        raise ValueError("coding_analysis_contract_invalid")
+    release_status = state.get("analysis_snapshot_release_status")
+    if status == "pending":
+        if release_status != "active":
+            raise ValueError("coding_analysis_contract_invalid")
+    elif release_status not in {"released", "cleanup_pending"}:
+        raise ValueError("coding_analysis_contract_invalid")
+    service.validate_analysis_snapshot(
+        snapshot,
+        identity=identity,
+        thread_id=thread_id,
+        workspace=workspace,
+        require_active=status == "pending",
+    )
 
 
 def _thread_id(config: RunnableConfig) -> str:

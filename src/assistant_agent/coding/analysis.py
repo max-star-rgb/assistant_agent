@@ -13,6 +13,15 @@ import httpx
 from langgraph.errors import GraphBubbleUp, NodeCancelledError
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+try:
+    from openai import APIConnectionError, APIStatusError, APITimeoutError
+except ImportError:  # pragma: no cover - OpenAI is optional outside that provider.
+    _OPENAI_CONNECTION_ERRORS: tuple[type[BaseException], ...] = ()
+    _OPENAI_STATUS_ERRORS: tuple[type[BaseException], ...] = ()
+else:
+    _OPENAI_CONNECTION_ERRORS = (APIConnectionError, APITimeoutError)
+    _OPENAI_STATUS_ERRORS = (APIStatusError,)
+
 from assistant_agent.coding.models import (
     CODING_ANALYSIS_TASK_SPECS,
     CodingAnalysisFinding,
@@ -20,6 +29,7 @@ from assistant_agent.coding.models import (
     CodingAnalysisSnapshot,
     CodingAnalysisTask,
 )
+from assistant_agent.coding.workspace import CodingWorkspaceError
 
 ANALYSIS_TASK_IDS = tuple(CODING_ANALYSIS_TASK_SPECS)
 ANALYSIS_READ_TOOL_NAMES = CODING_ANALYSIS_TASK_SPECS["structure_context"][1]
@@ -138,7 +148,7 @@ def build_analysis_failure_result(
 
 
 def is_transient_analysis_failure(error: BaseException) -> bool:
-    """Classify only operational failures safe for advisory degradation."""
+    """Classify trusted operational failures without masking unsafe causes."""
 
     pending: list[BaseException] = [error]
     visited: set[int] = set()
@@ -163,27 +173,36 @@ def is_transient_analysis_failure(error: BaseException) -> bool:
                 ImportError,
                 NameError,
                 SyntaxError,
+                CodingWorkspaceError,
             ),
         ):
             return False
-        recognized = False
-        if isinstance(current, (TimeoutError, ConnectionError, httpx.TransportError)):
+        if isinstance(current, (TimeoutError, ConnectionError, *_OPENAI_CONNECTION_ERRORS)):
             operational = True
-            recognized = True
-        status_code = _exception_status_code(current)
-        if status_code is not None:
+        elif isinstance(
+            current,
+            (
+                httpx.ConnectError,
+                httpx.ConnectTimeout,
+                httpx.PoolTimeout,
+                httpx.ReadError,
+                httpx.ReadTimeout,
+                httpx.RemoteProtocolError,
+                httpx.WriteError,
+                httpx.WriteTimeout,
+            ),
+        ):
+            operational = True
+        elif isinstance(current, (HTTPError, httpx.HTTPStatusError, *_OPENAI_STATUS_ERRORS)):
+            status_code = _exception_status_code(current)
             if status_code in {408, 409, 425, 429} or status_code >= 500:
                 operational = True
-                recognized = True
             else:
                 return False
-        if isinstance(current, URLError):
+        elif isinstance(current, URLError):
             operational = True
-            recognized = True
             if isinstance(current.reason, BaseException):
                 pending.append(current.reason)
-        if not recognized:
-            return False
         if isinstance(current.__cause__, BaseException):
             pending.append(current.__cause__)
         if isinstance(current.__context__, BaseException):

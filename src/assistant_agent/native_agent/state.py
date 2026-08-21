@@ -154,13 +154,14 @@ class PlanningState(AgentState):
 class CodingState(AgentState):
     """Sequential coding channels kept out of fast and planning branches."""
 
+    coding_cycle_generation: NotRequired[int]
     memory_context: NotRequired[tuple[str, ...]]
     memory_status: NotRequired[MemoryStatus]
     execution_mode: NotRequired[ExecutionMode]
     trusted_runtime_facts: NotRequired[dict[str, object]]
     coding_repo_id: Required[str]
-    workspace_ref: NotRequired[str]
-    base_commit: NotRequired[str]
+    workspace_ref: NotRequired[str | None]
+    base_commit: NotRequired[str | None]
     analysis_snapshot: NotRequired[CodingAnalysisSnapshot | None]
     analysis_tasks: NotRequired[tuple[CodingAnalysisTask, ...]]
     analysis_results: NotRequired[
@@ -175,7 +176,7 @@ class CodingState(AgentState):
     proposal: NotRequired[CodingPatchProposal | None]
     validation: NotRequired[CodingPatchValidation | None]
     approval_status: NotRequired[Literal["pending", "approved", "rejected"] | None]
-    approval_origin: NotRequired[Literal["model", "formatter", "repair"]]
+    approval_origin: NotRequired[Literal["model", "formatter", "repair"] | None]
     applied_result: NotRequired[CodingPatchApplyResult | None]
     approved_changed_paths: NotRequired[Annotated[list[str], _merge_unique_strings]]
     dependency_plan: NotRequired[CodingDependencyPlan | None]
@@ -194,7 +195,7 @@ class CodingState(AgentState):
     verification_evidence: NotRequired[
         Annotated[list[CodingCommandEvidence], operator.add]
     ]
-    last_verification_status: NotRequired[Literal["passed", "failed"]]
+    last_verification_status: NotRequired[Literal["passed", "failed"] | None]
     integration_required: NotRequired[bool]
     commit_result: NotRequired[CodingCommitResult | None]
     merge_preview: NotRequired[CodingMergePreview | None]
@@ -210,7 +211,7 @@ class CodingState(AgentState):
         Annotated[list[str], _merge_unique_strings]
     ]
     repair_approval_context: NotRequired[CodingRepairApprovalContext | None]
-    coding_result: NotRequired[CodingTerminalResult]
+    coding_result: NotRequired[CodingTerminalResult | None]
 
 
 def _merge_unique_strings(

@@ -430,6 +430,36 @@ class CodingWorkspaceService:
                 }
             )
 
+    def validate_analysis_snapshot(
+        self,
+        snapshot: CodingAnalysisSnapshot,
+        *,
+        identity: str,
+        thread_id: str,
+        workspace: CodingWorkspace,
+        require_active: bool,
+    ) -> None:
+        """Validate a checkpoint binding without recreating or renewing it."""
+
+        snapshot_root = self._analysis_snapshot_root(snapshot)
+        with self._lock(snapshot.workspace_ref):
+            metadata = self._load_analysis_snapshot_metadata(
+                snapshot_root / _ANALYSIS_SNAPSHOT_METADATA_FILE
+            )
+            self._verify_analysis_snapshot_metadata(
+                snapshot,
+                metadata,
+                snapshot_root,
+                require_active=require_active,
+            )
+            self._verify_analysis_snapshot_scope(
+                snapshot,
+                metadata,
+                identity=identity,
+                thread_id=thread_id,
+                workspace=workspace,
+            )
+
     def release_analysis_snapshot(
         self,
         snapshot: CodingAnalysisSnapshot,
