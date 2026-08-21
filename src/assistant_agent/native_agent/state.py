@@ -38,6 +38,7 @@ from assistant_agent.native_agent.models import (
     WorkerOutcome,
     WorkerResult,
 )
+from assistant_agent.native_agent.planning_budget import WaveReservation
 from pydantic import JsonValue
 
 ExecutionMode = Literal["fast", "planning", "coding"]
@@ -108,6 +109,7 @@ class FastAgentState(AgentState):
     phase_tool_call_count: NotRequired[int]
     phase_budget_status: NotRequired[Literal["exhausted"]]
     phase_budget_usage: NotRequired[Annotated[BudgetUsage, add_budget_usage]]
+    phase_budget_allowance: NotRequired[BudgetUsage]
     worker_tool_allowlist: NotRequired[tuple[str, ...]]
     provider_search_profile: NotRequired[ProviderSearchProfile]
     active_skill_ids: NotRequired[Annotated[list[str], _merge_unique_strings]]
@@ -138,6 +140,7 @@ class WorkerState(AgentState):
     plan_generation: Required[int]
     attempt: Required[int]
     tool_call_allowance: Required[int]
+    budget_allowance: Required[BudgetUsage]
     work_item_id: Required[str]
     objective: Required[str]
     dependency_results: Required[tuple[WorkerResult, ...]]
@@ -167,7 +170,15 @@ class PlanningState(AgentState):
     recovery_decision: NotRequired[RecoveryDecision | None]
     recovery_context: NotRequired[dict[str, JsonValue] | None]
     recovery_history: NotRequired[list[RecoveryDecision]]
-    budget_usage: NotRequired[Annotated[BudgetUsage, add_budget_usage]]
+    # Sequential graph nodes publish an absolute total. Worker branches only emit
+    # immutable outcomes; reconciliation is the sole worker accounting writer.
+    budget_usage: NotRequired[BudgetUsage]
+    wave_reservations: NotRequired[
+        Annotated[dict[str, WaveReservation], merge_wave_reservations]
+    ]
+    reconciled_wave_reservation_ids: NotRequired[
+        Annotated[list[str], _merge_unique_strings]
+    ]
     historical_node_ids: NotRequired[Annotated[list[str], _merge_unique_strings]]
     superseded_work_item_ids: NotRequired[Annotated[list[str], _merge_unique_strings]]
     worker_outcomes: NotRequired[
@@ -314,6 +325,19 @@ def merge_frozen_worker_results(
     )
 
 
+def merge_wave_reservations(
+    left: Mapping[str, WaveReservation | Mapping[str, object]] | None,
+    right: Mapping[str, WaveReservation | Mapping[str, object]] | None,
+) -> dict[str, WaveReservation]:
+    """Merge the append-only reservation ledger and reject identity conflicts."""
+
+    return _merge_immutable_mapping(
+        _validated_wave_reservation_mapping(left),
+        _validated_wave_reservation_mapping(right),
+        conflict_message="conflicting wave reservation",
+    )
+
+
 def _validated_worker_outcome_mapping(
     values: Mapping[str, WorkerOutcome | Mapping[str, object]] | None,
 ) -> dict[str, WorkerOutcome]:
@@ -340,6 +364,19 @@ def _validated_frozen_result_mapping(
     return validated
 
 
+def _validated_wave_reservation_mapping(
+    values: Mapping[str, WaveReservation | Mapping[str, object]] | None,
+) -> dict[str, WaveReservation]:
+    validated: dict[str, WaveReservation] = {}
+    for key, value in (values or {}).items():
+        payload = value.model_dump() if isinstance(value, WaveReservation) else value
+        reservation = WaveReservation.model_validate(payload)
+        if key != reservation.execution_id:
+            raise ValueError("wave reservation key does not match execution_id")
+        validated[key] = reservation
+    return validated
+
+
 __all__ = [
     "AgentPhase",
     "add_budget_usage",
@@ -352,6 +389,7 @@ __all__ = [
     "MemoryExtractionState",
     "MemoryStatus",
     "merge_frozen_worker_results",
+    "merge_wave_reservations",
     "merge_worker_outcomes",
     "PlanningState",
     "WorkerState",

@@ -33,13 +33,19 @@ from assistant_agent.native_agent.models import (
     NativePlanProposal,
     PlannerEvidence,
     PlannerOutcome,
+    RecoveryDecision,
     WorkerCompletion,
     WorkerOutcome,
     WorkerResult,
 )
-from assistant_agent.native_agent.planning_budget import PlanningBudgetPolicy
+from assistant_agent.native_agent.planning_budget import (
+    PlanningBudgetPolicy,
+    WaveReservation,
+    remaining_budget,
+)
 from assistant_agent.native_agent.planning_recovery import (
     assess_planner_node,
+    assess_recovery_budget,
     assess_workers_node,
     classify_operational_failure,
     controlled_finalize_node,
@@ -365,6 +371,48 @@ def build_planning_graph(
             if state.get("admission_error")
             else int(state.get("planner_attempt_count", 0)) + 1
         )
+        consumed = _budget_usage(state)
+        remaining = remaining_budget(consumed, resolved_budget_policy)
+        exhausted = assess_recovery_budget(consumed, resolved_budget_policy)
+        execution_exhausted = (
+            exhausted
+            if exhausted is not None
+            and exhausted.reason_code != "replan_budget_exhausted"
+            else None
+        )
+        if (
+            execution_exhausted is not None
+            or remaining.node_attempts < 1
+            or remaining.model_calls < 1
+        ):
+            reason_code = (
+                execution_exhausted.reason_code
+                if execution_exhausted is not None
+                else "graph_model_budget_exhausted"
+            )
+            return {
+                "planner_outcome": PlannerOutcome(
+                    status="budget_exhausted",
+                    evidence_ids=tuple(
+                        item.evidence_id for item in state.get("planner_evidence", ())
+                    ),
+                    failure=FailureFact(
+                        category="budget_exhausted",
+                        code=reason_code,
+                        phase="planner",
+                        plan_generation=int(state.get("plan_generation", 0)),
+                        attempt=max(attempt, 1),
+                    ),
+                    usage=BudgetUsage(),
+                ),
+                "plan_candidate": None,
+            }
+        phase_limits = resolved_budget_policy.phase_limits("planner")
+        phase_allowance = BudgetUsage(
+            model_calls=min(phase_limits.model_calls, remaining.model_calls),
+            tool_calls=min(phase_limits.tool_calls, remaining.tool_calls),
+            node_attempts=1,
+        )
         try:
             planner_result = await fast_agent.ainvoke(
                 {
@@ -374,6 +422,7 @@ def build_planning_graph(
                     "execution_mode": "planning",
                     "trusted_runtime_facts": state.get("trusted_runtime_facts"),
                     "agent_phase": "planner",
+                    "phase_budget_allowance": phase_allowance,
                     "active_skill_ids": list(state.get("planner_active_skill_ids", ())),
                     "skill_reference_grants": dict(
                         state.get("planner_skill_reference_grants", {})
@@ -403,7 +452,7 @@ def build_planning_graph(
                 planner_result.get("phase_budget_usage") or {}
             )
             usage = BudgetUsage(
-                model_calls=phase_usage.model_calls,
+                model_calls=max(phase_usage.model_calls, 1),
                 tool_calls=phase_usage.tool_calls,
                 node_attempts=1,
                 replans=phase_usage.replans,
@@ -415,7 +464,7 @@ def build_planning_graph(
                     planner_result.get("skill_reference_grants")
                 ),
                 "planner_evidence": list(new_evidence),
-                "budget_usage": usage,
+                "budget_usage": _add_usage(consumed, usage),
             }
             candidate = planner_result.get("structured_response")
             if candidate is not None:
@@ -449,7 +498,7 @@ def build_planning_graph(
             raise
         except Exception as error:
             if classify_operational_failure(error):
-                usage = BudgetUsage(node_attempts=1)
+                usage = BudgetUsage(model_calls=1, node_attempts=1)
                 return {
                     "planner_attempt_count": attempt,
                     "planner_outcome": PlannerOutcome(
@@ -467,7 +516,7 @@ def build_planning_graph(
                         ),
                         usage=usage,
                     ),
-                    "budget_usage": usage,
+                    "budget_usage": _add_usage(consumed, usage),
                 }
             propagation_error = sanitize_planner_propagation(error)
         raise propagation_error
@@ -517,6 +566,7 @@ def build_planning_graph(
                     "execution_mode": state["execution_mode"],
                     "trusted_runtime_facts": state.get("trusted_runtime_facts"),
                     "agent_phase": state.get("agent_phase", "worker"),
+                    "phase_budget_allowance": state["budget_allowance"],
                     "provider_search_profile": state.get(
                         "provider_search_profile", "none"
                     ),
@@ -550,6 +600,34 @@ def build_planning_graph(
         state: PlanningState,
         runtime: Runtime[AssistantRunContext],
     ) -> dict[str, Any]:
+        consumed = _budget_usage(state)
+        remaining = remaining_budget(consumed, resolved_budget_policy)
+        exhausted = assess_recovery_budget(consumed, resolved_budget_policy)
+        execution_exhausted = (
+            exhausted
+            if exhausted is not None
+            and exhausted.reason_code != "replan_budget_exhausted"
+            else None
+        )
+        if (
+            execution_exhausted is not None
+            or remaining.node_attempts < 1
+            or remaining.model_calls < 1
+        ):
+            reason_code = (
+                execution_exhausted.reason_code
+                if execution_exhausted is not None
+                else "graph_model_budget_exhausted"
+            )
+            return controlled_finalize_node(
+                {
+                    **state,
+                    "recovery_decision": RecoveryDecision(
+                        action="finalize",
+                        reason_code=reason_code,
+                    ),
+                }
+            )
         ordered = _ordered_final_worker_results(state)
         payload = _finalizer_prompt(
             request=_last_human_text(state),
@@ -565,6 +643,10 @@ def build_planning_graph(
                 "execution_mode": "planning",
                 "trusted_runtime_facts": state.get("trusted_runtime_facts"),
                 "agent_phase": "finalizer",
+                "phase_budget_allowance": BudgetUsage(
+                    model_calls=1,
+                    node_attempts=1,
+                ),
             },
             context=runtime.context,
         )
@@ -578,7 +660,15 @@ def build_planning_graph(
         )
         if final_message is None:
             raise RuntimeError("finalizer completed without a terminal AIMessage")
-        return {"messages": [final_message]}
+        phase_usage = BudgetUsage.model_validate(result.get("phase_budget_usage") or {})
+        usage = BudgetUsage(
+            model_calls=max(phase_usage.model_calls, 1),
+            tool_calls=phase_usage.tool_calls,
+        )
+        return {
+            "messages": [final_message],
+            "budget_usage": _add_usage(consumed, usage),
+        }
 
     builder = StateGraph(PlanningState, context_schema=AssistantRunContext)
     builder.add_node(
@@ -602,11 +692,19 @@ def build_planning_graph(
         ),
     )
     builder.add_node(
+        "reserve_wave_budget",
+        partial(reserve_wave_budget_node, policy=resolved_budget_policy),
+    )
+    builder.add_node(
         "worker",
         worker_node,
         input_schema=WorkerState,
     )
     builder.add_node("join", join_node)
+    builder.add_node(
+        "reconcile_wave_budget",
+        partial(reconcile_wave_budget_node, policy=resolved_budget_policy),
+    )
     builder.add_node(
         "assess_workers",
         partial(assess_workers_node, policy=resolved_budget_policy),
@@ -626,19 +724,19 @@ def build_planning_graph(
         route_after_admission,
         ["planner", "scheduler"],
     )
+    builder.add_edge("scheduler", "reserve_wave_budget")
     builder.add_conditional_edges(
-        "scheduler",
+        "reserve_wave_budget",
         partial(
             route_scheduler,
             worker_attempt_limit=worker_attempt_limit,
-            tool_call_allowance=resolved_budget_policy.phase_limits(
-                "worker"
-            ).tool_calls,
+            policy=resolved_budget_policy,
         ),
-        ["worker", "finalize"],
+        ["worker", "finalize", "controlled_finalize"],
     )
     builder.add_edge("worker", "join")
-    builder.add_edge("join", "assess_workers")
+    builder.add_edge("join", "reconcile_wave_budget")
+    builder.add_edge("reconcile_wave_budget", "assess_workers")
     builder.add_conditional_edges(
         "assess_workers",
         route_after_worker_assessment,
@@ -750,13 +848,145 @@ def _exception_status_code(error: BaseException) -> int | None:
     return status_code if isinstance(status_code, int) else None
 
 
+def reserve_wave_budget_node(
+    state: PlanningState,
+    *,
+    policy: PlanningBudgetPolicy,
+    worker_attempt_limit: int = 3,
+) -> dict[str, Any]:
+    """Reserve a full worker allowance for a stable ready-wave prefix."""
+
+    existing = _wave_reservations(state)
+    reconciled = frozenset(state.get("reconciled_wave_reservation_ids", ()))
+    active = {
+        execution_id: reservation
+        for execution_id, reservation in existing.items()
+        if execution_id not in reconciled
+    }
+    if active:
+        return {
+            "wave_reservations": active,
+            "recovery_decision": None,
+        }
+
+    latest = _latest_current_worker_outcomes(state)
+    ready = _ready_worker_nodes(
+        state,
+        latest=latest,
+        worker_attempt_limit=worker_attempt_limit,
+    )
+    if not ready:
+        return {"wave_reservations": {}, "recovery_decision": None}
+
+    remaining = remaining_budget(
+        _budget_usage(state),
+        policy,
+        reservations=existing,
+        reconciled_execution_ids=reconciled,
+    )
+    limits = policy.phase_limits("worker")
+    required = BudgetUsage(
+        model_calls=limits.model_calls,
+        tool_calls=limits.tool_calls,
+        node_attempts=1,
+    )
+    generation = int(state.get("plan_generation", 0))
+    attempts = state.get("worker_attempts", {})
+    selected: dict[str, WaveReservation] = {}
+    available = remaining
+    for node in ready:
+        previous = latest.get(node.node_id)
+        previous_attempt = previous.attempt if previous is not None else 0
+        attempt = max(int(attempts.get(node.node_id, 0)), previous_attempt + 1)
+        if attempt > worker_attempt_limit or not _budget_fits(required, available):
+            break
+        execution_id = _worker_execution_id(
+            generation=generation,
+            work_item_id=node.node_id,
+            attempt=attempt,
+        )
+        selected[execution_id] = WaveReservation(
+            execution_id=execution_id,
+            plan_generation=generation,
+            work_item_id=node.node_id,
+            attempt=attempt,
+            allowance=required,
+        )
+        available = _subtract_usage(available, required)
+
+    decision = None
+    if not selected:
+        decision = RecoveryDecision(
+            action="finalize",
+            reason_code=_insufficient_worker_budget_reason(remaining, required),
+        )
+    return {
+        "wave_reservations": selected,
+        "recovery_decision": decision,
+    }
+
+
+def reconcile_wave_budget_node(
+    state: PlanningState,
+    *,
+    policy: PlanningBudgetPolicy,
+) -> dict[str, Any]:
+    """Settle reserved executions by stable ID using actual worker usage once."""
+
+    reservations = _wave_reservations(state)
+    reconciled = list(dict.fromkeys(state.get("reconciled_wave_reservation_ids", ())))
+    reconciled_set = set(reconciled)
+    outcomes = {
+        str(key): WorkerOutcome.model_validate(value)
+        for key, value in state.get("worker_outcomes", {}).items()
+    }
+    delta = BudgetUsage()
+    for execution_id, reservation in reservations.items():
+        if execution_id in reconciled_set:
+            continue
+        outcome = outcomes.get(execution_id)
+        if outcome is None:
+            continue
+        if (
+            outcome.plan_generation != reservation.plan_generation
+            or outcome.work_item_id != reservation.work_item_id
+            or outcome.attempt != reservation.attempt
+        ):
+            raise ValueError("worker outcome does not match wave reservation")
+        if not _budget_fits(outcome.usage, reservation.allowance):
+            raise ValueError("worker usage exceeds wave reservation")
+        delta = _add_usage(delta, outcome.usage)
+        reconciled.append(execution_id)
+        reconciled_set.add(execution_id)
+
+    total = _add_usage(_budget_usage(state), delta)
+    if (
+        total.tool_calls > policy.graph_tool_limit
+        or total.model_calls > policy.graph_model_limit
+        or total.node_attempts > policy.graph_node_attempt_limit
+        or total.replans > policy.max_replans
+    ):
+        raise ValueError("reconciled worker usage exceeds graph budget")
+    return {
+        "budget_usage": total,
+        "reconciled_wave_reservation_ids": reconciled,
+    }
+
+
 def route_scheduler(
     state: PlanningState,
     *,
     worker_attempt_limit: int = 3,
     tool_call_allowance: int = 1,
+    policy: PlanningBudgetPolicy | None = None,
 ) -> list[Send] | str:
-    """Dispatch one ready DAG wave in plan order, or enter the finalizer."""
+    """Dispatch only execution identities with an active reservation."""
+
+    decision = state.get("recovery_decision")
+    if decision is not None:
+        parsed_decision = RecoveryDecision.model_validate(decision)
+        if parsed_decision.action == "finalize":
+            return "controlled_finalize"
 
     latest = _latest_current_worker_outcomes(state)
     successful_results = {
@@ -779,6 +1009,23 @@ def route_scheduler(
         for work_item_id, result in state.get("frozen_worker_results", {}).items()
     }
     attempts = state.get("worker_attempts", {})
+    reservations = _wave_reservations(state)
+    reconciled = frozenset(state.get("reconciled_wave_reservation_ids", ()))
+    active_reservations = {
+        execution_id: reservation
+        for execution_id, reservation in reservations.items()
+        if execution_id not in reconciled
+    }
+    if "wave_reservations" not in state:
+        compatibility_policy = policy or PlanningBudgetPolicy.from_base(
+            max(tool_call_allowance, 1)
+        )
+        compatibility = reserve_wave_budget_node(
+            state,
+            policy=compatibility_policy,
+            worker_attempt_limit=worker_attempt_limit,
+        )
+        active_reservations = compatibility["wave_reservations"]
     sends: list[Send] = []
     ready = _ready_worker_nodes(
         state,
@@ -791,6 +1038,14 @@ def route_scheduler(
         previous_attempt = previous.attempt if previous is not None else 0
         attempt = max(int(attempts.get(node.node_id, 0)), previous_attempt + 1)
         if attempt > worker_attempt_limit:
+            continue
+        execution_id = _worker_execution_id(
+            generation=generation,
+            work_item_id=node.node_id,
+            attempt=attempt,
+        )
+        reservation = active_reservations.get(execution_id)
+        if reservation is None:
             continue
         active_skill_ids = [
             skill_id
@@ -806,14 +1061,11 @@ def route_scheduler(
                     "memory_status": state.get("memory_status", "empty"),
                     "execution_mode": "planning",
                     "trusted_runtime_facts": state.get("trusted_runtime_facts"),
-                    "execution_id": _worker_execution_id(
-                        generation=generation,
-                        work_item_id=node.node_id,
-                        attempt=attempt,
-                    ),
+                    "execution_id": execution_id,
                     "plan_generation": generation,
                     "attempt": attempt,
-                    "tool_call_allowance": tool_call_allowance,
+                    "tool_call_allowance": reservation.allowance.tool_calls,
+                    "budget_allowance": reservation.allowance,
                     "work_item_id": node.node_id,
                     "objective": node.objective,
                     "dependency_results": tuple(
@@ -844,13 +1096,16 @@ def route_scheduler(
         )
     if sends:
         return sends
+    if active_reservations:
+        raise NativePlanAdmissionError("admitted plan has no schedulable work item")
+    if "wave_reservations" in state:
+        return "controlled_finalize"
     raise NativePlanAdmissionError("admitted plan has no schedulable work item")
 
 
 def _worker_outcome_update(outcome: WorkerOutcome) -> dict[str, Any]:
     return {
         "worker_outcomes": {outcome.execution_id: outcome},
-        "budget_usage": outcome.usage,
     }
 
 
@@ -862,7 +1117,7 @@ def _worker_result_outcome_update(
 
     phase_usage = BudgetUsage.model_validate(result.get("phase_budget_usage") or {})
     usage = BudgetUsage(
-        model_calls=phase_usage.model_calls,
+        model_calls=max(phase_usage.model_calls, 1),
         tool_calls=phase_usage.tool_calls,
         node_attempts=1,
         replans=phase_usage.replans,
@@ -941,7 +1196,7 @@ def _worker_result_outcome_update(
 
 
 def _operational_worker_outcome_update(state: WorkerState) -> dict[str, Any]:
-    usage = BudgetUsage(node_attempts=1)
+    usage = BudgetUsage(model_calls=1, node_attempts=1)
     outcome = WorkerOutcome(
         execution_id=state["execution_id"],
         plan_generation=state["plan_generation"],
@@ -1019,6 +1274,65 @@ def _worker_execution_id(
     attempt: int,
 ) -> str:
     return f"g{generation}:{work_item_id}:a{attempt}"
+
+
+def _budget_usage(state: Mapping[str, Any]) -> BudgetUsage:
+    return BudgetUsage.model_validate(state.get("budget_usage") or {})
+
+
+def _wave_reservations(
+    state: Mapping[str, Any],
+) -> dict[str, WaveReservation]:
+    reservations: dict[str, WaveReservation] = {}
+    raw = state.get("wave_reservations") or {}
+    if not isinstance(raw, Mapping):
+        raise TypeError("wave_reservations must be a mapping")
+    for key, value in raw.items():
+        reservation = WaveReservation.model_validate(value)
+        if str(key) != reservation.execution_id:
+            raise ValueError("wave reservation key does not match execution_id")
+        reservations[str(key)] = reservation
+    return reservations
+
+
+def _add_usage(left: BudgetUsage, right: BudgetUsage) -> BudgetUsage:
+    return BudgetUsage(
+        model_calls=left.model_calls + right.model_calls,
+        tool_calls=left.tool_calls + right.tool_calls,
+        node_attempts=left.node_attempts + right.node_attempts,
+        replans=left.replans + right.replans,
+    )
+
+
+def _subtract_usage(left: BudgetUsage, right: BudgetUsage) -> BudgetUsage:
+    if not _budget_fits(right, left):
+        raise ValueError("budget subtraction would become negative")
+    return BudgetUsage(
+        model_calls=left.model_calls - right.model_calls,
+        tool_calls=left.tool_calls - right.tool_calls,
+        node_attempts=left.node_attempts - right.node_attempts,
+        replans=left.replans - right.replans,
+    )
+
+
+def _budget_fits(required: BudgetUsage, available: BudgetUsage) -> bool:
+    return (
+        required.model_calls <= available.model_calls
+        and required.tool_calls <= available.tool_calls
+        and required.node_attempts <= available.node_attempts
+        and required.replans <= available.replans
+    )
+
+
+def _insufficient_worker_budget_reason(
+    available: BudgetUsage,
+    required: BudgetUsage,
+) -> str:
+    if available.tool_calls < required.tool_calls:
+        return "graph_tool_budget_exhausted"
+    if available.model_calls < required.model_calls:
+        return "graph_model_budget_exhausted"
+    return "graph_node_attempt_budget_exhausted"
 
 
 def _ordered_final_worker_results(

@@ -166,6 +166,34 @@ def _exception_chain(error: BaseException):
             pending.append(current.__context__)
 
 
+def assess_recovery_budget(
+    usage: BudgetUsage | Mapping[str, object],
+    policy: PlanningBudgetPolicy,
+) -> RecoveryDecision | None:
+    """Return the stable controlled-finalize decision for an exhausted cap."""
+
+    consumed = BudgetUsage.model_validate(usage)
+    checks = (
+        (
+            consumed.tool_calls >= policy.graph_tool_limit,
+            "graph_tool_budget_exhausted",
+        ),
+        (
+            consumed.model_calls >= policy.graph_model_limit,
+            "graph_model_budget_exhausted",
+        ),
+        (
+            consumed.node_attempts >= policy.graph_node_attempt_limit,
+            "graph_node_attempt_budget_exhausted",
+        ),
+        (consumed.replans >= policy.max_replans, "replan_budget_exhausted"),
+    )
+    for exhausted, reason_code in checks:
+        if exhausted:
+            return RecoveryDecision(action="finalize", reason_code=reason_code)
+    return None
+
+
 def assess_planner_node(
     state: PlanningState,
     *,
@@ -181,7 +209,10 @@ def assess_planner_node(
     failure = outcome.failure
     if failure is None:
         raise ValueError("failed planner outcome requires failure")
-    if (
+    exhausted = _assess_execution_budget(_budget_usage(state), policy)
+    if exhausted is not None:
+        decision = exhausted
+    elif (
         outcome.status == "operational_failed"
         and _planner_attempt_count(state) < policy.planner_attempts
     ):
@@ -280,7 +311,10 @@ def assess_workers_node(
         and outcome.attempt < worker_attempt_limit
     ]
     decision: RecoveryDecision | None = None
-    if terminal_failures:
+    exhausted = _assess_execution_budget(_budget_usage(state), policy)
+    if exhausted is not None:
+        decision = exhausted
+    elif terminal_failures:
         source_ids = tuple(item.execution_id for item in terminal_failures)
         if _budget_usage(state).replans >= policy.max_replans:
             decision = RecoveryDecision(
@@ -417,7 +451,10 @@ def prepare_replan_node(
             decision,
             limit=policy.recovery_history_limit,
         ),
-        "budget_usage": BudgetUsage(replans=1),
+        "budget_usage": _add_usage(
+            _budget_usage(state),
+            BudgetUsage(replans=1),
+        ),
         "historical_node_ids": list(historical_node_ids),
     }
     if worker_origin:
@@ -452,7 +489,28 @@ def _bounded_history(
     if limit <= 0:
         raise ValueError("recovery history limit must be positive")
     history = [RecoveryDecision.model_validate(item) for item in existing]
+    if history and history[-1] == decision:
+        return history[-limit:]
     return [*history, decision][-limit:]
+
+
+def _add_usage(left: BudgetUsage, right: BudgetUsage) -> BudgetUsage:
+    return BudgetUsage(
+        model_calls=left.model_calls + right.model_calls,
+        tool_calls=left.tool_calls + right.tool_calls,
+        node_attempts=left.node_attempts + right.node_attempts,
+        replans=left.replans + right.replans,
+    )
+
+
+def _assess_execution_budget(
+    usage: BudgetUsage,
+    policy: PlanningBudgetPolicy,
+) -> RecoveryDecision | None:
+    decision = assess_recovery_budget(usage, policy)
+    if decision is not None and decision.reason_code != "replan_budget_exhausted":
+        return decision
+    return None
 
 
 def _planner_outcome(state: Mapping[str, object]) -> PlannerOutcome | None:
