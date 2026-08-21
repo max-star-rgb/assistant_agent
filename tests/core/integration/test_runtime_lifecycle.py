@@ -227,9 +227,18 @@ def test_parent_graph_has_fast_planning_and_coding_native_branches(monkeypatch) 
             ("join", "scheduler"),
             ("finalize", "__end__"),
         }
-        coding_nodes = set(graph.nodes["coding_graph"].data.get_graph().nodes)
-        assert "prepare_repair" in coding_nodes
-        assert {
+        coding_graph = graph.nodes["coding_graph"].data.get_graph()
+        coding_nodes = set(coding_graph.nodes)
+        analysis_super_step_nodes = {
+            "prepare_analysis",
+            "analyze_workspace",
+            "join_analysis",
+        }
+        sequential_mutation_lane_nodes = {
+            "inspect_and_draft",
+            "validate_proposal",
+            "prepare_repair",
+            "consume_repair_budget",
             "approval",
             "apply_patch",
             "run_validation",
@@ -237,7 +246,10 @@ def test_parent_graph_has_fast_planning_and_coding_native_branches(monkeypatch) 
             "prepare_merge",
             "merge_approval",
             "apply_merge",
-        }.issubset(coding_nodes)
+        }
+        assert analysis_super_step_nodes.issubset(coding_nodes)
+        assert sequential_mutation_lane_nodes.issubset(coding_nodes)
+        assert analysis_super_step_nodes.isdisjoint(sequential_mutation_lane_nodes)
         assert owner.graph.checkpointer is None
     finally:
         asyncio.run(owner.aclose())

@@ -21,12 +21,23 @@ source repository 只能从服务端 JSON allowlist 通过 opaque `coding_repo_i
 `user.identity + thread_id + repo_id` 解析到独立临时 Git worktree，workspace ref 使用服务端 HMAC 派生，
 metadata、锁和 TTL 位于受管 workspace root，不进入 Graph state。
 
+每个 repository 的 `parallel_analysis_enabled` 也是服务端静态配置且默认关闭。显式启用时，同一 process-owned
+`CodingWorkspaceService` 在首次 draft 前创建内容寻址、只读、identity/thread/workspace 绑定的 analysis snapshot；
+snapshot 覆盖创建时允许访问的已跟踪修改和新增文本文件，不修改真实 worktree 或 Git index。三个原生 `Send`
+worker 只借用 snapshot-bound read 接口。join 后 owner 释放 active lease；释放清理失败只登记
+`cleanup_pending`，已释放 snapshot 仍保留到 TTL，并由 workspace owner 的受管 reaper 清理过期、构建残留或隔离
+异常目录。pending checkpoint 恢复只校验既有 snapshot，过期、身份或 digest 不匹配时不静默重建。
+
 Graph checkpoint 只保存 opaque workspace ref、base commit、proposal/validation、结构化 repair
-failure evidence/history/digests 和结构化结果，不保存完整命令日志、宿主路径、Git client、文件句柄或进程
-对象。repair evidence 仅含有界命令投影及其 digest，模型使用的临时 context 不写入对话
+failure evidence/history/digests、opaque analysis snapshot contract、有界规范化 analysis result/status 和结构化结果，
+不保存完整命令日志、snapshot 或 workspace 宿主路径、Git client/process、backend client、文件句柄或进程对象。
+analysis worker transcript 与临时 task/context 不进入主对话 `messages`；repair evidence 仅含有界命令投影及其
+digest，模型使用的临时 context 也不写入对话
 `messages`。interrupt/resume 由 Agent Server/LangGraph 原生所有；resume 时 backend 重新校验唯一认证
 身份、thread、base commit、目标文件 digest、patch digest 与 repair 累计 diff digests，项目不保存
-平行 resume 机制。integration 默认关闭，且只在最终一轮完整 validation gates 通过后才能进入；
+平行 resume 机制。analysis 的 `partial|unavailable` 只降低 advisory evidence 质量；repair、patch、dependency、
+credential、artifact 与 merge approval resume 不重跑已完成分析，所有 mutation 仍由同一顺序治理 lane 执行。
+integration 默认关闭，且只在最终一轮完整 validation gates 通过后才能进入；
 关闭时终态保留 worktree 到 TTL，不 commit、merge、push 或写回 source repository。
 
 repository 可独立显式启用本地 Docker sandbox。Agent Server process owner 只构造一份
