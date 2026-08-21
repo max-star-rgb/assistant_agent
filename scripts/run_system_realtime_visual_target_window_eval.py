@@ -24,7 +24,7 @@ from evals.system.realtime_visual_target_window.runner import (  # noqa: E402
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Evaluate one strict five-frame realtime visual target window."
+        description="Evaluate one strict eight-frame realtime visual target window."
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--allow-real-provider", action="store_true")

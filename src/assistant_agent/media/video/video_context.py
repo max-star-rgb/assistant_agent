@@ -10,7 +10,7 @@ from threading import Lock
 from typing import Protocol
 
 
-REALTIME_VISUAL_TARGET_WINDOW_SIZE = 5
+REALTIME_VISUAL_TARGET_WINDOW_SIZE = 8
 DEFAULT_VIDEO_CONTEXT_WINDOW_SIZE = REALTIME_VISUAL_TARGET_WINDOW_SIZE
 REPO_ROOT = Path(__file__).resolve().parents[4]
 DEMO_VIDEO_ROOT = REPO_ROOT / "demo_data" / "videos"

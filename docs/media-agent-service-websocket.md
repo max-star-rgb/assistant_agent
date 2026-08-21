@@ -187,9 +187,10 @@ enqueue 时已有有效在线 presence 才排队，在线写成功后记为 sent
 ## 5. audio、video 与 3D callback
 
 `audio` 继续做字段校验后的传输层 ACK，不把原始音频写入 Graph State。`video` 先在 WebSocket 热路径完成
-字段校验，再按连接内 wire 顺序进入后台解码队列；后续 chat 不等待尚未完成的视频解码。后台任务在 media edge
-的工作线程中把独立 Annex-B H.264 frame 解码为有界 JPEG window；连接级待处理消息数有固定上限，满时返回
-结构化失败而不无限保留媒体正文。Graph 输入只携带稳定 `video_id`。Graph worker
+字段校验，再进入连接级 `one in-flight + one latest pending` 后台解码边界；新 pending 会替换尚未开始的旧
+pending，旧消息仍收到正常 `videoResponse`，但不再解码、提交 VLM 或进入视觉窗口。后台任务在 media edge
+的工作线程中把独立 Annex-B H.264 frame 解码为有界 JPEG window，因此消费速度下降时不会形成历史 FIFO
+积压。Graph 输入只携带稳定 `video_id`。Graph worker
 的受治理 `live_view_inspect` Tool 通过共享 SQLite frame index 解析该引用；H.264 hex、JPEG
 正文和本地路径均不进入 Graph State、prompt 或 Agent Server Store。
 
@@ -200,8 +201,10 @@ enqueue 时已有有效在线 presence 才排队，在线写成功后记为 sent
 媒体连接把连接级 reminder manager 注册到视觉 Runtime，并将提醒命中机械投影为当前 WebSocket 上的主动
 `chatResponse`。握手后尚未收到有效帧、解码失败或连接已关闭时均不可用。这些条件暴露不依赖 Skill 加载。
 
-媒体 wire 只负责把每个成功解码帧提交给连接级视觉句柄。chat 到达时只冻结当时已经成功解码的帧；已入队但
-尚未完成解码的帧不进入该轮窗口。随后它把视觉模块冻结得到的可信
+媒体 wire 只负责把每个成功解码帧提交给连接级视觉句柄。chat 到达 A 时刻后立即发送 `chatProgress`，随后
+等待截至 A 最新接收的视频消息完成解码与提交，再从成功解码结果中冻结最近八帧；WebSocket receive loop 在
+该冻结完成前不接收 A 之后的视频消息。若 A 时刻最新消息解码失败，该轮视觉投影为空并 fail closed，不允许
+回退到更早成功帧。随后媒体入口把视觉模块冻结得到的可信
 `window_id`、`window_start_sequence` 和 `target_sequence` 绑定到标准 `source=live_camera` video content
 block，不传 JPEG、Provider client 或 task。逐帧并发、semantic keyframe、目标帧等待、ready/missing 结果和
 晚到帧处理均以 [`visual-perception-architecture.md`](visual-perception-architecture.md) 为唯一权威。

@@ -1,4 +1,4 @@
-"""Operator-gated real VLM eval for one strict five-frame target window."""
+"""Operator-gated real VLM eval for one strict eight-frame target window."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ DEFAULT_OUTPUT_ROOT = Path(".data/evals/system/realtime_visual_target_window")
 
 
 class RealtimeVisualEvalConfigurationError(RuntimeError):
-    """The real five-call evaluation is not explicitly and fully configured."""
+    """The real window evaluation is not explicitly and fully configured."""
 
 
 def dry_run_report(*, frame_dir: Path | None, allow_real_provider: bool) -> dict[str, object]:
@@ -58,7 +58,7 @@ def dry_run_report(*, frame_dir: Path | None, allow_real_provider: bool) -> dict
         "candidate_frame_count": len(configured_frames),
         "planned_provider_calls": REALTIME_VISUAL_TARGET_WINDOW_SIZE,
         "would_check": [
-            "five_isolated_realtime_vlm_clients",
+            "window_isolated_realtime_vlm_clients",
             "all_window_frames_started",
             "parallel_frame_inference",
             "exact_target_barrier",
@@ -75,7 +75,7 @@ def run_real_eval(
     allow_real_provider: bool,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
 ) -> tuple[Path, dict[str, object]]:
-    """Run exactly five real, isolated frame observations and the target barrier."""
+    """Run one full window of isolated frame observations and the target barrier."""
 
     config = ProviderConfig.from_env()
     _validate_real_eval(config, allow_real_provider=allow_real_provider)
@@ -204,8 +204,10 @@ async def _run_window(
     )
     service_ids = [str(item["connection_id"]) for item in observations]
     checks = {
-        "five_calls_finished": len(observations) == REALTIME_VISUAL_TARGET_WINDOW_SIZE,
-        "isolated_connections": len(service_ids) == len(set(service_ids)) == 5,
+        "window_calls_finished": len(observations) == REALTIME_VISUAL_TARGET_WINDOW_SIZE,
+        "isolated_connections": len(service_ids)
+        == len(set(service_ids))
+        == REALTIME_VISUAL_TARGET_WINDOW_SIZE,
         "all_frames_started_before_target_finished": started_before_target_finished,
         "parallel_inference": registry.max_concurrency >= 2,
         "exact_target_ready": result_data.get("target_ready") is True,
@@ -368,7 +370,8 @@ def _validated_frame_paths(frame_dir: Path) -> list[tuple[int, Path]]:
     paths = _frame_candidates(frame_dir)
     if len(paths) != REALTIME_VISUAL_TARGET_WINDOW_SIZE:
         raise RealtimeVisualEvalConfigurationError(
-            "frame-dir must contain exactly five sequence-named JPEG files"
+            "frame-dir must contain exactly "
+            f"{REALTIME_VISUAL_TARGET_WINDOW_SIZE} sequence-named JPEG files"
         )
     sequences = [sequence for sequence, _path in paths]
     if len(set(sequences)) != len(sequences):

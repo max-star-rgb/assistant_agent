@@ -61,7 +61,6 @@ from assistant_agent.runtime.generated_artifacts import (
 
 
 logger = logging.getLogger(__name__)
-MAX_PENDING_VIDEO_MESSAGES = 8
 
 
 @asynccontextmanager
@@ -164,26 +163,86 @@ class _VisualPerceptionConnection:
     session: Any | None = None
     video_tail: asyncio.Task[None] | None = None
     video_tasks: set[asyncio.Task[None]] = field(default_factory=set)
+    video_pending: (
+        tuple[
+            Callable[[], Awaitable[bool | None]],
+            Callable[[], Awaitable[None]] | None,
+            asyncio.Future[bool],
+        ]
+        | None
+    ) = None
+    latest_video_completion: asyncio.Future[bool] | None = None
 
-    def enqueue_video(self, operation: Callable[[], Awaitable[None]]) -> bool:
-        """Run video packets in wire order without blocking later chat packets."""
+    def enqueue_video(
+        self,
+        operation: Callable[[], Awaitable[bool | None]],
+        *,
+        on_replaced: Callable[[], Awaitable[None]] | None = None,
+    ) -> bool:
+        """Keep one active video operation and replace stale pending work."""
 
-        if len(self.video_tasks) >= MAX_PENDING_VIDEO_MESSAGES:
-            return False
-        previous = self.video_tail
-
-        async def run_in_order() -> None:
-            if previous is not None:
-                await previous
-            await operation()
-
-        task = asyncio.create_task(run_in_order(), name="media-video-ingestion")
-        self.video_tail = task
-        self.video_tasks.add(task)
-        task.add_done_callback(self.video_tasks.discard)
+        completion = asyncio.get_running_loop().create_future()
+        replaced = self.video_pending
+        if replaced is not None:
+            _, replaced_callback, replaced_completion = replaced
+            if not replaced_completion.done():
+                replaced_completion.set_result(False)
+            if replaced_callback is not None:
+                self._track_video_task(
+                    asyncio.create_task(
+                        replaced_callback(),
+                        name="media-video-replaced",
+                    )
+                )
+        self.video_pending = (operation, on_replaced, completion)
+        self.latest_video_completion = completion
+        if self.video_tail is None or self.video_tail.done():
+            self.video_tail = asyncio.create_task(
+                self._run_latest_video(),
+                name="media-video-ingestion",
+            )
+            self._track_video_task(self.video_tail)
         return True
 
+    async def _run_latest_video(self) -> None:
+        while self.video_pending is not None:
+            operation, _on_replaced, completion = self.video_pending
+            self.video_pending = None
+            succeeded: bool | None = False
+            try:
+                succeeded = await operation()
+            finally:
+                if not completion.done():
+                    completion.set_result(succeeded is not False)
+
+    async def wait_for_latest_video(self) -> bool:
+        """Wait through the newest video message received before this call."""
+
+        completion = self.latest_video_completion
+        if completion is None:
+            return True
+        return await asyncio.shield(completion)
+
+    def _track_video_task(self, task: asyncio.Task[None]) -> None:
+        self.video_tasks.add(task)
+        task.add_done_callback(self._settle_video_task)
+
+    def _settle_video_task(self, task: asyncio.Task[None]) -> None:
+        self.video_tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.warning(
+                "media_video_background_task_failed error_type=%s",
+                type(error).__name__,
+            )
+
     async def aclose_video_tasks(self) -> None:
+        pending = self.video_pending
+        self.video_pending = None
+        if pending is not None and not pending[2].done():
+            pending[2].cancel()
         tasks = tuple(self.video_tasks)
         if tasks:
             for task in tasks:
@@ -191,6 +250,7 @@ class _VisualPerceptionConnection:
             await asyncio.gather(*tasks, return_exceptions=True)
         self.video_tasks.clear()
         self.video_tail = None
+        self.latest_video_completion = None
 
 
 @dataclass(frozen=True)
@@ -587,11 +647,13 @@ async def _handle_frame(
                 delivery_id=delivery_id,
             ),
         )
+        latest_video_ready = await visual_perception.wait_for_latest_video()
         visual_prepare_started_ns = perf_counter_ns()
         visual_window = None
-        if visual_perception.session is not None:
+        live_video_ids = session.video_ids if latest_video_ready else ()
+        if latest_video_ready and visual_perception.session is not None:
             visual_window = await visual_perception.session.prepare_strict_window(
-                session.video_ids
+                live_video_ids
             )
         visual_prepared_ns = perf_counter_ns()
         record_live_view = getattr(visual_module, "record_live_view", None)
@@ -601,7 +663,7 @@ async def _handle_frame(
             record_live_view(
                 visual_identity,
                 session.thread_id,
-                video_ids=session.video_ids,
+                video_ids=live_video_ids,
                 window=visual_window,
             )
             freeze_live_view = getattr(visual_module, "freeze_live_view", None)
@@ -736,7 +798,16 @@ async def _handle_frame(
                 video_ingestion=video_ingestion,
                 visual_perception=visual_perception,
                 packets=packets,
-            )
+            ),
+            on_replaced=lambda: _send_json(
+                websocket,
+                send_lock,
+                envelope(
+                    message="videoResponse",
+                    session_id=frame.session_id,
+                    body={"code": 0, "message": "video received"},
+                ),
+            ),
         )
         if not accepted:
             raise MediaProtocolError("video ingestion queue is full")
@@ -961,7 +1032,7 @@ async def _ingest_video_packets(
     video_ingestion: Any,
     visual_perception: _VisualPerceptionConnection,
     packets: list[tuple[str, str, dict[str, Any], str]],
-) -> None:
+) -> bool:
     """Decode one wire video message after it has left the receive hot path."""
 
     try:
@@ -989,6 +1060,7 @@ async def _ingest_video_packets(
                 body={"code": 0, "message": "video received"},
             ),
         )
+        return True
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 - background protocol boundary.
@@ -1008,7 +1080,8 @@ async def _ingest_video_packets(
                 ),
             )
         except Exception:  # noqa: BLE001 - disconnected transport.
-            return
+            pass
+        return False
 
 
 async def _cancel_active_runs(*, session: MediaConnectionSession, client: Any) -> None:

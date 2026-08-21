@@ -1,12 +1,12 @@
 # Realtime visual target window system eval
 
-该专项验证实时视觉严格窗口的真实 Provider 行为：五个 frame submit 各自在到达时立即创建独立 Qwen
-realtime WebSocket client；随后 chat 只冻结连续五帧的 sequence 边界，Tool 只等待 exact target，不通过
+该专项验证实时视觉严格窗口的真实 Provider 行为：八个 frame submit 各自在到达时立即创建独立 Qwen
+realtime WebSocket client；随后 chat 只冻结连续八帧的 sequence 边界，Tool 只等待 exact target，不通过
 promotion 启动 VLM。上下文帧缺失不会阻塞 target 已完成的回答。
 
-默认 `--dry-run` 只检查门禁和输入形状，不加载图片、不建立网络连接。真实运行必须由 operator 提供恰好五张
+默认 `--dry-run` 只检查门禁和输入形状，不加载图片、不建立网络连接。真实运行必须由 operator 提供恰好八张
 以十进制 sequence 命名的本地 `.jpg` / `.jpeg`，同时显式设置
-`MULTIMODAL_AGENT_PROVIDER_MODE=real`、Qwen vision 配置并传入 `--allow-real-provider`。一次真实运行会发起五次
+`MULTIMODAL_AGENT_PROVIDER_MODE=real`、Qwen vision 配置并传入 `--allow-real-provider`。一次真实运行会发起八次
 Qwen realtime VLM 调用。
 
 ```bash
@@ -18,7 +18,7 @@ MULTIMODAL_AGENT_PROVIDER_MODE=real \
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
   scripts/run_system_realtime_visual_target_window_eval.py \
   --allow-real-provider \
-  --frame-dir /absolute/operator/supplied/five-frames
+  --frame-dir /absolute/operator/supplied/eight-frames
 ```
 
 结果写入 `.data/evals/system/realtime_visual_target_window/<run-id>/result.json`。artifact 仅包含 sequence、状态、

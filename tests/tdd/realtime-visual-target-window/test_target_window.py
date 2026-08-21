@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from assistant_agent.agent_server.media_app import _VisualPerceptionConnection
 from assistant_agent.media.video.h264_video_ingestion import (
     DecodedFrameData,
     H264VideoIngestionService,
@@ -30,13 +31,60 @@ class RecordingObserver:
         return None
 
 
-def test_chat_only_freezes_the_latest_five_decoded_frame_boundaries() -> None:
+def test_video_ingress_replaces_stale_pending_work_with_the_latest_frame() -> None:
+    async def exercise() -> None:
+        release = asyncio.Event()
+        connection = _VisualPerceptionConnection()
+        executed: list[int] = []
+
+        def operation(sequence: int):
+            async def run() -> bool:
+                executed.append(sequence)
+                if sequence == 1:
+                    await release.wait()
+                return True
+
+            return run
+
+        try:
+            connection.enqueue_video(operation(1))
+            await asyncio.sleep(0)
+            for sequence in range(2, 10):
+                connection.enqueue_video(operation(sequence))
+
+            release.set()
+            assert await connection.wait_for_latest_video() is True
+            assert executed == [1, 9]
+        finally:
+            release.set()
+            await connection.aclose_video_tasks()
+
+    asyncio.run(exercise())
+
+
+def test_failed_latest_video_ingestion_fails_closed() -> None:
+    async def exercise() -> None:
+        connection = _VisualPerceptionConnection()
+
+        async def fail() -> bool:
+            return False
+
+        try:
+            connection.enqueue_video(fail)
+            assert await connection.wait_for_latest_video() is False
+        finally:
+            await connection.aclose_video_tasks()
+
+    asyncio.run(exercise())
+
+
+def test_chat_only_freezes_the_latest_eight_decoded_frame_boundaries() -> None:
     """Regression: chat-time promotion starts VLM after the user has already asked."""
 
-    store = InMemoryVideoContextStore(window_size=5)
+    store = InMemoryVideoContextStore(window_size=8)
     observer = RecordingObserver()
     video_id = "video-window"
-    for sequence in range(1, 9):
+    for sequence in range(1, 12):
         store.append_frame(
             VideoFrame(
                 video_id=video_id,
@@ -59,16 +107,16 @@ def test_chat_only_freezes_the_latest_five_decoded_frame_boundaries() -> None:
     assert window is not None
     assert window.video_id == video_id
     assert window.start_sequence == 4
-    assert window.target_sequence == 8
-    assert window.sequences == (4, 5, 6, 7, 8)
+    assert window.target_sequence == 11
+    assert window.sequences == (4, 5, 6, 7, 8, 9, 10, 11)
     assert window.window_id.startswith("visual-window-")
     assert observer.promote_window_called is False
 
 
-def test_chat_uses_all_frames_when_fewer_than_five_exist() -> None:
+def test_chat_uses_all_frames_when_fewer_than_eight_exist() -> None:
     """Regression: a short new call must still expose its complete decoded window."""
 
-    store = InMemoryVideoContextStore(window_size=5)
+    store = InMemoryVideoContextStore(window_size=8)
     observer = RecordingObserver()
     for sequence in range(1, 4):
         store.append_frame(
@@ -93,8 +141,8 @@ def test_chat_uses_all_frames_when_fewer_than_five_exist() -> None:
     assert window.sequences == (1, 2, 3)
 
 
-def test_default_h264_retention_keeps_frames_four_through_eight(tmp_path: Path) -> None:
-    """Regression: the old three-frame retention deletes frames 4-5 before chat."""
+def test_default_h264_retention_keeps_the_latest_eight_frames(tmp_path: Path) -> None:
+    """Regression: chat-time context must retain exactly the latest eight frames."""
 
     store = InMemoryVideoContextStore()
 
@@ -121,9 +169,18 @@ def test_default_h264_retention_keeps_frames_four_through_eight(tmp_path: Path) 
             {"codec": "H264"},
             None,
         )
-        for sequence in range(1, 9)
+        for sequence in range(1, 12)
     ]
 
-    assert [frame.sequence for frame in store.get_recent_frames(video_id)] == [4, 5, 6, 7, 8]
+    assert [frame.sequence for frame in store.get_recent_frames(video_id)] == [
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+    ]
     assert all(Path(frame.uri).exists() for frame in frames[3:])
     assert all(not Path(frame.uri).exists() for frame in frames[:3])

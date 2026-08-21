@@ -168,12 +168,14 @@ image embedding/selector/reminder 派生支路，不限制、延迟或替代逐�
 
 连续性在 VLM 之后建立：每个成功结果成为带 `frame_sequence` 和 `captured_at_ms` 的
 `VisualSemanticRecord`，并保留产生该文本的 `source_vision_trace_id`、`source_vision_run_id` 和
-`source_vlm_span_id`。chat 到达 A 时刻时只冻结最近五个成功解码帧的 sequence 边界；例如 target 为 8 时
-冻结 4–8，不 promotion、不补跑或重放 VLM。此时 4–6 可能已有文本，7 和 8 仍由各自在帧到达时启动的
-service/client/adapter/WebSocket 并行观察。`live_view_inspect` 只等待 exact target 8，完成即返回，
-不等待 4–7 或 observer idle。随后它只读取 `[window_start_sequence, target_sequence]` 内当时已完成的 ready
-subset；若 7 尚未完成，可立即返回 4、5、6、8 并标记 `missing_sequences=[7]`。未来帧和窗口前旧帧不能进入
-本次列表；target 失败或超时不得回退到 7。较早帧晚完成只补入历史，不修改已结束的 Graph run；
+`source_vlm_span_id`。媒体入口使用 `one in-flight + one latest pending` 消费解码消息，尚未开始的旧 pending
+会被更新帧替换，不能积压后成为未来 chat 的 target。chat 到达 A 时刻时先等截至 A 最新接收的视频消息完成
+解码与提交，再冻结最近八个成功解码帧的 sequence 边界；例如 target 为 11 时冻结 4–11，不 promotion、
+不补跑或重放 VLM。此时部分上下文可能已有文本，其余 sequence 仍由各自在帧到达时启动的
+service/client/adapter/WebSocket 并行观察。`live_view_inspect` 只等待 exact target 11，完成即返回，
+不等待其他上下文帧或 observer idle。随后它只读取 `[window_start_sequence, target_sequence]` 内当时已完成的 ready
+subset；未来帧和窗口前旧帧不能进入
+本次列表；target 失败或超时不得回退到更早 sequence。较早帧晚完成只补入历史，不修改已结束的 Graph run；
 Store 自身的 retention 继续提供更大的有界历史；`visual_memory_search` 在可信 as-of/time window 内取
 最后最多 256 条。原始记录不做预压缩；是否压缩只在 Tool 即将生成主 LLM observation 时按实际 token
 预算决定。主 turn 的 `live_view_inspect` trace metadata 只关联本次实际选中 record 的来源 trace/span，
