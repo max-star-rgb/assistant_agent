@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.errors import GraphInterrupt
+from langgraph.errors import GraphInterrupt, NodeCancelledError
 
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.models import (
@@ -314,6 +314,157 @@ def test_nonretryable_planner_error_is_sanitized_before_checkpoint_boundary() ->
     assert "contract-credential-marker" not in str(raised.value)
     assert "contract-body-marker" not in _saver_text(saver)
     assert "contract-credential-marker" not in _saver_text(saver)
+
+
+class _CancelledPlannerAgent:
+    name = "AssistantFastAgent"
+
+    def __init__(self) -> None:
+        self.error = NodeCancelledError("planner")
+
+    async def ainvoke(self, input: dict[str, Any], *, context: Any) -> dict[str, Any]:
+        del input, context
+        raise self.error
+
+
+class _RevisionThenTransientPlannerAgent:
+    name = "AssistantFastAgent"
+
+    def __init__(self) -> None:
+        self.planner_calls = 0
+
+    async def ainvoke(self, input: dict[str, Any], *, context: Any) -> dict[str, Any]:
+        del context
+        if input["agent_phase"] == "finalizer":
+            return {"messages": [*input["messages"], AIMessage(content="final")]}
+        self.planner_calls += 1
+        if self.planner_calls == 1:
+            return {
+                "messages": list(input["messages"]),
+                "structured_response": _invalid_candidate(),
+            }
+        if self.planner_calls == 2:
+            raise TimeoutError()
+        return {
+            "messages": list(input["messages"]),
+            "structured_response": _zero_worker_plan(),
+        }
+
+
+class _TwoRevisionsThenSuccessPlannerAgent:
+    name = "AssistantFastAgent"
+
+    def __init__(self) -> None:
+        self.planner_calls = 0
+
+    async def ainvoke(self, input: dict[str, Any], *, context: Any) -> dict[str, Any]:
+        del context
+        if input["agent_phase"] == "finalizer":
+            return {"messages": [*input["messages"], AIMessage(content="final")]}
+        self.planner_calls += 1
+        proposal = (
+            _invalid_candidate()
+            if self.planner_calls < 3
+            else _zero_worker_plan()
+        )
+        return {"messages": list(input["messages"]), "structured_response": proposal}
+
+
+def _invalid_candidate() -> NativePlanProposal:
+    return NativePlanProposal(
+        schema_version="native_plan_v2",
+        nodes=(
+            {
+                "node_id": "invalid-worker",
+                "objective": "invalid",
+                "allowed_tool_names": ("unknown-tool",),
+            },
+        ),
+        deliverables=(
+            {
+                "deliverable_id": "answer",
+                "description": "answer",
+                "producer_node_ids": ("invalid-worker",),
+            },
+        ),
+    )
+
+
+def _input_with_evidence() -> dict[str, Any]:
+    return {
+        **_planning_input(),
+        "planner_evidence": [
+            PlannerEvidence(
+                evidence_id="evidence-1",
+                tool_name="probe_tool",
+                status="succeeded",
+                content="safe",
+            )
+        ],
+    }
+
+
+def test_node_cancelled_error_propagates_without_recovery_state() -> None:
+    """Catches native cancel control flow being converted to planner recovery."""
+
+    saver = InMemorySaver()
+    agent = _CancelledPlannerAgent()
+    graph = build_planning_graph(
+        object(),
+        agent,
+        tools=[_probe_tool()],
+        skill_catalog=SkillCatalog(),
+        checkpointer=saver,
+    )
+    config = {"configurable": {"thread_id": "planner-native-cancel"}}
+
+    with pytest.raises(NodeCancelledError) as raised:
+        asyncio.run(graph.ainvoke(_planning_input(), config=config, context=AssistantRunContext()))
+
+    assert raised.value is agent.error
+    snapshots = list(graph.get_state_history(config))
+    assert all("planner_outcome" not in snapshot.values for snapshot in snapshots)
+    assert all("recovery_history" not in snapshot.values for snapshot in snapshots)
+
+
+def test_admission_revision_opens_a_new_operational_retry_window() -> None:
+    """Catches admission revision consuming the next proposal's retry allowance."""
+
+    agent = _RevisionThenTransientPlannerAgent()
+    graph = build_planning_graph(
+        object(),
+        agent,
+        tools=[_probe_tool()],
+        skill_catalog=SkillCatalog(),
+        budget_policy=PlanningBudgetPolicy.from_base(1),
+    )
+
+    result = asyncio.run(graph.ainvoke(_input_with_evidence(), context=AssistantRunContext()))
+
+    assert agent.planner_calls == 3
+    assert result["revision_count"] == 1
+    assert result["planner_attempt_count"] == 2
+    assert result["budget_usage"].node_attempts == 3
+    assert result["planner_outcome"].status == "succeeded"
+
+
+def test_admission_revisions_reset_only_the_operational_window() -> None:
+    """Catches consecutive revisions corrupting bounded retry or global usage state."""
+
+    agent = _TwoRevisionsThenSuccessPlannerAgent()
+    graph = build_planning_graph(
+        object(),
+        agent,
+        tools=[_probe_tool()],
+        skill_catalog=SkillCatalog(),
+    )
+
+    result = asyncio.run(graph.ainvoke(_input_with_evidence(), context=AssistantRunContext()))
+
+    assert agent.planner_calls == 3
+    assert result["revision_count"] == 2
+    assert result["planner_attempt_count"] == 1
+    assert result["budget_usage"].node_attempts == 3
 
 
 def _saver_text(saver: InMemorySaver) -> str:

@@ -346,7 +346,11 @@ def build_planning_graph(
             planner_messages.append(
                 HumanMessage(content=_planner_recovery_context(recovery_context))
             )
-        attempt = int(state.get("planner_attempt_count", 0)) + 1
+        attempt = (
+            1
+            if state.get("admission_error")
+            else int(state.get("planner_attempt_count", 0)) + 1
+        )
         try:
             planner_result = await fast_agent.ainvoke(
                 {
@@ -394,6 +398,7 @@ def build_planning_graph(
             )
             update: dict[str, Any] = {
                 "planner_attempt_count": attempt,
+                "admission_error": None,
                 "planner_active_skill_ids": active_skill_ids,
                 "planner_skill_reference_grants": _reference_grants(
                     planner_result.get("skill_reference_grants")
@@ -429,13 +434,14 @@ def build_planning_graph(
                 )
                 return update
             raise ValueError("planner completed without a plan candidate")
-        except GraphBubbleUp:
+        except (GraphBubbleUp, NodeCancelledError):
             raise
         except Exception as error:
             if classify_operational_failure(error):
                 usage = BudgetUsage(node_attempts=1)
                 return {
                     "planner_attempt_count": attempt,
+                    "admission_error": None,
                     "planner_outcome": PlannerOutcome(
                         status="operational_failed",
                         evidence_ids=tuple(
