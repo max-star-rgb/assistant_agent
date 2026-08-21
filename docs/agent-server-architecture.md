@@ -26,17 +26,20 @@ metadata、锁和 TTL 位于受管 workspace root，不进入 Graph state。
 snapshot 覆盖创建时允许访问的已跟踪修改和新增文本文件，不修改真实 worktree 或 Git index。三个原生 `Send`
 worker 只借用 snapshot-bound read 接口。join 后 owner 释放 active lease；释放清理失败只登记
 `cleanup_pending`，已释放 snapshot 仍保留到 TTL，并由 workspace owner 的受管 reaper 清理过期、构建残留或隔离
-异常目录。process owner 在 coding 启用时启动唯一有界周期 reaper，每轮以 round-robin 上限扫描 workspace 与 snapshot，
-shutdown 的 `aclose` 会取消该 task 并执行一次安全有界清理；它不创建 Graph、run 或第二套 Runtime。pending checkpoint
+异常目录。process owner 在 coding 启用时启动唯一有界周期 reaper，每轮只从增量 `scandir` cursor 读取配置上限内的
+workspace/snapshot entry，不预收集或排序完整目录；cursor 使用硬上限 LRU map，目录消失、workspace 删除与 shutdown
+都会关闭并清除对应句柄。`aclose` 会取消该 task 并执行一次安全有界清理；它不创建 Graph、run 或第二套 Runtime。pending checkpoint
 恢复严格校验既有物理 snapshot，过期、身份或 digest 不匹配时不静默重建；join 后的 approval/repair resume 只校验
 checkpoint contract 与 workspace/base，不要求 released snapshot 仍在物理 TTL 内，因此 snapshot 不是 mutation gate。
 
 所有 workspace、snapshot 与 integration Git 子进程都设置 `GIT_NO_LAZY_FETCH=1`、关闭 credential prompt 和 system/
 global config；partial/promisor repository 缺少本地对象时稳定 fail closed，不允许 Git 隐式 lazy fetch。analysis diff
-固定 full object index、Myers algorithm、context、prefix、rename、textconv 与 external-diff 参数，local repository 的
-diff/core.abbrev 配置不能改变同一 baseline/current tree 的 digest。snapshot scanner 分别以 O(1) 累计 visited entry、
-directory、attempted/read bytes 与 included file/bytes 硬限制；protected、non-UTF-8、unreadable 和 oversize entry 也
-消耗扫描预算，不能用大量最终被排除的文件绕过资源上限。
+在临时 bare `GIT_DIR` 中只通过受管 object directory/alternate 读取两棵 tree，隔离 source repository 的 local config 与
+`info/attributes`；同时固定 full object index、Myers、order file、inter-hunk context、quotePath、prefix、rename、
+textconv 与 external-diff 参数，因此同一 baseline/current tree 的 digest 只由 tree object 与固定协议决定。snapshot
+scanner 使用增量 `scandir`，每取得一个 entry 就以 O(1) 累计 visited entry、directory、attempted/read bytes 与
+included file/bytes 硬限制；不会在预算前收集或排序单目录全部 entry。protected、non-UTF-8、unreadable 和 oversize
+entry 也消耗扫描预算，Git baseline index 输出同样按 scan entry/byte 上限约束，不能用最终被排除的文件绕过资源上限。
 
 Graph checkpoint 只保存 opaque workspace ref、base commit、proposal/validation、结构化 repair
 failure evidence/history/digests、opaque analysis snapshot contract、有界规范化 analysis result/status 和结构化结果，

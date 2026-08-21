@@ -14,6 +14,8 @@ import stat
 import subprocess
 import tempfile
 import time
+import threading
+from collections import OrderedDict
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -57,6 +59,8 @@ _ANALYSIS_QUARANTINE_PREFIX = ".analysis-quarantine-"
 _ANALYSIS_QUARANTINE_SECONDS = 300
 _ANALYSIS_METADATA_TEMP_PREFIX = ".metadata-"
 _MAX_GIT_OUTPUT = 262_144
+_REAPER_CURSOR_LIMIT = 256
+_ANALYSIS_INDEX_ENTRY_MAX_BYTES = 1_152
 
 
 class CodingWorkspaceError(RuntimeError):
@@ -126,7 +130,22 @@ class _AnalysisScanBudget:
             raise CodingWorkspaceError("coding_analysis_snapshot_limit_exceeded")
 
 
+@dataclass(slots=True)
+class _ReaperCursor:
+    path: Path
+    device: int
+    inode: int
+    iterator: Iterator[os.DirEntry[str]]
+
+    def close(self) -> None:
+        closer = getattr(self.iterator, "close", None)
+        if callable(closer):
+            closer()
+
+
 class CodingWorkspaceService:
+    _REAPER_CURSOR_LIMIT = _REAPER_CURSOR_LIMIT
+
     def __init__(
         self,
         config: CodingConfig,
@@ -141,8 +160,8 @@ class CodingWorkspaceService:
         self._cached_secret: bytes | None = secret
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._snapshot_reaper_task: asyncio.Task[None] | None = None
-        self._cleanup_cursor = 0
-        self._snapshot_cleanup_cursors: dict[str, int] = {}
+        self._reaper_cursor_lock = threading.RLock()
+        self._reaper_cursors: OrderedDict[str, _ReaperCursor] = OrderedDict()
 
     def resolve(self, identity: str, thread_id: str, repo_id: str) -> CodingWorkspace:
         if not self.config.enabled or repo_id not in self.config.repositories:
@@ -1219,16 +1238,17 @@ class CodingWorkspaceService:
             "-z",
             error_code="coding_analysis_snapshot_failed",
             extra_env=git_env,
-            max_output_bytes=(
-                self.config.analysis_snapshot_max_files * (1_024 + 128)
+            max_output_bytes=min(
+                self.config.analysis_snapshot_max_scan_entries
+                * _ANALYSIS_INDEX_ENTRY_MAX_BYTES,
+                self.config.analysis_snapshot_max_scan_bytes,
             ),
         )
+        budget.consume_read(len(raw_entries))
         files: dict[str, tuple[str, bytes]] = {}
         removed_paths: list[bytes] = []
         blob_cache: dict[str, bytes | None] = {}
-        for raw_entry in raw_entries.split(b"\0"):
-            if not raw_entry:
-                continue
+        for raw_entry in _iter_nul_records(raw_entries):
             budget.visit_entry()
             try:
                 raw_metadata, raw_path = raw_entry.split(b"\t", 1)
@@ -1332,72 +1352,80 @@ class CodingWorkspaceService:
         files: dict[str, tuple[str, bytes]] = {}
         index_records: list[bytes] = []
         budget.visit_directory()
-        for directory, child_directories, filenames in os.walk(
-            workspace.root,
-            followlinks=False,
-        ):
-            root = Path(directory)
-            retained_directories: list[str] = []
-            for name in sorted(child_directories):
-                budget.visit_entry()
-                candidate = root / name
-                try:
-                    details = candidate.lstat()
-                except OSError:
-                    continue
-                budget.attempt_file(details.st_size)
-                if stat.S_ISDIR(details.st_mode):
-                    budget.visit_directory()
-                if candidate.is_symlink() or candidate.name == ".git":
-                    continue
-                try:
-                    self.policy.validate_relative_path(
-                        workspace.root,
-                        candidate.relative_to(workspace.root).as_posix(),
-                        operation="read",
+        pending_directories = [workspace.root]
+        while pending_directories:
+            root = pending_directories.pop()
+            try:
+                entries = os.scandir(root)
+            except OSError:
+                continue
+            with entries:
+                for entry in entries:
+                    budget.visit_entry()
+                    candidate = Path(entry.path)
+                    path = candidate.relative_to(workspace.root).as_posix()
+                    try:
+                        details = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    budget.attempt_file(details.st_size)
+                    if stat.S_ISDIR(details.st_mode):
+                        budget.visit_directory()
+                        if candidate.name == ".git":
+                            continue
+                        try:
+                            self.policy.validate_relative_path(
+                                workspace.root,
+                                path,
+                                operation="read",
+                            )
+                        except CodingPolicyError:
+                            continue
+                        pending_directories.append(candidate)
+                        continue
+                    if not stat.S_ISREG(details.st_mode):
+                        continue
+                    mode = (
+                        "100755"
+                        if details.st_mode
+                        & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+                        else "100644"
                     )
-                except CodingPolicyError:
-                    continue
-                retained_directories.append(name)
-            child_directories[:] = retained_directories
-            for filename in sorted(filenames):
-                candidate = root / filename
-                path = candidate.relative_to(workspace.root).as_posix()
-                budget.visit_entry()
-                try:
-                    details = candidate.lstat()
-                except OSError:
-                    continue
-                budget.attempt_file(details.st_size)
-                mode = (
-                    "100755"
-                    if details.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-                    else "100644"
-                )
-                if not self._analysis_path_is_allowed(workspace.root, path, mode):
-                    continue
-                data = self._read_analysis_worktree_file(candidate, details, budget)
-                if data is None:
-                    continue
-                files[path] = (mode, data)
-                budget.include_file(len(data))
-                object_id = self._run_git_bytes(
-                    workspace.root,
-                    "hash-object",
-                    "-w",
-                    "--stdin",
-                    error_code="coding_analysis_snapshot_failed",
-                    extra_env=git_env,
-                    input_bytes=data,
-                    max_output_bytes=128,
-                ).decode("ascii").strip()
-                if len(object_id) not in {40, 64} or any(
-                    character not in "0123456789abcdef" for character in object_id
-                ):
-                    raise CodingWorkspaceError("coding_analysis_snapshot_failed")
-                index_records.append(
-                    f"{mode} {object_id}\t{path}".encode("utf-8") + b"\0"
-                )
+                    if not self._analysis_path_is_allowed(
+                        workspace.root,
+                        path,
+                        mode,
+                    ):
+                        continue
+                    data = self._read_analysis_worktree_file(
+                        candidate,
+                        details,
+                        budget,
+                    )
+                    if data is None:
+                        continue
+                    files[path] = (mode, data)
+                    budget.include_file(len(data))
+                    object_id = self._run_git_bytes(
+                        workspace.root,
+                        "hash-object",
+                        "-w",
+                        "--stdin",
+                        error_code="coding_analysis_snapshot_failed",
+                        extra_env=git_env,
+                        input_bytes=data,
+                        max_output_bytes=128,
+                    ).decode("ascii").strip()
+                    if len(object_id) not in {40, 64} or any(
+                        character not in "0123456789abcdef"
+                        for character in object_id
+                    ):
+                        raise CodingWorkspaceError(
+                            "coding_analysis_snapshot_failed"
+                        )
+                    index_records.append(
+                        f"{mode} {object_id}\t{path}".encode("utf-8") + b"\0"
+                    )
         if index_records:
             self._run_git_bytes(
                 workspace.root,
@@ -1476,10 +1504,21 @@ class CodingWorkspaceService:
         main_objects = (common / "objects").resolve()
         if not main_objects.is_dir():
             raise CodingWorkspaceError("coding_analysis_snapshot_failed")
+        isolated_git_dir = object_root / ".canonical-git"
+        (isolated_git_dir / "refs" / "heads").mkdir(parents=True)
+        (isolated_git_dir / "HEAD").write_text(
+            "ref: refs/heads/analysis\n",
+            encoding="ascii",
+        )
+        (isolated_git_dir / "config").write_text(
+            "[core]\n\trepositoryformatversion = 0\n\tbare = true\n",
+            encoding="ascii",
+        )
         return {
             "GIT_INDEX_FILE": str(index_path),
             "GIT_OBJECT_DIRECTORY": str(object_root),
             "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(main_objects),
+            "ASSISTANT_AGENT_ANALYSIS_GIT_DIR": str(isolated_git_dir),
         }
 
     def _analysis_git_diff_result(
@@ -1501,6 +1540,9 @@ class CodingWorkspaceService:
             "GIT_EXTERNAL_DIFF": "",
             **git_env,
         }
+        environment["GIT_DIR"] = environment.pop(
+            "ASSISTANT_AGENT_ANALYSIS_GIT_DIR"
+        )
         command = (
             "git",
             "-C",
@@ -1512,11 +1554,21 @@ class CodingWorkspaceService:
             "-c",
             "core.abbrev=40",
             "-c",
+            "core.quotePath=true",
+            "-c",
             "diff.algorithm=myers",
             "-c",
             "diff.indentHeuristic=false",
             "-c",
             "diff.renames=false",
+            "-c",
+            f"diff.orderFile={os.devnull}",
+            "-c",
+            "diff.interHunkContext=0",
+            "-c",
+            "diff.mnemonicPrefix=false",
+            "-c",
+            "diff.noprefix=false",
             "diff",
             "--no-ext-diff",
             "--no-textconv",
@@ -1529,6 +1581,9 @@ class CodingWorkspaceService:
             "--src-prefix=a/",
             "--dst-prefix=b/",
             "--no-relative",
+            f"-O{os.devnull}",
+            "--inter-hunk-context=0",
+            "--ignore-submodules=all",
             baseline_tree_object,
             current_tree_object,
             "--",
@@ -1834,20 +1889,21 @@ class CodingWorkspaceService:
     ) -> None:
         root = self.config.workspace_root
         if not root.is_dir():
+            self._drop_reaper_cursor(f"workspaces:{root}")
             return
-        all_management_roots = sorted(root.iterdir(), key=lambda item: item.name)
-        management_roots = all_management_roots
-        if max_workspaces is not None and all_management_roots:
-            start = self._cleanup_cursor % len(all_management_roots)
-            count = min(max_workspaces, len(all_management_roots))
-            management_roots = [
-                all_management_roots[(start + offset) % len(all_management_roots)]
-                for offset in range(count)
-            ]
-            self._cleanup_cursor = (start + count) % len(all_management_roots)
-        for management_root in management_roots:
+        for entry in self._iter_reaper_entries(
+            root,
+            limit=max_workspaces,
+            cursor_key=f"workspaces:{root}",
+        ):
+            try:
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+            except OSError:
+                continue
+            management_root = Path(entry.path)
             metadata_path = management_root / _METADATA_FILE
-            if not management_root.is_dir() or not metadata_path.is_file():
+            if not metadata_path.is_file():
                 continue
             try:
                 metadata = self._load_metadata(metadata_path)
@@ -1879,6 +1935,7 @@ class CodingWorkspaceService:
                     )
                     remove_workspace = True
             if remove_workspace:
+                self._drop_reaper_cursors_under(management_root)
                 shutil.rmtree(management_root, ignore_errors=False)
 
     def _reap_analysis_snapshots_locked(
@@ -1888,27 +1945,21 @@ class CodingWorkspaceService:
         max_snapshots: int | None = None,
     ) -> None:
         snapshots_root = management_root / _ANALYSIS_SNAPSHOTS_DIR
+        remaining = max_snapshots
         if snapshots_root.is_dir():
-            all_snapshot_roots = sorted(
-                snapshots_root.iterdir(), key=lambda item: item.name
-            )
-            snapshot_roots = all_snapshot_roots
-            cursor_key = str(management_root)
-            if max_snapshots is not None and all_snapshot_roots:
-                start = self._snapshot_cleanup_cursors.get(cursor_key, 0) % len(
-                    all_snapshot_roots
-                )
-                count = min(max_snapshots, len(all_snapshot_roots))
-                snapshot_roots = [
-                    all_snapshot_roots[(start + offset) % len(all_snapshot_roots)]
-                    for offset in range(count)
-                ]
-                self._snapshot_cleanup_cursors[cursor_key] = (
-                    start + count
-                ) % len(all_snapshot_roots)
-            for snapshot_root in snapshot_roots:
-                if not snapshot_root.is_dir():
+            enumerated = 0
+            for entry in self._iter_reaper_entries(
+                snapshots_root,
+                limit=remaining,
+                cursor_key=f"snapshots:{snapshots_root}",
+            ):
+                enumerated += 1
+                try:
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+                except OSError:
                     continue
+                snapshot_root = Path(entry.path)
                 if snapshot_root.name.startswith(_ANALYSIS_BUILD_PREFIX):
                     try:
                         self._remove_analysis_snapshot_directory(snapshot_root)
@@ -1942,10 +1993,16 @@ class CodingWorkspaceService:
                     self._remove_analysis_snapshot_directory(snapshot_root)
                 except OSError:
                     continue
-        index_paths = sorted(management_root.glob(".analysis-index-*"))
-        if max_snapshots is not None:
-            index_paths = index_paths[:max_snapshots]
-        for index_path in index_paths:
+            if remaining is not None:
+                remaining = max(0, remaining - enumerated)
+        for entry in self._iter_reaper_entries(
+            management_root,
+            limit=remaining,
+            cursor_key=f"indexes:{management_root}",
+        ):
+            if not entry.name.startswith(".analysis-index-"):
+                continue
+            index_path = Path(entry.path)
             try:
                 index_path.unlink(missing_ok=True)
                 Path(f"{index_path}.lock").unlink(missing_ok=True)
@@ -1972,6 +2029,95 @@ class CodingWorkspaceService:
                 os.close(directory_descriptor)
         except OSError:
             return
+
+    def _iter_reaper_entries(
+        self,
+        path: Path,
+        *,
+        limit: int | None,
+        cursor_key: str,
+    ) -> Iterator[os.DirEntry[str]]:
+        if limit is not None and limit <= 0:
+            return
+        if limit is None:
+            self._drop_reaper_cursor(cursor_key)
+            try:
+                entries = os.scandir(path)
+            except OSError:
+                return
+            with entries:
+                yield from entries
+            return
+        for _ in range(limit):
+            entry = self._next_reaper_entry(path, cursor_key)
+            if entry is None:
+                break
+            yield entry
+
+    def _next_reaper_entry(
+        self,
+        path: Path,
+        cursor_key: str,
+    ) -> os.DirEntry[str] | None:
+        with self._reaper_cursor_lock:
+            try:
+                details = path.stat(follow_symlinks=False)
+            except OSError:
+                self._drop_reaper_cursor_locked(cursor_key)
+                return None
+            if not stat.S_ISDIR(details.st_mode):
+                self._drop_reaper_cursor_locked(cursor_key)
+                return None
+            cursor = self._reaper_cursors.get(cursor_key)
+            if (
+                cursor is None
+                or cursor.path != path
+                or cursor.device != details.st_dev
+                or cursor.inode != details.st_ino
+            ):
+                self._drop_reaper_cursor_locked(cursor_key)
+                try:
+                    iterator = os.scandir(path)
+                except OSError:
+                    return None
+                while len(self._reaper_cursors) >= _REAPER_CURSOR_LIMIT:
+                    _, stale = self._reaper_cursors.popitem(last=False)
+                    stale.close()
+                cursor = _ReaperCursor(
+                    path=path,
+                    device=details.st_dev,
+                    inode=details.st_ino,
+                    iterator=iterator,
+                )
+                self._reaper_cursors[cursor_key] = cursor
+            else:
+                self._reaper_cursors.move_to_end(cursor_key)
+            try:
+                return next(cursor.iterator)
+            except (StopIteration, OSError):
+                self._drop_reaper_cursor_locked(cursor_key)
+                return None
+
+    def _drop_reaper_cursor(self, cursor_key: str) -> None:
+        with self._reaper_cursor_lock:
+            self._drop_reaper_cursor_locked(cursor_key)
+
+    def _drop_reaper_cursor_locked(self, cursor_key: str) -> None:
+        cursor = self._reaper_cursors.pop(cursor_key, None)
+        if cursor is not None:
+            cursor.close()
+
+    def _drop_reaper_cursors_under(self, root: Path) -> None:
+        with self._reaper_cursor_lock:
+            for key, cursor in tuple(self._reaper_cursors.items()):
+                if cursor.path == root or cursor.path.is_relative_to(root):
+                    self._drop_reaper_cursor_locked(key)
+
+    def _close_all_reaper_cursors(self) -> None:
+        with self._reaper_cursor_lock:
+            for cursor in self._reaper_cursors.values():
+                cursor.close()
+            self._reaper_cursors.clear()
 
     def start_snapshot_reaper(
         self,
@@ -2022,11 +2168,14 @@ class CodingWorkspaceService:
                 await task
             except asyncio.CancelledError:
                 pass
-        await asyncio.to_thread(
-            self.cleanup_expired,
-            max_workspaces=32,
-            max_snapshots_per_workspace=64,
-        )
+        try:
+            await asyncio.to_thread(
+                self.cleanup_expired,
+                max_workspaces=32,
+                max_snapshots_per_workspace=64,
+            )
+        finally:
+            self._close_all_reaper_cursors()
 
     def _read_path(
         self,
@@ -2199,6 +2348,17 @@ class CodingWorkspaceService:
 
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _iter_nul_records(payload: bytes) -> Iterator[bytes]:
+    start = 0
+    while start < len(payload):
+        end = payload.find(b"\0", start)
+        if end < 0:
+            raise CodingWorkspaceError("coding_analysis_snapshot_failed")
+        if end > start:
+            yield payload[start:end]
+        start = end + 1
 
 
 __all__ = ["CodingWorkspaceError", "CodingWorkspaceService"]
