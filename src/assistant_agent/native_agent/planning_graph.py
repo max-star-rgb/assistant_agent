@@ -41,9 +41,9 @@ from assistant_agent.native_agent.planning_recovery import (
     assess_planner_node,
     classify_operational_failure,
     controlled_finalize_node,
-    planner_failure_node,
     prepare_replan_node,
     route_after_planner_assessment,
+    sanitize_planner_propagation,
 )
 from assistant_agent.native_agent.state import PlanningState, WorkerState
 from assistant_agent.skills.loading import SkillCatalog
@@ -316,6 +316,7 @@ def build_planning_graph(
     tools: Sequence[BaseTool] = (),
     skill_catalog: SkillCatalog | None = None,
     budget_policy: PlanningBudgetPolicy | None = None,
+    checkpointer: Any | None = None,
 ):
     """Build a minimal planner/wave-worker/finalize graph around one fast graph."""
 
@@ -345,84 +346,115 @@ def build_planning_graph(
             planner_messages.append(
                 HumanMessage(content=_planner_recovery_context(recovery_context))
             )
-        planner_result = await fast_agent.ainvoke(
-            {
-                "messages": planner_messages,
-                "memory_context": tuple(state.get("memory_context", ())),
-                "memory_status": state.get("memory_status", "empty"),
-                "execution_mode": "planning",
-                "trusted_runtime_facts": state.get("trusted_runtime_facts"),
-                "agent_phase": "planner",
-                "active_skill_ids": list(state.get("planner_active_skill_ids", ())),
-                "skill_reference_grants": dict(
-                    state.get("planner_skill_reference_grants", {})
-                ),
-                "recovery_context": recovery_context,
-            },
-            context=runtime.context,
-        )
-        result_messages = list(planner_result.get("messages", ()))
-        new_evidence = capture_planner_evidence(
-            _new_planner_tool_messages(planner_messages, result_messages),
-            inventory_names=inventory_names,
-        )
-        active_skill_ids = _string_list(planner_result.get("active_skill_ids"))
-        evidence_ids = tuple(
-            dict.fromkeys(
-                [
-                    *(
-                        item.evidence_id
-                        for item in state.get("planner_evidence", ())
+        attempt = int(state.get("planner_attempt_count", 0)) + 1
+        try:
+            planner_result = await fast_agent.ainvoke(
+                {
+                    "messages": planner_messages,
+                    "memory_context": tuple(state.get("memory_context", ())),
+                    "memory_status": state.get("memory_status", "empty"),
+                    "execution_mode": "planning",
+                    "trusted_runtime_facts": state.get("trusted_runtime_facts"),
+                    "agent_phase": "planner",
+                    "active_skill_ids": list(
+                        state.get("planner_active_skill_ids", ())
                     ),
-                    *(item.evidence_id for item in new_evidence),
-                ]
+                    "skill_reference_grants": dict(
+                        state.get("planner_skill_reference_grants", {})
+                    ),
+                    "recovery_context": recovery_context,
+                },
+                context=runtime.context,
             )
-        )
-        phase_usage = BudgetUsage.model_validate(
-            planner_result.get("phase_budget_usage") or {}
-        )
-        usage = BudgetUsage(
-            model_calls=phase_usage.model_calls,
-            tool_calls=phase_usage.tool_calls,
-            node_attempts=phase_usage.node_attempts + 1,
-            replans=phase_usage.replans,
-        )
-        update: dict[str, Any] = {
-            "planner_active_skill_ids": active_skill_ids,
-            "planner_skill_reference_grants": _reference_grants(
-                planner_result.get("skill_reference_grants")
-            ),
-            "planner_evidence": list(new_evidence),
-            "worker_results": [],
-            "budget_usage": usage,
-        }
-        candidate = planner_result.get("structured_response")
-        if candidate is not None:
-            proposal = NativePlanProposal.model_validate(candidate)
-            update["plan_candidate"] = proposal
-            update["planner_outcome"] = PlannerOutcome(
-                status="succeeded",
-                plan_candidate=proposal,
-                evidence_ids=evidence_ids,
-                usage=usage,
+            result_messages = list(planner_result.get("messages", ()))
+            new_evidence = capture_planner_evidence(
+                _new_planner_tool_messages(planner_messages, result_messages),
+                inventory_names=inventory_names,
             )
-            return update
-        if planner_result.get("phase_budget_status") == "exhausted":
-            update["plan_candidate"] = None
-            update["planner_outcome"] = PlannerOutcome(
-                status="budget_exhausted",
-                evidence_ids=evidence_ids,
-                failure=FailureFact(
-                    category="budget_exhausted",
-                    code="planner_tool_budget_exhausted",
-                    phase="planner",
-                    plan_generation=int(state.get("plan_generation", 0)),
-                    attempt=max(1, usage.node_attempts),
+            active_skill_ids = _string_list(planner_result.get("active_skill_ids"))
+            evidence_ids = tuple(
+                dict.fromkeys(
+                    [
+                        *(
+                            item.evidence_id
+                            for item in state.get("planner_evidence", ())
+                        ),
+                        *(item.evidence_id for item in new_evidence),
+                    ]
+                )
+            )
+            phase_usage = BudgetUsage.model_validate(
+                planner_result.get("phase_budget_usage") or {}
+            )
+            usage = BudgetUsage(
+                model_calls=phase_usage.model_calls,
+                tool_calls=phase_usage.tool_calls,
+                node_attempts=1,
+                replans=phase_usage.replans,
+            )
+            update: dict[str, Any] = {
+                "planner_attempt_count": attempt,
+                "planner_active_skill_ids": active_skill_ids,
+                "planner_skill_reference_grants": _reference_grants(
+                    planner_result.get("skill_reference_grants")
                 ),
-                usage=usage,
-            )
-            return update
-        raise ValueError("planner completed without a plan candidate")
+                "planner_evidence": list(new_evidence),
+                "worker_results": [],
+                "budget_usage": usage,
+            }
+            candidate = planner_result.get("structured_response")
+            if candidate is not None:
+                proposal = NativePlanProposal.model_validate(candidate)
+                update["plan_candidate"] = proposal
+                update["planner_outcome"] = PlannerOutcome(
+                    status="succeeded",
+                    plan_candidate=proposal,
+                    evidence_ids=evidence_ids,
+                    usage=usage,
+                )
+                return update
+            if planner_result.get("phase_budget_status") == "exhausted":
+                update["plan_candidate"] = None
+                update["planner_outcome"] = PlannerOutcome(
+                    status="budget_exhausted",
+                    evidence_ids=evidence_ids,
+                    failure=FailureFact(
+                        category="budget_exhausted",
+                        code="planner_tool_budget_exhausted",
+                        phase="planner",
+                        plan_generation=int(state.get("plan_generation", 0)),
+                        attempt=attempt,
+                    ),
+                    usage=usage,
+                )
+                return update
+            raise ValueError("planner completed without a plan candidate")
+        except GraphBubbleUp:
+            raise
+        except Exception as error:
+            if classify_operational_failure(error):
+                usage = BudgetUsage(node_attempts=1)
+                return {
+                    "planner_attempt_count": attempt,
+                    "planner_outcome": PlannerOutcome(
+                        status="operational_failed",
+                        evidence_ids=tuple(
+                            item.evidence_id
+                            for item in state.get("planner_evidence", ())
+                        ),
+                        failure=FailureFact(
+                            category="operational",
+                            code="planner_operational_failure",
+                            phase="planner",
+                            plan_generation=int(state.get("plan_generation", 0)),
+                            attempt=attempt,
+                        ),
+                        usage=usage,
+                    ),
+                    "budget_usage": usage,
+                }
+            propagation_error = sanitize_planner_propagation(error)
+        raise propagation_error
 
     def admit_plan_node(state: PlanningState) -> dict[str, Any]:
         proposal = state.get("plan_candidate")
@@ -563,14 +595,6 @@ def build_planning_graph(
     builder.add_node(
         "planner",
         planner_node,
-        retry_policy=RetryPolicy(
-            initial_interval=0,
-            backoff_factor=0,
-            max_attempts=resolved_budget_policy.planner_attempts,
-            jitter=False,
-            retry_on=classify_operational_failure,
-        ),
-        error_handler=partial(planner_failure_node, policy=resolved_budget_policy),
     )
     builder.add_node(
         "assess_planner",
@@ -620,7 +644,7 @@ def build_planning_graph(
     builder.add_edge("join", "scheduler")
     builder.add_edge("finalize", END)
     builder.add_edge("controlled_finalize", END)
-    return builder.compile(name="AssistantPlanningGraph")
+    return builder.compile(name="AssistantPlanningGraph", checkpointer=checkpointer)
 
 
 def route_after_admission(state: PlanningState) -> str:

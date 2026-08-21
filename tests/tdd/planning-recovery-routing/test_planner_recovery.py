@@ -8,13 +8,22 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.errors import GraphInterrupt
 
 from assistant_agent.native_agent.context import AssistantRunContext
-from assistant_agent.native_agent.models import BudgetUsage, NativePlanProposal, PlanDeliverable
+from assistant_agent.native_agent.models import (
+    BudgetUsage,
+    NativePlanProposal,
+    PlanDeliverable,
+    PlannerEvidence,
+)
 from assistant_agent.native_agent.planning_budget import PlanningBudgetPolicy
 from assistant_agent.native_agent.planning_graph import build_planning_graph
-from assistant_agent.native_agent.planning_recovery import classify_operational_failure
+from assistant_agent.native_agent.planning_recovery import (
+    PlannerPropagationError,
+    classify_operational_failure,
+)
 from assistant_agent.skills.loading import SkillCatalog
 
 
@@ -177,3 +186,153 @@ def test_operational_classifier_rejects_control_and_contract_errors(
     """Catches control, authorization, and contract failures being retried."""
 
     assert not classify_operational_failure(error)
+
+
+class _MarkedTimeout(TimeoutError):
+    def __init__(self) -> None:
+        self.response = {
+            "body": "operational-body-marker",
+            "credential": "operational-credential-marker",
+        }
+        super().__init__("operational-body-marker")
+
+
+class _MarkedHttp4xx(Exception):
+    def __init__(self) -> None:
+        self.response = type(
+            "Response",
+            (),
+            {
+                "status_code": 400,
+                "body": "contract-body-marker",
+                "credential": "contract-credential-marker",
+            },
+        )()
+        super().__init__("contract-body-marker")
+
+
+class _TransientThenSuccessPlannerAgent:
+    name = "AssistantFastAgent"
+
+    def __init__(self) -> None:
+        self.planner_calls = 0
+
+    async def ainvoke(self, input: dict[str, Any], *, context: Any) -> dict[str, Any]:
+        del context
+        if input["agent_phase"] == "planner":
+            self.planner_calls += 1
+            if self.planner_calls == 1:
+                raise _MarkedTimeout()
+            return {
+                "messages": list(input["messages"]),
+                "structured_response": _zero_worker_plan(),
+            }
+        return {"messages": [*input["messages"], AIMessage(content="final")]}
+
+
+class _NonRetryablePlannerAgent:
+    name = "AssistantFastAgent"
+
+    async def ainvoke(self, input: dict[str, Any], *, context: Any) -> dict[str, Any]:
+        del input, context
+        raise _MarkedHttp4xx()
+
+
+def _zero_worker_plan() -> NativePlanProposal:
+    return NativePlanProposal(
+        schema_version="native_plan_v2",
+        nodes=(),
+        deliverables=(
+            PlanDeliverable(
+                deliverable_id="answer",
+                description="answer",
+                evidence_refs=("evidence-1",),
+            ),
+        ),
+    )
+
+
+def test_transient_planner_failure_retries_through_state_and_counts_attempts() -> None:
+    """Catches retry-success runs losing their first planner attempt delta."""
+
+    saver = InMemorySaver()
+    agent = _TransientThenSuccessPlannerAgent()
+    graph = build_planning_graph(
+        object(),
+        agent,
+        tools=[_probe_tool()],
+        skill_catalog=SkillCatalog(),
+        budget_policy=PlanningBudgetPolicy.from_base(1),
+        checkpointer=saver,
+    )
+    config = {"configurable": {"thread_id": "planner-transient-recovery"}}
+    result = asyncio.run(
+        graph.ainvoke(
+            {
+                **_planning_input(),
+                "planner_evidence": [
+                    PlannerEvidence(
+                        evidence_id="evidence-1",
+                        tool_name="probe_tool",
+                        status="succeeded",
+                        content="safe",
+                    )
+                ],
+            },
+            config=config,
+            context=AssistantRunContext(),
+        )
+    )
+
+    assert agent.planner_calls == 2
+    assert result["planner_attempt_count"] == 2
+    assert result["planner_outcome"].usage.node_attempts == 1
+    assert result["budget_usage"].node_attempts == 2
+    assert "operational-body-marker" not in _saver_text(saver)
+    assert "operational-credential-marker" not in _saver_text(saver)
+
+
+def test_nonretryable_planner_error_is_sanitized_before_checkpoint_boundary() -> None:
+    """Catches nonretryable provider payloads entering planner state or writes."""
+
+    saver = InMemorySaver()
+    graph = build_planning_graph(
+        object(),
+        _NonRetryablePlannerAgent(),
+        tools=[_probe_tool()],
+        skill_catalog=SkillCatalog(),
+        checkpointer=saver,
+    )
+    config = {"configurable": {"thread_id": "planner-contract-propagation"}}
+
+    with pytest.raises(PlannerPropagationError) as raised:
+        asyncio.run(graph.ainvoke(_planning_input(), config=config, context=AssistantRunContext()))
+
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert "contract-body-marker" not in str(raised.value)
+    assert "contract-credential-marker" not in str(raised.value)
+    assert "contract-body-marker" not in _saver_text(saver)
+    assert "contract-credential-marker" not in _saver_text(saver)
+
+
+def _saver_text(saver: InMemorySaver) -> str:
+    values: list[str] = []
+
+    def collect(value: object) -> None:
+        if isinstance(value, bytes):
+            values.append(value.decode("utf-8", errors="replace"))
+        elif isinstance(value, str):
+            values.append(value)
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                collect(key)
+                collect(item)
+        elif isinstance(value, (list, tuple, set)):
+            for item in value:
+                collect(item)
+
+    collect(saver.storage)
+    collect(saver.writes)
+    collect(saver.blobs)
+    return "\n".join(values)

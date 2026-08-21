@@ -9,16 +9,23 @@ from urllib.error import HTTPError, URLError
 
 import httpx
 from langchain_core.messages import AIMessage
-from langgraph.errors import GraphBubbleUp, NodeCancelledError, NodeError
+from langgraph.errors import GraphBubbleUp, NodeCancelledError
 
 from assistant_agent.native_agent.models import (
     BudgetUsage,
-    FailureFact,
     PlannerOutcome,
     RecoveryDecision,
 )
 from assistant_agent.native_agent.planning_budget import PlanningBudgetPolicy
 from assistant_agent.native_agent.state import PlanningState
+
+
+class PlannerPropagationError(RuntimeError):
+    """A stable planner boundary error without provider exception references."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
 
 
 def classify_operational_failure(error: BaseException) -> bool:
@@ -75,33 +82,21 @@ def classify_operational_failure(error: BaseException) -> bool:
     return operational
 
 
-def planner_failure_node(
-    state: PlanningState,
-    error: NodeError,
-    *,
-    policy: PlanningBudgetPolicy,
-) -> dict[str, object]:
-    """Convert only exhausted retryable planner errors into a stable outcome."""
+def sanitize_planner_propagation(error: Exception) -> PlannerPropagationError:
+    """Erase unsafe exception chains before a nonrecoverable planner failure exits.
 
-    if not classify_operational_failure(error.error):
-        raise error.error
-    attempt = max(1, policy.planner_attempts)
-    failure = FailureFact(
-        category="operational",
-        code="planner_operational_failure",
-        phase="planner",
-        plan_generation=_plan_generation(state),
-        attempt=attempt,
-    )
-    return {
-        "planner_outcome": PlannerOutcome(
-            status="operational_failed",
-            evidence_ids=_evidence_ids(state),
-            failure=failure,
-            usage=BudgetUsage(node_attempts=attempt),
-        ),
-        "budget_usage": BudgetUsage(node_attempts=attempt),
-    }
+    This deliberately recognizes only authorization, contract/schema, nonretryable
+    provider status, and an unclassified fail-closed remainder.  It never copies an
+    exception message, response, cause, context, or arbitrary provider attribute.
+    """
+
+    if isinstance(error, PermissionError):
+        return PlannerPropagationError("planner_authorization_failure")
+    if isinstance(error, (TypeError, ValueError, AssertionError)):
+        return PlannerPropagationError("planner_contract_failure")
+    if _exception_status_code(error) is not None:
+        return PlannerPropagationError("planner_nonretryable_provider_failure")
+    return PlannerPropagationError("planner_unclassified_failure")
 
 
 def assess_planner_node(
@@ -119,7 +114,12 @@ def assess_planner_node(
     failure = outcome.failure
     if failure is None:
         raise ValueError("failed planner outcome requires failure")
-    if _budget_usage(state).replans >= policy.max_replans:
+    if (
+        outcome.status == "operational_failed"
+        and _planner_attempt_count(state) < policy.planner_attempts
+    ):
+        decision = RecoveryDecision(action="retry", reason_code=failure.code)
+    elif _budget_usage(state).replans >= policy.max_replans:
         decision = RecoveryDecision(
             action="finalize",
             reason_code="planner_recovery_budget_exhausted",
@@ -166,6 +166,7 @@ def prepare_replan_node(
     )
     return {
         "plan_generation": generation,
+        "planner_attempt_count": 0,
         "plan_candidate": None,
         "planner_outcome": None,
         "recovery_decision": None,
@@ -225,6 +226,10 @@ def _plan_generation(state: Mapping[str, object]) -> int:
     return int(state.get("plan_generation", 0))
 
 
+def _planner_attempt_count(state: Mapping[str, object]) -> int:
+    return int(state.get("planner_attempt_count", 0))
+
+
 def _evidence_ids(state: Mapping[str, object]) -> tuple[str, ...]:
     evidence = state.get("planner_evidence", ())
     return tuple(
@@ -249,7 +254,8 @@ __all__ = [
     "assess_planner_node",
     "classify_operational_failure",
     "controlled_finalize_node",
-    "planner_failure_node",
     "prepare_replan_node",
     "route_after_planner_assessment",
+    "PlannerPropagationError",
+    "sanitize_planner_propagation",
 ]

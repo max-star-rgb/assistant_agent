@@ -158,6 +158,7 @@ class PlanningState(AgentState):
     admission_error: NotRequired[str | None]
     revision_count: NotRequired[int]
     plan_generation: NotRequired[int]
+    planner_attempt_count: NotRequired[int]
     planner_outcome: NotRequired[PlannerOutcome | None]
     recovery_decision: NotRequired[RecoveryDecision | None]
     recovery_context: NotRequired[dict[str, JsonValue] | None]
