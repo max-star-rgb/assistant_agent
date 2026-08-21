@@ -17,6 +17,7 @@ from assistant_agent.media.embedding.coordinator_store import (
 )
 from assistant_agent.media.embedding.observability import LoggingEmbeddingObserver
 from assistant_agent.media.embedding.provider import (
+    MultimodalEmbeddingProvider,
     create_multimodal_embedding_provider,
 )
 from assistant_agent.media.video.h264_video_ingestion import H264VideoIngestionService
@@ -126,8 +127,8 @@ class VisualPerceptionToolResources:
     visual_semantic_store_pool: SessionVisualSemanticStorePool
     visual_memory_text_index: VisualMemoryTextIndex
     visual_history_probe: VisualObservationHistoryProbe
-    embedding_coordinator_store: SessionEmbeddingCoordinatorStore
-    visual_reminder_registry: VisualReminderRegistry
+    embedding_coordinator_store: SessionEmbeddingCoordinatorStore | None
+    visual_reminder_registry: VisualReminderRegistry | None
 
 
 class VisualPerceptionSession:
@@ -258,6 +259,7 @@ class VisualPerceptionModule:
         visual_memory_text_index: VisualMemoryTextIndex | None = None,
         observer_factory: ObserverFactory | None = None,
         vision_client: VisionUnderstandingClient | None = None,
+        embedding_provider: MultimodalEmbeddingProvider | None = None,
     ) -> None:
         self.config = config or ProviderConfig.from_env()
         self.data_root = Path(data_root)
@@ -266,7 +268,9 @@ class VisualPerceptionModule:
             realtime_video_memory_store or RealtimeVideoMemoryStore()
         )
         self.embedding_observer = LoggingEmbeddingObserver()
-        self.embedding_provider = create_multimodal_embedding_provider(self.config)
+        self.embedding_provider = (
+            embedding_provider or create_multimodal_embedding_provider(self.config)
+        )
         self.embedding_coordinator_store = SessionEmbeddingCoordinatorStore(
             factory=lambda _user_id, session_id: SessionEmbeddingCoordinator(
                 session_id,
@@ -431,6 +435,10 @@ class VisualPerceptionModule:
             return self._vision_client.understand(request)
 
     def tool_resources(self) -> VisualPerceptionToolResources:
+        embedding_readiness = self.embedding_provider.readiness()
+        reminder_ready = (
+            embedding_readiness.image_ready and embedding_readiness.text_ready
+        )
         return VisualPerceptionToolResources(
             video_context_store=self.video_context_store,
             vision_client=self,
@@ -438,8 +446,12 @@ class VisualPerceptionModule:
             visual_semantic_store_pool=self.visual_semantic_store_pool,
             visual_memory_text_index=self.visual_memory_text_index,
             visual_history_probe=self.visual_history_probe,
-            embedding_coordinator_store=self.embedding_coordinator_store,
-            visual_reminder_registry=self.visual_reminder_registry,
+            embedding_coordinator_store=(
+                self.embedding_coordinator_store if reminder_ready else None
+            ),
+            visual_reminder_registry=(
+                self.visual_reminder_registry if reminder_ready else None
+            ),
         )
 
     async def aclose(self) -> None:

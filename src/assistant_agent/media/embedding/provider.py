@@ -114,6 +114,41 @@ class MockMultimodalEmbeddingProvider:
         )
 
 
+class UnavailableMultimodalEmbeddingProvider:
+    """Fail-closed boundary used when real joint embeddings are unconfigured."""
+
+    provider = "unavailable"
+    model_id = "unavailable-multimodal-embedding"
+
+    def embed_image(self, observation: ImageObservation) -> EmbeddingOutcome:
+        return self._failure("image", observation)
+
+    def embed_text(self, observation: TextObservation) -> EmbeddingOutcome:
+        return self._failure("text", observation)
+
+    def readiness(self) -> EmbeddingReadiness:
+        return EmbeddingReadiness(
+            provider=self.provider,
+            model_id=self.model_id,
+            issues=["provider_unconfigured"],
+        )
+
+    def _failure(
+        self,
+        modality: str,
+        observation: ImageObservation | TextObservation,
+    ) -> EmbeddingFailureEvent:
+        return EmbeddingFailureEvent(
+            modality=modality,
+            session_id=observation.session_id,
+            source_observation_id=observation.observation_id,
+            code="provider_unconfigured",
+            safe_message="real multimodal embedding provider is not configured",
+            recoverable=False,
+            latency_ms=0,
+            model_id=self.model_id,
+        )
+
 class DashScopeImageOnlyEmbeddingProvider:
     """Compatibility adapter: DashScope has no proven matching text space here."""
 
@@ -239,7 +274,7 @@ def create_multimodal_embedding_provider(config=None) -> MultimodalEmbeddingProv
                 )
             )
         )
-    return MockMultimodalEmbeddingProvider()
+    return UnavailableMultimodalEmbeddingProvider()
 
 
 def _deterministic_unit_vector(seed: str, dimension: int) -> list[float]:

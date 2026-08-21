@@ -335,6 +335,8 @@ class LocalSiglip2EmbeddingProvider:
     def readiness(self) -> EmbeddingReadiness:
         try:
             manifest = self._validated_manifest()
+            if manifest.image is not None or manifest.text is not None:
+                self._inference_backend(manifest)
         except LocalSiglip2Error as exc:
             return EmbeddingReadiness(
                 provider=self.provider, model_id=self.model_id, issues=[exc.code]

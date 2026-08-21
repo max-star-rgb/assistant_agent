@@ -105,7 +105,10 @@ dimension/finite 并 L2 normalize。ONNX Runtime 只允许 CUDA 为首个 execut
 
 schema v1 image-only manifest 仍可读取，但 readiness 必须是 `image_ready=true、text_ready=false`。
 DashScope adapter 同样只声明 image readiness；没有共同空间证据时禁止拼接本地 SigLIP2 text。
-mock 模式使用确定性离线共同空间，不加载真实模型。
+mock 模式使用确定性离线共同空间，不加载真实模型。real 模式未显式选择并完整配置共同空间 Provider 时
+必须返回结构化 unavailable，禁止回退 mock；只有 image/text readiness 同时成功才向生产 Tool composition
+注入视觉提醒资源。local SigLIP2 readiness 除校验 manifest 外还必须成功初始化 CUDA-only image/text ONNX
+backend，不能只凭资产文件存在宣称 ready。
 
 新配置名是 `MULTIMODAL_AGENT_EMBEDDING_PROVIDER`、`SIGLIP2_MODEL_DIR` 和
 `SIGLIP2_CUDA_DEVICE_ID`。旧 `MULTIMODAL_AGENT_VISION_EMBEDDING_PROVIDER` 与
