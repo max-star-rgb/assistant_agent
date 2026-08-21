@@ -32,7 +32,7 @@ VisualObservationStatus = Literal["succeeded", "failed"]
 
 
 class VisualSemanticRecord(BaseModel):
-    """One validated current-frame VLM result and derived-index status."""
+    """One validated keyframe-window VLM result and derived-index status."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -40,6 +40,9 @@ class VisualSemanticRecord(BaseModel):
     session_id: str = Field(min_length=1, max_length=240)
     video_id: str = Field(min_length=1, max_length=240)
     frame_sequence: int = Field(ge=0)
+    visual_window_id: str | None = Field(default=None, min_length=1, max_length=160)
+    window_start_sequence: int | None = Field(default=None, ge=0)
+    window_sequences: tuple[int, ...] = Field(default_factory=tuple, max_length=5)
     captured_at_ms: int | None = Field(default=None, ge=0)
     summary: str = Field(default="", max_length=4_000)
     scene: str | None = Field(default=None, max_length=1_000)
@@ -75,6 +78,15 @@ class VisualSemanticRecord(BaseModel):
 
     @model_validator(mode="after")
     def validate_search_index(self) -> "VisualSemanticRecord":
+        if self.visual_window_id is not None:
+            if not self.window_sequences:
+                raise ValueError("visual window record requires frame sequences")
+            if self.window_sequences[-1] != self.frame_sequence:
+                raise ValueError("visual window target must match frame sequence")
+            if self.window_start_sequence != self.window_sequences[0]:
+                raise ValueError("visual window start must match frame sequences")
+        elif self.window_sequences or self.window_start_sequence is not None:
+            raise ValueError("visual window metadata requires a window id")
         if self.search_embedding is not None:
             if not self.search_embedding or not self.embedding_space_id:
                 raise ValueError("visual search embedding metadata is incomplete")
@@ -335,7 +347,13 @@ class SessionVisualSemanticStore:
             )[-limit:]
             return [record.model_copy(deep=True) for record in records]
 
-    def has_exact_sequence(self, video_id: str, *, sequence: int) -> bool:
+    def has_exact_sequence(
+        self,
+        video_id: str,
+        *,
+        sequence: int,
+        visual_window_id: str | None = None,
+    ) -> bool:
         """Return whether one successful record exists for the exact sequence."""
 
         if isinstance(sequence, bool) or sequence < 0:
@@ -344,6 +362,10 @@ class SessionVisualSemanticStore:
             self._ensure_open()
             return any(
                 record.frame_sequence == sequence
+                and (
+                    visual_window_id is None
+                    or record.visual_window_id in {None, visual_window_id}
+                )
                 for record in self._records_for_video_locked(video_id)
             )
 
@@ -352,6 +374,7 @@ class SessionVisualSemanticStore:
         video_id: str,
         *,
         sequence: int,
+        visual_window_id: str | None = None,
     ) -> VisualSemanticRecord | None:
         """Return a copy of the newest record for one exact frame sequence."""
 
@@ -363,6 +386,10 @@ class SessionVisualSemanticStore:
                 record
                 for record in self._records_for_video_locked(video_id)
                 if record.frame_sequence == sequence
+                and (
+                    visual_window_id is None
+                    or record.visual_window_id in {None, visual_window_id}
+                )
             ]
             if not candidates:
                 return None
@@ -446,6 +473,7 @@ class SessionVisualSemanticStore:
                 if until_ms is not None and observed_at_ms > until_ms:
                     continue
                 records.append(record)
+            records = _latest_window_revisions(records)
             records.sort(
                 key=lambda item: (
                     (
@@ -867,6 +895,32 @@ class SessionVisualSemanticStore:
     def _delete_evidence(records: list[VisualSemanticRecord]) -> None:
         for record in records:
             Path(record.evidence_ref).unlink(missing_ok=True)
+
+
+def _latest_window_revisions(
+    records: list[VisualSemanticRecord],
+) -> list[VisualSemanticRecord]:
+    """Project immutable window revisions to one latest memory entry per window."""
+
+    retained: list[VisualSemanticRecord] = []
+    latest_by_window: dict[tuple[str, str], VisualSemanticRecord] = {}
+    for record in records:
+        window_id = record.visual_window_id
+        if window_id is None:
+            retained.append(record)
+            continue
+        window_key = (record.video_id, window_id)
+        current = latest_by_window.get(window_key)
+        if current is None or (
+            record.frame_sequence,
+            record.created_at_ms,
+        ) > (
+            current.frame_sequence,
+            current.created_at_ms,
+        ):
+            latest_by_window[window_key] = record
+    retained.extend(latest_by_window.values())
+    return retained
 
 
 def _cosine_similarity(left: list[float], right: list[float]) -> float:

@@ -1,4 +1,4 @@
-"""Fixed-rate, bounded semantic processing for realtime video frames."""
+"""Latest-wins semantic processing for realtime video frames."""
 
 from __future__ import annotations
 
@@ -49,31 +49,6 @@ class ImageEmbeddingCoordinator(Protocol):
     ) -> EmbeddingOutcome: ...
 
 
-class FixedIntervalSemanticSampler:
-    """Admit increasing frame sequences at a fixed monotonic-time interval."""
-
-    def __init__(self, *, fps: float = 5.0) -> None:
-        if fps <= 0:
-            raise ValueError("semantic input FPS must be positive")
-        self.fps = fps
-        self.interval_seconds = 1.0 / fps
-        self._last_seen_sequence: int | None = None
-        self._last_admitted_at: float | None = None
-
-    def admit(self, *, sequence: int, now: float) -> bool:
-        if sequence < 0:
-            return False
-        if self._last_seen_sequence is not None and sequence <= self._last_seen_sequence:
-            return False
-        self._last_seen_sequence = sequence
-        if self._last_admitted_at is not None:
-            elapsed = now - self._last_admitted_at
-            if elapsed < self.interval_seconds:
-                return False
-        self._last_admitted_at = now
-        return True
-
-
 @dataclass(frozen=True)
 class SemanticAdmission:
     """Immediate admission result returned before embedding or VLM work."""
@@ -92,14 +67,13 @@ class _SemanticFrameJob:
 
 
 class SemanticFramePipeline:
-    """Run one image embedding with one bounded pending slot."""
+    """Run one embedding in flight while retaining only the latest pending frame."""
 
     def __init__(
         self,
         *,
         coordinator: ImageEmbeddingCoordinator,
         selector: SemanticKeyframeSelector,
-        sampler: FixedIntervalSemanticSampler,
         retention_root: Path | str,
         on_selected: SelectedCallback,
         on_embedded: EmbeddedCallback | None = None,
@@ -109,7 +83,6 @@ class SemanticFramePipeline:
     ) -> None:
         self.coordinator = coordinator
         self.selector = selector
-        self.sampler = sampler
         self.retention_root = Path(retention_root)
         self.on_selected = on_selected
         self.on_embedded = on_embedded
@@ -118,6 +91,7 @@ class SemanticFramePipeline:
         self.clock = clock
         self._pending: _SemanticFrameJob | None = None
         self._inflight: _SemanticFrameJob | None = None
+        self._last_submitted_sequence: int | None = None
         self._interactive_sequences: set[int] = set()
         self._owned_paths: set[Path] = set()
         self._worker: asyncio.Task[None] | None = None
@@ -128,17 +102,22 @@ class SemanticFramePipeline:
         self._closed = False
 
     async def submit(self, frame: VideoFrame) -> SemanticAdmission:
-        """Admit a background frame without waiting for embedding."""
+        """Admit every increasing background frame without temporal sampling."""
 
         if self._closed:
             raise RuntimeError("semantic frame pipeline is closed")
-        if not self.sampler.admit(sequence=frame.sequence, now=self.clock()):
-            self._emit("semantic_frame.skipped", frame.sequence, "fixed_interval")
-            return SemanticAdmission(
-                admitted=False,
-                reason="fixed_interval",
-                sequence=frame.sequence,
-            )
+        async with self._lock:
+            if (
+                self._last_submitted_sequence is not None
+                and frame.sequence <= self._last_submitted_sequence
+            ):
+                self._emit("semantic_frame.skipped", frame.sequence, "non_increasing")
+                return SemanticAdmission(
+                    admitted=False,
+                    reason="non_increasing",
+                    sequence=frame.sequence,
+                )
+            self._last_submitted_sequence = frame.sequence
         retained = await asyncio.to_thread(self._retain_frame, frame)
         return await self._put(
             _SemanticFrameJob(
@@ -232,6 +211,22 @@ class SemanticFramePipeline:
             if self._closed:
                 await self._delete_owned(job.frame)
                 raise RuntimeError("semantic frame pipeline is closed")
+            if (
+                not job.pinned
+                and self._last_submitted_sequence is not None
+                and job.frame.sequence < self._last_submitted_sequence
+            ):
+                await self._delete_owned(job.frame)
+                self._emit(
+                    "semantic_frame.skipped",
+                    job.frame.sequence,
+                    "superseded_before_admission",
+                )
+                return SemanticAdmission(
+                    admitted=False,
+                    reason="superseded_before_admission",
+                    sequence=job.frame.sequence,
+                )
             if (
                 job.pinned
                 and self._inflight is not None

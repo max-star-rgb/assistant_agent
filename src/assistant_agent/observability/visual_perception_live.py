@@ -16,12 +16,13 @@ from assistant_agent.observability.visual_perception_report import (
 
 
 class VisualPerceptionLogFollower:
-    def __init__(self, log_file: Path, *, session_digest: str) -> None:
+    def __init__(self, log_file: Path, *, session_digest: str | None) -> None:
         self.log_file = Path(log_file)
-        self.session_digest = parse_visual_perception_log(
-            (),
-            session_digest=session_digest,
-        ).session_digest
+        self.session_digest = (
+            parse_visual_perception_log((), session_digest=session_digest).session_digest
+            if session_digest is not None
+            else None
+        )
         self._identity: tuple[int, int] | None = None
         self._offset = 0
         self._buffer = b""
@@ -69,15 +70,17 @@ class VisualPerceptionLiveFeed:
         self,
         log_file: Path,
         *,
-        session_digest: str,
+        session_digest: str | None,
         max_events: int = 50_000,
     ) -> None:
         if max_events <= 0:
             raise ValueError("live feed event limit must be positive")
-        self.session_digest = parse_visual_perception_log(
-            (),
-            session_digest=session_digest,
-        ).session_digest
+        self.session_digest = (
+            parse_visual_perception_log((), session_digest=session_digest).session_digest
+            if session_digest is not None
+            else None
+        )
+        self._active_session_digest = self.session_digest
         self.max_events = max_events
         self._follower = VisualPerceptionLogFollower(
             log_file,
@@ -90,9 +93,14 @@ class VisualPerceptionLiveFeed:
     def snapshot(self) -> VisualPerceptionReport:
         with self._lock:
             self._refresh_locked()
+            active_digest = self._active_session_digest or ""
             return build_visual_perception_report(
-                tuple(self._events),
-                session_digest=self.session_digest,
+                tuple(
+                    event
+                    for event in self._events
+                    if event.get("session_id_digest") == active_digest
+                ),
+                session_digest=active_digest,
             )
 
     def events_after(self, event_id: int) -> tuple[dict[str, Any], ...]:
@@ -109,6 +117,8 @@ class VisualPerceptionLiveFeed:
             projected = {**event, "order": self._next_event_id}
             self._next_event_id += 1
             self._events.append(projected)
+            if self.session_digest is None:
+                self._active_session_digest = projected["session_id_digest"]
         overflow = len(self._events) - self.max_events
         if overflow > 0:
             del self._events[:overflow]

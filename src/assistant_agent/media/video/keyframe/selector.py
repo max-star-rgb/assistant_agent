@@ -20,17 +20,12 @@ SemanticKeyframeReason = Literal[
 
 @dataclass(frozen=True)
 class SemanticKeyframeConfig:
-    min_interval_seconds: float = 0.5
-    max_interval_seconds: float = 10.0
-    semantic_threshold: float = 0.18
+    max_interval_seconds: float = 2.0
+    semantic_threshold: float = 0.08
 
     def __post_init__(self) -> None:
-        if self.min_interval_seconds < 0:
-            raise ValueError("keyframe min interval must be non-negative")
         if self.max_interval_seconds <= 0:
             raise ValueError("keyframe max interval must be positive")
-        if self.min_interval_seconds > self.max_interval_seconds:
-            raise ValueError("keyframe min interval must not exceed max interval")
         if not 0.0 <= self.semantic_threshold <= 1.0:
             raise ValueError("keyframe semantic threshold must be between 0 and 1")
 
@@ -74,10 +69,7 @@ class SemanticKeyframeSelector:
         reference_sequence = self._last_event.frame_sequence
         semantic_similarity = self.comparator.similarity(event, self._last_event)
         semantic_change = 1.0 - semantic_similarity
-        if (
-            elapsed >= self.config.min_interval_seconds
-            and semantic_change >= self.config.semantic_threshold
-        ):
+        if semantic_change >= self.config.semantic_threshold:
             return self._commit(
                 event,
                 frame_timestamp_seconds,

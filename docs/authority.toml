@@ -183,7 +183,7 @@ exclusive_allowlist = []
 id = "visual-perception"
 authority = "docs/visual-perception-architecture.md"
 read_when = [
-  "实时视觉、逐帧并行 VLM、目标帧屏障或视觉文本消费",
+  "实时视觉、SigLIP2 latest-wins、并行关键帧 VLM、逻辑关键帧窗口或目标帧屏障",
   "SigLIP2、image/text embedding、semantic keyframe 或视觉提醒",
   "短期视觉时间线、visual_memory_search、Qdrant 或历史找物",
 ]

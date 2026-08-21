@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from assistant_agent.media.vision.models import (
     VideoUnderstandingResult,
@@ -32,14 +32,46 @@ class RealtimeVisualObservationRequest(BaseModel):
     user_id: str = Field(min_length=1, max_length=320)
     session_id: str = Field(min_length=1, max_length=320)
     video_id: str = Field(min_length=1, max_length=500)
-    frame_ref: str = Field(min_length=1, max_length=4_000)
-    frame_sequence: int = Field(ge=0)
-    frame_timestamp_ms: int | None = Field(default=None, ge=0)
+    frame_refs: tuple[str, ...] = Field(min_length=1, max_length=5)
+    frame_sequences: tuple[int, ...] = Field(min_length=1, max_length=5)
+    frame_timestamps_ms: tuple[int | None, ...] = Field(min_length=1, max_length=5)
     visual_window_id: str | None = Field(default=None, min_length=1, max_length=160)
     window_start_sequence: int | None = Field(default=None, ge=0)
     target_sequence: int | None = Field(default=None, ge=0)
     window_role: Literal["target", "context", "background"] = "background"
     provider_connection_isolated: bool = False
+
+    @model_validator(mode="after")
+    def validate_window(self) -> "RealtimeVisualObservationRequest":
+        if not (
+            len(self.frame_refs)
+            == len(self.frame_sequences)
+            == len(self.frame_timestamps_ms)
+        ):
+            raise ValueError("realtime visual window fields must have equal lengths")
+        if any(
+            current >= following
+            for current, following in zip(
+                self.frame_sequences,
+                self.frame_sequences[1:],
+            )
+        ):
+            raise ValueError("realtime visual frame sequences must be increasing")
+        if self.target_sequence is not None and self.target_sequence != self.frame_sequence:
+            raise ValueError("realtime visual target must be the last supplied keyframe")
+        return self
+
+    @property
+    def frame_ref(self) -> str:
+        return self.frame_refs[-1]
+
+    @property
+    def frame_sequence(self) -> int:
+        return self.frame_sequences[-1]
+
+    @property
+    def frame_timestamp_ms(self) -> int | None:
+        return self.frame_timestamps_ms[-1]
 
 
 class RealtimeVisualObservationOutcome(BaseModel):
@@ -74,16 +106,20 @@ class RealtimeVisualObservationService:
             raise RuntimeError("realtime_visual_observation_service_closed")
         provider_request = VisionUnderstandingRequest(
             video_ref=request.video_id,
-            frame_refs=[request.frame_ref],
-            user_query="简短描述当前单帧中直接可见的内容。",
+            frame_refs=list(request.frame_refs),
+            user_query=(
+                "按时间顺序理解这些关键帧。最后一张是目标当前画面，前面的帧只用于理解变化过程；"
+                "summary 必须优先、明确描述最后一张画面，可以补充与前序关键帧相比发生的变化。"
+            ),
             user_id=request.user_id,
             session_id=request.session_id,
             metadata={
                 "frame_sequence": request.frame_sequence,
+                "frame_sequences": list(request.frame_sequences),
                 "frame_timestamp_ms": request.frame_timestamp_ms,
                 "_force_video_understanding": True,
                 "visual_context_compaction": {
-                    "status": "disabled_single_frame_text",
+                    "status": "disabled_keyframe_window_text",
                     "compacted": False,
                 },
             },
@@ -100,7 +136,7 @@ class RealtimeVisualObservationService:
                 capability="video_understanding",
                 source="background_keyframe_observation",
                 media_kind="live_view",
-                media_count=1,
+                media_count=len(request.frame_refs),
                 frame_sequence=request.frame_sequence,
                 visual_window_id=request.visual_window_id,
                 window_start_sequence=request.window_start_sequence,
@@ -109,11 +145,12 @@ class RealtimeVisualObservationService:
                 provider_connection_isolated=(
                     request.provider_connection_isolated
                 ),
-                prompt_version="realtime-single-frame-v1",
+                prompt_version="realtime-keyframe-window-v1",
                 local_input_content={
                     "mode": "background_keyframe_observation",
                     "media_kind": "live_view",
                     "frame_sequence": request.frame_sequence,
+                    "frame_sequences": list(request.frame_sequences),
                     "visual_window_id": request.visual_window_id,
                     "window_start_sequence": request.window_start_sequence,
                     "target_sequence": request.target_sequence,

@@ -108,12 +108,14 @@ def parse_visual_perception_log(
 def parse_visual_perception_line(
     raw_line: str,
     *,
-    session_digest: str,
+    session_digest: str | None,
     order: int,
 ) -> dict[str, Any] | None:
-    normalized_digest = session_digest.strip().lower()
-    if _SESSION_DIGEST.fullmatch(normalized_digest) is None:
-        raise ValueError("session digest must contain exactly 16 lowercase hex characters")
+    normalized_digest = (
+        _normalize_session_digest(session_digest)
+        if session_digest is not None
+        else None
+    )
     line = _ANSI_ESCAPE.sub("", raw_line)
     marker = line.find(_MARKER)
     if marker < 0:
@@ -130,7 +132,12 @@ def parse_visual_perception_line(
     allowed = _EVENT_FIELDS.get(event_name)
     if allowed is None or not isinstance(payload, dict):
         return None
-    if payload.get("session_id_digest") != normalized_digest:
+    payload_digest = payload.get("session_id_digest")
+    if not isinstance(payload_digest, str) or _SESSION_DIGEST.fullmatch(
+        payload_digest
+    ) is None:
+        return None
+    if normalized_digest is not None and payload_digest != normalized_digest:
         return None
     projected = {
         key: payload[key]
@@ -200,6 +207,13 @@ def _is_prompt_safe_scalar(value: object) -> bool:
     return value is None or isinstance(value, (str, int, float, bool))
 
 
+def _normalize_session_digest(session_digest: str) -> str:
+    normalized_digest = session_digest.strip().lower()
+    if _SESSION_DIGEST.fullmatch(normalized_digest) is None:
+        raise ValueError("session digest must contain exactly 16 lowercase hex characters")
+    return normalized_digest
+
+
 _HTML = """<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -213,14 +227,15 @@ _HTML = """<!doctype html>
 </head>
 <body><main class="wrap">
 <div class="head"><div><h1>视觉感知诊断时间轴</h1><div class="muted">仅包含脱敏 ID、帧序号、cosine 与决策，不包含媒体内容或 embedding 向量。</div></div><div><code id="session"></code><div id="liveStatus" class="muted"></div></div></div>
-<section class="card"><h2>关键帧选取</h2><div class="legend"><span><i class="dot" style="background:var(--blue)"></i>semantic change</span><span><i class="dot" style="background:var(--amber)"></i>阈值</span><span><i class="dot" style="background:var(--green)"></i>selected</span></div><canvas id="semanticChangeChart" class="chart"></canvas></section>
+<section class="card"><h2>关键帧选取</h2><div class="muted">横坐标：实际完成 SigLIP2 的原始帧 sequence；被 latest-pending 替换或 embedding 失败的帧没有 cosine 点。</div><div class="legend"><span><i class="dot" style="background:var(--blue)"></i>未选中</span><span><i class="dot" style="background:var(--green)"></i>已选关键帧</span><span><i class="dot" style="background:var(--amber)"></i>semantic change 阈值</span></div><canvas id="semanticChangeChart" class="chart"></canvas></section>
 <section class="card"><h2>提醒图文匹配 cosine</h2><div class="legend"><span><i class="dot" style="background:var(--blue)"></i>cosine</span><span><i class="dot" style="background:var(--amber)"></i>阈值</span><span><i class="dot" style="background:var(--red)"></i>matched</span></div><canvas id="reminderCosineChart" class="chart"></canvas></section>
 <section class="card"><h2>事件明细</h2><div id="events"></div></section>
 </main>
 <script>
 const report=__REPORT_DATA__;
 const liveEventsUrl=__LIVE_EVENTS_URL__;
-document.getElementById('session').textContent=report.session_digest;
+const sessionLabel=document.getElementById('session');
+sessionLabel.textContent=report.session_digest||'等待视觉会话';
 const semantic=report.events.filter(e=>e.event_name==='semantic_frame.selected'||(e.event_name==='semantic_frame.skipped'&&e.semantic_change!==undefined));
 const comparisons=report.events.filter(e=>e.event_name==='visual_reminder.compared');
 const reminderLifecycle=report.events.filter(e=>e.event_name==='visual_reminder.created'||e.event_name==='visual_reminder.triggered'||e.event_name==='visual_reminder.cancelled');
@@ -236,12 +251,12 @@ function draw(canvas, rows, valueKey, thresholdKey, selectedKey, yMin, yMax, mar
  for(const row of rows){const value=row[valueKey],seq=row.sequence??row.frame_sequence;if(!Number.isFinite(value))continue;c.fillStyle=row[selectedKey]?'#fb7185':row.selected?'#4ade80':'#60a5fa';c.beginPath();c.arc(x(seq),y(value),4,0,Math.PI*2);c.fill()}
  c.fillStyle='#92a0ba';c.fillText(String(min),p.l,h-12);c.fillText(String(max),w-p.r-24,h-12)
 }
-function render(){draw(document.getElementById('semanticChangeChart'),semantic,'semantic_change','semantic_threshold','matched',0,1);draw(document.getElementById('reminderCosineChart'),comparisons,'similarity','similarity_threshold','matched',-1,1,reminderLifecycle)}
+function render(){draw(document.getElementById('semanticChangeChart'),semantic,'semantic_change','semantic_threshold','matched',0,2);draw(document.getElementById('reminderCosineChart'),comparisons,'similarity','similarity_threshold','matched',-1,1,reminderLifecycle)}
 addEventListener('resize',render);render();
 const eventRoot=document.getElementById('events');
 function appendCell(row,value,tag='td'){const cell=document.createElement(tag);cell.textContent=String(value??'');row.appendChild(cell)}
 function renderTable(){eventRoot.replaceChildren();if(!report.events.length){const empty=document.createElement('div');empty.className='empty';empty.textContent='没有匹配当前 session 的诊断事件';eventRoot.appendChild(empty);return}const table=document.createElement('table'),head=document.createElement('thead'),headRow=document.createElement('tr'),body=document.createElement('tbody');for(const label of ['时间','帧','事件','状态','数值'])appendCell(headRow,label,'th');head.appendChild(headRow);for(const event of report.events){const row=document.createElement('tr');appendCell(row,event.recorded_at);appendCell(row,event.sequence??event.frame_sequence);appendCell(row,event.event_name);appendCell(row,event.reason??event.status);appendCell(row,event.semantic_change??event.similarity);body.appendChild(row)}table.append(head,body);eventRoot.appendChild(table)}
 renderTable();
-function acceptLiveEvent(event){if(!event||typeof event!=='object'||typeof event.event_name!=='string')return;report.events.push(event);if(event.event_name==='semantic_frame.selected'||(event.event_name==='semantic_frame.skipped'&&event.semantic_change!==undefined))semantic.push(event);if(event.event_name==='visual_reminder.compared')comparisons.push(event);if(event.event_name==='visual_reminder.created'||event.event_name==='visual_reminder.triggered'||event.event_name==='visual_reminder.cancelled')reminderLifecycle.push(event);render();renderTable()}
+function acceptLiveEvent(event){if(!event||typeof event!=='object'||typeof event.event_name!=='string')return;const digest=event.session_id_digest;if(typeof digest==='string'&&digest!==report.session_digest){const previous=report.session_digest;report.session_digest=digest;sessionLabel.textContent=digest;report.events.length=0;semantic.length=0;comparisons.length=0;reminderLifecycle.length=0;document.getElementById('liveStatus').textContent=previous?`已切换会话 ${previous} → ${digest}`:'已发现视觉会话'}report.events.push(event);if(event.event_name==='semantic_frame.selected'||(event.event_name==='semantic_frame.skipped'&&event.semantic_change!==undefined))semantic.push(event);if(event.event_name==='visual_reminder.compared')comparisons.push(event);if(event.event_name==='visual_reminder.created'||event.event_name==='visual_reminder.triggered'||event.event_name==='visual_reminder.cancelled')reminderLifecycle.push(event);render();renderTable()}
 if(liveEventsUrl){const status=document.getElementById('liveStatus'),latest=Math.max(0,...report.events.map(event=>Number.isInteger(event.order)?event.order:0)),separator=liveEventsUrl.includes('?')?'&':'?',source=new EventSource(`${liveEventsUrl}${separator}after=${latest}`);status.textContent='正在连接实时日志…';source.onopen=()=>{status.textContent='实时更新中'};source.onerror=()=>{status.textContent='连接中断，正在重连…'};source.addEventListener('visual-perception',message=>{try{acceptLiveEvent(JSON.parse(message.data))}catch{status.textContent='收到无法解析的诊断事件'}})}
 </script></body></html>"""

@@ -65,8 +65,10 @@ def _context() -> ToolContext:
         metadata={
             "entry_profile": "agent_service",
             "visual_window_id": "visual-window-test",
-            "visual_window_start_sequence": 4,
+            "visual_window_start_sequence": 8,
             "visual_target_sequence": 8,
+            "visual_window_sequences": (8,),
+            "visual_window_timestamps_ms": (0,),
         },
     )
 
@@ -78,8 +80,8 @@ def _branch(store: SessionVisualSemanticStore) -> VideoUnderstandingBranch:
     )
 
 
-def test_target_eight_releases_without_waiting_for_seven(tmp_path: Path) -> None:
-    """Regression: a pending context frame must not extend the target barrier."""
+def test_target_projection_contains_only_target_observation(tmp_path: Path) -> None:
+    """Historical keyframe text remains stored but is not projected as current."""
 
     store = SignallingSemanticStore(
         root=tmp_path / "store",
@@ -104,14 +106,67 @@ def test_target_eight_releases_without_waiting_for_seven(tmp_path: Path) -> None
         result = future.result(timeout=1)
 
     assert result.success is True
-    assert result.data["window_start_sequence"] == 4
+    assert result.data["window_start_sequence"] == 8
     assert result.data["target_sequence"] == 8
-    assert result.data["ready_sequences"] == [4, 5, 6, 8]
-    assert result.data["missing_sequences"] == [7]
+    assert result.data["ready_sequences"] == [8]
+    assert result.data["missing_sequences"] == []
     assert result.data["target_ready"] is True
-    assert [item["sequence"] for item in result.data["observations"]] == [4, 5, 6, 8]
-    assert result.data["observations"][-1]["role"] == "target"
+    assert [item["sequence"] for item in result.data["observations"]] == [8]
+    assert result.data["observations"][0]["role"] == "target"
     assert all(item["sequence"] not in {3, 9} for item in result.data["observations"])
+    assert result.model_observation == {
+        "window": [
+            {
+                "sequence": 8,
+                "captured_at": "1970-01-01T08:00:00.000+08:00",
+            }
+        ],
+        "vlm_response": "sequence-8",
+    }
+
+
+def test_target_projection_does_not_remove_history_from_semantic_store(tmp_path: Path) -> None:
+    """The live-view window is one frame while short-term visual memory stays intact."""
+
+    store = SessionVisualSemanticStore(
+        root=tmp_path / "sparse-store",
+        session_id="session-window",
+    )
+    for sequence in (2, 3, 5, 8, 13, 21, 34):
+        store.record_success(_record(tmp_path, sequence=sequence))
+    context = _context()
+    context.metadata.update(
+        {
+            "visual_window_start_sequence": 34,
+            "visual_target_sequence": 34,
+            "visual_window_sequences": (34,),
+        }
+    )
+
+    result = _branch(store).execute(
+        VideoUnderstandingRequest(video_ref="video-window"),
+        context,
+    )
+
+    assert result.data["ready_sequences"] == [34]
+    assert result.data["missing_sequences"] == []
+    assert [item["sequence"] for item in result.data["observations"]] == [34]
+    assert [
+        item.frame_sequence
+        for item in store.recent_at_or_before(
+            "video-window",
+            sequence=34,
+            limit=8,
+        )
+    ] == [
+        2,
+        3,
+        5,
+        8,
+        13,
+        21,
+        34,
+    ]
 
 
 @pytest.mark.parametrize("terminal", ["failed", "timeout"])
@@ -147,4 +202,11 @@ def test_target_failure_or_timeout_never_uses_sequence_seven_as_current(
     assert result.data["target_status"] == terminal
     assert result.data["target_sequence"] == 8
     assert "sequence-7" not in str(result.model_observation)
-
+    assert set(result.model_observation) == {"window", "vlm_response"}
+    assert result.model_observation["window"] == [
+        {
+            "sequence": 8,
+            "captured_at": "1970-01-01T08:00:00.000+08:00",
+        }
+    ]
+    assert result.model_observation["vlm_response"]

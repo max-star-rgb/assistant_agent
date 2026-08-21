@@ -1,4 +1,4 @@
-"""Expose retained single-frame VLM text for main-model retrieval."""
+"""Expose retained keyframe-window VLM text for main-model retrieval."""
 
 from __future__ import annotations
 
@@ -138,6 +138,7 @@ class VisualMemorySearchService:
                 since_ms=effective_since_ms,
                 until_ms=request.until_ms,
                 freshness_record_id=records[-1].record_id,
+                record_ids=tuple(record.record_id for record in records),
                 limit=self.limit,
             )
         )
@@ -163,7 +164,7 @@ class VisualMemorySearchService:
             and hit.document.session_id == request.session_id
         ]
         observations: list[VisualMemoryTextObservation] = []
-        for _hit, record in retained_hits:
+        for _hit, record in retained_hits[: self.limit]:
             observed_at_ms = (
                 record.captured_at_ms
                 if record.captured_at_ms is not None
@@ -187,7 +188,7 @@ class VisualMemorySearchService:
             searchable_observation_count=searchable_count,
             matched_observation_count=matched_count,
             returned_observation_count=len(observations),
-            truncated=False,
+            truncated=len(observations) < matched_count,
             coverage_complete=(
                 index_result.coverage_complete and searchable_count == len(records)
             ),

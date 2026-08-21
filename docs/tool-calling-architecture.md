@@ -70,6 +70,9 @@ WebSocket 已成功完成 `callType=VIDEO` 的 control 握手；`visual_memory_s
 `uploaded_media_inspect`、`live_view_inspect`、`visual_memory_search` 和 `visual_reminder_manage` 都由原生
 函数 Tool 工厂构造；Tool
 层只负责标准执行与可信运行事实注入，视觉算法和资源复用全部由视觉 authority 负责。
+`live_view_inspect` 的模型可见 content 固定为
+`window[{sequence, captured_at}] + vlm_response`，其中北京时间由 Tool owner 从受信媒体时间机械格式化；
+完整视觉状态与诊断只属于 artifact、contract 与 trace，不重复投影给主模型。
 
 只读 Tool 由 `ToolRetryMiddleware` 做有界重试，重试耗尽后产生 error `ToolMessage`；非 read 内建 Tool
 使用官方 `BaseTool.handle_tool_error` 把 native boundary 抛出的 `ToolException` 转为同类 error

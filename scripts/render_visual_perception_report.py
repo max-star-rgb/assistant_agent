@@ -34,7 +34,7 @@ LIVE_HOST = "127.0.0.1"
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--log-file", type=Path, required=True)
-    parser.add_argument("--session-digest", required=True)
+    parser.add_argument("--session-digest")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--port", type=int, default=8765)
@@ -55,6 +55,8 @@ def main(argv: list[str] | None = None) -> int:
             port=args.port,
             open_browser=args.open_browser,
         )
+    if args.session_digest is None:
+        raise SystemExit("--session-digest is required unless --live is used")
     try:
         with args.log_file.open("r", encoding="utf-8", errors="replace") as source:
             report = parse_visual_perception_log(
@@ -81,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
 def _serve_live(
     *,
     log_file: Path,
-    session_digest: str,
+    session_digest: str | None,
     port: int,
     open_browser: bool,
 ) -> int:

@@ -40,9 +40,9 @@ def test_live_view_window_resolves_from_vlm_side_module() -> None:
         window=VisualTargetWindow(
             window_id="visual-window-test",
             video_id="video-window",
-            start_sequence=4,
+            start_sequence=8,
             target_sequence=8,
-            sequences=(4, 5, 6, 7, 8),
+            sequences=(8,),
         ),
     )
 
@@ -50,8 +50,9 @@ def test_live_view_window_resolves_from_vlm_side_module() -> None:
     assert projection is not None
     assert projection.live_video_ids == ("video-window",)
     assert projection.window_id == "visual-window-test"
-    assert projection.window_start_sequence == 4
+    assert projection.window_start_sequence == 8
     assert projection.target_sequence == 8
+    assert projection.window_sequences == (8,)
     assert projection.target_video_id == "video-window"
     # a different session must not observe it
     assert module.resolve_live_view("user-1", "thread-2") is None

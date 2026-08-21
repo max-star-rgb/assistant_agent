@@ -1,8 +1,10 @@
 """Video understanding Tool backed by a shared video adapter."""
 
 from collections.abc import Callable
+from datetime import datetime
 from time import perf_counter_ns, time
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from assistant_agent.tools.capability_output import build_capability_output_contract
 from assistant_agent.media.vision.models import (
@@ -95,6 +97,8 @@ class VideoUnderstandingBranch:
         status_snapshot = None
         text_observations: list[dict[str, object]] | None = None
         visual_target_sequence = self._live_target_sequence(context)
+        visual_window_sequences = self._live_window_sequences(context)
+        visual_window_timestamps_ms = self._live_window_timestamps_ms(context)
         visual_window_start_sequence = self._live_window_start_sequence(context)
         barrier_started_ns: int | None = None
         if (
@@ -141,6 +145,8 @@ class VideoUnderstandingBranch:
                     snapshot,
                     window_start_sequence=visual_window_start_sequence,
                     target_sequence=visual_target_sequence,
+                    window_sequences=visual_window_sequences,
+                    window_timestamps_ms=visual_window_timestamps_ms,
                     observations=text_observations,
                 )
                 self._record_target_barrier_finished(
@@ -178,6 +184,8 @@ class VideoUnderstandingBranch:
                 snapshot=status_snapshot,
                 window_start_sequence=visual_window_start_sequence,
                 target_sequence=visual_target_sequence,
+                window_sequences=visual_window_sequences,
+                window_timestamps_ms=visual_window_timestamps_ms,
                 status_override=status_override,
                 target_status=target_status,
             )
@@ -306,6 +314,7 @@ class VideoUnderstandingBranch:
                 record = semantic_store.exact_sequence(
                     video_ref,
                     sequence=target_sequence,
+                    visual_window_id=self._live_window_id(context),
                 )
             else:
                 record = semantic_store.latest(video_ref)
@@ -344,6 +353,7 @@ class VideoUnderstandingBranch:
         semantic_store = self._semantic_store(context)
         target_sequence = self._live_target_sequence(context)
         window_start_sequence = self._live_window_start_sequence(context)
+        window_sequences = self._live_window_sequences(context)
         if semantic_store is not None:
             sequence = target_sequence
             if sequence is None and snapshot is not None:
@@ -362,6 +372,13 @@ class VideoUnderstandingBranch:
                         limit=LIVE_VIEW_TEXT_TIMELINE_LIMIT,
                     )
                 )
+                if window_sequences:
+                    allowed_sequences = set(window_sequences)
+                    records = [
+                        record
+                        for record in records
+                        if record.frame_sequence in allowed_sequences
+                    ]
                 return [
                     {
                         "sequence": record.frame_sequence,
@@ -417,6 +434,9 @@ class VideoUnderstandingBranch:
 
     @classmethod
     def _live_window_start_sequence(cls, context: ToolContext) -> int | None:
+        window_sequences = cls._live_window_sequences(context)
+        if window_sequences:
+            return window_sequences[0]
         target_sequence = cls._live_target_sequence(context)
         start_sequence = context.metadata.get("visual_window_start_sequence")
         if (
@@ -428,6 +448,50 @@ class VideoUnderstandingBranch:
         ):
             return start_sequence
         return None
+
+    @classmethod
+    def _live_window_sequences(cls, context: ToolContext) -> tuple[int, ...]:
+        value = context.metadata.get("visual_window_sequences")
+        if not isinstance(value, (list, tuple)) or not value:
+            return ()
+        if len(value) > REALTIME_VISUAL_TARGET_WINDOW_SIZE:
+            return ()
+        sequences: list[int] = []
+        for sequence in value:
+            if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 0:
+                return ()
+            if sequences and sequence <= sequences[-1]:
+                return ()
+            sequences.append(sequence)
+        target_sequence = cls._live_target_sequence(context)
+        if target_sequence is None or sequences[-1] != target_sequence:
+            return ()
+        return tuple(sequences)
+
+    @classmethod
+    def _live_window_timestamps_ms(
+        cls,
+        context: ToolContext,
+    ) -> tuple[int | None, ...]:
+        sequences = cls._live_window_sequences(context)
+        value = context.metadata.get("visual_window_timestamps_ms")
+        if not sequences or not isinstance(value, (list, tuple)):
+            return tuple(None for _ in sequences)
+        if len(value) != len(sequences):
+            return tuple(None for _ in sequences)
+        timestamps: list[int | None] = []
+        for timestamp_ms in value:
+            if timestamp_ms is None:
+                timestamps.append(None)
+            elif (
+                isinstance(timestamp_ms, int)
+                and not isinstance(timestamp_ms, bool)
+                and timestamp_ms >= 0
+            ):
+                timestamps.append(timestamp_ms)
+            else:
+                return tuple(None for _ in sequences)
+        return tuple(timestamps)
 
     @staticmethod
     def _live_window_id(context: ToolContext) -> str | None:
@@ -555,6 +619,8 @@ class VideoUnderstandingBranch:
         *,
         window_start_sequence: int | None = None,
         target_sequence: int | None = None,
+        window_sequences: tuple[int, ...] = (),
+        window_timestamps_ms: tuple[int | None, ...] = (),
         observations: list[dict[str, object]] | None = None,
     ) -> ToolResult:
         output_ref = f"memory://realtime-video/{_safe_ref(snapshot.video_id)}"
@@ -579,6 +645,7 @@ class VideoUnderstandingBranch:
             window_start_sequence,
             target_sequence,
             ready_sequences,
+            window_sequences=window_sequences,
         )
         payload = {
             "status": status,
@@ -608,6 +675,8 @@ class VideoUnderstandingBranch:
             "snapshot_sequence": snapshot.last_success_sequence,
             "window_start_sequence": window_start_sequence,
             "target_sequence": target_sequence,
+            "window_sequences": list(window_sequences),
+            "window_timestamps_ms": list(window_timestamps_ms),
             "ready_sequences": ready_sequences,
             "missing_sequences": missing_sequences,
             "target_ready": target_ready,
@@ -658,6 +727,8 @@ class VideoUnderstandingBranch:
         snapshot: RealtimeVideoSnapshot | None,
         window_start_sequence: int | None = None,
         target_sequence: int | None = None,
+        window_sequences: tuple[int, ...] = (),
+        window_timestamps_ms: tuple[int | None, ...] = (),
         status_override: str | None = None,
         target_status: str | None = None,
     ) -> ToolResult:
@@ -708,11 +779,14 @@ class VideoUnderstandingBranch:
             ),
             "window_start_sequence": window_start_sequence,
             "target_sequence": target_sequence,
+            "window_sequences": list(window_sequences),
+            "window_timestamps_ms": list(window_timestamps_ms),
             "ready_sequences": [],
             "missing_sequences": _missing_window_sequences(
                 window_start_sequence,
                 target_sequence,
                 [],
+                window_sequences=window_sequences,
             ),
             "target_ready": False,
             "target_status": target_status or status,
@@ -1161,44 +1235,55 @@ def _timestamp_model_observation(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def _live_view_model_observation(payload: dict[str, Any]) -> dict[str, Any]:
-    freshness = {
-        "observed_timestamp_ms": payload.get("observed_timestamp_ms"),
-        "sequence_gap": payload.get("sequence_gap"),
-        "fallback_used": payload.get("fallback_used"),
-        "refresh_in_progress": bool(
-            payload.get("in_flight") or int(payload.get("pending_count") or 0) > 0
+    sequences = payload.get("window_sequences")
+    if not isinstance(sequences, list):
+        sequences = []
+    timestamps = payload.get("window_timestamps_ms")
+    if not isinstance(timestamps, list) or len(timestamps) != len(sequences):
+        timestamps = [None] * len(sequences)
+    return {
+        "window": [
+            {
+                "sequence": sequence,
+                "captured_at": _beijing_time(timestamp_ms),
+            }
+            for sequence, timestamp_ms in zip(sequences, timestamps)
+        ],
+        "vlm_response": str(
+            payload.get("summary")
+            or payload.get("description")
+            or "当前没有可用的视觉理解文本。"
         ),
     }
-    observation = {
-        "status": payload.get("status"),
-        "summary": payload.get("summary"),
-        "observations": payload.get("observations"),
-        "freshness": {
-            key: value
-            for key, value in freshness.items()
-            if value not in (None, "", [], {})
-        },
-        "usable_visual_text": payload.get("usable_visual_text", True),
-        "window_start_sequence": payload.get("window_start_sequence"),
-        "target_sequence": payload.get("target_sequence"),
-        "ready_sequences": payload.get("ready_sequences"),
-        "missing_sequences": payload.get("missing_sequences"),
-        "target_ready": payload.get("target_ready"),
-        "target_status": payload.get("target_status"),
-        "error_code": payload.get("error_code"),
-    }
-    return {
-        key: value
-        for key, value in observation.items()
-        if value not in (None, "", [], {})
-    }
+
+
+def _beijing_time(timestamp_ms: Any) -> str | None:
+    if (
+        isinstance(timestamp_ms, bool)
+        or not isinstance(timestamp_ms, int)
+        or timestamp_ms < 0
+    ):
+        return None
+    try:
+        captured_at = datetime.fromtimestamp(
+            timestamp_ms / 1000,
+            tz=ZoneInfo("Asia/Shanghai"),
+        )
+    except (OverflowError, OSError, ValueError):
+        return None
+    return captured_at.isoformat(timespec="milliseconds")
 
 
 def _missing_window_sequences(
     start_sequence: int | None,
     target_sequence: int | None,
     ready_sequences: list[int],
+    *,
+    window_sequences: tuple[int, ...] = (),
 ) -> list[int]:
+    if window_sequences:
+        ready = set(ready_sequences)
+        return [sequence for sequence in window_sequences if sequence not in ready]
     if start_sequence is None or target_sequence is None:
         return []
     ready = set(ready_sequences)

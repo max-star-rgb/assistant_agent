@@ -118,49 +118,60 @@ def _observer(
     )
 
 
-def test_each_frame_owns_one_service_for_the_whole_observation(tmp_path: Path) -> None:
-    """Regression: sharing one mutable Qwen adapter races socket and sequence state."""
+def test_each_completed_window_starts_one_isolated_vlm(
+    tmp_path: Path,
+) -> None:
 
     async def scenario() -> None:
-        registry = IsolatedServiceRegistry(expected_count=5)
+        registry = IsolatedServiceRegistry(expected_count=1)
         observer = _observer(tmp_path, registry)
         try:
             for sequence in range(4, 9):
-                await observer.submit(_frame(tmp_path, sequence))
+                frame = _frame(tmp_path, sequence)
+                observer._accept_video_id(frame)
+                await observer._handle_semantic_selection(
+                    frame,
+                    None,
+                    "semantic",
+                )
             assert await asyncio.to_thread(registry.all_entered.wait, 1) is True
 
-            assert len(registry.created_ids) == 5
-            assert set(registry.sequence_by_service.values()) == {4, 5, 6, 7, 8}
-            assert len(set(registry.sequence_by_service)) == 5
-            assert registry.max_active == 5
+            assert registry.sequence_by_service == {1: 8}
+            assert registry.max_active == 1
         finally:
             registry.release.set()
             await observer.wait_idle()
             await observer.close()
 
-        assert registry.close_counts == {1: 1, 2: 1, 3: 1, 4: 1, 5: 1}
+        assert registry.close_counts == {1: 1}
 
     asyncio.run(scenario())
 
 
-def test_one_frame_failure_does_not_reuse_or_close_another_service(
+def test_one_window_failure_closes_only_its_own_service(
     tmp_path: Path,
 ) -> None:
-    """Regression: sequence 7 failure must not corrupt clients serving 4-6 or 8."""
+    """Regression: a failed window must close its isolated client exactly once."""
 
     async def scenario() -> None:
-        registry = IsolatedServiceRegistry(expected_count=5, failing_sequence=7)
+        registry = IsolatedServiceRegistry(expected_count=1, failing_sequence=8)
         observer = _observer(tmp_path, registry)
         try:
             for sequence in range(4, 9):
-                await observer.submit(_frame(tmp_path, sequence))
+                frame = _frame(tmp_path, sequence)
+                observer._accept_video_id(frame)
+                await observer._handle_semantic_selection(
+                    frame,
+                    None,
+                    "semantic",
+                )
             assert await asyncio.to_thread(registry.all_entered.wait, 1) is True
         finally:
             registry.release.set()
             await observer.wait_idle()
             await observer.close()
 
-        assert set(registry.sequence_by_service.values()) == {4, 5, 6, 7, 8}
-        assert registry.close_counts == {1: 1, 2: 1, 3: 1, 4: 1, 5: 1}
+        assert registry.sequence_by_service == {1: 8}
+        assert registry.close_counts == {1: 1}
 
     asyncio.run(scenario())

@@ -1,11 +1,12 @@
-"""Governed bounded background observation for realtime video keyframes."""
+"""Governed parallel background observation for realtime video keyframes."""
 
 from __future__ import annotations
 
 import asyncio
 import shutil
+from collections import deque
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter_ns, time
 from typing import Any
@@ -36,7 +37,6 @@ from assistant_agent.media.video.realtime_video_memory import (
 )
 from assistant_agent.media.video.video_context import VideoFrame
 from assistant_agent.media.video.semantic_pipeline import (
-    FixedIntervalSemanticSampler,
     SemanticFramePipeline,
 )
 from assistant_agent.media.video.semantic_store import (
@@ -65,12 +65,12 @@ from assistant_agent.media.video.visual_memory_index import (
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_KEYFRAME_ROOT = REPO_ROOT / ".data" / "agent_service_video_keyframes"
 DEFAULT_CLOSE_WAIT_SECONDS = 1.0
-REALTIME_KEYFRAME_MAX_INTERVAL_SECONDS = 10.0
+KEYFRAME_WINDOW_SIZE = 5
 
 
 @dataclass(frozen=True)
 class _ObservationItem:
-    record: SemanticKeyframeRecord
+    records: tuple[SemanticKeyframeRecord, ...]
     enqueued_ns: int
     video_ingress_ns: int
     h264_decode_latency_ms: int | None
@@ -79,6 +79,28 @@ class _ObservationItem:
     window_start_sequence: int | None = None
     target_sequence: int | None = None
     window_role: str = "background"
+
+    @property
+    def record(self) -> SemanticKeyframeRecord:
+        return self.records[-1]
+
+
+@dataclass(frozen=True)
+class LogicalKeyframeWindowSnapshot:
+    """Immutable selected-keyframe prefix belonging to one fixed window."""
+
+    window_id: str
+    video_id: str
+    sequences: tuple[int, ...]
+    timestamps_ms: tuple[int | None, ...] = ()
+
+    @property
+    def start_sequence(self) -> int:
+        return self.sequences[0]
+
+    @property
+    def target_sequence(self) -> int:
+        return self.sequences[-1]
 
 
 @dataclass(frozen=True)
@@ -153,6 +175,7 @@ class RealtimeVideoObserver:
         self._owns_semantic_store = semantic_store is None
         self._resource_release = resource_release
         self._resources_released = False
+        self._close_resources_finalized = False
         resolved_provider_config = provider_config or ProviderConfig()
         self.close_wait_seconds = close_wait_seconds
         self.clock_ns = clock_ns
@@ -161,7 +184,12 @@ class RealtimeVideoObserver:
         self.closed = False
         self._observation_tasks: dict[int, asyncio.Task[None]] = {}
         self._observation_items: dict[int, _ObservationItem] = {}
+        self._logical_keyframe_sequences: deque[int] = deque(maxlen=256)
+        self._logical_keyframe_records: dict[int, SemanticKeyframeRecord] = {}
+        self._open_logical_window_sequences: list[int] = []
+        self._latest_closed_logical_window: LogicalKeyframeWindowSnapshot | None = None
         self._reserved_sequences: set[int] = set()
+        self._attempted_window_targets: set[tuple[str, int]] = set()
         self._owned_paths: set[Path] = set()
         self._idle = asyncio.Event()
         self._idle.set()
@@ -169,7 +197,6 @@ class RealtimeVideoObserver:
         self._snapshot_updated = asyncio.Event()
         self._enqueue_lock = asyncio.Lock()
         self._promotion_tasks: set[asyncio.Task[Any]] = set()
-        self._pinned_sequences: dict[int, int] = {}
         self._close_task: asyncio.Task[None] | None = None
         self._semantic_pending_count = 0
         self._semantic_in_flight = False
@@ -177,9 +204,6 @@ class RealtimeVideoObserver:
             coordinator=embedding_coordinator,
             selector=SemanticKeyframeSelector(
                 SemanticKeyframeConfig(
-                    min_interval_seconds=(
-                        resolved_provider_config.keyframe_min_interval_seconds
-                    ),
                     max_interval_seconds=(
                         resolved_provider_config.keyframe_max_interval_seconds
                     ),
@@ -187,9 +211,6 @@ class RealtimeVideoObserver:
                         resolved_provider_config.keyframe_semantic_threshold
                     ),
                 )
-            ),
-            sampler=FixedIntervalSemanticSampler(
-                fps=resolved_provider_config.semantic_input_fps
             ),
             retention_root=self.keyframe_root / "semantic-input",
             on_embedded=self._handle_semantic_embedding,
@@ -199,7 +220,7 @@ class RealtimeVideoObserver:
         )
 
     async def submit(self, frame: VideoFrame) -> FrameProcessingResult:
-        """Start one frame-owned VLM task and preserve semantic processing."""
+        """Submit one decoded frame to the low-latency semantic stage."""
 
         if self.closed:
             raise RuntimeError("realtime video observer is closed")
@@ -208,21 +229,16 @@ class RealtimeVideoObserver:
     async def _submit(self, frame: VideoFrame) -> FrameProcessingResult:
         self._accept_video_id(frame)
         started_ns = self.clock_ns()
-        vlm_enqueued = await self._enqueue(
-            frame,
-            enqueued_ns=started_ns,
-            keyframe_selection_latency_ms=0,
-        )
         admission = await self.semantic_pipeline.submit(frame)
         finished_ns = self.clock_ns()
         return FrameProcessingResult(
             frame_id=frame.frame_id,
             timestamp_seconds=_to_ai_frame(frame).timestamp_seconds,
             sampled=admission.admitted,
-            sampling_rate=self.semantic_pipeline.sampler.fps,
+            sampling_rate=0.0,
             metrics=KeyframeChangeMetrics(),
             keyframe_selected=False,
-            qwen_called=vlm_enqueued,
+            qwen_called=False,
             latency_ms=_elapsed_ms(started_ns, finished_ns),
             decision_reason=admission.reason,
             semantic_admission=admission.reason,
@@ -281,92 +297,54 @@ class RealtimeVideoObserver:
         window_start_sequence: int,
         target_sequence: int,
     ) -> WindowPromotionResult:
+        before = set(self._logical_keyframe_sequences)
         target = frames[-1]
-        ordered = (target, *frames[:-1])
-        outcomes: list[bool] = []
-        async with self._enqueue_lock:
-            for frame in ordered:
-                self._accept_video_id(frame)
-            pending = [
-                frame
-                for frame in ordered
-                if not self._sequence_is_represented(frame.sequence)
-            ]
-            retained_outcomes = await asyncio.gather(
-                *(asyncio.to_thread(self._retain_keyframe, frame) for frame in pending),
-                return_exceptions=True,
-            )
-            retained_by_sequence = {
-                frame.sequence: outcome
-                for frame, outcome in zip(pending, retained_outcomes, strict=True)
-                if isinstance(outcome, SemanticKeyframeRecord)
-            }
-            failure = next(
-                (
-                    outcome
-                    for outcome in retained_outcomes
-                    if isinstance(outcome, BaseException)
-                ),
-                None,
-            )
-            try:
-                if failure is not None:
-                    raise failure
-                if self.closed:
-                    raise RuntimeError("realtime video observer is closed")
-                for frame in ordered:
-                    retained = retained_by_sequence.get(frame.sequence)
-                    if retained is None:
-                        outcomes.append(False)
-                        continue
-                    outcomes.append(
-                        await self._enqueue_serialized(
-                            replace(frame, uri=retained.uri),
-                            enqueued_ns=self.clock_ns(),
-                            keyframe_selection_latency_ms=0,
-                            already_retained=True,
-                            visual_window_id=window_id,
-                            window_start_sequence=window_start_sequence,
-                            target_sequence=target_sequence,
-                            window_role=(
-                                "target"
-                                if frame.sequence == target_sequence
-                                else "context"
-                            ),
-                        )
-                    )
-            finally:
-                for retained in retained_by_sequence.values():
-                    path = Path(retained.uri)
-                    if path not in self._owned_paths:
-                        await asyncio.to_thread(path.unlink, missing_ok=True)
+        target_was_active = target.sequence in self._observation_tasks
+        latest_sequence = (
+            self._logical_keyframe_sequences[-1]
+            if self._logical_keyframe_sequences
+            else None
+        )
+        if latest_sequence is not None and any(
+            frame.sequence <= latest_sequence
+            and frame.sequence not in self._logical_keyframe_records
+            for frame in frames
+        ):
+            raise ValueError("promoted window cannot insert historical keyframes")
+
+        records: list[SemanticKeyframeRecord] = []
+        for frame in frames:
+            self._accept_video_id(frame)
+            retained = self._logical_keyframe_records.get(frame.sequence)
+            if retained is None:
+                retained = await asyncio.to_thread(self._retain_keyframe, frame)
+                await self._register_logical_keyframe(retained)
+            records.append(retained)
+        exact_window = LogicalKeyframeWindowSnapshot(
+            window_id=window_id or f"visual-window-{window_start_sequence:08d}",
+            video_id=frames[-1].video_id,
+            sequences=tuple(record.sequence for record in records),
+            timestamps_ms=tuple(record.timestamp_ms for record in records),
+        )
+        enqueued = await self.ensure_logical_keyframe_window(
+            exact_window,
+            window_role="target",
+        )
+        enqueued = enqueued or (
+            not target_was_active
+            and target.sequence in self._observation_tasks
+        )
+        newly_selected = tuple(
+            frame.sequence for frame in frames if frame.sequence not in before
+        )
         return WindowPromotionResult(
-            enqueued_sequences=tuple(
-                frame.sequence
-                for frame, enqueued in zip(ordered, outcomes, strict=True)
-                if enqueued
-            ),
-            reused_sequences=tuple(
-                frame.sequence
-                for frame, enqueued in zip(ordered, outcomes, strict=True)
-                if not enqueued
+            enqueued_sequences=(target.sequence,) if enqueued else (),
+            reused_sequences=(
+                tuple(frame.sequence for frame in frames[:-1])
+                if newly_selected
+                else tuple(frame.sequence for frame in frames)
             ),
         )
-
-    def pin_sequence(self, sequence: int) -> None:
-        """Keep one chat target represented until its observation settles."""
-
-        if sequence >= 0:
-            self._pinned_sequences[sequence] = self._pinned_sequences.get(sequence, 0) + 1
-
-    def release_sequence(self, sequence: int) -> None:
-        """Release a previously protected chat-arrival frame."""
-
-        count = self._pinned_sequences.get(sequence, 0)
-        if count <= 1:
-            self._pinned_sequences.pop(sequence, None)
-        else:
-            self._pinned_sequences[sequence] = count - 1
 
     async def _run_owned_retention(
         self,
@@ -388,6 +366,19 @@ class RealtimeVideoObserver:
     async def _promote(self, frame: VideoFrame) -> FrameProcessingResult:
         self._accept_video_id(frame)
         started_ns = self.clock_ns()
+        if self._sequence_is_represented(frame.sequence):
+            return FrameProcessingResult(
+                frame_id=frame.frame_id,
+                timestamp_seconds=_to_ai_frame(frame).timestamp_seconds,
+                sampled=True,
+                sampling_rate=0.0,
+                metrics=KeyframeChangeMetrics(),
+                keyframe_selected=True,
+                qwen_called=False,
+                latency_ms=_elapsed_ms(started_ns, self.clock_ns()),
+                decision_reason="already_represented",
+                semantic_admission="already_represented",
+            )
         represented = self.semantic_store.at_or_before(
             frame.video_id,
             sequence=frame.sequence,
@@ -425,13 +416,43 @@ class RealtimeVideoObserver:
         event: EmbeddingEvent | None,
         reason: str,
     ) -> None:
-        """Release the selected semantic-branch evidence after selection."""
+        """Register one selected keyframe and close each five-frame window."""
 
         if self.closed:
             raise RuntimeError("realtime video observer is closed")
-        del reason
-        del event
-        await asyncio.to_thread(self._delete_transferred_duplicate, frame)
+        del event, reason
+        record = SemanticKeyframeRecord(
+            frame_id=frame.frame_id,
+            uri=frame.uri,
+            sequence=frame.sequence,
+            timestamp_ms=frame.timestamp_ms,
+        )
+        if frame.sequence in self._logical_keyframe_records:
+            await asyncio.to_thread(self._delete_transferred_duplicate, frame)
+            return
+        await self._register_logical_keyframe(record)
+        self._open_logical_window_sequences.append(frame.sequence)
+        if len(self._open_logical_window_sequences) == KEYFRAME_WINDOW_SIZE:
+            window = self._close_open_logical_keyframe_window(frame.video_id)
+            await self.ensure_logical_keyframe_window(
+                window,
+                window_role="background",
+            )
+
+    async def _register_logical_keyframe(
+        self,
+        record: SemanticKeyframeRecord,
+    ) -> None:
+        """Retain one selected record without assigning it to a rolling window."""
+
+        if len(self._logical_keyframe_sequences) == self._logical_keyframe_sequences.maxlen:
+            evicted_sequence = self._logical_keyframe_sequences.popleft()
+            evicted = self._logical_keyframe_records.pop(evicted_sequence, None)
+            if evicted is not None and not self._record_is_in_flight(evicted_sequence):
+                await self._delete_record(evicted)
+        self._logical_keyframe_sequences.append(record.sequence)
+        self._logical_keyframe_records[record.sequence] = record
+        self._owned_paths.add(Path(record.uri))
 
     async def _handle_semantic_embedding(
         self,
@@ -462,12 +483,43 @@ class RealtimeVideoObserver:
         target_sequence: int | None = None,
         window_role: str = "background",
     ) -> bool:
+        retained = (
+            SemanticKeyframeRecord(
+                frame_id=frame.frame_id,
+                uri=frame.uri,
+                sequence=frame.sequence,
+                timestamp_ms=frame.timestamp_ms,
+            )
+            if already_retained
+            else await asyncio.to_thread(self._retain_keyframe, frame)
+        )
+        self._owned_paths.add(Path(retained.uri))
+        return await self._enqueue_records(
+            (retained,),
+            enqueued_ns=enqueued_ns,
+            keyframe_selection_latency_ms=keyframe_selection_latency_ms,
+            visual_window_id=visual_window_id,
+            window_start_sequence=window_start_sequence,
+            target_sequence=target_sequence,
+            window_role=window_role,
+        )
+
+    async def _enqueue_records(
+        self,
+        records: tuple[SemanticKeyframeRecord, ...],
+        *,
+        enqueued_ns: int,
+        keyframe_selection_latency_ms: int,
+        visual_window_id: str | None = None,
+        window_start_sequence: int | None = None,
+        target_sequence: int | None = None,
+        window_role: str = "background",
+    ) -> bool:
         async with self._enqueue_lock:
             return await self._enqueue_serialized(
-                frame,
+                records,
                 enqueued_ns=enqueued_ns,
                 keyframe_selection_latency_ms=keyframe_selection_latency_ms,
-                already_retained=already_retained,
                 visual_window_id=visual_window_id,
                 window_start_sequence=window_start_sequence,
                 target_sequence=target_sequence,
@@ -476,11 +528,10 @@ class RealtimeVideoObserver:
 
     async def _enqueue_serialized(
         self,
-        frame: VideoFrame,
+        records: tuple[SemanticKeyframeRecord, ...],
         *,
         enqueued_ns: int,
         keyframe_selection_latency_ms: int,
-        already_retained: bool,
         visual_window_id: str | None,
         window_start_sequence: int | None,
         target_sequence: int | None,
@@ -488,46 +539,46 @@ class RealtimeVideoObserver:
     ) -> bool:
         if self.closed:
             raise RuntimeError("realtime video observer is closed")
-        if self._sequence_is_represented(frame.sequence):
-            if already_retained:
-                await asyncio.to_thread(self._delete_transferred_duplicate, frame)
+        if not records or len(records) > KEYFRAME_WINDOW_SIZE:
+            raise ValueError("realtime visual keyframe window must contain 1 to 5 frames")
+        if any(
+            current.sequence >= following.sequence
+            for current, following in zip(records, records[1:])
+        ):
+            raise ValueError("realtime visual keyframe window must be increasing")
+        sequence = records[-1].sequence
+        attempt_key = (
+            (visual_window_id, sequence)
+            if visual_window_id is not None
+            else None
+        )
+        if attempt_key is not None and attempt_key in self._attempted_window_targets:
             return False
-        sequence = frame.sequence
-        retained: SemanticKeyframeRecord | None = None
+        if self._sequence_is_represented(sequence):
+            return False
         self._reserved_sequences.add(sequence)
         try:
-            retained = (
-                SemanticKeyframeRecord(
-                    frame_id=frame.frame_id,
-                    uri=frame.uri,
-                    sequence=sequence,
-                    timestamp_ms=frame.timestamp_ms,
-                )
-                if already_retained
-                else await asyncio.to_thread(self._retain_keyframe, frame)
-            )
-            self._owned_paths.add(Path(retained.uri))
             if self.closed:
-                await self._delete_record(retained)
                 raise RuntimeError("realtime video observer is closed")
             if self.semantic_store.has_exact_sequence(
-                frame.video_id,
+                self.video_id or "",
                 sequence=sequence,
+                visual_window_id=visual_window_id,
             ):
-                await self._delete_record(retained)
                 return False
-            snapshot = self.memory_store.snapshot(frame.video_id)
+            snapshot = self.memory_store.snapshot(self.video_id or "")
             if snapshot is None or snapshot.last_success_sequence is None:
                 self._first_terminal_snapshot.clear()
-            video_ingress_ns = _frame_timestamp_ns(frame, "video_ingress_ns")
+            target_frame = self._frame_for_record(records[-1])
+            video_ingress_ns = _frame_timestamp_ns(target_frame, "video_ingress_ns")
             item = _ObservationItem(
-                record=retained,
+                records=records,
                 enqueued_ns=enqueued_ns,
                 video_ingress_ns=(
                     video_ingress_ns if video_ingress_ns is not None else enqueued_ns
                 ),
                 h264_decode_latency_ms=_frame_latency_ms(
-                    frame,
+                    target_frame,
                     "h264_decode_latency_ms",
                 ),
                 keyframe_selection_latency_ms=keyframe_selection_latency_ms,
@@ -536,7 +587,14 @@ class RealtimeVideoObserver:
                 target_sequence=target_sequence,
                 window_role=window_role,
             )
-            task = asyncio.create_task(self._run_observation(item))
+            if attempt_key is not None:
+                self._attempted_window_targets.add(attempt_key)
+            try:
+                task = asyncio.create_task(self._run_observation(item))
+            except Exception:
+                if attempt_key is not None:
+                    self._attempted_window_targets.discard(attempt_key)
+                raise
             self._observation_items[sequence] = item
             self._observation_tasks[sequence] = task
             task.add_done_callback(
@@ -548,10 +606,6 @@ class RealtimeVideoObserver:
             self._idle.clear()
             self._update_pending_state()
             return True
-        except BaseException:
-            if retained is not None and sequence not in self._observation_tasks:
-                await self._delete_record(retained)
-            raise
         finally:
             self._reserved_sequences.discard(sequence)
 
@@ -594,6 +648,105 @@ class RealtimeVideoObserver:
 
         return self._represented_sequence()
 
+    def recent_logical_keyframes(
+        self,
+        video_id: str,
+        *,
+        limit: int,
+    ) -> tuple[int, ...]:
+        """Return selected keyframe sequences regardless of VLM completion state."""
+
+        if limit <= 0:
+            raise ValueError("logical keyframe window limit must be positive")
+        if self.video_id != video_id:
+            return ()
+        window = self.current_logical_keyframe_window(video_id)
+        if window is None:
+            return ()
+        return window.sequences[-limit:]
+
+    def current_logical_keyframe_window(
+        self,
+        video_id: str,
+    ) -> LogicalKeyframeWindowSnapshot | None:
+        """Return the open segment, or the latest closed segment when idle."""
+
+        if self.video_id != video_id or not self._logical_keyframe_sequences:
+            return None
+        if not self._open_logical_window_sequences:
+            return self._latest_closed_logical_window
+        current = tuple(self._open_logical_window_sequences)
+        return LogicalKeyframeWindowSnapshot(
+            window_id=f"visual-window-{current[0]:08d}",
+            video_id=video_id,
+            sequences=current,
+            timestamps_ms=tuple(
+                self._logical_keyframe_records[sequence].timestamp_ms
+                for sequence in current
+            ),
+        )
+
+    def freeze_logical_keyframe_window(
+        self,
+        video_id: str,
+    ) -> LogicalKeyframeWindowSnapshot | None:
+        """Close the current segment at a user-input boundary."""
+
+        if self.video_id != video_id or not self._logical_keyframe_sequences:
+            return None
+        if self._open_logical_window_sequences:
+            return self._close_open_logical_keyframe_window(video_id)
+        return self._latest_closed_logical_window
+
+    def _close_open_logical_keyframe_window(
+        self,
+        video_id: str,
+    ) -> LogicalKeyframeWindowSnapshot:
+        sequences = tuple(self._open_logical_window_sequences)
+        if not sequences:
+            raise RuntimeError("logical keyframe window is already closed")
+        window = LogicalKeyframeWindowSnapshot(
+            window_id=f"visual-window-{sequences[0]:08d}",
+            video_id=video_id,
+            sequences=sequences,
+            timestamps_ms=tuple(
+                self._logical_keyframe_records[sequence].timestamp_ms
+                for sequence in sequences
+            ),
+        )
+        self._open_logical_window_sequences.clear()
+        self._latest_closed_logical_window = window
+        return window
+
+    async def ensure_logical_keyframe_window(
+        self,
+        window: LogicalKeyframeWindowSnapshot,
+        *,
+        window_role: str,
+    ) -> bool:
+        """Start one immutable window snapshot, deduplicated by target sequence."""
+
+        if self.closed:
+            raise RuntimeError("realtime video observer is closed")
+        if window.video_id != self.video_id:
+            return False
+        records = tuple(
+            self._logical_keyframe_records[sequence]
+            for sequence in window.sequences
+            if sequence in self._logical_keyframe_records
+        )
+        if tuple(record.sequence for record in records) != window.sequences:
+            return False
+        return await self._enqueue_records(
+            records,
+            enqueued_ns=self.clock_ns(),
+            keyframe_selection_latency_ms=0,
+            visual_window_id=window.window_id,
+            window_start_sequence=window.start_sequence,
+            target_sequence=window.target_sequence,
+            window_role=window_role,
+        )
+
     def latest_keyframe_at_or_before(
         self,
         video_id: str,
@@ -618,6 +771,11 @@ class RealtimeVideoObserver:
         for item in self._observation_items.values():
             if item.record.sequence <= target_sequence:
                 candidates.append(item.record)
+        candidates.extend(
+            record
+            for record in self._logical_keyframe_records.values()
+            if record.sequence <= target_sequence
+        )
         if not candidates:
             return None
         selected = max(candidates, key=lambda record: record.sequence)
@@ -652,12 +810,10 @@ class RealtimeVideoObserver:
                     active_tasks,
                     timeout=self.close_wait_seconds,
                 )
-            if self.video_id is not None:
-                self.memory_store.remove_video(self.video_id)
-            if self._owns_semantic_store:
-                self.semantic_store.close()
             active_paths = {
-                Path(item.record.uri) for item in self._observation_items.values()
+                Path(record.uri)
+                for item in self._observation_items.values()
+                for record in item.records
             }
             for path in self._owned_paths - active_paths:
                 await asyncio.to_thread(path.unlink, missing_ok=True)
@@ -666,7 +822,22 @@ class RealtimeVideoObserver:
             self._idle.set()
             self._snapshot_updated.set()
         finally:
-            self._release_external_resources()
+            if not self._observation_tasks:
+                self._finalize_closed_resources()
+
+    def _finalize_closed_resources(self) -> None:
+        if self._close_resources_finalized:
+            return
+        self._close_resources_finalized = True
+        if self.video_id is not None:
+            self.memory_store.remove_video(self.video_id)
+        if self._owns_semantic_store:
+            self.semantic_store.close()
+        for path in tuple(self._owned_paths):
+            path.unlink(missing_ok=True)
+            self._owned_paths.discard(path)
+        _remove_empty_tree(self.keyframe_root)
+        self._release_external_resources()
 
     def _release_external_resources(self) -> None:
         if self._resources_released:
@@ -688,9 +859,13 @@ class RealtimeVideoObserver:
                     user_id=self.user_id,
                     session_id=self.session_id,
                     video_id=video_id,
-                    frame_ref=item.record.uri,
-                    frame_sequence=item.record.sequence,
-                    frame_timestamp_ms=item.record.timestamp_ms,
+                    frame_refs=tuple(record.uri for record in item.records),
+                    frame_sequences=tuple(
+                        record.sequence for record in item.records
+                    ),
+                    frame_timestamps_ms=tuple(
+                        record.timestamp_ms for record in item.records
+                    ),
                     visual_window_id=item.visual_window_id,
                     window_start_sequence=item.window_start_sequence,
                     target_sequence=item.target_sequence,
@@ -707,7 +882,6 @@ class RealtimeVideoObserver:
                 error=outcome.error,
             )
             if self.closed:
-                await self._delete_record(item)
                 return
             observation = outcome.result if outcome.succeeded else None
             if observation is not None:
@@ -715,7 +889,7 @@ class RealtimeVideoObserver:
                 publish_outcome = await asyncio.to_thread(
                     self._publish_visual_semantic_record,
                     video_id,
-                    item.record,
+                    item,
                     observation,
                     trace_link,
                 )
@@ -787,7 +961,6 @@ class RealtimeVideoObserver:
                         succeeded=False,
                     ),
                 )
-                await self._delete_record(item)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - background boundary.
@@ -808,7 +981,6 @@ class RealtimeVideoObserver:
                     item.record,
                     error,
                 )
-            await self._delete_record(item)
         finally:
             self._first_terminal_snapshot.set()
             self._snapshot_updated.set()
@@ -830,22 +1002,39 @@ class RealtimeVideoObserver:
         sequence: int,
         task: asyncio.Task[None],
     ) -> None:
+        item = self._observation_items.get(sequence)
         if self._observation_tasks.get(sequence) is task:
             self._observation_tasks.pop(sequence, None)
             self._observation_items.pop(sequence, None)
         if not task.cancelled():
             task.exception()
+        if self.closed and item is not None:
+            still_referenced = {
+                Path(record.uri)
+                for active_item in self._observation_items.values()
+                for record in active_item.records
+            }
+            for record in item.records:
+                path = Path(record.uri)
+                if path in still_referenced:
+                    continue
+                path.unlink(missing_ok=True)
+                self._owned_paths.discard(path)
+            _remove_empty_tree(self.keyframe_root)
         self._update_pending_state()
         if not self._observation_tasks:
             self._idle.set()
+            if self.closed:
+                self._finalize_closed_resources()
 
     def _publish_visual_semantic_record(
         self,
         video_id: str,
-        frame: SemanticKeyframeRecord,
+        item: _ObservationItem,
         result: VideoUnderstandingResult,
         trace_link: VisionInferenceTraceLink | None,
     ) -> _VisualSemanticPublishOutcome:
+        frame = item.record
         record_id = f"visual-{uuid4().hex}"
         created_at_ms = self.wall_clock_ms()
         captured_at_ms = (
@@ -870,6 +1059,9 @@ class RealtimeVideoObserver:
             session_id=self.session_id,
             video_id=video_id,
             frame_sequence=frame.sequence,
+            visual_window_id=item.visual_window_id,
+            window_start_sequence=item.window_start_sequence,
+            window_sequences=tuple(record.sequence for record in item.records),
             captured_at_ms=captured_at_ms,
             summary=result.summary,
             scene=result.scene,
@@ -1038,7 +1230,7 @@ class RealtimeVideoObserver:
         suffix = _safe_name(frame.video_id.removeprefix("agent-service-video-"))
         directory = self.keyframe_root / suffix
         directory.mkdir(parents=True, exist_ok=True)
-        destination = directory / f"frame-{frame.sequence:06d}.jpg"
+        destination = directory / f"frame-{frame.sequence:06d}-{uuid4().hex}.jpg"
         try:
             shutil.copy2(frame.uri, destination)
         except OSError:
@@ -1051,6 +1243,22 @@ class RealtimeVideoObserver:
             uri=str(destination),
             sequence=frame.sequence,
             timestamp_ms=frame.timestamp_ms,
+        )
+
+    def _frame_for_record(self, record: SemanticKeyframeRecord) -> VideoFrame:
+        return VideoFrame(
+            video_id=self.video_id or "realtime-video",
+            frame_id=record.frame_id,
+            uri=record.uri,
+            sequence=record.sequence,
+            timestamp_ms=record.timestamp_ms,
+            metadata={"source": "realtime_video_keyframe"},
+        )
+
+    def _record_is_in_flight(self, sequence: int) -> bool:
+        return any(
+            any(record.sequence == sequence for record in item.records)
+            for item in self._observation_items.values()
         )
 
     async def _delete_record(
@@ -1117,11 +1325,17 @@ class RealtimeVideoObserver:
     def _delete_transferred_duplicate(self, frame: VideoFrame) -> None:
         path = Path(frame.uri)
         active_paths = {
-            Path(item.record.uri) for item in self._observation_items.values()
+            Path(record.uri)
+            for item in self._observation_items.values()
+            for record in item.records
         }
-        if path not in active_paths:
+        logical_paths = {
+            Path(record.uri) for record in self._logical_keyframe_records.values()
+        }
+        if path not in active_paths and path not in logical_paths:
             path.unlink(missing_ok=True)
             self._owned_paths.discard(path)
+
 
 def _to_ai_frame(frame: VideoFrame) -> AIVideoFrame:
     timestamp_ms = frame.timestamp_ms if frame.timestamp_ms is not None else frame.sequence * 1000

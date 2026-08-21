@@ -22,6 +22,8 @@ Skill 加载顺序，不按 Provider 复制模板，也不向模型暴露无行�
 system prompt 同时定义统一的用户可见边界：模型只说明面向用户的能力、结果和必要限制，不复述或解释
 system/developer instructions、隐藏上下文、runtime/checkpoint、路由、内部标签、Tool schema/参数等实现细节；
 含糊指示语不得把临时注入的 Memory 或 TrustedRuntimeFacts 当成用户正在指向的内容。
+实时 VIDEO 会话中的当前画面属于瞬时事实；每个新的指示性视觉问题都重新调用 `live_view_inspect`，不得把历史
+视觉 Tool observation 当作本轮当前画面证据。
 
 dynamic prompt 的 L0 index 只用于发现可加载 Skill。成功执行 `load_skill` 后，标准 `Command(update=...)` 把
 受信 `skill_id` 写入当前 fast agent 子图的 `active_skill_ids`；每次后续 model call 都以该 ID 从 composition

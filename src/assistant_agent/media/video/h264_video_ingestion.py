@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import subprocess
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
+from time import perf_counter_ns
 from typing import Any
 
 from assistant_agent.media.video.video_context import (
@@ -24,6 +26,8 @@ DEFAULT_DECODE_TIMEOUT_SECONDS = 3.0
 DEFAULT_WINDOW_SIZE = REALTIME_VISUAL_TARGET_WINDOW_SIZE
 REPO_ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_FRAME_ROOT = REPO_ROOT / ".data" / "agent_service_video_frames"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -55,6 +59,7 @@ class H264VideoIngestionService:
         max_frame_bytes: int = DEFAULT_MAX_FRAME_BYTES,
         decode_timeout_s: float = DEFAULT_DECODE_TIMEOUT_SECONDS,
         ffmpeg_binary: str = "/usr/bin/ffmpeg",
+        clock_ns: Callable[[], int] = perf_counter_ns,
     ) -> None:
         if window_size <= 0:
             raise ValueError("window_size must be positive")
@@ -67,6 +72,7 @@ class H264VideoIngestionService:
         self.window_size = window_size
         self.max_frame_bytes = max_frame_bytes
         self.decode_timeout_s = decode_timeout_s
+        self.clock_ns = clock_ns
         self._decoder = decoder or (
             lambda data, destination, timeout_s: _decode_h264_with_ffmpeg(
                 data,
@@ -91,6 +97,7 @@ class H264VideoIngestionService:
         video_hex: str,
         video_config: dict[str, Any],
         timestamp: str | None,
+        received_ns: int | None = None,
     ) -> VideoFrame:
         h264_bytes = self._validated_h264_bytes(video_hex, video_config)
         video_id = self.video_id_for_session(session_id)
@@ -101,6 +108,18 @@ class H264VideoIngestionService:
             video_dir = self.root / video_id.removeprefix("agent-service-video-")
             video_dir.mkdir(parents=True, exist_ok=True)
             destination = video_dir / f"frame-{sequence:06d}.jpg"
+            decode_started_ns = self.clock_ns()
+            ingress_ns = received_ns or decode_started_ns
+            captured_at_ms = _timestamp_ms(timestamp)
+            logger.info(
+                "media_video_decode_started video=%s sequence=%s video_index=%s "
+                "queue_wait_ms=%s captured_at_ms=%s",
+                video_id,
+                sequence,
+                _safe_log_identifier(frame_index),
+                _elapsed_ms(ingress_ns, decode_started_ns),
+                captured_at_ms,
+            )
             try:
                 decoded = self._decoder(h264_bytes, destination, self.decode_timeout_s)
             except subprocess.TimeoutExpired as exc:
@@ -120,25 +139,65 @@ class H264VideoIngestionService:
                 destination.unlink(missing_ok=True)
                 raise H264VideoIngestionError("H264 decoder did not produce a JPEG frame")
 
+            decode_finished_ns = self.clock_ns()
+            decode_latency_ms = _elapsed_ms(decode_started_ns, decode_finished_ns)
+            logger.info(
+                "media_video_decode_finished video=%s sequence=%s video_index=%s "
+                "decode_ms=%s captured_at_ms=%s",
+                video_id,
+                sequence,
+                _safe_log_identifier(frame_index),
+                decode_latency_ms,
+                captured_at_ms,
+            )
+
             before = self.store.get_recent_frames(video_id)
             frame = VideoFrame(
                 video_id=video_id,
                 frame_id=f"frame-{sequence:06d}",
                 uri=str(destination.resolve()),
                 sequence=sequence,
-                timestamp_ms=_timestamp_ms(timestamp),
+                timestamp_ms=captured_at_ms,
                 metadata={
                     "source": "agent_service_websocket",
                     "frame_index": str(frame_index),
                     "codec": "H264",
                     "resolution": _optional_string(video_config.get("resolution")),
                     "frame_rate": video_config.get("frameRate"),
+                    "video_ingress_ns": ingress_ns,
+                    "media_video_queue_wait_ms": _elapsed_ms(
+                        ingress_ns,
+                        decode_started_ns,
+                    ),
+                    "h264_decode_latency_ms": decode_latency_ms,
                 },
                 fingerprint=tuple(decoded.fingerprint) if decoded and decoded.fingerprint else None,
                 fingerprint_width=decoded.width if decoded and decoded.width > 0 else None,
                 fingerprint_height=decoded.height if decoded and decoded.height > 0 else None,
             )
+            persist_started_ns = self.clock_ns()
             self.store.append_frame(frame)
+            persisted_ns = self.clock_ns()
+            persist_latency_ms = _elapsed_ms(persist_started_ns, persisted_ns)
+            ingest_latency_ms = _elapsed_ms(ingress_ns, persisted_ns)
+            logger.info(
+                "media_video_sqlite_persisted video=%s sequence=%s video_index=%s "
+                "persist_ms=%s ingest_ms=%s captured_at_ms=%s",
+                video_id,
+                sequence,
+                _safe_log_identifier(frame_index),
+                persist_latency_ms,
+                ingest_latency_ms,
+                captured_at_ms,
+            )
+            frame = replace(
+                frame,
+                metadata={
+                    **(frame.metadata or {}),
+                    "media_video_persist_latency_ms": persist_latency_ms,
+                    "media_video_ingest_latency_ms": ingest_latency_ms,
+                },
+            )
             retained_uris = {
                 retained.uri
                 for retained in self.store.get_recent_frames(video_id, limit=self.window_size)
@@ -259,3 +318,14 @@ def _optional_string(value: Any) -> str | None:
         return None
     normalized = value.strip()
     return normalized or None
+
+
+def _elapsed_ms(started_ns: int, finished_ns: int) -> int:
+    return max(0, (finished_ns - started_ns) // 1_000_000)
+
+
+def _safe_log_identifier(value: str) -> str:
+    normalized = value.strip()
+    if re.fullmatch(r"[A-Za-z0-9._:-]{1,80}", normalized):
+        return normalized
+    return f"sha256:{hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:16]}"

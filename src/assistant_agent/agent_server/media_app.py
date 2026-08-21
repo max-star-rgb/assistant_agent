@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
+import hashlib
 import json
 import logging
 import os
@@ -593,6 +594,17 @@ async def _handle_frame(
     if frame.message == "chat":
         chat_received_ns = received_ns or perf_counter_ns()
         chat = parse_chat(frame)
+        if session.requires_matching_media_user and chat.user_id != session.user_id:
+            raise MediaProtocolError("chat userNumber does not match assistantControl")
+        visual_prepare_started_ns = perf_counter_ns()
+        live_video_ids = session.video_ids
+        visual_window = None
+        if visual_perception.session is not None:
+            # This must remain synchronous and precede every await in the chat path:
+            # it is the linearization point for K-time visual targeting.
+            visual_window = visual_perception.session.freeze_strict_window(
+                live_video_ids
+            )
         if session.thread_id is None or session.user_id is None:
             authenticated_user = websocket.scope.get("user")
             authenticated_identity = _agent_server_identity(websocket)
@@ -633,8 +645,6 @@ async def _handle_frame(
                     ),
                 ),
             )
-        if session.requires_matching_media_user and chat.user_id != session.user_id:
-            raise MediaProtocolError("chat userNumber does not match assistantControl")
         session.begin_chat(chat.chat_index)
         delivery_id = f"delivery-{uuid4()}"
         session.bind_delivery(delivery_id=delivery_id, chat_index=chat.chat_index)
@@ -647,14 +657,8 @@ async def _handle_frame(
                 delivery_id=delivery_id,
             ),
         )
-        latest_video_ready = await visual_perception.wait_for_latest_video()
-        visual_prepare_started_ns = perf_counter_ns()
-        visual_window = None
-        live_video_ids = session.video_ids if latest_video_ready else ()
-        if latest_video_ready and visual_perception.session is not None:
-            visual_window = await visual_perception.session.prepare_strict_window(
-                live_video_ids
-            )
+        if visual_perception.session is not None and visual_window is not None:
+            await visual_perception.session.ensure_strict_window(visual_window)
         visual_prepared_ns = perf_counter_ns()
         record_live_view = getattr(visual_module, "record_live_view", None)
         visual_identity = _agent_server_identity(websocket)
@@ -763,6 +767,7 @@ async def _handle_frame(
         )
         return
     if frame.message == "video":
+        video_received_ns = received_ns or perf_counter_ns()
         if session.thread_id is None or session.user_id is None:
             raise MediaProtocolError("video requires assistantControl handshake")
         if (
@@ -789,6 +794,15 @@ async def _handle_frame(
                     _required_text(item, "time"),
                 )
             )
+        for packet_index, (packet_video_index, *_rest) in enumerate(packets):
+            logger.info(
+                "media_video_websocket_received connection=%s video_index=%s "
+                "packet=%s packet_count=%s",
+                session.connection_id,
+                _safe_video_index(packet_video_index),
+                packet_index + 1,
+                len(packets),
+            )
         accepted = visual_perception.enqueue_video(
             lambda: _ingest_video_packets(
                 websocket,
@@ -798,6 +812,7 @@ async def _handle_frame(
                 video_ingestion=video_ingestion,
                 visual_perception=visual_perception,
                 packets=packets,
+                received_ns=video_received_ns,
             ),
             on_replaced=lambda: _send_json(
                 websocket,
@@ -1032,11 +1047,20 @@ async def _ingest_video_packets(
     video_ingestion: Any,
     visual_perception: _VisualPerceptionConnection,
     packets: list[tuple[str, str, dict[str, Any], str]],
+    received_ns: int | None = None,
 ) -> bool:
     """Decode one wire video message after it has left the receive hot path."""
 
     try:
         for video_index, video_content, video_config, captured_at in packets:
+            dequeued_ns = perf_counter_ns()
+            logger.info(
+                "media_video_ingestion_dequeued connection=%s video_index=%s "
+                "queue_wait_ms=%s",
+                session.connection_id,
+                _safe_video_index(video_index),
+                _elapsed_ms(received_ns, dequeued_ns),
+            )
             frame_result = await asyncio.to_thread(
                 video_ingestion.ingest,
                 session.thread_id,
@@ -1044,13 +1068,35 @@ async def _ingest_video_packets(
                 video_content,
                 video_config,
                 captured_at,
+                received_ns,
             )
             session.bind_video(frame_result.video_id)
             if visual_perception.session is not None and isinstance(
                 frame_result, VideoFrame
             ):
                 visual_perception.session.mark_video_received()
-                await visual_perception.session.submit(frame_result)
+                semantic_submitted_ns = perf_counter_ns()
+                logger.info(
+                    "media_video_semantic_submitted connection=%s video_index=%s "
+                    "sequence=%s receive_to_submit_ms=%s captured_at_ms=%s",
+                    session.connection_id,
+                    _safe_video_index(video_index),
+                    frame_result.sequence,
+                    _elapsed_ms(received_ns, semantic_submitted_ns),
+                    frame_result.timestamp_ms,
+                )
+                admission = await visual_perception.session.submit(frame_result)
+                semantic_admitted_ns = perf_counter_ns()
+                logger.info(
+                    "media_video_semantic_admitted connection=%s video_index=%s "
+                    "sequence=%s submit_ms=%s receive_to_admit_ms=%s admission=%s",
+                    session.connection_id,
+                    _safe_video_index(video_index),
+                    frame_result.sequence,
+                    _elapsed_ms(semantic_submitted_ns, semantic_admitted_ns),
+                    _elapsed_ms(received_ns, semantic_admitted_ns),
+                    getattr(admission, "semantic_admission", None),
+                )
         await _send_json(
             websocket,
             send_lock,
@@ -1187,6 +1233,13 @@ def _safe_identifier(value: str | None) -> str:
     if not value:
         return "none"
     return str(uuid5(NAMESPACE_URL, value))[:12]
+
+
+def _safe_video_index(value: str) -> str:
+    normalized = value.strip()
+    if re.fullmatch(r"[A-Za-z0-9._:-]{1,80}", normalized):
+        return normalized
+    return f"sha256:{hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:16]}"
 
 
 def _elapsed_ms(start_ns: int | None, end_ns: int | None) -> int | None:

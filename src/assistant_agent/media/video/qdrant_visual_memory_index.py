@@ -410,6 +410,8 @@ def _query_filter(query: VisualMemoryIndexQuery) -> dict[str, Any]:
         _match("user_id", query.user_id),
         _match("session_id", query.session_id),
     ]
+    if query.record_ids:
+        must.append({"key": "record_id", "match": {"any": list(query.record_ids)}})
     if query.as_of_sequence is not None:
         must.append({"key": "frame_sequence", "range": {"lte": query.as_of_sequence}})
     timestamp_range: dict[str, int] = {}

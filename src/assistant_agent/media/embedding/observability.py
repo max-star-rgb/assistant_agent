@@ -61,15 +61,16 @@ SEMANTIC_FRAME_REASONS = frozenset(
         "admitted",
         "below_threshold",
         "embedding_failed",
-        "fixed_interval",
         "initial",
         "interactive",
         "interactive_inflight",
         "interactive_pending",
         "latest_wins",
         "max_interval",
+        "non_increasing",
         "processing_error",
         "semantic",
+        "superseded_before_admission",
     }
 )
 

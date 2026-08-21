@@ -1,4 +1,4 @@
-"""Operator-gated real VLM eval for one strict eight-frame target window."""
+"""Operator-gated real VLM eval for a logical-keyframe target window."""
 
 from __future__ import annotations
 
@@ -56,14 +56,13 @@ def dry_run_report(*, frame_dir: Path | None, allow_real_provider: bool) -> dict
         "realtime_vision_config_complete": _realtime_qwen_config_complete(config),
         "frame_dir_configured": frame_dir is not None,
         "candidate_frame_count": len(configured_frames),
-        "planned_provider_calls": REALTIME_VISUAL_TARGET_WINDOW_SIZE,
+        "planned_provider_calls": "1 closed keyframe window (1..5 images)",
         "would_check": [
-            "window_isolated_realtime_vlm_clients",
-            "all_window_frames_started",
-            "parallel_frame_inference",
+            "one_multiframe_vlm_call_for_frozen_window",
+            "ordered_keyframes_end_at_exact_target",
+            "window_uses_isolated_realtime_vlm_client",
             "exact_target_barrier",
-            "ready_subset_excludes_future_frames",
-            "content_free_trace_correlation",
+            "exact_target_trace_correlation",
         ],
         "network_called": False,
     }
@@ -99,10 +98,7 @@ async def _run_window(
     user_id = "realtime-visual-system-eval"
     session_id = f"system-eval-{uuid4().hex}"
     video_id = f"video-{uuid4().hex}"
-    window_id = f"visual-window-{uuid4().hex}"
-    start_sequence = frame_paths[0][0]
-    target_sequence = frame_paths[-1][0]
-    registry = _ObservationRegistry(expected_sequences={item[0] for item in frame_paths})
+    registry = _ObservationRegistry()
     trace_store = InMemoryTraceStore()
     memory_store = RealtimeVideoMemoryStore()
     trace_links: list[dict[str, object]] = []
@@ -151,26 +147,39 @@ async def _run_window(
             )
             for sequence, path in frame_paths
         )
-        context = ToolContext(
-            user_id=user_id,
-            session_id=session_id,
-            run_id=f"run-{uuid4().hex}",
-            trace_id=f"trace-{uuid4().hex}",
-            trace_store=trace_store,
-            metadata={
-                "entry_profile": "agent_service",
-                "visual_window_id": window_id,
-                "visual_window_start_sequence": start_sequence,
-                "visual_target_sequence": target_sequence,
-            },
-        )
         branch = VideoUnderstandingBranch(
             memory_store=memory_store,
             semantic_store_pool=_SingleSemanticStorePool(semantic_store),
         )
+        visual_session = VisualPerceptionSession(
+            observer=observer,
+            video_context_store=object(),
+            release=lambda _session: None,
+        )
         try:
             for frame in frames:
                 await observer.submit(frame)
+            await observer.semantic_pipeline.wait_idle()
+            frozen_window = await visual_session.prepare_strict_window([video_id])
+            if frozen_window is None:
+                raise RuntimeError("semantic selector produced no logical keyframe")
+            logical_sequences = frozen_window.sequences
+            start_sequence = frozen_window.start_sequence
+            target_sequence = frozen_window.target_sequence
+            context = ToolContext(
+                user_id=user_id,
+                session_id=session_id,
+                run_id=f"run-{uuid4().hex}",
+                trace_id=f"trace-{uuid4().hex}",
+                trace_store=trace_store,
+                metadata={
+                    "entry_profile": "agent_service",
+                    "visual_window_id": frozen_window.window_id,
+                    "visual_window_start_sequence": start_sequence,
+                    "visual_target_sequence": target_sequence,
+                    "visual_window_sequences": logical_sequences,
+                },
+            )
             tool_started_ns = perf_counter_ns()
             tool_result = await asyncio.to_thread(
                 branch.execute,
@@ -199,22 +208,34 @@ async def _run_window(
     observations = registry.snapshot()
     result_data = tool_result.data if isinstance(tool_result.data, dict) else {}
     target_finished_ns = registry.finished_ns(target_sequence)
-    started_before_target_finished = bool(target_finished_ns) and all(
-        int(item.get("started_ns", 0)) <= target_finished_ns for item in observations
-    )
     service_ids = [str(item["connection_id"]) for item in observations]
+    executed_sequences = {
+        int(item["sequence"])
+        for item in observations
+        if isinstance(item.get("sequence"), int)
+    }
+    ready_sequences = {
+        int(sequence)
+        for sequence in result_data.get("ready_sequences", [])
+        if isinstance(sequence, int) and not isinstance(sequence, bool)
+    }
     checks = {
-        "window_calls_finished": len(observations) == REALTIME_VISUAL_TARGET_WINDOW_SIZE,
-        "isolated_connections": len(service_ids)
-        == len(set(service_ids))
-        == REALTIME_VISUAL_TARGET_WINDOW_SIZE,
-        "all_frames_started_before_target_finished": started_before_target_finished,
-        "parallel_inference": registry.max_concurrency >= 2,
+        "one_window_call_finished": len(observations) == 1,
+        "isolated_connection": len(service_ids) == len(set(service_ids)) == 1,
+        "ordered_window_exact": (
+            observations[0].get("frame_sequences") == list(logical_sequences)
+            if observations
+            else False
+        ),
+        "target_executed": target_sequence in executed_sequences,
         "exact_target_ready": result_data.get("target_ready") is True,
-        "future_frames_excluded": all(
-            sequence <= target_sequence
-            for sequence in result_data.get("ready_sequences", [])
-            if isinstance(sequence, int) and not isinstance(sequence, bool)
+        "ready_is_exact_target": ready_sequences == {target_sequence},
+        "exact_target_trace_linked": len(trace_links) == 1
+        and trace_links[0].get("sequence") == target_sequence
+        and all(
+            isinstance(trace_links[0].get(field), str)
+            and bool(trace_links[0].get(field))
+            for field in ("trace_id", "run_id", "span_id")
         ),
     }
     return {
@@ -223,6 +244,7 @@ async def _run_window(
         "checks": checks,
         "window_start_sequence": start_sequence,
         "target_sequence": target_sequence,
+        "logical_sequences": list(logical_sequences),
         "frames": observations,
         "max_concurrency": registry.max_concurrency,
         "target_wait_ms": max(0, (tool_returned_ns - tool_started_ns) // 1_000_000),
@@ -240,6 +262,7 @@ async def _run_window(
 @dataclass
 class _ObservationTiming:
     sequence: int
+    frame_sequences: tuple[int, ...]
     connection_id: str
     started_ns: int
     finished_ns: int | None = None
@@ -247,8 +270,7 @@ class _ObservationTiming:
 
 
 class _ObservationRegistry:
-    def __init__(self, *, expected_sequences: set[int]) -> None:
-        self.expected_sequences = expected_sequences
+    def __init__(self) -> None:
         self._lock = Lock()
         self._items: dict[int, _ObservationTiming] = {}
         self._active = 0
@@ -257,12 +279,17 @@ class _ObservationRegistry:
     def create_service(self) -> str:
         return f"connection-{uuid4().hex}"
 
-    def started(self, *, sequence: int, connection_id: str) -> None:
+    def started(
+        self,
+        *,
+        sequence: int,
+        frame_sequences: tuple[int, ...],
+        connection_id: str,
+    ) -> None:
         with self._lock:
-            if sequence not in self.expected_sequences:
-                raise RuntimeError("unexpected_frame_sequence")
             self._items[sequence] = _ObservationTiming(
                 sequence=sequence,
+                frame_sequences=frame_sequences,
                 connection_id=connection_id,
                 started_ns=perf_counter_ns(),
             )
@@ -286,6 +313,7 @@ class _ObservationRegistry:
             return [
                 {
                     "sequence": item.sequence,
+                    "frame_sequences": list(item.frame_sequences),
                     "connection_id": item.connection_id,
                     "status": item.status,
                     "started_ns": item.started_ns,
@@ -318,7 +346,11 @@ class _MeasuredObservationService:
         *,
         trace_context: Any = None,
     ) -> RealtimeVisualObservationOutcome:
-        self.registry.started(sequence=request.frame_sequence, connection_id=self.service_id)
+        self.registry.started(
+            sequence=request.frame_sequence,
+            frame_sequences=request.frame_sequences,
+            connection_id=self.service_id,
+        )
         status = "failed"
         try:
             outcome = self.delegate.observe(request, trace_context=trace_context)

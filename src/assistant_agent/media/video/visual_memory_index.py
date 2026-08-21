@@ -16,7 +16,7 @@ class VisualMemoryIndexError(BaseModel):
 
 
 class VisualMemoryIndexDocument(BaseModel):
-    """One complete single-frame VLM text and its trusted identity metadata."""
+    """One immutable keyframe-window VLM text and trusted identity metadata."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -39,6 +39,7 @@ class VisualMemoryIndexQuery(BaseModel):
     since_ms: int | None = Field(default=None, ge=0)
     until_ms: int | None = Field(default=None, ge=0)
     freshness_record_id: str | None = Field(default=None, min_length=1, max_length=160)
+    record_ids: tuple[str, ...] = Field(default_factory=tuple, max_length=256)
     limit: int = Field(default=12, ge=1, le=100)
 
 

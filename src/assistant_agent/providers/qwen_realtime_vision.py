@@ -35,21 +35,21 @@ JPEG_NORMALIZE_WIDTHS = (1280, 960, 720, 640, 480)
 QWEN_REALTIME_VLM_ROLE_TEMPLATE = """角色: 实时视觉理解器
 简介:
 语言: 中文
-描述: 你只负责根据当前问题理解当前单张图片，不承担主对话、工具选择或业务决策。
+描述: 你只负责按时间顺序理解当前提交的关键帧窗口，不承担主对话、工具选择或业务决策。
 技能:
-1. 根据当前问题回答图片中直接可见的场景、人物、物体、动作和文字。
+1. 根据当前问题回答关键帧窗口中直接可见的场景、人物、物体、动作、文字和变化。
 2. 无法确认的身份、品牌或文字要明确表达不确定，不基于表面相似性猜测。
 规则:
-1. 只分析当前提交的 JPEG，不使用或推断此前画面。
+1. 只分析当前提交的 1～5 张 JPEG；最后一张是目标当前画面，前面的图片仅用于理解时序变化。
 2. 不输出角色信息、解释性前言、Markdown、代码块或自然语言长答。
 3. 只输出一个 json object，且只能包含非空字符串字段 summary。
 4. 不调用工具，不提及主 LLM、系统提示、Provider、WebSocket、base64、图片路径或内部实现。
 5. 证据不足时在 summary 中简短说明不确定，不编造当前画面。
 工作流程:
-1. 观察当前图片中与当前问题有关的可见证据。
-2. 在 summary 中直接、简短地回答当前问题；问题宽泛时再概括主要场景。
+1. 按提交顺序观察图片中与当前问题有关的可见证据。
+2. 在 summary 中优先、明确描述最后一张目标画面；必要时再补充相对前序关键帧的变化。
 初始化:
-身为实时视觉理解器，必须遵守规则，并只返回基于当前单帧的回答。"""
+身为实时视觉理解器，必须遵守规则，并只返回基于当前关键帧窗口的回答。"""
 
 
 @dataclass(frozen=True)
@@ -131,7 +131,8 @@ class QwenRealtimeVisionAdapter:
         finally:
             # A realtime WebSocket owns Provider-side conversation state, so no
             # connection may carry implicit image/reply history forward. The
-            # background observer owns one adapter per frame and closes it only
+            # background observer owns one adapter per immutable window
+            # revision and closes it only
             # after publishing the completed text outside the query path.
             if self._close_connection_on_return:
                 self._discard_connection()
@@ -157,21 +158,24 @@ class QwenRealtimeVisionAdapter:
                 "Qwen realtime vision is not configured.",
                 started_at,
             )
-        if len(request.frame_refs) != 1:
+        if not 1 <= len(request.frame_refs) <= 5:
             return self._failure(
                 "invalid_frame_count",
-                "Qwen realtime vision requires exactly one frame.",
+                "Qwen realtime vision requires one to five keyframes.",
                 started_at,
             )
         try:
             deadline = self._clock() + self.config.timeout_seconds
             try:
                 stage_started_at = perf_counter()
-                image = _jpeg_base64(
-                    request.frame_refs[0],
-                    deadline=deadline,
-                    clock=self._clock,
-                )
+                images = [
+                    _jpeg_base64(
+                        frame_ref,
+                        deadline=deadline,
+                        clock=self._clock,
+                    )
+                    for frame_ref in request.frame_refs
+                ]
                 self._record_stage("jpeg_prepare_latency_ms", stage_started_at)
             except (OSError, ValueError) as exc:
                 code = "frame_too_large" if "256KB" in str(exc) else "invalid_frame"
@@ -193,7 +197,7 @@ class QwenRealtimeVisionAdapter:
             self._record_stage("instruction_update_latency_ms", stage_started_at)
             self._last_observation_phase = "observation_session_updated"
             stage_started_at = perf_counter()
-            for event in _media_events(image=image):
+            for event in _media_events(images=images):
                 socket.send(json.dumps(event))
             self._last_observation_phase = "media_sent"
             self._expect_event(socket, "input_audio_buffer.committed", deadline)
@@ -564,21 +568,25 @@ def _session_update(*, instructions: str | None = None) -> dict[str, Any]:
     }
 
 
-def _media_events(*, image: str) -> list[dict[str, Any]]:
+def _media_events(*, images: list[str]) -> list[dict[str, Any]]:
     silence_bytes = PCM_SAMPLE_RATE * 2 * PCM_SILENCE_MILLISECONDS // 1000
     silence = base64.b64encode(bytes(silence_bytes)).decode("ascii")
     return [
         {"type": "input_audio_buffer.append", "audio": silence},
-        {"type": "input_image_buffer.append", "image": image},
+        *(
+            {"type": "input_image_buffer.append", "image": image}
+            for image in images
+        ),
         {"type": "input_audio_buffer.commit"},
     ]
 
 
 def _instructions(request: VideoUnderstandingRequest) -> str:
+    frame_count = len(request.frame_refs)
     return (
         f"{QWEN_REALTIME_VLM_ROLE_TEMPLATE}\n"
         f"当前问题: {request.user_query or '更新当前画面语义。'}\n"
-        "只描述当前这一张图片。"
+        f"本次共有 {frame_count} 张按时间排序的关键帧；最后一张是目标当前画面。"
     )
 
 

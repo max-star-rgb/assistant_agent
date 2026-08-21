@@ -62,8 +62,7 @@ def _frame(tmp_path: Path, sequence: int) -> VideoFrame:
     )
 
 
-def test_each_submitted_frame_has_a_safe_vlm_generation(tmp_path: Path) -> None:
-    """Regression: frame-arrival VLM spans need safe sequence correlation."""
+def test_each_executed_keyframe_has_a_safe_vlm_generation(tmp_path: Path) -> None:
 
     async def scenario() -> InMemoryTraceStore:
         trace_store = InMemoryTraceStore()
@@ -100,21 +99,18 @@ def test_each_submitted_frame_has_a_safe_vlm_generation(tmp_path: Path) -> None:
         if event.canonical_event == "vlm.infer.finished"
     ]
 
-    assert len(generations) == 5
-    assert len({event.span_id for event in generations}) == 5
-    assert {event.attributes["frame_sequence"] for event in generations} == {
-        4,
-        5,
-        6,
-        7,
-        8,
+    assert len(generations) == 1
+    assert len({event.span_id for event in generations}) == len(generations)
+    executed_sequences = {
+        event.attributes["frame_sequence"] for event in generations
     }
+    assert executed_sequences == {8}
     assert all(
         event.attributes["provider_connection_isolated"] is True
         and event.attributes["window_role"] == "background"
-        and "visual_window_id" not in event.attributes
-        and "window_start_sequence" not in event.attributes
-        and "target_sequence" not in event.attributes
+        and event.attributes["visual_window_id"] == "visual-window-00000004"
+        and event.attributes["window_start_sequence"] == 4
+        and event.attributes["target_sequence"] == 8
         for event in generations
     )
     serialized = "\n".join(event.model_dump_json() for event in trace_store.events)
@@ -162,8 +158,9 @@ def test_live_view_records_a_content_free_target_barrier(tmp_path: Path) -> None
             metadata={
                 "entry_profile": "agent_service",
                 "visual_window_id": "visual-window-observed",
-                "visual_window_start_sequence": 4,
+                "visual_window_start_sequence": 8,
                 "visual_target_sequence": 8,
+                "visual_window_sequences": (8,),
             },
         ),
     )
@@ -181,11 +178,11 @@ def test_live_view_records_a_content_free_target_barrier(tmp_path: Path) -> None
     ]
     assert barrier_events[-1].attributes == {
         "visual_window_id": "visual-window-observed",
-        "window_start_sequence": 4,
+        "window_start_sequence": 8,
         "target_sequence": 8,
         "target_status": "ready",
         "ready_count": 1,
-        "missing_count": 4,
+        "missing_count": 0,
         "wait_ms": barrier_events[-1].attributes["wait_ms"],
     }
     assert isinstance(barrier_events[-1].attributes["wait_ms"], int)

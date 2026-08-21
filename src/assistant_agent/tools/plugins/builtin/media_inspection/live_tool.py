@@ -130,6 +130,8 @@ def create_live_view_inspect_tool(
                     "media_source": "live_camera",
                     "visual_target_sequence": live.target_sequence,
                     "visual_window_start_sequence": live.window_start_sequence,
+                    "visual_window_sequences": live.window_sequences,
+                    "visual_window_timestamps_ms": live.window_timestamps_ms,
                     "visual_window_id": live.window_id,
                     "visual_target_video_id": live.target_video_id,
                 },

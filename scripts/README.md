@@ -116,19 +116,19 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   `multimodal_observation` 事件生成自包含 HTML，按共享帧序号绘制关键帧 semantic change、选取阈值、
   reminder image-text cosine、匹配阈值和 created/triggered/cancelled 标记。报告不包含目标文本、媒体内容、
   embedding 向量、用户原始 ID 或媒体路径，也不会为旧日志重新计算缺失值。通话中实时观察使用 `--live`；
-  命令只绑定 `127.0.0.1`，浏览器通过 SSE 接收日志追加事件，日志轮转或连接中断后自动恢复：
+  命令只绑定 `127.0.0.1`，浏览器通过 SSE 接收日志追加事件，日志轮转或连接中断后自动恢复。实时模式省略
+  `--session-digest` 时自动跟随最新产生视觉事件的会话并切换页面：
 
   ```bash
   /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
     scripts/render_visual_perception_report.py \
     --log-file /tmp/assistant_agent/logs/agent_server-8089.log \
-    --session-digest 352f328d22e92c15 \
     --live --open
   ```
 
   不传 `--live` 时生成静态快照，默认输出到
   `.data/diagnostics/visual-perception-<session-digest>.html`；实时服务默认端口为 `8765`，可用 `--port`
-  修改。`session-digest` 可从同一日志的 visual observation 事件取得。
+  修改。实时模式显式传入 `--session-digest` 会固定在该会话；静态模式仍必须传入 digest。
 - 生产 Graph 生命周期以 Agent Server/LangSmith native trace 为准；旧 Gateway JSONL 兼容观测模块已删除。
 
 ## Eval and evidence
@@ -144,13 +144,14 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 - `scripts/run_system_multimodal_embedding_eval.py`: 验证本地 SigLIP2 联合 image/text ONNX
   资产。`--dry-run` 不加载模型；真实 CUDA session 必须显式传入 `--allow-local-model`，结果写入
   `.data/evals/system/multimodal_embedding/`，不保存向量、文本、图片内容或媒体路径。dry-run 还列出
-  固定 5 FPS、latest-wins、纯语义选帧、VLM 文本索引和无 query-time VLM 的架构检查面；流水线行为
+  原始帧 SigLIP2 latest-pending、1 FPS 关键帧保底、纯语义选帧、关键帧独立并行 VLM、VLM 文本索引和无 query-time VLM
+  的架构检查面；流水线行为
   由离线 pytest 验证。
-- `scripts/run_system_realtime_visual_target_window_eval.py`：验证 live camera 每帧到达即启动独立 VLM、chat
-  只冻结连续八帧 sequence 边界的行为。默认
+- `scripts/run_system_realtime_visual_target_window_eval.py`：验证 live camera SigLIP2 latest-wins、chat
+  冻结最近最多八个逻辑关键帧 sequence、只等待最后一个 target 的行为。默认
   `--dry-run` 不读取图片、不联网；真实运行要求 real Provider mode、完整 Qwen realtime vision 配置、
-  `--allow-real-provider` 和 operator 提供的八张 sequence-named JPEG。八帧使用八个隔离 WebSocket client
-  并行观察，Tool 只等待 exact target；artifact 只保存 sequence/status/latency/concurrency 和 trace/span ID。
+  `--allow-real-provider` 和 operator 提供的八张 sequence-named JPEG。每个实际执行的关键帧使用隔离 WebSocket
+  client，已选关键帧并行执行，Tool 只等待逻辑窗口的 exact target；artifact 只保存 sequence/status/latency/concurrency 和 trace/span ID。
 - 旧 Runtime/Workflow/Release Review LangSmith runner 已随旧 Graph Runtime 删除。后续评测重建必须直接消费
   Agent Server 或 `NativeGraphEvaluationTarget` 的标准 messages/native trace，当前不得宣称存在上线前行为门禁。
 - `scripts/run_improvement_lab.py`: offline, non-mutating improvement proposal runner.

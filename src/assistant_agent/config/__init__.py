@@ -85,10 +85,8 @@ class ProviderConfig:
     siglip2_cuda_device_id: int = 0
     siglip2_model_dir: str | None = None
     embedding_cuda_device_id: int = 0
-    semantic_input_fps: float = 5.0
-    keyframe_min_interval_seconds: float = 0.5
-    keyframe_max_interval_seconds: float = 10.0
-    keyframe_semantic_threshold: float = 0.18
+    keyframe_max_interval_seconds: float = 2.0
+    keyframe_semantic_threshold: float = 0.08
     visual_memory_candidate_similarity: float = 0.20
     visual_memory_confirmed_similarity: float = 0.30
     visual_memory_qdrant_url: str = "http://127.0.0.1:6333"
@@ -262,12 +260,6 @@ class ProviderConfig:
             raise ValueError("embedding CUDA device id must be non-negative")
         if self.keyframe_max_interval_seconds <= 0:
             raise ValueError("keyframe max interval must be positive")
-        if self.keyframe_min_interval_seconds < 0:
-            raise ValueError("keyframe min interval must be non-negative")
-        if self.keyframe_min_interval_seconds > self.keyframe_max_interval_seconds:
-            raise ValueError("keyframe min interval must not exceed max interval")
-        if self.semantic_input_fps <= 0:
-            raise ValueError("semantic input FPS must be positive")
         if not 0.0 <= self.keyframe_semantic_threshold <= 1.0:
             raise ValueError("keyframe semantic threshold must be between 0 and 1")
         if not (
@@ -370,17 +362,14 @@ class ProviderConfig:
             legacy="SIGLIP2_VISION_MODEL_DIR",
             conflict_code="conflicting_siglip2_model_dir",
         )
-        semantic_input_fps_value = _compatible_env_value(
-            source,
-            canonical="REALTIME_SEMANTIC_INPUT_FPS",
-            legacy="REALTIME_KEYFRAME_SEMANTIC_PROBE_FPS",
-            conflict_code="conflicting_semantic_input_fps",
-        )
         if any(
             name in source
             for name in (
                 "REALTIME_KEYFRAME_STRUCTURAL_THRESHOLD",
                 "REALTIME_KEYFRAME_COMBINED_THRESHOLD",
+                "REALTIME_SEMANTIC_INPUT_FPS",
+                "REALTIME_KEYFRAME_SEMANTIC_PROBE_FPS",
+                "REALTIME_KEYFRAME_MIN_INTERVAL_SECONDS",
             )
         ):
             raise ValueError("removed_realtime_keyframe_config")
@@ -460,18 +449,13 @@ class ProviderConfig:
             siglip2_cuda_device_id=embedding_cuda_device_id,
             siglip2_model_dir=siglip2_model_dir,
             embedding_cuda_device_id=embedding_cuda_device_id,
-            semantic_input_fps=_float_env(semantic_input_fps_value, 5.0),
-            keyframe_min_interval_seconds=_float_env(
-                source.get("REALTIME_KEYFRAME_MIN_INTERVAL_SECONDS"),
-                0.5,
-            ),
             keyframe_max_interval_seconds=_float_env(
                 source.get("REALTIME_KEYFRAME_MAX_INTERVAL_SECONDS"),
-                10.0,
+                2.0,
             ),
             keyframe_semantic_threshold=_float_env(
                 source.get("REALTIME_KEYFRAME_SEMANTIC_THRESHOLD"),
-                0.18,
+                0.08,
             ),
             visual_memory_candidate_similarity=_float_env(
                 source.get("REALTIME_VISUAL_MEMORY_CANDIDATE_SIMILARITY"),

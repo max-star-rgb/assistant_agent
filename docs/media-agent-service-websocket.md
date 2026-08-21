@@ -194,6 +194,15 @@ pending，旧消息仍收到正常 `videoResponse`，但不再解码、提交 VL
 的受治理 `live_view_inspect` Tool 通过共享 SQLite frame index 解析该引用；H.264 hex、JPEG
 正文和本地路径均不进入 Graph State、prompt 或 Agent Server Store。
 
+视频热路径使用同一个安全 `video_index`，并在完成解码后增加服务端 `sequence`，依次记录
+`media_video_websocket_received`、`media_video_ingestion_dequeued`、`media_video_decode_started`、
+`media_video_decode_finished`、`media_video_sqlite_persisted`、`media_video_semantic_submitted` 和
+`media_video_semantic_admitted`。日志自身时间戳是对应边界的服务端 wall time；字段中的
+`queue_wait_ms`、`decode_ms`、`persist_ms`、`receive_to_submit_ms`、`submit_ms` 和
+`receive_to_admit_ms` 使用同一进程 monotonic clock 计算。`captured_at_ms` 仍只表示媒体包
+`contents[].time` 提供的上游帧时间，不得当作服务端收包或解码时间。日志不记录 H.264/JPEG 正文、路径、
+用户正文或 Provider payload；不满足安全字符约束的 `video_index` 只记录摘要。
+
 媒体入口给摄像头引用固定标记 `source=live_camera`；用户主动上传的图片或视频必须由普通请求入口标记为
 `source=uploaded`，交给独立的 `uploaded_media_inspect`，两类引用不能互相替代。VIDEO control 成功后即允许
 模型看到 `live_view_inspect`；当当前 `user/thread/as-of sequence` 已产生可检索视觉文本时，才进一步暴露
@@ -201,12 +210,17 @@ pending，旧消息仍收到正常 `videoResponse`，但不再解码、提交 VL
 媒体连接把连接级 reminder manager 注册到视觉 Runtime，并将提醒命中机械投影为当前 WebSocket 上的主动
 `chatResponse`。握手后尚未收到有效帧、解码失败或连接已关闭时均不可用。这些条件暴露不依赖 Skill 加载。
 
-媒体 wire 只负责把每个成功解码帧提交给连接级视觉句柄。chat 到达 A 时刻后立即发送 `chatProgress`，随后
-等待截至 A 最新接收的视频消息完成解码与提交，再从成功解码结果中冻结最近八帧；WebSocket receive loop 在
-该冻结完成前不接收 A 之后的视频消息。若 A 时刻最新消息解码失败，该轮视觉投影为空并 fail closed，不允许
-回退到更早成功帧。随后媒体入口把视觉模块冻结得到的可信
+媒体 wire 只负责把每个成功解码帧提交给连接级视觉句柄。chat 到达 A 时刻后，入口在任何异步发送或其他
+`await` 之前同步冻结 selector 已经登记的当前半固定关键帧窗口（1～5 帧），随后立即发送 `chatProgress`，
+不等待当前 H.264 解码、SigLIP2 embedding、VLM 或未来关键帧。冻结窗口最后一帧作为 target；窗口关闭后
+异步启动多图 VLM，下一 selected
+关键帧从新窗口开始。用户输入是否最终调用视觉 Tool 不改变这个短期记忆分段动作。当时仍处于
+pending/in-flight、尚未 selected 的帧不属于已关闭窗口。尚未完成解码或尚未完成选帧的工作不会阻塞 run
+创建；其后成为新关键帧也不回写已经冻结的本轮投影。
+随后媒体入口把视觉模块冻结得到的可信
 `window_id`、`window_start_sequence` 和 `target_sequence` 绑定到标准 `source=live_camera` video content
-block，不传 JPEG、Provider client 或 task。逐帧并发、semantic keyframe、目标帧等待、ready/missing 结果和
+block，不传 JPEG、Provider client 或 task。K+a 时刻 Tool 只能读取这个 exact target，不得吸收 A 之后新增的
+关键帧。窗口并发、semantic keyframe、目标帧等待、ready/missing 结果和
 晚到帧处理均以 [`visual-perception-architecture.md`](visual-perception-architecture.md) 为唯一权威。
 
 保留 callback：

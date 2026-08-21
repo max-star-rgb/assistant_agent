@@ -411,10 +411,6 @@ def _message_text(value: Any) -> str:
             "output_text",
         }:
             parts.append(str(block.get("text", "")))
-        elif isinstance(block, Mapping):
-            parts.append(
-                json.dumps(dict(block), ensure_ascii=False, separators=(",", ":"))
-            )
     return "\n".join(part for part in parts if part)
 
 

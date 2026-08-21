@@ -25,7 +25,10 @@ from assistant_agent.media.video.qdrant_visual_memory_index import (
     create_visual_memory_text_index,
 )
 from assistant_agent.media.video.realtime_video_memory import RealtimeVideoMemoryStore
-from assistant_agent.media.video.realtime_video_observer import RealtimeVideoObserver
+from assistant_agent.media.video.realtime_video_observer import (
+    LogicalKeyframeWindowSnapshot,
+    RealtimeVideoObserver,
+)
 from assistant_agent.media.video.semantic_store_pool import (
     SessionVisualSemanticStorePool,
 )
@@ -67,6 +70,30 @@ class RealtimeVisualObserver(Protocol):
 
     async def promote(self, frame: VideoFrame) -> Any: ...
 
+    def recent_logical_keyframes(
+        self,
+        video_id: str,
+        *,
+        limit: int,
+    ) -> tuple[int, ...]: ...
+
+    def current_logical_keyframe_window(
+        self,
+        video_id: str,
+    ) -> LogicalKeyframeWindowSnapshot | None: ...
+
+    def freeze_logical_keyframe_window(
+        self,
+        video_id: str,
+    ) -> LogicalKeyframeWindowSnapshot | None: ...
+
+    async def ensure_logical_keyframe_window(
+        self,
+        window: LogicalKeyframeWindowSnapshot,
+        *,
+        window_role: str,
+    ) -> bool: ...
+
     async def promote_window(
         self,
         frames: Sequence[VideoFrame],
@@ -92,13 +119,14 @@ class VisualTarget:
 
 @dataclass(frozen=True)
 class VisualTargetWindow:
-    """Immutable decoded-frame boundary frozen when one chat starts."""
+    """Immutable logical-keyframe boundary frozen when one chat starts."""
 
     window_id: str
     video_id: str
     start_sequence: int
     target_sequence: int
     sequences: tuple[int, ...]
+    timestamps_ms: tuple[int | None, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -115,6 +143,8 @@ class LiveViewProjection:
     window_start_sequence: int | None = None
     target_sequence: int | None = None
     target_video_id: str | None = None
+    window_sequences: tuple[int, ...] = ()
+    window_timestamps_ms: tuple[int | None, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -173,36 +203,55 @@ class VisualPerceptionSession:
         )
         self._reminder_registered = True
 
+    def freeze_strict_window(
+        self,
+        video_ids: Sequence[str],
+    ) -> VisualTargetWindow | None:
+        """Synchronously linearize a chat against already-selected keyframes."""
+
+        self._ensure_open()
+        frozen: LogicalKeyframeWindowSnapshot | None = None
+        for video_id in reversed(tuple(video_ids)):
+            frozen = self._observer.freeze_logical_keyframe_window(video_id)
+            if frozen is not None:
+                break
+        if frozen is None:
+            return None
+        selected = frozen.sequences
+        _validate_logical_keyframe_window(selected)
+        return VisualTargetWindow(
+            window_id=frozen.window_id,
+            video_id=frozen.video_id,
+            start_sequence=selected[0],
+            target_sequence=selected[-1],
+            sequences=selected,
+            timestamps_ms=frozen.timestamps_ms,
+        )
+
+    async def ensure_strict_window(self, window: VisualTargetWindow) -> bool:
+        """Start the VLM for a window already frozen at chat arrival."""
+
+        self._ensure_open()
+        return await self._observer.ensure_logical_keyframe_window(
+            LogicalKeyframeWindowSnapshot(
+                window_id=window.window_id,
+                video_id=window.video_id,
+                sequences=window.sequences,
+                timestamps_ms=window.timestamps_ms,
+            ),
+            window_role="target",
+        )
+
     async def prepare_strict_window(
         self,
         video_ids: Sequence[str],
     ) -> VisualTargetWindow | None:
-        """Freeze the newest frame boundaries without starting VLM work."""
+        """Freeze a logical window now and asynchronously start its VLM."""
 
-        self._ensure_open()
-        selected: tuple[VideoFrame, ...] = ()
-        for video_id in reversed(tuple(video_ids)):
-            frames = tuple(
-                await asyncio.to_thread(
-                    self._video_context_store.get_recent_frames,
-                    video_id,
-                    limit=REALTIME_VISUAL_TARGET_WINDOW_SIZE,
-                )
-            )
-            if frames:
-                selected = frames
-                break
-        if not selected:
-            return None
-        _validate_target_window(selected)
-        window_id = f"visual-window-{uuid4().hex}"
-        return VisualTargetWindow(
-            window_id=window_id,
-            video_id=selected[-1].video_id,
-            start_sequence=selected[0].sequence,
-            target_sequence=selected[-1].sequence,
-            sequences=tuple(frame.sequence for frame in selected),
-        )
+        window = self.freeze_strict_window(video_ids)
+        if window is not None:
+            await self.ensure_strict_window(window)
+        return window
 
     async def prepare_strict_target(
         self,
@@ -365,6 +414,10 @@ class VisualPerceptionModule:
             window_start_sequence=window.start_sequence if window is not None else None,
             target_sequence=window.target_sequence if window is not None else None,
             target_video_id=window.video_id if window is not None else None,
+            window_sequences=window.sequences if window is not None else (),
+            window_timestamps_ms=(
+                window.timestamps_ms if window is not None else ()
+            ),
         )
         with self._live_views_lock:
             self._live_views[(user_id, session_id)] = projection
@@ -543,12 +596,11 @@ def _create_process_vision_client(
     return create_vision_understanding_client(config)
 
 
-def _validate_target_window(frames: Sequence[VideoFrame]) -> None:
-    video_id = frames[0].video_id
+def _validate_logical_keyframe_window(sequences: Sequence[int]) -> None:
     previous_sequence: int | None = None
-    for frame in frames:
-        if frame.video_id != video_id:
-            raise ValueError("visual target window must contain one video id")
-        if previous_sequence is not None and frame.sequence <= previous_sequence:
+    for sequence in sequences:
+        if isinstance(sequence, bool) or sequence < 0:
+            raise ValueError("visual target window sequence must be non-negative")
+        if previous_sequence is not None and sequence <= previous_sequence:
             raise ValueError("visual target window sequences must be strictly increasing")
-        previous_sequence = frame.sequence
+        previous_sequence = sequence
