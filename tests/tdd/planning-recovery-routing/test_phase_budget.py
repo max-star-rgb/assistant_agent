@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -10,9 +11,16 @@ from langchain_core.tools import tool
 
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.fast_agent import build_fast_agent
-from assistant_agent.native_agent.models import BudgetUsage, WorkerCompletion
+from assistant_agent.native_agent.models import (
+    BudgetUsage,
+    WorkerCompletion,
+    WorkerOutcome,
+)
 from assistant_agent.native_agent.planning_graph import build_planning_graph
-from assistant_agent.native_agent.planning_budget import PhaseLimits, PlanningBudgetPolicy
+from assistant_agent.native_agent.planning_budget import (
+    PhaseLimits,
+    PlanningBudgetPolicy,
+)
 from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.native_agent.state import add_budget_usage
 from assistant_agent.skills.loading import SkillCatalog
@@ -57,12 +65,15 @@ def test_worker_consumes_mock_structured_completion() -> None:
     assert worker.verification_status == "advisory"
 
 
-def test_worker_preserves_insufficient_completion_as_failed_result() -> None:
-    result = asyncio.run(_run_mock_worker(_InsufficientWorkerModel()))
+def test_worker_preserves_insufficient_completion_as_business_outcome() -> None:
+    result = asyncio.run(_run_mock_worker(_InsufficientWorkerModel(), max_replans=0))
 
-    worker = result["worker_results"][0]
-    assert worker.content == "mock worker insufficient"
-    assert worker.verification_status == "failed"
+    worker = next(iter(result["worker_outcomes"].values()))
+    assert isinstance(worker, WorkerOutcome)
+    assert worker.status == "business_failed"
+    assert worker.failure is not None
+    assert worker.failure.code == "worker_business_insufficient"
+    assert result["worker_results"] == []
 
 
 def test_structured_completion_does_not_consume_tool_budget() -> None:
@@ -112,13 +123,21 @@ async def _run_budget_loop(*, phase: str, base: int) -> dict[str, Any]:
     )
 
 
-async def _run_mock_worker(model: MockAssistantChatModel) -> dict[str, Any]:
+async def _run_mock_worker(
+    model: MockAssistantChatModel,
+    *,
+    max_replans: int | None = None,
+) -> dict[str, Any]:
     agent = build_fast_agent(model, [], skill_catalog=SkillCatalog())
+    budget_policy = PlanningBudgetPolicy.from_base(8)
+    if max_replans is not None:
+        budget_policy = replace(budget_policy, max_replans=max_replans)
     graph = build_planning_graph(
         model,
         agent,
         tools=[],
         skill_catalog=SkillCatalog(),
+        budget_policy=budget_policy,
     )
     return await graph.ainvoke(
         {
@@ -151,6 +170,8 @@ async def _run_budget_completion_loop() -> dict[str, Any]:
         },
         context=AssistantRunContext(),
     )
+
+
 class _ThreeProbeCallsModel(MockAssistantChatModel):
     def _response_message(self, messages, **kwargs):
         completed = sum(

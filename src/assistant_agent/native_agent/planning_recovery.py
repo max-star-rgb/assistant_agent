@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping, Sequence
-from typing import Any
 from urllib.error import HTTPError, URLError
 
 import httpx
@@ -13,8 +12,11 @@ from langgraph.errors import GraphBubbleUp, NodeCancelledError
 
 from assistant_agent.native_agent.models import (
     BudgetUsage,
+    NativePlanProposal,
     PlannerOutcome,
     RecoveryDecision,
+    WorkerOutcome,
+    WorkerResult,
 )
 from assistant_agent.native_agent.planning_budget import PlanningBudgetPolicy
 from assistant_agent.native_agent.state import PlanningState
@@ -148,6 +150,138 @@ def route_after_planner_assessment(state: PlanningState) -> str:
     }[decision.action]
 
 
+def freeze_successful_worker_results(
+    state: Mapping[str, object],
+) -> dict[str, WorkerResult]:
+    """Return monotonic successful worker results not already frozen."""
+
+    frozen = _frozen_worker_results(state)
+    additions: dict[str, WorkerResult] = {}
+    outcomes = sorted(
+        _worker_outcomes(state).values(),
+        key=lambda item: (
+            item.plan_generation,
+            item.work_item_id,
+            item.attempt,
+            item.execution_id,
+        ),
+    )
+    for outcome in outcomes:
+        if outcome.status != "succeeded" or outcome.result is None:
+            continue
+        existing = frozen.get(outcome.work_item_id) or additions.get(
+            outcome.work_item_id
+        )
+        if existing is not None and existing != outcome.result:
+            raise ValueError("conflicting frozen worker result")
+        if existing is None:
+            additions[outcome.work_item_id] = outcome.result
+    return additions
+
+
+def assess_workers_node(
+    state: PlanningState,
+    *,
+    policy: PlanningBudgetPolicy,
+) -> dict[str, object]:
+    """Freeze successes before selecting retry, replan, or completion."""
+
+    plan = _plan(state)
+    latest = _latest_current_worker_outcomes(state, plan=plan)
+    worker_attempt_limit = min(max(policy.worker_attempts, 1), 3)
+    frozen_additions = freeze_successful_worker_results(state)
+    combined_frozen = {
+        **_frozen_worker_results(state),
+        **frozen_additions,
+    }
+    failures = [
+        latest[node.node_id]
+        for node in plan.nodes
+        if node.node_id in latest and latest[node.node_id].status != "succeeded"
+    ]
+    terminal_failures = [
+        outcome
+        for outcome in failures
+        if outcome.status in {"budget_exhausted", "business_failed"}
+        or (
+            outcome.status == "operational_failed"
+            and outcome.attempt >= worker_attempt_limit
+        )
+    ]
+    retryable = [
+        outcome
+        for outcome in failures
+        if outcome.status == "operational_failed"
+        and outcome.attempt < worker_attempt_limit
+    ]
+    decision: RecoveryDecision | None = None
+    if terminal_failures:
+        source_ids = tuple(item.execution_id for item in terminal_failures)
+        if _budget_usage(state).replans >= policy.max_replans:
+            decision = RecoveryDecision(
+                action="finalize",
+                reason_code="worker_recovery_budget_exhausted",
+                source_execution_ids=source_ids,
+            )
+        else:
+            first = terminal_failures[0]
+            reason_code = (
+                "worker_operational_exhausted"
+                if first.status == "operational_failed"
+                else first.failure.code
+                if first.failure is not None
+                else "worker_recovery_required"
+            )
+            decision = RecoveryDecision(
+                action="replan",
+                reason_code=reason_code,
+                source_execution_ids=source_ids,
+            )
+    elif retryable:
+        decision = RecoveryDecision(
+            action="retry",
+            reason_code="worker_operational_retry",
+            source_execution_ids=tuple(item.execution_id for item in retryable),
+        )
+    update: dict[str, object] = {
+        "frozen_worker_results": frozen_additions,
+        "worker_results": _ordered_compatibility_results(
+            combined_frozen,
+            plan=plan,
+        ),
+        "recovery_decision": decision,
+    }
+    if decision is not None and decision.action in {"retry", "finalize"}:
+        update["recovery_history"] = _bounded_history(
+            state.get("recovery_history", ()),
+            decision,
+            limit=policy.recovery_history_limit,
+        )
+    return update
+
+
+def route_after_worker_assessment(state: PlanningState) -> str:
+    """Route the deterministic worker assessment without model judgment."""
+
+    decision = _recovery_decision(state)
+    if decision is not None:
+        return {
+            "retry": "scheduler",
+            "replan": "prepare_replan",
+            "finalize": "controlled_finalize",
+            "propagate": "controlled_finalize",
+        }[decision.action]
+    plan = _plan(state)
+    latest = _latest_current_worker_outcomes(state, plan=plan)
+    if all(
+        (outcome := latest.get(node.node_id)) is not None
+        and outcome.status == "succeeded"
+        for node in plan.nodes
+    ):
+        return "finalize"
+    return "scheduler"
+
+
 def prepare_replan_node(
     state: PlanningState,
     *,
@@ -161,12 +295,22 @@ def prepare_replan_node(
     if _budget_usage(state).replans >= policy.max_replans:
         raise ValueError("replan preparation exceeds configured budget")
     generation = _plan_generation(state) + 1
-    historical_node_ids = tuple(
-        node.node_id for node in getattr(state.get("plan"), "nodes", ())
+    plan = _optional_plan(state)
+    historical_node_ids = tuple(node.node_id for node in plan.nodes) if plan else ()
+    frozen_additions = freeze_successful_worker_results(state)
+    frozen_results = {
+        **_frozen_worker_results(state),
+        **frozen_additions,
+    }
+    superseded_ids = _superseded_work_item_ids(state, plan=plan)
+    unfinished_deliverable_ids = _unfinished_deliverable_ids(
+        plan,
+        frozen_result_ids=frozen_results,
     )
     return {
         "plan_generation": generation,
         "planner_attempt_count": 0,
+        "revision_count": 0,
         "plan_candidate": None,
         "planner_outcome": None,
         "admission_error": None,
@@ -176,6 +320,9 @@ def prepare_replan_node(
             "planner_evidence_ids": list(_evidence_ids(state)),
             "plan_generation": generation,
             "remaining_replans": policy.max_replans - _budget_usage(state).replans - 1,
+            "frozen_result_ids": sorted(frozen_results),
+            "replannable_work_item_ids": list(superseded_ids),
+            "unfinished_deliverable_ids": list(unfinished_deliverable_ids),
         },
         "recovery_history": _bounded_history(
             state.get("recovery_history", ()),
@@ -184,6 +331,12 @@ def prepare_replan_node(
         ),
         "budget_usage": BudgetUsage(replans=1),
         "historical_node_ids": list(historical_node_ids),
+        "superseded_work_item_ids": list(superseded_ids),
+        "frozen_worker_results": frozen_additions,
+        "worker_results": _ordered_compatibility_results(
+            frozen_results,
+            plan=plan,
+        ),
     }
 
 
@@ -234,6 +387,112 @@ def _planner_attempt_count(state: Mapping[str, object]) -> int:
     return int(state.get("planner_attempt_count", 0))
 
 
+def _plan(state: Mapping[str, object]) -> NativePlanProposal:
+    plan = _optional_plan(state)
+    if plan is None:
+        raise ValueError("worker recovery requires an admitted plan")
+    return plan
+
+
+def _optional_plan(state: Mapping[str, object]) -> NativePlanProposal | None:
+    value = state.get("plan")
+    return NativePlanProposal.model_validate(value) if value is not None else None
+
+
+def _worker_outcomes(state: Mapping[str, object]) -> dict[str, WorkerOutcome]:
+    raw = state.get("worker_outcomes") or {}
+    if not isinstance(raw, Mapping):
+        raise TypeError("worker_outcomes must be a mapping")
+    return {str(key): WorkerOutcome.model_validate(value) for key, value in raw.items()}
+
+
+def _frozen_worker_results(
+    state: Mapping[str, object],
+) -> dict[str, WorkerResult]:
+    raw = state.get("frozen_worker_results") or {}
+    if not isinstance(raw, Mapping):
+        raise TypeError("frozen_worker_results must be a mapping")
+    return {str(key): WorkerResult.model_validate(value) for key, value in raw.items()}
+
+
+def _latest_current_worker_outcomes(
+    state: Mapping[str, object],
+    *,
+    plan: NativePlanProposal,
+) -> dict[str, WorkerOutcome]:
+    generation = _plan_generation(state)
+    current_ids = {node.node_id for node in plan.nodes}
+    latest: dict[str, WorkerOutcome] = {}
+    for outcome in _worker_outcomes(state).values():
+        if (
+            outcome.plan_generation != generation
+            or outcome.work_item_id not in current_ids
+        ):
+            continue
+        existing = latest.get(outcome.work_item_id)
+        if existing is not None and existing.attempt == outcome.attempt:
+            if existing != outcome:
+                raise ValueError("conflicting worker attempts")
+            continue
+        if existing is None or outcome.attempt > existing.attempt:
+            latest[outcome.work_item_id] = outcome
+    return latest
+
+
+def _superseded_work_item_ids(
+    state: Mapping[str, object],
+    *,
+    plan: NativePlanProposal | None,
+) -> tuple[str, ...]:
+    if plan is None:
+        return ()
+    latest = _latest_current_worker_outcomes(state, plan=plan)
+    superseded = {
+        node.node_id
+        for node in plan.nodes
+        if (outcome := latest.get(node.node_id)) is None
+        or outcome.status != "succeeded"
+    }
+    changed = True
+    while changed:
+        changed = False
+        for node in plan.nodes:
+            if node.node_id in superseded:
+                continue
+            if any(dependency in superseded for dependency in node.depends_on):
+                superseded.add(node.node_id)
+                changed = True
+    return tuple(node.node_id for node in plan.nodes if node.node_id in superseded)
+
+
+def _unfinished_deliverable_ids(
+    plan: NativePlanProposal | None,
+    *,
+    frozen_result_ids: Mapping[str, WorkerResult],
+) -> tuple[str, ...]:
+    if plan is None:
+        return ()
+    frozen_ids = frozenset(frozen_result_ids)
+    return tuple(
+        deliverable.deliverable_id
+        for deliverable in plan.deliverables
+        if not set(deliverable.producer_node_ids).issubset(frozen_ids)
+        or not set(deliverable.frozen_result_refs).issubset(frozen_ids)
+    )
+
+
+def _ordered_compatibility_results(
+    frozen: Mapping[str, WorkerResult],
+    *,
+    plan: NativePlanProposal | None,
+) -> list[WorkerResult]:
+    plan_order = tuple(node.node_id for node in plan.nodes) if plan else ()
+    ordered_ids = tuple(dict.fromkeys([*plan_order, *frozen.keys()]))
+    return [
+        frozen[work_item_id] for work_item_id in ordered_ids if work_item_id in frozen
+    ]
+
+
 def _evidence_ids(state: Mapping[str, object]) -> tuple[str, ...]:
     evidence = state.get("planner_evidence", ())
     return tuple(
@@ -256,10 +515,13 @@ def _exception_status_code(error: BaseException) -> int | None:
 
 __all__ = [
     "assess_planner_node",
+    "assess_workers_node",
     "classify_operational_failure",
     "controlled_finalize_node",
+    "freeze_successful_worker_results",
     "prepare_replan_node",
     "route_after_planner_assessment",
+    "route_after_worker_assessment",
     "PlannerPropagationError",
     "sanitize_planner_propagation",
 ]

@@ -134,6 +134,10 @@ class WorkerState(AgentState):
     provider_search_profile: Required[ProviderSearchProfile]
     active_skill_ids: Required[list[str]]
     skill_reference_grants: Required[dict[str, list[str]]]
+    execution_id: Required[str]
+    plan_generation: Required[int]
+    attempt: Required[int]
+    tool_call_allowance: Required[int]
     work_item_id: Required[str]
     objective: Required[str]
     dependency_results: Required[tuple[WorkerResult, ...]]
@@ -165,10 +169,16 @@ class PlanningState(AgentState):
     recovery_history: NotRequired[list[RecoveryDecision]]
     budget_usage: NotRequired[Annotated[BudgetUsage, add_budget_usage]]
     historical_node_ids: NotRequired[Annotated[list[str], _merge_unique_strings]]
-    superseded_work_item_ids: NotRequired[
-        Annotated[list[str], _merge_unique_strings]
+    superseded_work_item_ids: NotRequired[Annotated[list[str], _merge_unique_strings]]
+    worker_outcomes: NotRequired[
+        Annotated[dict[str, WorkerOutcome], merge_worker_outcomes]
     ]
-    worker_results: NotRequired[Annotated[list[WorkerResult], operator.add]]
+    frozen_worker_results: NotRequired[
+        Annotated[dict[str, WorkerResult], merge_frozen_worker_results]
+    ]
+    worker_attempts: NotRequired[dict[str, int]]
+    # Compatibility projection only. Recovery and scheduling never read this channel.
+    worker_results: NotRequired[list[WorkerResult]]
 
 
 class CodingState(AgentState):
@@ -216,9 +226,7 @@ class CodingState(AgentState):
     repair_failure_evidence: NotRequired[CodingRepairFailureEvidence | None]
     repair_history: NotRequired[Annotated[list[CodingRepairAttempt], operator.add]]
     repair_model_calls: NotRequired[int]
-    repair_proposal_digests: NotRequired[
-        Annotated[list[str], _merge_unique_strings]
-    ]
+    repair_proposal_digests: NotRequired[Annotated[list[str], _merge_unique_strings]]
     repair_approval_context: NotRequired[CodingRepairApprovalContext | None]
     coding_result: NotRequired[CodingTerminalResult]
 

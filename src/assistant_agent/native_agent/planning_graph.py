@@ -21,7 +21,7 @@ from langchain_core.tools import BaseTool
 from langgraph.errors import GraphBubbleUp, NodeCancelledError, NodeError
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
-from langgraph.types import Command, RetryPolicy, Send
+from langgraph.types import Command, Send
 from pydantic import BaseModel
 from pydantic_core import to_jsonable_python
 
@@ -34,15 +34,18 @@ from assistant_agent.native_agent.models import (
     PlannerEvidence,
     PlannerOutcome,
     WorkerCompletion,
+    WorkerOutcome,
     WorkerResult,
 )
 from assistant_agent.native_agent.planning_budget import PlanningBudgetPolicy
 from assistant_agent.native_agent.planning_recovery import (
     assess_planner_node,
+    assess_workers_node,
     classify_operational_failure,
     controlled_finalize_node,
     prepare_replan_node,
     route_after_planner_assessment,
+    route_after_worker_assessment,
     sanitize_planner_propagation,
 )
 from assistant_agent.native_agent.state import PlanningState, WorkerState
@@ -72,10 +75,6 @@ MAX_PLAN_REVISION_CONTEXT_CHARS = 48_000
 MAX_WORKER_CONTEXT_CHARS = 48_000
 MAX_FINALIZER_CONTEXT_CHARS = 96_000
 MAX_PLAN_REVISIONS = 2
-_MAX_WORKER_ATTEMPTS = 3
-_WORKER_OPERATIONAL_FAILURE_CONTENT = (
-    "worker execution failed after bounded operational retries"
-)
 
 _PLAN_REVISION_CONTEXT_OPEN = (
     '<plan_revision_context format="json" trust="tool-output" readonly="true">\n'
@@ -188,7 +187,9 @@ def admit_native_plan(
         if any(
             node.replaces_node_ids or node.frozen_dependency_ids
             for node in proposal.nodes
-        ) or any(deliverable.frozen_result_refs for deliverable in proposal.deliverables):
+        ) or any(
+            deliverable.frozen_result_refs for deliverable in proposal.deliverables
+        ):
             raise NativePlanAdmissionError(
                 "recovery references are forbidden for the initial plan"
             )
@@ -329,6 +330,7 @@ def build_planning_graph(
     )
     inventory_names = admission_policy.inventory_tool_names
     resolved_budget_policy = budget_policy or PlanningBudgetPolicy.from_base(8)
+    worker_attempt_limit = min(max(resolved_budget_policy.worker_attempts, 1), 3)
 
     async def planner_node(
         state: PlanningState,
@@ -370,9 +372,7 @@ def build_planning_graph(
                     "execution_mode": "planning",
                     "trusted_runtime_facts": state.get("trusted_runtime_facts"),
                     "agent_phase": "planner",
-                    "active_skill_ids": list(
-                        state.get("planner_active_skill_ids", ())
-                    ),
+                    "active_skill_ids": list(state.get("planner_active_skill_ids", ())),
                     "skill_reference_grants": dict(
                         state.get("planner_skill_reference_grants", {})
                     ),
@@ -413,7 +413,6 @@ def build_planning_graph(
                     planner_result.get("skill_reference_grants")
                 ),
                 "planner_evidence": list(new_evidence),
-                "worker_results": [],
                 "budget_usage": usage,
             }
             candidate = planner_result.get("structured_response")
@@ -505,22 +504,76 @@ def build_planning_graph(
         state: WorkerState,
         runtime: Runtime[AssistantRunContext],
     ) -> dict[str, Any]:
-        result = await fast_agent.ainvoke(
-            {
-                "messages": [HumanMessage(content=_worker_prompt(state))],
-                "memory_context": tuple(state.get("memory_context", ())),
-                "memory_status": state.get("memory_status", "empty"),
-                "execution_mode": state["execution_mode"],
-                "trusted_runtime_facts": state.get("trusted_runtime_facts"),
-                "agent_phase": state.get("agent_phase", "worker"),
-                "provider_search_profile": state.get("provider_search_profile", "none"),
-                "worker_tool_allowlist": state.get("worker_tool_allowlist", ()),
-                "active_skill_ids": list(state.get("active_skill_ids", ())),
-                "skill_reference_grants": dict(state.get("skill_reference_grants", {})),
-            },
-            context=runtime.context,
+        try:
+            result = await fast_agent.ainvoke(
+                {
+                    "messages": [HumanMessage(content=_worker_prompt(state))],
+                    "memory_context": tuple(state.get("memory_context", ())),
+                    "memory_status": state.get("memory_status", "empty"),
+                    "execution_mode": state["execution_mode"],
+                    "trusted_runtime_facts": state.get("trusted_runtime_facts"),
+                    "agent_phase": state.get("agent_phase", "worker"),
+                    "provider_search_profile": state.get(
+                        "provider_search_profile", "none"
+                    ),
+                    "worker_tool_allowlist": state.get("worker_tool_allowlist", ()),
+                    "active_skill_ids": list(state.get("active_skill_ids", ())),
+                    "skill_reference_grants": dict(
+                        state.get("skill_reference_grants", {})
+                    ),
+                },
+                context=runtime.context,
+            )
+        except (GraphBubbleUp, NodeCancelledError):
+            raise
+        except Exception as error:
+            if _is_worker_operational_failure(error):
+                return _operational_worker_outcome_update(state)
+            raise
+        phase_usage = BudgetUsage.model_validate(result.get("phase_budget_usage") or {})
+        usage = BudgetUsage(
+            model_calls=phase_usage.model_calls,
+            tool_calls=phase_usage.tool_calls,
+            node_attempts=1,
+            replans=phase_usage.replans,
         )
+        if result.get("phase_budget_status") == "exhausted":
+            outcome = WorkerOutcome(
+                execution_id=state["execution_id"],
+                plan_generation=state["plan_generation"],
+                work_item_id=state["work_item_id"],
+                attempt=state["attempt"],
+                status="budget_exhausted",
+                failure=FailureFact(
+                    category="budget_exhausted",
+                    code="worker_phase_budget_exhausted",
+                    phase="worker",
+                    plan_generation=state["plan_generation"],
+                    work_item_id=state["work_item_id"],
+                    attempt=state["attempt"],
+                ),
+                usage=usage,
+            )
+            return _worker_outcome_update(outcome)
         completion = WorkerCompletion.model_validate(result["structured_response"])
+        if completion.status == "insufficient":
+            outcome = WorkerOutcome(
+                execution_id=state["execution_id"],
+                plan_generation=state["plan_generation"],
+                work_item_id=state["work_item_id"],
+                attempt=state["attempt"],
+                status="business_failed",
+                failure=FailureFact(
+                    category="business_failure",
+                    code="worker_business_insufficient",
+                    phase="worker",
+                    plan_generation=state["plan_generation"],
+                    work_item_id=state["work_item_id"],
+                    attempt=state["attempt"],
+                ),
+                usage=usage,
+            )
+            return _worker_outcome_update(outcome)
         terminal = next(
             (
                 message
@@ -547,7 +600,16 @@ def build_planning_graph(
             verification_status=verification,  # type: ignore[arg-type]
             sources=sources,
         )
-        return {"worker_results": [worker_result]}
+        outcome = WorkerOutcome(
+            execution_id=state["execution_id"],
+            plan_generation=state["plan_generation"],
+            work_item_id=state["work_item_id"],
+            attempt=state["attempt"],
+            status="succeeded",
+            result=worker_result,
+            usage=usage,
+        )
+        return _worker_outcome_update(outcome)
 
     def worker_failure_node(
         state: WorkerState,
@@ -556,15 +618,7 @@ def build_planning_graph(
         if not _is_worker_operational_failure(error.error):
             raise error.error
         return Command(
-            update={
-                "worker_results": [
-                    WorkerResult(
-                        work_item_id=state["work_item_id"],
-                        content=_WORKER_OPERATIONAL_FAILURE_CONTENT,
-                        verification_status="failed",
-                    )
-                ]
-            },
+            update=_operational_worker_outcome_update(state),
             goto="join",
         )
 
@@ -575,13 +629,12 @@ def build_planning_graph(
         state: PlanningState,
         runtime: Runtime[AssistantRunContext],
     ) -> dict[str, Any]:
-        by_id = {item.work_item_id: item for item in state.get("worker_results", ())}
-        ordered = [by_id.get(node.node_id) for node in state["plan"].nodes]
+        ordered = _ordered_final_worker_results(state)
         payload = _finalizer_prompt(
             request=_last_human_text(state),
             deliverables=state["plan"].deliverables,
             evidence=state.get("planner_evidence", ()),
-            worker_results=tuple(item for item in ordered if item is not None),
+            worker_results=ordered,
         )
         result = await fast_agent.ainvoke(
             {
@@ -620,21 +673,24 @@ def build_planning_graph(
         partial(prepare_replan_node, policy=resolved_budget_policy),
     )
     builder.add_node("admit_plan", admit_plan_node)
-    builder.add_node("scheduler", scheduler_node)
+    builder.add_node(
+        "scheduler",
+        partial(
+            scheduler_node,
+            worker_attempt_limit=worker_attempt_limit,
+        ),
+    )
     builder.add_node(
         "worker",
         worker_node,
         input_schema=WorkerState,
-        retry_policy=RetryPolicy(
-            initial_interval=0,
-            backoff_factor=0,
-            max_attempts=_MAX_WORKER_ATTEMPTS,
-            jitter=False,
-            retry_on=_is_worker_operational_failure,
-        ),
         error_handler=worker_failure_node,
     )
     builder.add_node("join", join_node)
+    builder.add_node(
+        "assess_workers",
+        partial(assess_workers_node, policy=resolved_budget_policy),
+    )
     builder.add_node("finalize", finalize_node)
     builder.add_node("controlled_finalize", controlled_finalize_node)
     builder.add_edge(START, "planner")
@@ -652,11 +708,22 @@ def build_planning_graph(
     )
     builder.add_conditional_edges(
         "scheduler",
-        route_scheduler,
+        partial(
+            route_scheduler,
+            worker_attempt_limit=worker_attempt_limit,
+            tool_call_allowance=resolved_budget_policy.phase_limits(
+                "worker"
+            ).tool_calls,
+        ),
         ["worker", "finalize"],
     )
     builder.add_edge("worker", "join")
-    builder.add_edge("join", "scheduler")
+    builder.add_edge("join", "assess_workers")
+    builder.add_conditional_edges(
+        "assess_workers",
+        route_after_worker_assessment,
+        ["scheduler", "prepare_replan", "finalize", "controlled_finalize"],
+    )
     builder.add_edge("finalize", END)
     builder.add_edge("controlled_finalize", END)
     return builder.compile(name="AssistantPlanningGraph", checkpointer=checkpointer)
@@ -668,41 +735,33 @@ def route_after_admission(state: PlanningState) -> str:
     return "planner" if state.get("admission_error") else "scheduler"
 
 
-def scheduler_node(state: PlanningState) -> dict[str, Any]:
-    """Propagate failed dependencies into stable terminal worker results."""
+def scheduler_node(
+    state: PlanningState,
+    *,
+    worker_attempt_limit: int = 3,
+) -> dict[str, Any]:
+    """Reserve deterministic attempt identities for the next ready wave."""
 
-    results_by_id = {
-        item.work_item_id: item for item in state.get("worker_results", ())
+    attempts = {
+        str(work_item_id): int(attempt)
+        for work_item_id, attempt in state.get("worker_attempts", {}).items()
     }
-    blocked_results: list[WorkerResult] = []
-    changed = True
-    while changed:
-        changed = False
-        for node in state["plan"].nodes:
-            if node.node_id in results_by_id:
-                continue
-            failed_dependencies = [
-                dependency
-                for dependency in node.depends_on
-                if (
-                    (result := results_by_id.get(dependency)) is not None
-                    and result.verification_status == "failed"
-                )
-            ]
-            if not failed_dependencies:
-                continue
-            blocked = WorkerResult(
-                work_item_id=node.node_id,
-                content=(
-                    "work item blocked because a direct dependency failed: "
-                    + ", ".join(failed_dependencies)
-                ),
-                verification_status="failed",
-            )
-            results_by_id[node.node_id] = blocked
-            blocked_results.append(blocked)
-            changed = True
-    return {"worker_results": blocked_results} if blocked_results else {}
+    latest = _latest_current_worker_outcomes(state)
+    for node in _ready_worker_nodes(
+        state,
+        latest=latest,
+        worker_attempt_limit=worker_attempt_limit,
+    ):
+        previous = latest.get(node.node_id)
+        previous_attempt = previous.attempt if previous is not None else 0
+        attempts[node.node_id] = max(
+            attempts.get(node.node_id, 0),
+            previous_attempt + 1,
+        )
+    return {
+        "worker_attempts": attempts,
+        "recovery_decision": None,
+    }
 
 
 def _is_worker_operational_failure(error: BaseException) -> bool:
@@ -771,13 +830,21 @@ def _exception_status_code(error: BaseException) -> int | None:
     return status_code if isinstance(status_code, int) else None
 
 
-def route_scheduler(state: PlanningState) -> list[Send] | str:
+def route_scheduler(
+    state: PlanningState,
+    *,
+    worker_attempt_limit: int = 3,
+    tool_call_allowance: int = 1,
+) -> list[Send] | str:
     """Dispatch one ready DAG wave in plan order, or enter the finalizer."""
 
-    results_by_id = {
-        item.work_item_id: item for item in state.get("worker_results", ())
+    latest = _latest_current_worker_outcomes(state)
+    successful_results = {
+        work_item_id: outcome.result
+        for work_item_id, outcome in latest.items()
+        if outcome.status == "succeeded" and outcome.result is not None
     }
-    completed = set(results_by_id)
+    completed = set(successful_results)
     nodes = state["plan"].nodes
     if len(completed) == len(nodes):
         return "finalize"
@@ -787,16 +854,23 @@ def route_scheduler(state: PlanningState) -> list[Send] | str:
     }
     planner_active_skills = frozenset(state.get("planner_active_skill_ids", ()))
     planner_reference_grants = state.get("planner_skill_reference_grants", {})
+    frozen_results = {
+        str(work_item_id): WorkerResult.model_validate(result)
+        for work_item_id, result in state.get("frozen_worker_results", {}).items()
+    }
+    attempts = state.get("worker_attempts", {})
     sends: list[Send] = []
-    for node in nodes:
-        if node.node_id in completed:
-            continue
-        dependencies = [results_by_id.get(item) for item in node.depends_on]
-        if any(item is None for item in dependencies) or any(
-            item.verification_status == "failed"
-            for item in dependencies
-            if item is not None
-        ):
+    ready = _ready_worker_nodes(
+        state,
+        latest=latest,
+        worker_attempt_limit=worker_attempt_limit,
+    )
+    generation = int(state.get("plan_generation", 0))
+    for node in ready:
+        previous = latest.get(node.node_id)
+        previous_attempt = previous.attempt if previous is not None else 0
+        attempt = max(int(attempts.get(node.node_id, 0)), previous_attempt + 1)
+        if attempt > worker_attempt_limit:
             continue
         active_skill_ids = [
             skill_id
@@ -812,10 +886,25 @@ def route_scheduler(state: PlanningState) -> list[Send] | str:
                     "memory_status": state.get("memory_status", "empty"),
                     "execution_mode": "planning",
                     "trusted_runtime_facts": state.get("trusted_runtime_facts"),
+                    "execution_id": _worker_execution_id(
+                        generation=generation,
+                        work_item_id=node.node_id,
+                        attempt=attempt,
+                    ),
+                    "plan_generation": generation,
+                    "attempt": attempt,
+                    "tool_call_allowance": tool_call_allowance,
                     "work_item_id": node.node_id,
                     "objective": node.objective,
                     "dependency_results": tuple(
-                        results_by_id[dependency] for dependency in node.depends_on
+                        [
+                            successful_results[dependency]
+                            for dependency in node.depends_on
+                        ]
+                        + [
+                            frozen_results[dependency]
+                            for dependency in node.frozen_dependency_ids
+                        ]
                     ),
                     "planner_evidence": tuple(
                         evidence_by_id[evidence_id]
@@ -836,6 +925,110 @@ def route_scheduler(state: PlanningState) -> list[Send] | str:
     if sends:
         return sends
     raise NativePlanAdmissionError("admitted plan has no schedulable work item")
+
+
+def _worker_outcome_update(outcome: WorkerOutcome) -> dict[str, Any]:
+    return {
+        "worker_outcomes": {outcome.execution_id: outcome},
+        "budget_usage": outcome.usage,
+    }
+
+
+def _operational_worker_outcome_update(state: WorkerState) -> dict[str, Any]:
+    usage = BudgetUsage(node_attempts=1)
+    outcome = WorkerOutcome(
+        execution_id=state["execution_id"],
+        plan_generation=state["plan_generation"],
+        work_item_id=state["work_item_id"],
+        attempt=state["attempt"],
+        status="operational_failed",
+        failure=FailureFact(
+            category="operational",
+            code="worker_operational_failure",
+            phase="worker",
+            plan_generation=state["plan_generation"],
+            work_item_id=state["work_item_id"],
+            attempt=state["attempt"],
+        ),
+        usage=usage,
+    )
+    return _worker_outcome_update(outcome)
+
+
+def _latest_current_worker_outcomes(
+    state: Mapping[str, Any],
+) -> dict[str, WorkerOutcome]:
+    generation = int(state.get("plan_generation", 0))
+    plan_ids = {node.node_id for node in state["plan"].nodes}
+    latest: dict[str, WorkerOutcome] = {}
+    for raw_outcome in state.get("worker_outcomes", {}).values():
+        outcome = WorkerOutcome.model_validate(raw_outcome)
+        if (
+            outcome.plan_generation != generation
+            or outcome.work_item_id not in plan_ids
+        ):
+            continue
+        existing = latest.get(outcome.work_item_id)
+        if existing is not None and existing.attempt == outcome.attempt:
+            if existing != outcome:
+                raise ValueError("conflicting worker attempts")
+            continue
+        if existing is None or outcome.attempt > existing.attempt:
+            latest[outcome.work_item_id] = outcome
+    return latest
+
+
+def _ready_worker_nodes(
+    state: Mapping[str, Any],
+    *,
+    latest: Mapping[str, WorkerOutcome],
+    worker_attempt_limit: int,
+) -> list[Any]:
+    successful = {
+        work_item_id
+        for work_item_id, outcome in latest.items()
+        if outcome.status == "succeeded"
+    }
+    ready: list[Any] = []
+    for node in state["plan"].nodes:
+        outcome = latest.get(node.node_id)
+        if outcome is not None:
+            if outcome.status == "succeeded":
+                continue
+            if not (
+                outcome.status == "operational_failed"
+                and outcome.attempt < worker_attempt_limit
+            ):
+                continue
+        if not set(node.depends_on).issubset(successful):
+            continue
+        ready.append(node)
+    return ready
+
+
+def _worker_execution_id(
+    *,
+    generation: int,
+    work_item_id: str,
+    attempt: int,
+) -> str:
+    return f"g{generation}:{work_item_id}:a{attempt}"
+
+
+def _ordered_final_worker_results(
+    state: Mapping[str, Any],
+) -> tuple[WorkerResult, ...]:
+    frozen = {
+        str(work_item_id): WorkerResult.model_validate(result)
+        for work_item_id, result in state.get("frozen_worker_results", {}).items()
+    }
+    ordered_ids: list[str] = []
+    for deliverable in state["plan"].deliverables:
+        ordered_ids.extend(deliverable.frozen_result_refs)
+        ordered_ids.extend(deliverable.producer_node_ids)
+    ordered_ids.extend(node.node_id for node in state["plan"].nodes)
+    unique_ids = tuple(dict.fromkeys(ordered_ids))
+    return tuple(frozen[item_id] for item_id in unique_ids if item_id in frozen)
 
 
 def _worker_prompt(state: WorkerState) -> str:
@@ -1591,19 +1784,52 @@ def _planner_recovery_context(context: Mapping[str, Any]) -> str:
 
     payload = {
         "failure_code": context.get("failure_code"),
-        "planner_evidence_ids": context.get("planner_evidence_ids", ()),
+        "planner_evidence_ids": list(context.get("planner_evidence_ids", ())),
         "plan_generation": context.get("plan_generation"),
         "remaining_replans": context.get("remaining_replans"),
+        "frozen_result_ids": list(context.get("frozen_result_ids", ())),
+        "replannable_work_item_ids": list(context.get("replannable_work_item_ids", ())),
+        "unfinished_deliverable_ids": list(
+            context.get("unfinished_deliverable_ids", ())
+        ),
     }
-    return (
+    opening = (
         '<planning_recovery_context format="json" trust="runtime-fact" '
         'readonly="true">\n'
-        + escape(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":")), quote=False
-        )
-        + "\n</planning_recovery_context>\n"
-        + "复用已捕获的 evidence_id，不要重复执行已经成功的 Tool。"
     )
+    closing = (
+        "\n</planning_recovery_context>\n"
+        "复用 frozen_result_id 和已捕获的 evidence_id；不要重复执行已经成功的 worker 或 Tool。"
+    )
+
+    def render() -> str:
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return opening + escape(encoded, quote=False) + closing
+
+    omitted: dict[str, int] = {}
+    for field in (
+        "unfinished_deliverable_ids",
+        "frozen_result_ids",
+        "planner_evidence_ids",
+        "replannable_work_item_ids",
+    ):
+        values = payload[field]
+        if not isinstance(values, list):
+            continue
+        while values and len(render()) > MAX_PLAN_REVISION_CONTEXT_CHARS:
+            values.pop()
+            omitted[field] = omitted.get(field, 0) + 1
+    if omitted:
+        payload["context_truncated"] = True
+        payload["omitted_id_counts"] = omitted
+    rendered = render()
+    if len(rendered) > MAX_PLAN_REVISION_CONTEXT_CHARS:
+        raise ValueError("planning recovery metadata exceeds context budget")
+    return rendered
 
 
 def _render_plan_revision_context(
