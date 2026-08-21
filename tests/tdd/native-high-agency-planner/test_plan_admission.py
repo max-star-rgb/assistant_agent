@@ -90,7 +90,7 @@ def _proposal(
     deliverable_evidence_refs: tuple[str, ...] = (EVIDENCE_ID,),
 ) -> NativePlanProposal:
     return NativePlanProposal(
-        schema_version="native_plan_v1",
+        schema_version="native_plan_v2",
         nodes=nodes
         or (
             NativePlanNode(

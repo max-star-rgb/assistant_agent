@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
+from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
@@ -10,9 +12,18 @@ from langgraph_sdk.auth.types import StudioUser
 from pydantic import PrivateAttr, ValidationError
 import pytest
 
+from assistant_agent.agent_server import services
 from assistant_agent.agent_server.services import AgentServerExecutionOwner
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.fast_agent import build_fast_agent
+from assistant_agent.native_agent.models import (
+    BudgetUsage,
+    NativePlanNode,
+    NativePlanProposal,
+    PlanDeliverable,
+    WorkerCompletion,
+)
+from assistant_agent.native_agent.planning_budget import PlanningBudgetPolicy
 from assistant_agent.native_agent.planning_graph import build_planning_graph
 from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.native_agent.state import AssistantRootInput
@@ -41,14 +52,15 @@ class _PlanningProbeModel(MockAssistantChatModel):
     _max_active_workers: int = PrivateAttr(default=0)
 
     def _response_message(self, messages, **kwargs):
-        if "NativePlanProposal" in _probe_tool_names(kwargs.get("tools")):
+        visible_names = _probe_tool_names(kwargs.get("tools"))
+        if "NativePlanProposal" in visible_names:
             return AIMessage(
                 content="",
                 tool_calls=[
                     {
                         "name": "NativePlanProposal",
                         "args": {
-                            "schema_version": "native_plan_v1",
+                            "schema_version": "native_plan_v2",
                             "nodes": [
                                 {
                                     "node_id": f"worker-{index}",
@@ -67,6 +79,22 @@ class _PlanningProbeModel(MockAssistantChatModel):
                             ],
                         },
                         "id": "planning-probe-proposal",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        if "WorkerCompletion" in visible_names:
+            objective = _probe_last_human_text(messages).split("\n", 1)[0]
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "WorkerCompletion",
+                        "args": {
+                            "status": "completed",
+                            "content": f"completed:{objective}",
+                        },
+                        "id": f"completion-{objective}",
                         "type": "tool_call",
                     }
                 ],
@@ -125,7 +153,7 @@ class _ZeroNodePlanningProbeModel(MockAssistantChatModel):
                 {
                     "name": "NativePlanProposal",
                     "args": {
-                        "schema_version": "native_plan_v1",
+                        "schema_version": "native_plan_v2",
                         "nodes": [],
                         "deliverables": [
                             {
@@ -140,6 +168,104 @@ class _ZeroNodePlanningProbeModel(MockAssistantChatModel):
                 }
             ],
         )
+
+
+class _PlanningRecoveryProbeAgent:
+    name = "AssistantFastAgent"
+
+    def __init__(self) -> None:
+        self.planner_calls = 0
+        self.worker_calls: Counter[str] = Counter()
+
+    async def ainvoke(
+        self,
+        input: dict[str, Any],
+        *,
+        context: Any,
+    ) -> dict[str, Any]:
+        del context
+        phase = input["agent_phase"]
+        if phase == "planner":
+            self.planner_calls += 1
+            proposal = (
+                _initial_recovery_probe_plan()
+                if self.planner_calls == 1
+                else _replacement_recovery_probe_plan()
+            )
+            return {
+                "messages": list(input["messages"]),
+                "structured_response": proposal,
+                "phase_budget_usage": BudgetUsage(model_calls=1),
+            }
+        if phase == "worker":
+            objective = str(input["messages"][0].content).split("\n", 1)[0]
+            if (
+                objective == "successful-worker-sentinel"
+                and self.worker_calls[objective]
+            ):
+                raise AssertionError("frozen successful worker was replayed")
+            self.worker_calls[objective] += 1
+            if objective == "operational-failure-sentinel":
+                raise TimeoutError("operational-probe")
+            completion = WorkerCompletion(
+                status="completed",
+                content=f"{objective}-result",
+            )
+            return {
+                "messages": [AIMessage(content=completion.content)],
+                "structured_response": completion,
+                "phase_budget_usage": BudgetUsage(model_calls=1),
+            }
+        assert phase == "finalizer"
+        return {
+            "messages": [AIMessage(content="recovery-final-answer-sentinel")],
+            "phase_budget_usage": BudgetUsage(model_calls=1),
+        }
+
+
+def _initial_recovery_probe_plan() -> NativePlanProposal:
+    return NativePlanProposal(
+        schema_version="native_plan_v2",
+        nodes=(
+            NativePlanNode(
+                node_id="successful-worker",
+                objective="successful-worker-sentinel",
+            ),
+            NativePlanNode(
+                node_id="failed-worker",
+                objective="operational-failure-sentinel",
+            ),
+        ),
+        deliverables=(
+            PlanDeliverable(
+                deliverable_id="answer",
+                description="recovery probe",
+                producer_node_ids=("successful-worker", "failed-worker"),
+            ),
+        ),
+    )
+
+
+def _replacement_recovery_probe_plan() -> NativePlanProposal:
+    return NativePlanProposal(
+        schema_version="native_plan_v2",
+        nodes=(
+            NativePlanNode(
+                node_id="replacement-worker",
+                objective="replacement-worker-sentinel",
+                replaces_node_ids=("failed-worker",),
+                frozen_dependency_ids=("successful-worker",),
+            ),
+        ),
+        deliverables=(
+            PlanDeliverable(
+                deliverable_id="answer",
+                description="recovered probe",
+                producer_node_ids=("replacement-worker",),
+                frozen_result_refs=("successful-worker",),
+            ),
+        ),
+    )
 
 
 def _probe_last_human_text(messages) -> str:
@@ -205,11 +331,17 @@ def test_parent_graph_has_fast_planning_and_coding_native_branches(monkeypatch) 
         assert planning_nodes == {
             "__start__",
             "planner",
+            "assess_planner",
+            "prepare_replan",
             "admit_plan",
             "scheduler",
+            "reserve_wave_budget",
             "worker",
             "join",
+            "reconcile_wave_budget",
+            "assess_workers",
             "finalize",
+            "controlled_finalize",
             "__end__",
         }
         planning_edges = {
@@ -218,14 +350,29 @@ def test_parent_graph_has_fast_planning_and_coding_native_branches(monkeypatch) 
         }
         assert planning_edges == {
             ("__start__", "planner"),
-            ("planner", "admit_plan"),
+            ("planner", "assess_planner"),
+            ("assess_planner", "admit_plan"),
+            ("assess_planner", "planner"),
+            ("assess_planner", "prepare_replan"),
+            ("assess_planner", "controlled_finalize"),
+            ("prepare_replan", "planner"),
             ("admit_plan", "planner"),
             ("admit_plan", "scheduler"),
-            ("scheduler", "worker"),
-            ("scheduler", "finalize"),
+            ("scheduler", "reserve_wave_budget"),
+            ("reserve_wave_budget", "worker"),
+            ("reserve_wave_budget", "finalize"),
+            ("reserve_wave_budget", "controlled_finalize"),
             ("worker", "join"),
-            ("join", "scheduler"),
+            ("join", "reconcile_wave_budget"),
+            ("reconcile_wave_budget", "assess_workers"),
+            ("assess_workers", "scheduler"),
+            ("assess_workers", "prepare_replan"),
+            ("assess_workers", "finalize"),
+            ("assess_workers", "controlled_finalize"),
+            ("finalize", "finalize"),
+            ("finalize", "controlled_finalize"),
             ("finalize", "__end__"),
+            ("controlled_finalize", "__end__"),
         }
         coding_nodes = set(graph.nodes["coding_graph"].data.get_graph().nodes)
         assert "prepare_repair" in coding_nodes
@@ -239,6 +386,42 @@ def test_parent_graph_has_fast_planning_and_coding_native_branches(monkeypatch) 
             "apply_merge",
         }.issubset(coding_nodes)
         assert owner.graph.checkpointer is None
+    finally:
+        asyncio.run(owner.aclose())
+
+
+@pytest.mark.core_invariant("LOOP-001")
+def test_production_composition_reuses_one_planning_budget_policy(monkeypatch) -> (
+    None
+):
+    monkeypatch.setenv("MULTIMODAL_AGENT_PROVIDER_MODE", "mock")
+    monkeypatch.setenv("MAX_TOOL_ITERATIONS", "3")
+    fast_policies: list[PlanningBudgetPolicy | None] = []
+    planning_policies: list[PlanningBudgetPolicy | None] = []
+    real_build_fast_agent = services.build_fast_agent
+    real_build_planning_graph = services.build_planning_graph
+
+    def recording_build_fast_agent(*args: Any, **kwargs: Any):
+        fast_policies.append(kwargs.get("budget_policy"))
+        return real_build_fast_agent(*args, **kwargs)
+
+    def recording_build_planning_graph(*args: Any, **kwargs: Any):
+        planning_policies.append(kwargs.get("budget_policy"))
+        return real_build_planning_graph(*args, **kwargs)
+
+    monkeypatch.setattr(services, "build_fast_agent", recording_build_fast_agent)
+    monkeypatch.setattr(
+        services,
+        "build_planning_graph",
+        recording_build_planning_graph,
+    )
+
+    owner = asyncio.run(_open_owner())
+    try:
+        assert len(fast_policies) == len(planning_policies) == 1
+        assert isinstance(fast_policies[0], PlanningBudgetPolicy)
+        assert fast_policies[0].base == 3
+        assert fast_policies[0] is planning_policies[0]
     finally:
         asyncio.run(owner.aclose())
 
@@ -288,12 +471,65 @@ def test_planning_workers_reuse_one_agent_without_state_leakage() -> None:
         )
     )
 
-    contents = {item.work_item_id: item.content for item in result["worker_results"]}
+    contents = {
+        work_item_id: item.content
+        for work_item_id, item in result["frozen_worker_results"].items()
+    }
     assert model._max_active_workers == 2
     assert "worker-a-sentinel" in contents["worker-1"]
     assert "worker-b-sentinel" not in contents["worker-1"]
     assert "worker-b-sentinel" in contents["worker-2"]
     assert "worker-a-sentinel" not in contents["worker-2"]
+
+
+@pytest.mark.core_invariant("LOOP-001")
+def test_planning_operational_failure_replans_without_replaying_success() -> None:
+    agent = _PlanningRecoveryProbeAgent()
+    graph = build_planning_graph(
+        object(),
+        agent,
+        skill_catalog=SkillCatalog(),
+    )
+
+    async def collect_stream():
+        return [
+            part
+            async for part in graph.astream(
+                {
+                    "messages": [HumanMessage(content="request-sentinel")],
+                    "memory_context": (),
+                    "memory_status": "empty",
+                },
+                context=AssistantRunContext(),
+                stream_mode=["updates", "values"],
+                version="v2",
+            )
+        ]
+
+    parts = asyncio.run(collect_stream())
+    node_path = [
+        node_name
+        for part in parts
+        if part["type"] == "updates"
+        for node_name in part["data"]
+    ]
+    final_state = [
+        part["data"] for part in parts if part["type"] == "values"
+    ][-1]
+    recovery_path = ("assess_workers", "prepare_replan", "planner")
+
+    assert any(
+        tuple(node_path[index : index + len(recovery_path)]) == recovery_path
+        for index in range(len(node_path) - len(recovery_path) + 1)
+    )
+    frozen_results = final_state["frozen_worker_results"]
+    assert frozen_results["successful-worker"].content == (
+        "successful-worker-sentinel-result"
+    )
+    assert frozen_results["replacement-worker"].content == (
+        "replacement-worker-sentinel-result"
+    )
+    assert isinstance(final_state["messages"][-1], AIMessage)
 
 
 @pytest.mark.core_invariant("RUN-001")
@@ -331,7 +567,7 @@ def test_zero_node_planning_plan_finishes_with_standard_ai_message() -> None:
         )
     )
 
-    assert result["worker_results"] == []
+    assert result.get("frozen_worker_results", {}) == {}
     assert isinstance(result["messages"][-1], AIMessage)
     assert result["messages"][-1].content == "zero-node-final-answer-sentinel"
 

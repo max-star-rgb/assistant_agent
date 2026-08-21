@@ -9,7 +9,16 @@ from typing import Any
 
 from langgraph_sdk import get_sync_client
 
-ASSISTANT_ID = "assistant-native-v1"
+from assistant_agent.agent_server.client import (
+    IncompatibleCheckpointGraphError,
+    IncompatibleThreadGraphError,
+    bind_thread_graph_identity,
+    require_current_checkpoint_graph,
+    require_thread_graph_identity,
+)
+from assistant_agent.agent_server.config import ASSISTANT_GRAPH_ID
+
+ASSISTANT_ID = ASSISTANT_GRAPH_ID
 
 
 def _context() -> dict[str, object]:
@@ -39,12 +48,25 @@ def _ensure_thread(client: Any, thread_id: str | None) -> str:
     thread = client.threads.create(
         thread_id=thread_id,
         if_exists="do_nothing",
-        metadata={"client": "agent_cli"},
+        metadata=bind_thread_graph_identity(
+            {"client": "agent_cli"},
+            expected_graph_id=ASSISTANT_ID,
+        ),
+        graph_id=ASSISTANT_ID,
     )
+    require_thread_graph_identity(thread, expected_graph_id=ASSISTANT_ID)
     return str(thread["thread_id"])
 
 
 def _run_once(client: Any, *, text: str, thread_id: str, mode: str) -> int:
+    try:
+        require_thread_graph_identity(
+            client.threads.get(thread_id),
+            expected_graph_id=ASSISTANT_ID,
+        )
+    except IncompatibleThreadGraphError as exc:
+        print(f"Run rejected: {exc}")
+        return 1
     result = client.runs.wait(
         thread_id,
         ASSISTANT_ID,
@@ -97,6 +119,23 @@ def _replay_checkpoint(
     checkpoint_id: str,
     confirm: Callable[[str], str] = input,
 ) -> int:
+    states = client.threads.get_history(thread_id, limit=100)
+    selected = next(
+        (
+            state
+            for state in states
+            if _state_checkpoint_id(state) == checkpoint_id
+        ),
+        None,
+    )
+    if selected is None:
+        print(f"Checkpoint not found: {checkpoint_id}")
+        return 1
+    try:
+        require_current_checkpoint_graph(selected)
+    except IncompatibleCheckpointGraphError as exc:
+        print(f"Replay rejected: {exc}")
+        return 1
     expected = f"REPLAY {checkpoint_id}"
     answer = confirm(
         "Replay re-executes nodes after the checkpoint and may repeat external "
@@ -115,6 +154,13 @@ def _replay_checkpoint(
     )
     print(_response_text(result))
     return 0
+
+
+def _state_checkpoint_id(state: Mapping[str, Any]) -> str | None:
+    checkpoint = state.get("checkpoint")
+    checkpoint = checkpoint if isinstance(checkpoint, Mapping) else {}
+    value = state.get("checkpoint_id") or checkpoint.get("checkpoint_id")
+    return str(value) if value is not None else None
 
 
 def _rollback_run(
@@ -147,7 +193,11 @@ def main() -> int:
     args = build_parser().parse_args()
     headers = {"x-assistant-user": args.identity}
     client = get_sync_client(url=args.server, headers=headers, timeout=args.timeout)
-    thread_id = _ensure_thread(client, args.thread_id)
+    try:
+        thread_id = _ensure_thread(client, args.thread_id)
+    except IncompatibleThreadGraphError as exc:
+        print(f"Run rejected: {exc}")
+        return 1
     if not args.interactive:
         text = " ".join(args.text).strip()
         if not text:

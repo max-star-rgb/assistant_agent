@@ -23,7 +23,7 @@ def test_plan_allows_zero_nodes_when_evidence_produces_deliverable() -> None:
         content="sunny",
     )
     proposal = NativePlanProposal(
-        schema_version="native_plan_v1",
+        schema_version="native_plan_v2",
         nodes=(),
         deliverables=(
             PlanDeliverable(

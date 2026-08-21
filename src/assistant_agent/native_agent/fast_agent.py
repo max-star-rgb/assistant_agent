@@ -8,7 +8,6 @@ from typing import Any
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
     HumanInTheLoopMiddleware,
-    ModelCallLimitMiddleware,
     ModelRequest,
     SummarizationMiddleware,
     ToolCallLimitMiddleware,
@@ -36,6 +35,7 @@ from assistant_agent.media.visual_perception.history_probe import (
     VisualObservationHistoryProbe,
 )
 from assistant_agent.native_agent.state import FastAgentState
+from assistant_agent.native_agent.models import PlanningAuthorizationEnvelope
 from assistant_agent.native_agent.runtime_facts import (
     TrustedRuntimeFacts,
     trusted_runtime_facts_message,
@@ -46,7 +46,11 @@ from assistant_agent.native_agent.conditional_tool_exposure import (
 )
 from assistant_agent.native_agent.planning_phase import (
     PlanningPhaseMiddleware,
-    planner_response_format,
+    shared_response_format,
+)
+from assistant_agent.native_agent.planning_budget import (
+    PhaseBudgetMiddleware,
+    PlanningBudgetPolicy,
 )
 from assistant_agent.native_agent.tool_exposure import (
     ProgressiveToolExposureMiddleware,
@@ -64,8 +68,7 @@ def build_fast_agent(
     model: BaseChatModel,
     tools: Sequence[BaseTool],
     *,
-    model_call_limit: int = 12,
-    tool_call_limit: int = 16,
+    budget_policy: PlanningBudgetPolicy | None = None,
     context_window_tokens: int = 128_000,
     compaction_trigger_ratio: float = 0.75,
     compaction_target_ratio: float = 0.15,
@@ -78,8 +81,6 @@ def build_fast_agent(
 ):
     """Build the shared create_agent unit without binding saver or Store."""
 
-    if model_call_limit <= 0 or tool_call_limit <= 0:
-        raise ValueError("model and tool call limits must be positive")
     if context_window_tokens < 100:
         raise ValueError("context window must contain at least 100 tokens")
     if not 0 < compaction_target_ratio < compaction_trigger_ratio <= 1:
@@ -87,14 +88,22 @@ def build_fast_agent(
     resolved_skill_catalog = skill_catalog or load_repo_skill_descriptors(
         default_repo_root()
     )
+    resolved_budget_policy = budget_policy or PlanningBudgetPolicy.from_base(8)
     skill_index = discoverable_skill_descriptors(resolved_skill_catalog)
 
     @dynamic_prompt
     def assistant_prompt(request: ModelRequest[AssistantRunContext]) -> str:
+        raw_envelope = request.state.get("authorization_envelope")
+        authorization_skill_ids = (
+            PlanningAuthorizationEnvelope.model_validate(raw_envelope).skill_ids
+            if raw_envelope is not None
+            else None
+        )
         return render_assistant_system_prompt(
             request.runtime.context,
             skill_descriptors=skill_index,
             active_skill_ids=tuple(request.state.get("active_skill_ids", ())),
+            authorization_skill_ids=authorization_skill_ids,
         )
 
     read_tool_names = _retryable_read_tool_names(tools)
@@ -114,13 +123,9 @@ def build_fast_agent(
             visual_history_probe,
             live_view_resolver,
         ),
-        ModelCallLimitMiddleware(
-            run_limit=model_call_limit,
-            exit_behavior="error",
-        ),
-        ToolCallLimitMiddleware(
-            run_limit=tool_call_limit,
-            exit_behavior="error",
+        PhaseBudgetMiddleware(
+            resolved_budget_policy,
+            business_tool_names=frozenset(tool.name for tool in tools),
         ),
     ]
     tool_retry_middleware = (
@@ -172,7 +177,7 @@ def build_fast_agent(
         state_schema=state_schema,
         context_schema=AssistantRunContext,
         middleware=middleware,
-        response_format=planner_response_format(),
+        response_format=shared_response_format(),
         name="AssistantFastAgent",
     )
 
@@ -292,8 +297,20 @@ def render_assistant_system_prompt(
     *,
     skill_descriptors: Sequence[SkillDescriptor] = (),
     active_skill_ids: Sequence[str] = (),
+    authorization_skill_ids: Sequence[str] | None = None,
 ) -> str:
     """Render concise instructions that directly affect model decisions."""
+
+    if authorization_skill_ids is not None:
+        authorized = frozenset(authorization_skill_ids)
+        skill_descriptors = tuple(
+            descriptor
+            for descriptor in skill_descriptors
+            if descriptor.name in authorized
+        )
+        active_skill_ids = tuple(
+            skill_id for skill_id in active_skill_ids if skill_id in authorized
+        )
 
     skill_lines = "\n".join(
         f"- {descriptor.name}：{descriptor.description}"

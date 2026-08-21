@@ -34,6 +34,7 @@ from assistant_agent.native_agent.fast_agent import build_fast_agent
 from assistant_agent.native_agent.coding_graph import build_coding_graph
 from assistant_agent.native_agent.memory import MemoryBackend, create_memory_backend
 from assistant_agent.native_agent.memory_graph import build_memory_extraction_graph
+from assistant_agent.native_agent.planning_budget import PlanningBudgetPolicy
 from assistant_agent.native_agent.planning_graph import build_planning_graph
 from assistant_agent.native_agent.providers import create_chat_model
 from assistant_agent.native_agent.root_graph import build_assistant_root_graph
@@ -92,11 +93,11 @@ class AgentServerExecutionOwner:
             create_context_token_counter,
             config,
         )
+        planning_budget = PlanningBudgetPolicy.from_base(config.max_tool_iterations)
         fast_agent = build_fast_agent(
             model,
             tools,
-            model_call_limit=config.max_tool_iterations,
-            tool_call_limit=config.max_tool_iterations,
+            budget_policy=planning_budget,
             context_window_tokens=config.context_input_token_limit,
             compaction_trigger_ratio=config.context_compaction_trigger_ratio,
             compaction_target_ratio=config.context_compaction_target_ratio,
@@ -114,6 +115,7 @@ class AgentServerExecutionOwner:
             fast_agent,
             tools=tools,
             skill_catalog=skill_catalog,
+            budget_policy=planning_budget,
         )
         coding_config = CodingConfig.from_env()
         coding_workspace_service = CodingWorkspaceService(coding_config)

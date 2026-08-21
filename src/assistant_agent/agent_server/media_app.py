@@ -23,6 +23,7 @@ from langchain_core.messages import AIMessage
 
 from assistant_agent.agent_server.client import SdkAgentServerClient
 from assistant_agent.agent_server.graph import close_native_assistant_graph
+from assistant_agent.agent_server.config import ASSISTANT_GRAPH_ID
 from assistant_agent.agent_server.media_protocol import (
     MediaProtocolError,
     envelope,
@@ -137,7 +138,7 @@ def _native_graph_warmup_url() -> str:
         "8000",
     )
     port = int(raw_port) if raw_port.isdigit() else 8000
-    return f"http://127.0.0.1:{port}/assistants/assistant-native-v1/graph"
+    return f"http://127.0.0.1:{port}/assistants/{ASSISTANT_GRAPH_ID}/graph"
 
 
 async def _await_native_graph_warmup(application: FastAPI) -> None:
@@ -530,6 +531,7 @@ async def _handle_frame(
                 protocol_session_id=frame.session_id,
                 user_id=user_id,
             ),
+            graph_id=ASSISTANT_GRAPH_ID,
         )
         session.bind_control(
             protocol_session_id=frame.session_id,
@@ -623,6 +625,7 @@ async def _handle_frame(
                     protocol_session_id=frame.session_id,
                     user_id=chat.user_id,
                 ),
+                graph_id=ASSISTANT_GRAPH_ID,
             )
             session.bind_control(
                 protocol_session_id=frame.session_id,
@@ -887,7 +890,7 @@ async def _run_chat(
         }
         async for part in client.stream_run(
             thread_id=session.thread_id,
-            assistant_id="assistant-native-v1",
+            assistant_id=ASSISTANT_GRAPH_ID,
             input=media_graph_input(
                 chat,
                 video_ids=session.video_ids,
@@ -1257,13 +1260,26 @@ def _control_user_id(message: str, body: dict[str, Any]) -> str:
     return _required_text(body, "number")
 
 
-def _native_thread_id(*, protocol_session_id: str | None, user_id: str) -> str | None:
+def _native_thread_id(
+    *,
+    protocol_session_id: str | None,
+    user_id: str,
+    graph_id: str = ASSISTANT_GRAPH_ID,
+) -> str | None:
     if protocol_session_id is None:
         return None
     return str(
         uuid5(
             NAMESPACE_URL,
-            f"assistant-agent:agent-service-v1:{user_id}:{protocol_session_id}",
+            ":".join(
+                (
+                    "assistant-agent",
+                    graph_id,
+                    "agent-service-v1",
+                    user_id,
+                    protocol_session_id,
+                )
+            ),
         )
     )
 

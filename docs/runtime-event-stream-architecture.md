@@ -1,6 +1,6 @@
 # LangGraph-native Assistant 运行与流式架构
 
-最后更新：2026-08-20
+最后更新：2026-08-21
 
 ## Authority contract
 
@@ -77,31 +77,54 @@ messages channel 和官方 middleware，不维护项目自建 assistant/tool loo
 不创建独立 Agent 或模型调用链。相同初始 state 与受信运行事实下，planner 首轮继承 fast 首轮相同的 Tool
 projection；差异只在 planner system role 与严格 `NativePlanProposal` structured response。
 
-planning 分支是显式 `AssistantPlanningGraph`：planner 可在共享的 model→ToolNode→model loop 中调用 Tool，
+planning 分支是显式 `AssistantPlanningGraph`：production composition 从 `max_tool_iterations` 构造唯一
+`PlanningBudgetPolicy`，并把同一实例注入共享 fast agent 与 planning graph；该 policy 是受信进程配置，不进入
+公开 Graph input。planner 可在共享的 model→ToolNode→model loop 中调用 Tool，
 其已完成业务 `ToolMessage` 被捕获为有界 `PlannerEvidence`；成功 `load_skill` 产生的 active Skill/reference grant
 随 planning state reducer 保存。planner 随后输出严格 `NativePlanProposal`，其中 deliverable 必须引用 producer
 node 或实际 planner evidence。本地 admission 根据
 composition 注入的静态 Tool inventory 与同一份 Skill catalog 确定性校验节点 Tool、Planner 实际激活 Skill、
 节点 Skill grant、真实 planner evidence 引用、deliverable producer/evidence 引用、节点上限、DAG 无环和依赖深度；
+校验还读取 checkpointed global usage、未 reconciliation 的 wave reservation 与同一 policy：每个候选 worker
+至少预留一次 model call 和一次 node attempt，并始终为 finalizer 再保留一次 model call 和一次 node attempt；
+最小需求超过当前剩余 graph budget 时以稳定 `insufficient_graph_budget` 拒绝，Tool 最小需求为零。该计算只按
+checkpoint state 和稳定 ID 顺序完成，不依赖并行结果 arrival 顺序。
 未知或未授权事实一律 fail closed，且不读取用户文本或内置领域规则。admission 失败时把有界错误码写入
 planning state，并由原生 conditional edge 回到同一个 planner；最多允许两次 proposal revision，第三次失败以
 有界 `NativePlanAdmissionError` 终止 run。revision 输入只增加既有 `PlannerEvidence` 的只读投影和错误码；
 该投影以 `trust=tool-output` 标记，JSON 在嵌入标签前转义 `<>&`，并以最终渲染字符数硬限制为 48,000。
 预算先保留稳定顺序的 evidence ID、Tool 名与状态，再有界保留 content/artifact ref，不输出半个 JSON。
 它不注入旧 planner transcript、Tool schema 或原始异常；evidence、已激活 Skill 与 reference grant 沿用原生 state
-reducer，只有候选计划被覆盖。成功 admission 清除错误并进入 scheduler。`Send` 按依赖分 wave 并行派发 worker。调度器根据 `depends_on` 自动把直接上游
+reducer，只有候选计划被覆盖。generation 0 可在首次成功 admission 前通过 revision 修正 scope；首次成功
+admission 冻结该计划实际声明或使用的 Skill ID、reference ID 与 Tool name 为 checkpointed strict authorization
+envelope。后续 generation 只能使用它的子集，任一新增 scope 以稳定 `authorization_expansion` fail closed；planner
+prompt/context 与 scheduler projection 同时收窄到 envelope，且 checkpoint 不保存原始 Tool 参数或结果。
+成功 admission 清除错误并进入 scheduler。`Send` 按依赖分 wave 并行派发 worker。调度器根据 `depends_on` 自动把直接上游
 `WorkerResult` 组装为运行时 `dependency_results`，worker 将其作为明确的只读数据输入交给同一个 fast graph；
-该字段不是 planner 输出 schema。其原生拓扑是
-`planner -> admit_plan -> scheduler -> Send(worker) -> join -> scheduler`；scheduler 每轮只派发当前 ready wave，
-依赖失败会生成稳定的 failed `WorkerResult` 并向下游传播。worker 节点使用原生 `RetryPolicy` 和 node
-`error_handler`；只有明确可重试的超时、连接或临时 HTTP 执行失败在有界重试耗尽后转为不含异常正文的
-failed `WorkerResult`。`GraphBubbleUp` / interrupt / cancel、准入、鉴权与程序契约错误不进入该降级边界，
-仍保持 LangGraph 原生传播。零节点 plan 不派发 worker，scheduler 直接进入 finalizer。worker 只能继承节点 required Skill 与
+该字段不是 planner 输出 schema。其 generation-aware 原生拓扑是
+`planner -> assess_planner -> admit_plan|planner|prepare_replan|controlled_finalize`，其中
+`assess_planner -> planner` 承担同一 generation 内有界的 operational retry；worker 路径为
+`scheduler -> reserve_wave_budget -> Send(worker) -> join -> reconcile_wave_budget -> assess_workers`。
+planner 和 worker 都把预期结果收敛为严格 `PlannerOutcome` / `WorkerOutcome`；明确可重试的超时、连接或临时
+HTTP 执行失败先在同一 generation 内有界 retry，业务不足、phase budget 耗尽或 operational retry 耗尽后经
+`assess_workers -> prepare_replan -> planner` 进入下一 generation。`prepare_replan` 先冻结已成功
+`WorkerResult`，新计划只能替换失败工作并显式引用 frozen result；checkpointed 单调 replacement claim ledger
+允许相同 claim replay 幂等，但拒绝 later generation 用不同 replacement 再次 claim 同一 historical node。
+scheduler 从 checkpointed generation、plan、outcome 与 frozen result 重算 ready wave，已成功 worker不重放。
+`GraphBubbleUp` / interrupt / cancel、准入、鉴权与程序契约错误不进入该预期失败边界，仍保持 LangGraph 原生
+传播。planner、worker、finalizer 在 operational 分类与 sanitizer 前使用同一 cause/context chain 检查并原样
+抛出 control-flow；checkpoint 不写入外层 wrapper marker。checkpoint 中出现没有 live exception 的
+`RecoveryDecision(action="propagate")` 属于契约错误，明确 fail closed，不进入 controlled finalizer。零节点 plan 不派发 worker，沿
+`scheduler -> reserve_wave_budget -> finalize` 完成；`reserve_wave_budget` 的条件路线还会依据 ready wave 与预算
+进入 worker 或 `controlled_finalize`。worker 只能继承节点 required Skill 与
 Planner 实际快照的交集；admission 禁止节点把
 `load_skill` 放入 worker Tool allowlist，worker phase 也确定性过滤该 Tool。显式允许 `load_skill_reference` 时，Tool
 只能读取 scheduler 投影的既有 `skill_reference_grants`，不能扩大 Skill 或 reference grant。全部节点完成后，
 finalizer 仍调用共享 `AssistantFastAgent`，但 `agent_phase="finalizer"` 确定性清空 Tool 与 structured response，
 根据原始请求、deliverables、planner evidence 和按 plan 排序的 worker results 返回标准 `AIMessage`，不机械拼接输出。
+finalizer 的 operational failure 只有有预算时才有界重试；模型终态不合约或 planner/worker/global recovery
+耗尽时进入确定性 `controlled_finalize`，只用稳定 failure code、deliverable ID、generation 与冻结结果生成
+标准 `AIMessage`，不暴露原始异常或另建产品终态。
 worker 的直接依赖与所引用 PlannerEvidence 使用最终转义字符计数的 48,000 字符单消息预算；
 finalizer 的最新请求、deliverables、全部 PlannerEvidence 和按 plan 排序的 WorkerResult 使用 96,000 字符单消息预算。
 两者先保留 ID、状态、来源与 artifact ref，再确定性公平分配 content 字符并在 JSON 中标记裁剪；
@@ -116,8 +139,8 @@ verifier、repair ledger、acceptance contract 或 artifact provenance；deliver
 ## State 与恢复
 
 生产 state channel、checkpoint 和 reducer 调度全部使用 LangGraph 原生能力。生产 state 以
-`AgentState.messages` 的 `add_messages` reducer 为主；planning 并行结果使用
-`Annotated[list[WorkerResult], operator.add]` 声明原生列表累积。父图只增加：
+`AgentState.messages` 的 `add_messages` reducer 为主；planning 并行 attempt 使用 canonical execution ID
+映射累积 typed `WorkerOutcome`，成功 `WorkerResult` 再按 work item ID 单调冻结。父图只增加：
 
 - `execution_mode`；
 - 冻结的 `memory_context` 与 `memory_status`；
@@ -127,9 +150,12 @@ fast agent 子图才增加由成功 `load_skill` 标准 Tool 结果产生的 `ac
 与窄 `skill_reference_grants`；这两个 channel 只在子图的 model→tool→model 循环中累积，不进入
 父图节点、父图输出或独立 Memory Graph。planning 子图内部另外持有 plan、worker result，
 并在 `Send` 派发时从直接依赖结果派生窄 `dependency_results` worker 输入。
-其 `plan_candidate`、`admission_error` 与 `revision_count` 只服务原生 revision edge；不建立 repair ledger、数据库、
-队列、checkpoint adapter 或 shadow state。恢复后 scheduler 只从 checkpointed plan 与已累积 worker results 重算
-下一 wave，不保存平行 ready/completed channel。`WorkerResult.sources` 在 JsonPlus/msgpack 的 JSON list 边界
+其 `plan_candidate`、`admission_error` 与 `revision_count` 只服务原生 revision edge；recovery 另外保存有界的
+`plan_generation`、typed planner/worker outcome、budget usage、wave reservation、recovery decision/history/context、
+首次成功 admission 冻结的 strict authorization envelope、单调 replacement claim ledger、
+`frozen_worker_results` 与 superseded ID，不建立数据库、队列、checkpoint adapter 或 shadow state。恢复后
+scheduler 只从这些 checkpointed typed channels 重算下一 wave，不保存平行 ready/completed channel；冻结成功
+结果的 reducer 拒绝同 ID 冲突，replan/resume 都不会再次派发它。`WorkerResult.sources` 在 JsonPlus/msgpack 的 JSON list 边界
 规范化回 tuple，避免 strict Pydantic checkpoint 恢复退化为未校验构造。
 planning 的 planner、worker 与 finalizer 都读取父图传入的同一份可信事实快照，不在子图内重新采集。
 `trusted_runtime_facts` 写入 checkpoint 时保存为 JSON-safe 字典（时间为 ISO 8601 字符串），模型调用边界再校验为
@@ -143,10 +169,15 @@ planning 的 planner、worker 与 finalizer 都读取父图传入的同一份可
 视觉模块生成的可信目标边界，但 JPEG、Provider client、task 和 lease 不进入 state。父图只通过标准 ToolNode
 消费视觉结果，逐帧并发、等待和晚到结果语义见视觉 authority。
 
-已完成节点直接从 worker result 推导，不保存平行 completed-ID channel，也没有项目自定义 result/artifact
-reducer。Provider/Tool client、Memory backend、投递 Store、身份对象和 callback 不写入 checkpoint。旧
+已完成节点直接从 frozen result 与当代 typed outcome 推导，不保存平行 completed-ID channel，也不维护
+项目自建 result/artifact runtime。Provider/Tool client、Memory backend、投递 Store、身份对象和 callback
+不写入 checkpoint。旧
 `AssistantTurnState` checkpoint 不迁移进新图；旧 assistant/thread 仅作只读历史或外围兼容，新图使用版本化
-assistant ID `assistant-native-v1`。
+assistant ID `assistant-native-v2`。项目创建的可运行 thread 以 metadata `assistant_graph_id` 绑定具体 graph；
+普通 v2 run/resume/stream 在创建 run 前精确验证该值。`assistant-native-v1` 或缺失 identity 的 unknown thread
+及其 checkpoint 同样只读，不能进入 v2 run/resume/replay；该 graph ID 升级没有自动 migration。历史 state、
+thread 和 stream inspection 不因此被禁止，部署阶段仍可 drain/cancel legacy run；校验函数接收调用方期望的
+graph ID，不阻止 Memory 等独立 Graph 使用自己的 thread 与版本身份。
 
 完整 Tool inventory 仍静态注册给 fast `create_agent` 的 `ToolNode`；每次 model call 的可见子集由原生 middleware
 从上述 Skill 激活状态与受信 manifest 派生。该过滤不创建第二套 Tool runtime，也不改变 ToolNode 对已注册 Tool
@@ -162,19 +193,28 @@ assistant ID `assistant-native-v1`。
 ## 原生流与生命周期
 
 生产消费者直接使用 Agent Server 的 messages/updates/custom/values、thread/run、cancel、checkpoint、interrupt 与
-resume 协议。原生 SDK/Studio 可显式选择所需 stream mode；媒体入口只订阅 messages/values，不消费
+resume 协议。媒体入口只订阅 messages/values，不消费
 updates/custom。模型 token、Tool 消息和节点 state update 由 LangChain/LangGraph 原生 callback/stream 产生；项目不再投影
 `GraphStreamPart`、`AgentEvent` 或产品 run 状态作为主链事实源。
 父图中的 fast/planning 单元是子图，因此需要模型 token 的消费者必须显式启用原生 subgraph stream；媒体入口
 仍只把标准 assistant 文本和受控兼容投影发送到 wire，不转发 planner、Tool 参数或 ToolMessage 正文。
 Tool 执行通过官方 runtime stream writer 向 custom mode 发送 `tool_progress` 生命周期事件；只包含
 `tool_name`、`tool_call_id` 与 `started|completed|failed`，不包含 Tool 参数或结果正文。由于 fast/planning
-执行单元是父图子图，Agent Server SDK 消费者需要同时启用 subgraph stream 才能接收其中的 messages/custom。
+执行单元是父图子图，需要完整协议的 Agent Server SDK/API 消费者分别请求
+`stream_mode=["messages", "updates", "custom"]` 并设置 `stream_subgraphs=True`；进程内调用
+`graph.astream(...)` 时使用相同的 `stream_mode`，并设置 `subgraphs=True`。`stream_mode` 选择事件类型，subgraph
+开关决定嵌套 namespace 是否可见，两者互不替代。
+planning recovery 节点同样只通过原生 custom mode 发出 `recovery_transition`，字段固定为 `from`、`to`、
+`reason_code` 与 `plan_generation`；节点 state 变化仍由 updates/values 提供，终态仍由 messages 提供。
+Graph Studio 用于查看 graph/subgraph 执行、trace 与调试信息；其具体 UI 能力随 Studio 版本演进，不作为任意
+custom payload 的通用渲染承诺。需要完整核验恢复事件和嵌套 namespace 时，应使用上述 SDK/API 订阅。媒体
+custom route 不订阅或重解释该事件，也不建立 shadow event bus。
 
 `HumanInTheLoopMiddleware` 使用 state-aware `when` predicate：fast 模式自动放行，planning 的 planner 与 worker
 阶段都对非 read Tool 在执行前触发原生 interrupt；恢复使用 Agent Server/LangGraph `Command(resume=...)`，
-已完成的 Planner Tool 和 worker 不重放，scheduler 从 checkpoint state 重算后续 wave。model/tool call limit、
-只读 Tool retry 与 summarization 均由官方 middleware 承担。
+已完成的 Planner Tool、冻结 worker 和已结算 wave 不重放，scheduler 从 checkpoint state 重算后续 wave。
+phase model/tool call limit 由 `PhaseBudgetMiddleware` 承担，planning graph 再以同一 policy 结算 global
+model/tool/node/replan budget；只读 Tool retry 与 summarization 继续使用官方 middleware。
 
 ## 已退役兼容边界
 

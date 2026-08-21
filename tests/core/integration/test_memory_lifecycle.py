@@ -104,7 +104,7 @@ class _MemoryStatusPlanningModel(MockAssistantChatModel):
                     {
                         "name": "NativePlanProposal",
                         "args": {
-                            "schema_version": "native_plan_v1",
+                            "schema_version": "native_plan_v2",
                             "nodes": [
                                 {
                                     "node_id": "worker-1",
@@ -130,7 +130,20 @@ class _MemoryStatusPlanningModel(MockAssistantChatModel):
                 isinstance(message, ToolMessage)
                 and message.name == "memory_status_probe"
             ):
-                return AIMessage(content=str(message.content))
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "WorkerCompletion",
+                            "args": {
+                                "status": "completed",
+                                "content": str(message.content),
+                            },
+                            "id": "memory-status-worker-completion",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
         if "memory_status_probe" in tool_names:
             return AIMessage(
                 content="",
@@ -262,7 +275,9 @@ def test_planning_worker_preserves_parent_memory_status() -> None:
         )
     )
 
-    assert [item.content for item in result["worker_results"]] == ["degraded"]
+    assert [
+        item.content for item in result["frozen_worker_results"].values()
+    ] == ["degraded"]
 
 
 @pytest.mark.core_invariant("MEMORY-001")

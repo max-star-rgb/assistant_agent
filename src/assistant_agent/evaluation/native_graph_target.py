@@ -9,6 +9,7 @@ from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from langgraph.store.base import BaseStore
 
 from assistant_agent.agent_server.services import AgentServerExecutionOwner
+from assistant_agent.agent_server.config import ASSISTANT_GRAPH_ID
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.state import ExecutionMode
 
@@ -79,8 +80,8 @@ class NativeGraphEvaluationTarget:
                 "configurable": {
                     "thread_id": thread_id,
                     "run_id": run_id,
-                    "assistant_id": "assistant-native-v1",
-                    "graph_id": "assistant-native-v1",
+                    "assistant_id": ASSISTANT_GRAPH_ID,
+                    "graph_id": ASSISTANT_GRAPH_ID,
                     "langgraph_auth_user": _EvaluationUser(identity),
                 }
             },

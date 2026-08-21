@@ -1,6 +1,6 @@
 # LangChain-native Tool 与扩展架构
 
-最后更新：2026-08-20
+最后更新：2026-08-21
 
 ## Authority contract
 
@@ -40,9 +40,12 @@ planning 不另建 Planner Tool executor。Planner 以 `agent_phase="planner"` �
 产生原生 interrupt，approve/resume 后沿 checkpoint 继续而不重放已经完成的 Planner Tool。
 
 成功的 `load_skill` 通过标准 `Command(update=...)` 写入受信 `active_skill_ids` 和 reference grant；后续 Planner
-model call 会从同一受信 catalog 将对应完整 Skill 正文加入 system prompt，并暴露其 `governed_tools`。admission
-冻结 Planner 实际激活的 Skill snapshot，scheduler 只把节点 `required_skill_ids` 与该 snapshot 的交集投影给
-worker；worker 的空 Tool allowlist 为 fail closed，且不能重新调用 `load_skill` 扩权。finalizer phase 则确定性
+model call 会从同一受信 catalog 将对应完整 Skill 正文加入 system prompt，并暴露其 `governed_tools`。首次成功
+admission 只冻结该计划实际声明或使用的 Skill ID、reference ID 与 Tool name 为 checkpointed strict
+authorization envelope，而不是冻结完整 inventory；后续 generation 只允许其子集。Planner prompt/context 与
+scheduler projection 都只暴露 envelope 内 scope，admission 对任何新增 scope 继续 fail closed。envelope reducer
+相同 replay 幂等、冲突拒绝，且只保存标识符，不保存原始 Tool 参数或结果。scheduler 只把节点
+`required_skill_ids` 与该 envelope 的交集投影给 worker；worker 的空 Tool allowlist 为 fail closed，且不能重新调用 `load_skill` 扩权。finalizer phase 则确定性
 使用空 Tool projection，不允许任何 Tool 调用。
 
 媒体 Tool 使用另一条与 Skill 正交的条件暴露链。`ConditionalToolExposureMiddleware` 只过滤已经静态注册在
@@ -81,11 +84,24 @@ WebSocket 已成功完成 `callType=VIDEO` 的 control 握手；`visual_memory_s
 `HumanInTheLoopMiddleware` 在执行前产生原生 interrupt。schema、身份与授权仍由具体 Tool/业务 adapter 校验；
 外部副作用幂等属于具体 Tool 或业务 API，主链不再维护通用 operation ledger。
 
+`PhaseBudgetMiddleware` 位于同一个 fast agent 的 model→ToolNode loop 中，按当前 phase 对 model call 与已注册
+业务 Tool call 计数。Tool 预算超限时，它不调用实际 Tool，而是为每个被阻止的 tool call 生成标准
+`ToolMessage(status="error")` 并有界结束该 phase；未超限调用仍原样进入同一个标准 `ToolNode`，继续使用官方
+`ToolRuntime` 注入、`ToolRetryMiddleware` 与 state-aware `HumanInTheLoopMiddleware`。因此预算层不是第二个
+executor，也不接管 Tool schema、身份、授权、retry、HITL 或副作用幂等。live-view 的
+`ToolCallLimitMiddleware(tool_name="live_view_inspect")` 只保护该昂贵实时观察 Tool，不是全 inventory limiter。
+
+production composition 从一个受信 base 值构造唯一 `PlanningBudgetPolicy`，phase middleware 与 planning graph
+共享该实例。planning graph 的 global model/tool/node-attempt/replan cap 通过 typed usage、wave reservation 与
+reconciliation 防止并行 worker 超卖；global/phase budget failure 只产生稳定 failure code、typed outcome 与
+controlled standard-message terminal。模型、客户端和 Tool 参数都不能提交或扩大 policy。
+
 fast agent 的最内层 `ToolProgressMiddleware` 使用官方 `ToolRuntime.stream_writer` 向原生 custom stream 发出
 每次逻辑 Tool 调用的 `started` 和 `completed|failed` 生命周期。事件只携带 `type=tool_progress`、标准
 Tool name 与 tool call ID，不携带模型提交的参数、ToolMessage content、artifact 或异常正文。middleware 位于
 retry 与 HITL 内层：审批完成后才发出 started，同一次有界 retry 只对外形成一组逻辑生命周期。媒体入口不订阅
-custom；Agent Server SDK/Studio 消费者需要显式选择 custom stream mode。
+custom；需要该生命周期的 Agent Server SDK/API 消费者需要显式选择 custom stream mode。Studio 的 graph/trace
+调试可见性不构成任意 custom payload 的通用渲染承诺，完整协议核验以 SDK/API 订阅为准。
 
 Tool 的 Provider adapter 先把外部响应规范化为业务 Pydantic result；Provider 原始响应不进入模型上下文或
 `artifact`，需要审计时只保留受治理的引用。具体 Tool 再从完整业务 result 派生有界的模型投影：例如购物

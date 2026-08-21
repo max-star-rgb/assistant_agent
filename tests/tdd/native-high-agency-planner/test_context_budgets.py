@@ -19,6 +19,7 @@ from assistant_agent.native_agent.models import (
     NativePlanProposal,
     PlanDeliverable,
     PlannerEvidence,
+    WorkerCompletion,
     WorkerResult,
 )
 from assistant_agent.skills.loading import SkillCatalog
@@ -224,7 +225,7 @@ class _BudgetFastAgent:
             return {
                 "messages": list(input["messages"]),
                 "structured_response": NativePlanProposal(
-                    schema_version="native_plan_v1",
+                    schema_version="native_plan_v2",
                     nodes=nodes,
                     deliverables=(
                         PlanDeliverable(
@@ -254,7 +255,11 @@ class _BudgetFastAgent:
                             ]
                         },
                     ),
-                ]
+                ],
+                "structured_response": WorkerCompletion(
+                    status="completed",
+                    content="<&>" * 33_333,
+                ),
             }
         self.finalizer_message = str(input["messages"][0].content)
         return {"messages": [AIMessage(content="finalizer-budget-sentinel")]}

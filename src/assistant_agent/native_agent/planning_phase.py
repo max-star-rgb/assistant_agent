@@ -11,7 +11,11 @@ from langchain.agents.structured_output import ToolStrategy
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.tools import BaseTool
 
-from assistant_agent.native_agent.models import NativePlanProposal
+from assistant_agent.native_agent.models import (
+    NativePlanProposal,
+    PlanningAuthorizationEnvelope,
+    WorkerCompletion,
+)
 from assistant_agent.tools.ids import LOAD_SKILL_TOOL_NAME
 
 
@@ -35,7 +39,16 @@ class PlanningPhaseMiddleware(AgentMiddleware):
     def _project(self, request: ModelRequest) -> ModelRequest:
         phase = request.state.get("agent_phase", "fast")
         if phase == "planner":
+            tools = request.tools
+            raw_envelope = request.state.get("authorization_envelope")
+            if raw_envelope is not None:
+                envelope = PlanningAuthorizationEnvelope.model_validate(raw_envelope)
+                allowed_names = frozenset(envelope.tool_names)
+                tools = [
+                    tool for tool in tools if _tool_name(tool) in allowed_names
+                ]
             return request.override(
+                tools=tools,
                 response_format=planner_response_format(),
                 system_message=_phase_system_message(request, planner_system_prompt()),
             )
@@ -57,7 +70,7 @@ class PlanningPhaseMiddleware(AgentMiddleware):
                 tools=[
                     tool for tool in request.tools if _tool_name(tool) in allowed_names
                 ],
-                response_format=None,
+                response_format=worker_response_format(),
                 model_settings=model_settings,
             )
         return request.override(response_format=None)
@@ -69,6 +82,18 @@ def planner_response_format() -> ToolStrategy:
     return ToolStrategy(NativePlanProposal)
 
 
+def shared_response_format() -> ToolStrategy:
+    """Declare every phase-specific schema before compiling the shared agent."""
+
+    return ToolStrategy(NativePlanProposal | WorkerCompletion)
+
+
+def worker_response_format() -> ToolStrategy:
+    """Return the strict completion schema for a planning worker."""
+
+    return ToolStrategy(WorkerCompletion)
+
+
 def planner_system_prompt() -> str:
     """Constrain the planner role without creating a separate agent loop."""
 
@@ -76,7 +101,7 @@ def planner_system_prompt() -> str:
         "你是任务规划器。需要专业流程时先加载对应 Skill；可为澄清当前任务执行必要的业务探索，"
         "复用共享的已完成业务工具证据，并把可独立的深入工作留给 DAG worker。"
         "evidence_refs 只能引用已完成业务 ToolCall 的原始 tool_call_id。"
-        "最终只提交符合 NativePlanProposal schema 的最小可执行 native_plan_v1，不直接回答用户。"
+        "最终只提交符合 NativePlanProposal schema 的最小可执行 native_plan_v2，不直接回答用户。"
     )
 
 
@@ -141,4 +166,6 @@ __all__ = [
     "finalizer_system_prompt",
     "planner_response_format",
     "planner_system_prompt",
+    "shared_response_format",
+    "worker_response_format",
 ]

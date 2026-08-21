@@ -3,6 +3,12 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from langchain.agents.middleware import (
+    HumanInTheLoopMiddleware,
+    SummarizationMiddleware,
+    ToolCallLimitMiddleware,
+    ToolRetryMiddleware,
+)
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.checkpoint.memory import InMemorySaver
@@ -16,15 +22,25 @@ from assistant_agent.native_agent.fast_agent import (
     build_fast_agent,
 )
 from assistant_agent.native_agent.models import (
+    BudgetUsage,
+    FailureFact,
     NativePlanNode,
     NativePlanProposal,
     PlannerEvidence,
+    PlannerOutcome,
+    RecoveryDecision,
+    WorkerOutcome,
     WorkerResult,
+)
+from assistant_agent.native_agent.planning_budget import (
+    PhaseBudgetMiddleware,
+    WaveReservation,
 )
 from assistant_agent.native_agent.planning_graph import build_planning_graph
 from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.native_agent.state import PlanningState
 from assistant_agent.skills.loading import SkillCatalog
+from assistant_agent.tools.ids import LIVE_VIEW_INSPECT_TOOL_NAME
 
 
 class _HitlPlanningModel(MockAssistantChatModel):
@@ -52,7 +68,7 @@ class _HitlPlanningModel(MockAssistantChatModel):
                     {
                         "name": "NativePlanProposal",
                         "args": {
-                            "schema_version": "native_plan_v1",
+                            "schema_version": "native_plan_v2",
                             "nodes": [
                                 {
                                     "node_id": "worker-1",
@@ -80,7 +96,10 @@ class _HitlPlanningModel(MockAssistantChatModel):
             )
         if _last_human_text(messages).startswith("worker-write-sentinel"):
             if any(isinstance(message, ToolMessage) for message in messages):
-                return AIMessage(content="completed:worker-write-sentinel")
+                return _worker_completion_message(
+                    "completed:worker-write-sentinel",
+                    "worker-write-completion",
+                )
             return AIMessage(
                 content="",
                 tool_calls=[
@@ -93,7 +112,10 @@ class _HitlPlanningModel(MockAssistantChatModel):
                 ],
             )
         if _last_human_text(messages).startswith("dependent-sentinel"):
-            return AIMessage(content="completed:dependent-sentinel")
+            return _worker_completion_message(
+                "completed:dependent-sentinel",
+                "dependent-completion",
+            )
         return super()._response_message(messages, **kwargs)
 
 
@@ -116,7 +138,7 @@ class _CompletedWorkerResumeModel(MockAssistantChatModel):
                     {
                         "name": "NativePlanProposal",
                         "args": {
-                            "schema_version": "native_plan_v1",
+                            "schema_version": "native_plan_v2",
                             "nodes": [
                                 {
                                     "node_id": "completed-worker",
@@ -150,10 +172,16 @@ class _CompletedWorkerResumeModel(MockAssistantChatModel):
         current = _last_human_text(messages)
         if current.startswith("completed-worker-sentinel"):
             self.first_worker_runs += 1
-            return AIMessage(content="completed-worker-result")
+            return _worker_completion_message(
+                "completed-worker-result",
+                "completed-worker-completion",
+            )
         if current.startswith("dependent-write-sentinel"):
             if any(isinstance(message, ToolMessage) for message in messages):
-                return AIMessage(content="write-worker-result")
+                return _worker_completion_message(
+                    "write-worker-result",
+                    "write-worker-completion",
+                )
             return AIMessage(
                 content="",
                 tool_calls=[
@@ -166,7 +194,10 @@ class _CompletedWorkerResumeModel(MockAssistantChatModel):
                 ],
             )
         if current.startswith("after-resume-sentinel"):
-            return AIMessage(content="after-resume-result")
+            return _worker_completion_message(
+                "after-resume-result",
+                "after-resume-completion",
+            )
         return AIMessage(content="final-answer-sentinel")
 
 
@@ -187,6 +218,20 @@ def _tool_names(raw_tools: object) -> set[str]:
         and isinstance((function := item.get("function")), dict)
         and isinstance(function.get("name"), str)
     }
+
+
+def _worker_completion_message(content: str, call_id: str) -> AIMessage:
+    return AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "WorkerCompletion",
+                "args": {"status": "completed", "content": content},
+                "id": call_id,
+                "type": "tool_call",
+            }
+        ],
+    )
 
 
 @pytest.mark.core_invariant("CTX-001")
@@ -224,24 +269,59 @@ def test_frozen_memory_is_a_transient_human_context_before_current_request() -> 
 
 
 @pytest.mark.core_invariant("CTX-001")
-def test_create_agent_owns_limits_summary_and_hitl_middleware() -> None:
+def test_create_agent_owns_phase_budget_summary_retry_and_hitl_middleware(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from assistant_agent.native_agent import fast_agent as fast_agent_module
+
     def write_probe(value: str) -> str:
         """probe"""
 
         return value
 
-    tool = StructuredTool.from_function(
+    write_tool = StructuredTool.from_function(
         write_probe,
         name="write_probe",
         metadata={"effect": "write"},
     )
-    graph = build_fast_agent(MockAssistantChatModel(), [tool])
-    nodes = set(graph.get_graph().nodes)
+    read_tool = StructuredTool.from_function(
+        write_probe,
+        name="read_probe",
+        metadata={"effect": "read"},
+    )
+    live_view_tool = StructuredTool.from_function(
+        write_probe,
+        name=LIVE_VIEW_INSPECT_TOOL_NAME,
+        metadata={"effect": "read"},
+    )
+    captured_middleware: list[object] = []
+    real_create_agent = fast_agent_module.create_agent
 
-    assert any("ModelCallLimitMiddleware" in node for node in nodes)
-    assert any("ToolCallLimitMiddleware" in node for node in nodes)
+    def recording_create_agent(*args: Any, **kwargs: Any):
+        captured_middleware.extend(kwargs["middleware"])
+        return real_create_agent(*args, **kwargs)
+
+    monkeypatch.setattr(fast_agent_module, "create_agent", recording_create_agent)
+    graph = build_fast_agent(
+        MockAssistantChatModel(),
+        [write_tool, read_tool, live_view_tool],
+    )
+    nodes = set(graph.get_graph().nodes)
+    tool_limiters = [
+        item
+        for item in captured_middleware
+        if isinstance(item, ToolCallLimitMiddleware)
+    ]
+
+    assert any("PhaseBudgetMiddleware" in node for node in nodes)
+    assert any(isinstance(item, PhaseBudgetMiddleware) for item in captured_middleware)
+    assert all(item.tool_name is not None for item in tool_limiters)
+    assert [item.tool_name for item in tool_limiters] == [LIVE_VIEW_INSPECT_TOOL_NAME]
     assert any("SummarizationMiddleware" in node for node in nodes)
+    assert any(isinstance(item, SummarizationMiddleware) for item in captured_middleware)
     assert any("HumanInTheLoopMiddleware" in node for node in nodes)
+    assert any(isinstance(item, HumanInTheLoopMiddleware) for item in captured_middleware)
+    assert any(isinstance(item, ToolRetryMiddleware) for item in captured_middleware)
 
 
 @pytest.mark.core_invariant("CTX-001")
@@ -280,7 +360,13 @@ def test_planning_write_tools_interrupt_and_resume_without_replaying_completed_w
                     NativePlanNode,
                     NativePlanProposal,
                     PlannerEvidence,
+                    BudgetUsage,
+                    FailureFact,
+                    PlannerOutcome,
+                    RecoveryDecision,
+                    WorkerOutcome,
                     WorkerResult,
+                    WaveReservation,
                 ]
             )
         )
@@ -381,7 +467,13 @@ def test_checkpoint_resume_does_not_replay_a_completed_worker() -> None:
                 allowed_msgpack_modules=[
                     NativePlanNode,
                     NativePlanProposal,
+                    BudgetUsage,
+                    FailureFact,
+                    PlannerOutcome,
+                    RecoveryDecision,
+                    WorkerOutcome,
                     WorkerResult,
+                    WaveReservation,
                 ]
             )
         )
