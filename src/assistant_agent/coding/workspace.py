@@ -525,7 +525,7 @@ class CodingWorkspaceService:
         thread_id: str,
         workspace: CodingWorkspace,
     ) -> CodingReadResult:
-        return self.read(
+        return self._read_file(
             self.resolve_analysis_snapshot(
                 snapshot,
                 identity=identity,
@@ -535,6 +535,7 @@ class CodingWorkspaceService:
             path,
             start_line=start_line,
             end_line=end_line,
+            preserve_raw_newlines=True,
         )
 
     def status_analysis_snapshot(
@@ -665,6 +666,23 @@ class CodingWorkspaceService:
         start_line: int,
         end_line: int,
     ) -> CodingReadResult:
+        return self._read_file(
+            workspace,
+            path,
+            start_line=start_line,
+            end_line=end_line,
+            preserve_raw_newlines=False,
+        )
+
+    def _read_file(
+        self,
+        workspace: CodingWorkspace,
+        path: str,
+        *,
+        start_line: int,
+        end_line: int,
+        preserve_raw_newlines: bool,
+    ) -> CodingReadResult:
         if start_line < 1 or end_line < start_line or end_line - start_line > 2_000:
             raise CodingWorkspaceError("invalid_tool_input")
         candidate = self._read_path(workspace, path)
@@ -673,8 +691,13 @@ class CodingWorkspaceService:
         if candidate.stat().st_size > self.config.max_file_bytes:
             raise CodingWorkspaceError("file_too_large")
         try:
-            with candidate.open("r", encoding="utf-8", newline="") as handle:
-                lines = handle.readlines()
+            if preserve_raw_newlines:
+                with candidate.open("r", encoding="utf-8", newline="") as handle:
+                    lines = handle.readlines()
+            else:
+                lines = candidate.read_text(encoding="utf-8").splitlines(
+                    keepends=True
+                )
         except UnicodeDecodeError as exc:
             raise CodingWorkspaceError("file_encoding_unsupported") from exc
         except OSError as exc:
