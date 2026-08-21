@@ -1557,7 +1557,16 @@ def build_coding_graph(
     builder.add_node("summarize", summarize_node)
     builder.add_edge(START, "begin_coding_cycle")
     builder.add_edge("begin_coding_cycle", "resolve_workspace")
-    builder.add_conditional_edges("resolve_workspace", after_resolve)
+    builder.add_conditional_edges(
+        "resolve_workspace",
+        after_resolve,
+        [
+            "consume_repair_budget",
+            "inspect_and_draft",
+            "prepare_analysis",
+            "summarize",
+        ],
+    )
     builder.add_conditional_edges(
         "prepare_analysis",
         route_analysis_workers,
@@ -1566,16 +1575,44 @@ def build_coding_graph(
     builder.add_edge("analyze_workspace", "join_analysis")
     builder.add_edge("join_analysis", "inspect_and_draft")
     builder.add_edge("inspect_and_draft", "validate_proposal")
-    builder.add_conditional_edges("validate_proposal", after_validation)
+    builder.add_conditional_edges(
+        "validate_proposal",
+        after_validation,
+        ["approval", "summarize"],
+    )
     builder.add_edge("prepare_repair", "consume_repair_budget")
     builder.add_edge("consume_repair_budget", "inspect_and_draft")
     builder.add_edge("apply_patch", "plan_dependencies")
-    builder.add_conditional_edges("plan_dependencies", after_dependency_plan)
-    builder.add_conditional_edges("plan_credentials", after_credential_plan)
-    builder.add_conditional_edges("plan_artifacts", after_artifact_plan)
-    builder.add_conditional_edges("run_validation", after_run_validation)
-    builder.add_conditional_edges("create_commit", after_integration_step)
-    builder.add_conditional_edges("prepare_merge", after_merge_preview)
+    builder.add_conditional_edges(
+        "plan_dependencies",
+        after_dependency_plan,
+        ["dependency_approval", "plan_credentials", "summarize"],
+    )
+    builder.add_conditional_edges(
+        "plan_credentials",
+        after_credential_plan,
+        ["credential_approval", "plan_artifacts", "summarize"],
+    )
+    builder.add_conditional_edges(
+        "plan_artifacts",
+        after_artifact_plan,
+        ["artifact_approval", "run_validation", "summarize"],
+    )
+    builder.add_conditional_edges(
+        "run_validation",
+        after_run_validation,
+        ["approval", "create_commit", "prepare_repair", "summarize"],
+    )
+    builder.add_conditional_edges(
+        "create_commit",
+        after_integration_step,
+        ["prepare_merge", "summarize"],
+    )
+    builder.add_conditional_edges(
+        "prepare_merge",
+        after_merge_preview,
+        ["merge_approval", "summarize"],
+    )
     builder.add_edge("apply_merge", "summarize")
     builder.add_edge("summarize", END)
     return builder.compile(name="AssistantCodingGraph", checkpointer=checkpointer)

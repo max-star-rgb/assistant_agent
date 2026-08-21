@@ -234,22 +234,58 @@ def test_parent_graph_has_fast_planning_and_coding_native_branches(monkeypatch) 
             "analyze_workspace",
             "join_analysis",
         }
-        sequential_mutation_lane_nodes = {
-            "inspect_and_draft",
-            "validate_proposal",
+        assert analysis_super_step_nodes.issubset(coding_nodes)
+        coding_edges = {
+            (edge.source, edge.target) for edge in coding_graph.edges
+        }
+        assert {
+            ("prepare_analysis", "analyze_workspace"),
+            ("prepare_analysis", "join_analysis"),
+            ("analyze_workspace", "join_analysis"),
+            ("join_analysis", "inspect_and_draft"),
+            ("inspect_and_draft", "validate_proposal"),
+        }.issubset(coding_edges)
+        assert {
+            target
+            for source, target in coding_edges
+            if source == "analyze_workspace"
+        } == {"join_analysis"}
+        assert {
+            source
+            for source, target in coding_edges
+            if target == "validate_proposal"
+        } == {"inspect_and_draft"}
+        assert {
+            ("apply_patch", "plan_dependencies"),
+            ("plan_dependencies", "plan_credentials"),
+            ("plan_credentials", "plan_artifacts"),
+            ("plan_artifacts", "run_validation"),
+        }.issubset(coding_edges)
+        assert {
+            ("run_validation", "prepare_repair"),
+            ("prepare_repair", "consume_repair_budget"),
+            ("consume_repair_budget", "inspect_and_draft"),
+        }.issubset(coding_edges)
+        repair_lane_nodes = {
+            "run_validation",
             "prepare_repair",
             "consume_repair_budget",
             "approval",
-            "apply_patch",
-            "run_validation",
-            "create_commit",
-            "prepare_merge",
-            "merge_approval",
-            "apply_merge",
         }
-        assert analysis_super_step_nodes.issubset(coding_nodes)
-        assert sequential_mutation_lane_nodes.issubset(coding_nodes)
-        assert analysis_super_step_nodes.isdisjoint(sequential_mutation_lane_nodes)
+        assert not any(
+            source in repair_lane_nodes and target in analysis_super_step_nodes
+            for source, target in coding_edges
+        )
+        assert {
+            ("run_validation", "create_commit"),
+            ("create_commit", "prepare_merge"),
+            ("prepare_merge", "merge_approval"),
+            ("merge_approval", "apply_merge"),
+            ("apply_merge", "summarize"),
+        }.issubset(coding_edges)
+        assert {
+            source for source, target in coding_edges if target == "create_commit"
+        } == {"run_validation"}
         assert owner.graph.checkpointer is None
     finally:
         asyncio.run(owner.aclose())
