@@ -10,24 +10,15 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from assistant_agent.coding.models import (
+    CODING_ANALYSIS_TASK_SPECS,
     CodingAnalysisFinding,
     CodingAnalysisResult,
     CodingAnalysisSnapshot,
     CodingAnalysisTask,
 )
 
-ANALYSIS_TASK_IDS = (
-    "structure_context",
-    "change_test_impact",
-    "safety_governance",
-)
-ANALYSIS_READ_TOOL_NAMES = (
-    "coding_repo_list",
-    "coding_repo_search",
-    "coding_repo_read",
-    "coding_repo_status",
-    "coding_repo_diff",
-)
+ANALYSIS_TASK_IDS = tuple(CODING_ANALYSIS_TASK_SPECS)
+ANALYSIS_READ_TOOL_NAMES = CODING_ANALYSIS_TASK_SPECS["structure_context"][1]
 MAX_FINDINGS_PER_TASK = 12
 MAX_TASK_CONTEXT_CHARS = 6_000
 MAX_ANALYSIS_CONTEXT_CHARS = 24_000
@@ -53,28 +44,14 @@ class _RawAnalysisResult(BaseModel):
 def build_analysis_tasks() -> tuple[CodingAnalysisTask, ...]:
     """Return the complete static read-only analysis inventory."""
 
-    objectives = {
-        "structure_context": (
-            "Identify relevant modules, interfaces, data flow, and existing "
-            "implementation patterns in the frozen workspace snapshot."
-        ),
-        "change_test_impact": (
-            "Identify likely change surfaces, test entry points, compatibility "
-            "constraints, and regression risks in the frozen workspace snapshot."
-        ),
-        "safety_governance": (
-            "Identify permission, credential, network, path, persistence, HITL, "
-            "and governance boundaries in the frozen workspace snapshot."
-        ),
-    }
     return tuple(
         CodingAnalysisTask(
             task_id=task_id,
             dimension=task_id,
-            objective=objectives[task_id],
-            allowed_tool_names=ANALYSIS_READ_TOOL_NAMES,
+            objective=objective,
+            allowed_tool_names=allowed_tool_names,
         )
-        for task_id in ANALYSIS_TASK_IDS
+        for task_id, (objective, allowed_tool_names) in CODING_ANALYSIS_TASK_SPECS.items()
     )
 
 
@@ -208,7 +185,7 @@ def render_analysis_context(
         assert isinstance(rendered_findings, list)
         for finding in sorted(result.findings, key=lambda item: item.finding_id):
             candidate = [*rendered_findings, finding.model_dump(mode="json")]
-            candidate_payload = {**task_payload, "findings": candidate, "truncated": True}
+            candidate_payload = {**task_payload, "findings": candidate}
             if len(_canonical_json(candidate_payload)) > MAX_TASK_CONTEXT_CHARS:
                 task_payload["truncated"] = True
                 break
@@ -221,12 +198,13 @@ def render_analysis_context(
             candidate_payload = {
                 **task_payload,
                 "covered_paths": candidate,
-                "covered_paths_truncated": True,
             }
             if len(_canonical_json(candidate_payload)) > MAX_TASK_CONTEXT_CHARS:
                 task_payload["covered_paths_truncated"] = True
                 break
             rendered_paths.append(path)
+        if len(_canonical_json(task_payload)) > MAX_TASK_CONTEXT_CHARS:
+            raise ValueError("coding_analysis_task_context_limit_exceeded")
         task_payloads.append(task_payload)
 
     payload = {

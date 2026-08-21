@@ -4,9 +4,38 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from types import MappingProxyType
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+_CODING_ANALYSIS_READ_TOOL_NAMES = (
+    "coding_repo_list",
+    "coding_repo_search",
+    "coding_repo_read",
+    "coding_repo_status",
+    "coding_repo_diff",
+)
+CODING_ANALYSIS_TASK_SPECS = MappingProxyType(
+    {
+        "structure_context": (
+            "Identify relevant modules, interfaces, data flow, and existing "
+            "implementation patterns in the frozen workspace snapshot.",
+            _CODING_ANALYSIS_READ_TOOL_NAMES,
+        ),
+        "change_test_impact": (
+            "Identify likely change surfaces, test entry points, compatibility "
+            "constraints, and regression risks in the frozen workspace snapshot.",
+            _CODING_ANALYSIS_READ_TOOL_NAMES,
+        ),
+        "safety_governance": (
+            "Identify permission, credential, network, path, persistence, HITL, "
+            "and governance boundaries in the frozen workspace snapshot.",
+            _CODING_ANALYSIS_READ_TOOL_NAMES,
+        ),
+    }
+)
 
 
 class CodingWorkspace(BaseModel):
@@ -46,7 +75,7 @@ class CodingAnalysisSnapshot(BaseModel):
 
     @model_validator(mode="after")
     def _expiry_follows_creation(self) -> "CodingAnalysisSnapshot":
-        if self.created_at.tzinfo is None or self.expires_at.tzinfo is None:
+        if self.created_at.utcoffset() is None or self.expires_at.utcoffset() is None:
             raise ValueError("analysis snapshot timestamps must be timezone-aware")
         if self.expires_at <= self.created_at:
             raise ValueError("analysis snapshot expiry must follow creation")
@@ -87,8 +116,11 @@ class CodingAnalysisTask(BaseModel):
     def _task_matches_dimension(self) -> "CodingAnalysisTask":
         if self.task_id != self.dimension:
             raise ValueError("analysis task dimension must match task id")
-        if len(self.allowed_tool_names) != len(set(self.allowed_tool_names)):
-            raise ValueError("analysis task tools must be unique")
+        objective, allowed_tool_names = CODING_ANALYSIS_TASK_SPECS[self.task_id]
+        if self.objective != objective:
+            raise ValueError("analysis task objective must match the canonical task")
+        if self.allowed_tool_names != allowed_tool_names:
+            raise ValueError("analysis task tools must match the canonical task")
         return self
 
 
@@ -925,6 +957,7 @@ class CodingDiffResult(BaseModel):
 
 
 __all__ = [
+    "CODING_ANALYSIS_TASK_SPECS",
     "CodingApprovalDecision",
     "CodingAnalysisFinding",
     "CodingAnalysisResult",
