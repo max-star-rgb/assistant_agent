@@ -200,6 +200,16 @@ class PlannerOutcome(BaseModel):
                 raise ValueError("failed planner outcome cannot have plan_candidate")
             if self.failure is None:
                 raise ValueError("failed planner outcome requires failure")
+            expected_category = {
+                "budget_exhausted": "budget_exhausted",
+                "operational_failed": "operational",
+            }[self.status]
+            if self.failure.phase != "planner":
+                raise ValueError("planner failure must have planner phase")
+            if self.failure.category != expected_category:
+                raise ValueError("planner failure category does not match status")
+            if self.failure.work_item_id is not None:
+                raise ValueError("planner failure cannot have work_item_id")
         return self
 
 
@@ -245,6 +255,21 @@ class WorkerOutcome(BaseModel):
                 raise ValueError("failed worker outcome cannot have result")
             if self.failure is None:
                 raise ValueError("failed worker outcome requires failure")
+            expected_category = {
+                "budget_exhausted": "budget_exhausted",
+                "operational_failed": "operational",
+                "business_failed": "business_failure",
+            }[self.status]
+            if self.failure.phase != "worker":
+                raise ValueError("worker failure must have worker phase")
+            if self.failure.category != expected_category:
+                raise ValueError("worker failure category does not match status")
+            if self.failure.plan_generation != self.plan_generation:
+                raise ValueError("worker failure plan_generation does not match outcome")
+            if self.failure.work_item_id != self.work_item_id:
+                raise ValueError("worker failure work_item_id does not match outcome")
+            if self.failure.attempt != self.attempt:
+                raise ValueError("worker failure attempt does not match outcome")
         return self
 
 

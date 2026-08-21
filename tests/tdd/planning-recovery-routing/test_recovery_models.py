@@ -5,6 +5,11 @@ from pydantic import ValidationError
 
 from assistant_agent.native_agent.models import (
     BudgetUsage,
+    FailureFact,
+    NativePlanNode,
+    NativePlanProposal,
+    PlanDeliverable,
+    PlannerOutcome,
     WorkerOutcome,
     WorkerResult,
 )
@@ -12,6 +17,38 @@ from assistant_agent.native_agent.state import (
     add_budget_usage,
     merge_worker_outcomes,
 )
+
+
+def _proposal() -> NativePlanProposal:
+    return NativePlanProposal(
+        schema_version="native_plan_v1",
+        nodes=(NativePlanNode(node_id="route", objective="route"),),
+        deliverables=(
+            PlanDeliverable(
+                deliverable_id="answer",
+                description="answer",
+                producer_node_ids=("route",),
+            ),
+        ),
+    )
+
+
+def _failure(
+    *,
+    category: str,
+    phase: str = "worker",
+    plan_generation: int = 0,
+    work_item_id: str | None = "route",
+    attempt: int = 1,
+) -> FailureFact:
+    return FailureFact(
+        category=category,
+        code="execution_failed",
+        phase=phase,
+        plan_generation=plan_generation,
+        work_item_id=work_item_id,
+        attempt=attempt,
+    )
 
 
 def _successful_worker_outcome(
@@ -63,3 +100,106 @@ def test_budget_usage_adds_each_counter() -> None:
         BudgetUsage(model_calls=2, tool_calls=1),
         BudgetUsage(model_calls=3, node_attempts=1, replans=1),
     ) == BudgetUsage(model_calls=5, tool_calls=1, node_attempts=1, replans=1)
+
+
+def test_planner_outcome_binds_payload_and_failure_identity() -> None:
+    proposal = _proposal()
+    planner_failure = _failure(category="operational", phase="planner", work_item_id=None)
+
+    with pytest.raises(ValidationError):
+        PlannerOutcome(
+            status="succeeded",
+            plan_candidate=proposal,
+            failure=planner_failure,
+            usage=BudgetUsage(),
+        )
+    with pytest.raises(ValidationError):
+        PlannerOutcome(
+            status="operational_failed",
+            plan_candidate=proposal,
+            failure=planner_failure,
+            usage=BudgetUsage(),
+        )
+    with pytest.raises(ValidationError):
+        PlannerOutcome(
+            status="budget_exhausted",
+            failure=_failure(category="operational", phase="planner", work_item_id=None),
+            usage=BudgetUsage(),
+        )
+    with pytest.raises(ValidationError):
+        PlannerOutcome(
+            status="operational_failed",
+            failure=_failure(category="operational", phase="worker", work_item_id=None),
+            usage=BudgetUsage(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("status", "category"),
+    (
+        ("budget_exhausted", "operational"),
+        ("operational_failed", "budget_exhausted"),
+        ("business_failed", "operational"),
+    ),
+)
+def test_worker_outcome_binds_failure_category(
+    status: str, category: str
+) -> None:
+    with pytest.raises(ValidationError):
+        WorkerOutcome(
+            execution_id="g0:route:a1",
+            plan_generation=0,
+            work_item_id="route",
+            attempt=1,
+            status=status,
+            failure=_failure(category=category),
+            usage=BudgetUsage(),
+        )
+
+
+def test_worker_outcome_binds_failure_phase_and_execution_identity() -> None:
+    for failure in (
+        _failure(category="operational", phase="planner"),
+        _failure(category="operational", plan_generation=1),
+        _failure(category="operational", work_item_id="other"),
+        _failure(category="operational", attempt=2),
+        _failure(category="authorization"),
+        _failure(category="contract_bug"),
+    ):
+        with pytest.raises(ValidationError):
+            WorkerOutcome(
+                execution_id="g0:route:a1",
+                plan_generation=0,
+                work_item_id="route",
+                attempt=1,
+                status="operational_failed",
+                failure=failure,
+                usage=BudgetUsage(),
+            )
+
+
+def test_worker_outcome_rejects_result_failure_payload_mixes() -> None:
+    result = WorkerResult(work_item_id="route", content="done")
+    failure = _failure(category="operational")
+    with pytest.raises(ValidationError):
+        WorkerOutcome(
+            execution_id="g0:route:a1",
+            plan_generation=0,
+            work_item_id="route",
+            attempt=1,
+            status="succeeded",
+            result=result,
+            failure=failure,
+            usage=BudgetUsage(),
+        )
+    with pytest.raises(ValidationError):
+        WorkerOutcome(
+            execution_id="g0:route:a1",
+            plan_generation=0,
+            work_item_id="route",
+            attempt=1,
+            status="operational_failed",
+            result=result,
+            failure=failure,
+            usage=BudgetUsage(),
+        )
