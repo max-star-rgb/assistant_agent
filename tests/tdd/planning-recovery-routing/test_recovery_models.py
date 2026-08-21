@@ -21,7 +21,7 @@ from assistant_agent.native_agent.state import (
 
 def _proposal() -> NativePlanProposal:
     return NativePlanProposal(
-        schema_version="native_plan_v1",
+        schema_version="native_plan_v2",
         nodes=(NativePlanNode(node_id="route", objective="route"),),
         deliverables=(
             PlanDeliverable(

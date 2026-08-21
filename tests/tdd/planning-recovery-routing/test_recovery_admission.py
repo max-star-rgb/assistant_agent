@@ -211,6 +211,52 @@ def test_recovery_plan_rejects_duplicate_replacement() -> None:
     assert caught.value.code == "duplicate_replacement"
 
 
+def test_unknown_frozen_ref_precedes_worker_tool_validation() -> None:
+    proposal = NativePlanProposal(
+        schema_version="native_plan_v2",
+        nodes=(
+            NativePlanNode(
+                node_id="route_g1",
+                objective="invalid frozen ref must win over a later invalid Tool",
+                allowed_tool_names=("unknown_probe",),
+            ),
+        ),
+        deliverables=(
+            PlanDeliverable(
+                deliverable_id="answer",
+                description="answer",
+                producer_node_ids=("route_g1",),
+                frozen_result_refs=("unknown_g0",),
+            ),
+        ),
+    )
+
+    with pytest.raises(NativePlanAdmissionError) as caught:
+        _admit_recovery(proposal)
+
+    assert caught.value.code == "unknown_frozen_deliverable_ref"
+
+
+def test_recovery_plan_rejects_duplicate_frozen_deliverable_refs() -> None:
+    proposal = NativePlanProposal(
+        schema_version="native_plan_v2",
+        nodes=(NativePlanNode(node_id="route_g1", objective="route"),),
+        deliverables=(
+            PlanDeliverable(
+                deliverable_id="answer",
+                description="answer",
+                producer_node_ids=("route_g1",),
+                frozen_result_refs=("weather_g0", "weather_g0"),
+            ),
+        ),
+    )
+
+    with pytest.raises(NativePlanAdmissionError) as caught:
+        _admit_recovery(proposal)
+
+    assert caught.value.code == "duplicate_deliverable_frozen_result_ref"
+
+
 def test_initial_plan_rejects_node_id_from_history() -> None:
     proposal = NativePlanProposal(
         schema_version="native_plan_v2",

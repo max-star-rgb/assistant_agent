@@ -80,6 +80,9 @@ _ADMISSION_ERROR_CODES = {
     "replacement cannot replace a frozen result": "replace_frozen_result",
     "a historical node can only be replaced once": "duplicate_replacement",
     "worker references an unknown frozen dependency": "unknown_frozen_dependency",
+    "deliverable frozen result refs must be unique": (
+        "duplicate_deliverable_frozen_result_ref"
+    ),
     "deliverable references an unknown frozen result": "unknown_frozen_deliverable_ref",
     "workflow plan exceeds the node limit": "node_limit_exceeded",
     "planner evidence ids must be unique": "duplicate_evidence_id",
@@ -199,6 +202,17 @@ def admit_native_plan(
             raise NativePlanAdmissionError(
                 "worker references an unknown frozen dependency"
             )
+    for deliverable in proposal.deliverables:
+        if len(deliverable.frozen_result_refs) != len(
+            set(deliverable.frozen_result_refs)
+        ):
+            raise NativePlanAdmissionError(
+                "deliverable frozen result refs must be unique"
+            )
+        if not set(deliverable.frozen_result_refs).issubset(frozen_results):
+            raise NativePlanAdmissionError(
+                "deliverable references an unknown frozen result"
+            )
 
     if len(node_ids) > policy.max_nodes:
         raise NativePlanAdmissionError("workflow plan exceeds the node limit")
@@ -255,10 +269,6 @@ def admit_native_plan(
             raise NativePlanAdmissionError("deliverable producers must be unique")
         if len(deliverable.evidence_refs) != len(set(deliverable.evidence_refs)):
             raise NativePlanAdmissionError("deliverable evidence refs must be unique")
-        if not set(deliverable.frozen_result_refs).issubset(frozen_results):
-            raise NativePlanAdmissionError(
-                "deliverable references an unknown frozen result"
-            )
         if not set(deliverable.producer_node_ids).issubset(known):
             raise NativePlanAdmissionError("deliverable references an unknown producer")
         if not set(deliverable.evidence_refs).issubset(known_evidence):
