@@ -301,6 +301,7 @@ def build_coding_graph(
         runtime: Runtime[AssistantRunContext],
         config: RunnableConfig,
     ) -> dict[str, object]:
+        workspace = _resolve_workspace(state, runtime, config, workspace_service)
         snapshot = CodingAnalysisSnapshot.model_validate(state["analysis_snapshot"])
         status, results = join_analysis_results(
             snapshot,
@@ -312,7 +313,6 @@ def build_coding_graph(
                 "analysis_status": "pending",
                 "analysis_snapshot_release_status": "active",
             }
-        workspace = _resolve_workspace(state, runtime, config, workspace_service)
         release_status = "released"
         try:
             workspace_service.release_analysis_snapshot(
