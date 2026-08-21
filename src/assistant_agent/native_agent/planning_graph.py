@@ -346,8 +346,18 @@ def build_planning_graph(
             planner_messages.append(
                 HumanMessage(content=_planner_recovery_context(recovery_context))
             )
+        previous_outcome = state.get("planner_outcome")
+        previous_status = (
+            previous_outcome.status
+            if isinstance(previous_outcome, PlannerOutcome)
+            else previous_outcome.get("status")
+            if isinstance(previous_outcome, Mapping)
+            else None
+        )
         attempt = (
-            1
+            int(state.get("planner_attempt_count", 0)) + 1
+            if previous_status == "operational_failed"
+            else 1
             if state.get("admission_error")
             else int(state.get("planner_attempt_count", 0)) + 1
         )
@@ -398,7 +408,6 @@ def build_planning_graph(
             )
             update: dict[str, Any] = {
                 "planner_attempt_count": attempt,
-                "admission_error": None,
                 "planner_active_skill_ids": active_skill_ids,
                 "planner_skill_reference_grants": _reference_grants(
                     planner_result.get("skill_reference_grants")
@@ -441,7 +450,6 @@ def build_planning_graph(
                 usage = BudgetUsage(node_attempts=1)
                 return {
                     "planner_attempt_count": attempt,
-                    "admission_error": None,
                     "planner_outcome": PlannerOutcome(
                         status="operational_failed",
                         evidence_ids=tuple(

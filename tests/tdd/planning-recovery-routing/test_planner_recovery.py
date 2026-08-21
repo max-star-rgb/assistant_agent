@@ -467,6 +467,106 @@ def test_admission_revisions_reset_only_the_operational_window() -> None:
     assert result["budget_usage"].node_attempts == 3
 
 
+class _CorrectionSensitivePlannerAgent:
+    name = "AssistantFastAgent"
+
+    def __init__(self) -> None:
+        self.planner_calls = 0
+        self.correction_seen: list[bool] = []
+
+    async def ainvoke(self, input: dict[str, Any], *, context: Any) -> dict[str, Any]:
+        del context
+        if input["agent_phase"] == "finalizer":
+            return {"messages": [*input["messages"], AIMessage(content="final")]}
+        self.planner_calls += 1
+        if self.planner_calls == 1:
+            return {
+                "messages": list(input["messages"]),
+                "structured_response": _invalid_candidate(),
+            }
+        correction_seen = _has_admission_correction(input)
+        self.correction_seen.append(correction_seen)
+        if self.planner_calls == 2:
+            raise TimeoutError()
+        proposal = _zero_worker_plan() if correction_seen else _invalid_candidate()
+        return {"messages": list(input["messages"]), "structured_response": proposal}
+
+
+class _CorrectionCleanupPlannerAgent:
+    name = "AssistantFastAgent"
+
+    def __init__(self) -> None:
+        self.planner_calls = 0
+        self.correction_seen: list[bool] = []
+
+    async def ainvoke(self, input: dict[str, Any], *, context: Any) -> dict[str, Any]:
+        del context
+        if input["agent_phase"] == "finalizer":
+            return {"messages": [*input["messages"], AIMessage(content="final")]}
+        self.planner_calls += 1
+        if self.planner_calls == 1:
+            return {
+                "messages": list(input["messages"]),
+                "structured_response": _invalid_candidate(),
+            }
+        correction_seen = _has_admission_correction(input)
+        self.correction_seen.append(correction_seen)
+        if self.planner_calls < 4:
+            raise TimeoutError()
+        return {
+            "messages": list(input["messages"]),
+            "structured_response": _zero_worker_plan(),
+        }
+
+
+def _has_admission_correction(input: dict[str, Any]) -> bool:
+    return any(
+        isinstance(message, HumanMessage)
+        and "plan_revision_context" in str(message.content)
+        for message in input["messages"]
+    )
+
+
+def test_admission_correction_survives_operational_retry_window() -> None:
+    """Catches transient planner recovery dropping the active revision correction."""
+
+    agent = _CorrectionSensitivePlannerAgent()
+    graph = build_planning_graph(
+        object(),
+        agent,
+        tools=[_probe_tool()],
+        skill_catalog=SkillCatalog(),
+    )
+
+    result = asyncio.run(graph.ainvoke(_input_with_evidence(), context=AssistantRunContext()))
+
+    assert agent.planner_calls == 3
+    assert agent.correction_seen == [True, True]
+    assert result["revision_count"] == 1
+    assert result["planner_attempt_count"] == 2
+    assert result["budget_usage"].node_attempts == 3
+    assert result["admission_error"] is None
+
+
+def test_admission_correction_clears_before_next_replan_generation() -> None:
+    """Catches a revision correction leaking into an unrelated replan generation."""
+
+    agent = _CorrectionCleanupPlannerAgent()
+    graph = build_planning_graph(
+        object(),
+        agent,
+        tools=[_probe_tool()],
+        skill_catalog=SkillCatalog(),
+    )
+
+    result = asyncio.run(graph.ainvoke(_input_with_evidence(), context=AssistantRunContext()))
+
+    assert agent.planner_calls == 4
+    assert agent.correction_seen == [True, True, False]
+    assert result["plan_generation"] == 1
+    assert result["budget_usage"].node_attempts == 4
+
+
 def _saver_text(saver: InMemorySaver) -> str:
     values: list[str] = []
 

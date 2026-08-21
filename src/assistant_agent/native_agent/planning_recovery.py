@@ -169,6 +169,7 @@ def prepare_replan_node(
         "planner_attempt_count": 0,
         "plan_candidate": None,
         "planner_outcome": None,
+        "admission_error": None,
         "recovery_decision": None,
         "recovery_context": {
             "failure_code": decision.reason_code,
