@@ -26,6 +26,7 @@ from assistant_agent.coding.models import (
     CodingTerminalResult,
 )
 from assistant_agent.coding.repair import (
+    MAX_REPAIR_ROUNDS,
     ensure_repair_progress,
     repair_interrupt_payload,
     render_repair_context,
@@ -136,6 +137,16 @@ def build_coding_graph(
         call_state = dict(state)
         call_messages = list(state.get("messages", ()))
         if state.get("repair_status") == "active":
+            repair_model_calls = int(state.get("repair_model_calls", 0))
+            if repair_model_calls >= MAX_REPAIR_ROUNDS:
+                return {
+                    "repair_status": "no_progress",
+                    "coding_result": _failed(
+                        state,
+                        "coding_repair_no_progress",
+                        repair_status="no_progress",
+                    ),
+                }
             evidence = state.get("repair_failure_evidence")
             if evidence is None:
                 return {
@@ -176,7 +187,13 @@ def build_coding_graph(
             ):
                 artifact = message.artifact
                 break
-        return {"messages": new_messages, "draft_artifact": artifact}
+        update: dict[str, object] = {
+            "messages": new_messages,
+            "draft_artifact": artifact,
+        }
+        if state.get("repair_status") == "active":
+            update["repair_model_calls"] = int(state.get("repair_model_calls", 0)) + 1
+        return update
 
     def validate_proposal_node(
         state: CodingState,
@@ -187,6 +204,15 @@ def build_coding_graph(
             return {}
         artifact = state.get("draft_artifact")
         if not isinstance(artifact, dict):
+            if state.get("repair_status") == "active":
+                return {
+                    "repair_status": "no_progress",
+                    "coding_result": _failed(
+                        state,
+                        "coding_repair_no_progress",
+                        repair_status="no_progress",
+                    ),
+                }
             return {
                 "coding_result": CodingTerminalResult(
                     status="failed",
@@ -198,6 +224,15 @@ def build_coding_graph(
         try:
             validation = CodingPatchValidation.model_validate(artifact)
         except Exception:
+            if state.get("repair_status") == "active":
+                return {
+                    "repair_status": "no_progress",
+                    "coding_result": _failed(
+                        state,
+                        "coding_repair_no_progress",
+                        repair_status="no_progress",
+                    ),
+                }
             return {
                 "coding_result": CodingTerminalResult(
                     status="failed",
@@ -215,6 +250,10 @@ def build_coding_graph(
             update.update(approval_origin="model", format_round=0)
             return update
         try:
+            if validation.proposal.patch_digest in state.get(
+                "repair_proposal_digests", ()
+            ):
+                raise ValueError("coding_repair_no_progress")
             workspace = _resolve_workspace(state, runtime, config, workspace_service)
             if workspace.workspace_ref != state.get("workspace_ref"):
                 raise CodingWorkspaceError("workspace_identity_mismatch")
@@ -254,6 +293,7 @@ def build_coding_graph(
         update.update(
             approval_origin="repair",
             repair_approval_context=context,
+            repair_proposal_digests=[validation.proposal.patch_digest],
         )
         return update
 
@@ -263,11 +303,9 @@ def build_coding_graph(
             normalized_evidence = CodingRepairFailureEvidence.model_validate(evidence)
         except Exception:
             return {
-                "repair_status": "exhausted",
                 "coding_result": _failed(
                     state,
                     "coding_repair_evidence_required",
-                    repair_status="exhausted",
                 ),
             }
         return {
@@ -316,7 +354,16 @@ def build_coding_graph(
                     },
                     goto="summarize",
                 )
-            raw = interrupt(repair_interrupt_payload(context))
+            raw = interrupt(
+                repair_interrupt_payload(
+                    context,
+                    workspace_ref=str(state.get("workspace_ref", "")),
+                    base_commit=proposal.base_commit,
+                    changed_paths=proposal.changed_paths,
+                    summary=proposal.summary,
+                    diff_preview=validation.diff_preview,
+                )
+            )
             try:
                 decision_kind = validate_repair_approval(context, raw)
                 workspace = _resolve_workspace(
@@ -383,6 +430,18 @@ def build_coding_graph(
                         },
                         goto="summarize",
                     )
+                if int(state.get("repair_model_calls", 0)) >= MAX_REPAIR_ROUNDS:
+                    return Command(
+                        update={
+                            "repair_status": "no_progress",
+                            "coding_result": _failed(
+                                state,
+                                "coding_repair_no_progress",
+                                repair_status="no_progress",
+                            ),
+                        },
+                        goto="summarize",
+                    )
                 return Command(
                     update={
                         "messages": [HumanMessage(content=response)],
@@ -442,6 +501,22 @@ def build_coding_graph(
                     update={"coding_result": _failed(state, "invalid_tool_input")},
                     goto="summarize",
                 )
+            if (
+                state.get("repair_status") == "active"
+                and int(state.get("repair_model_calls", 0)) >= MAX_REPAIR_ROUNDS
+            ):
+                return Command(
+                    update={
+                        "repair_status": "no_progress",
+                        "coding_result": _failed(
+                            state,
+                            "coding_repair_no_progress",
+                            repair_status="no_progress",
+                        ),
+                    },
+                    goto="summarize",
+                )
+            active_repair = state.get("repair_status") == "active"
             return Command(
                 update={
                     "messages": [HumanMessage(content=decision.response.strip())],
@@ -449,7 +524,10 @@ def build_coding_graph(
                     "proposal": None,
                     "validation": None,
                     "approval_status": None,
-                    "approval_origin": "model",
+                    "approval_origin": "repair" if active_repair else "model",
+                    "repair_approval_context": None if active_repair else state.get(
+                        "repair_approval_context"
+                    ),
                 },
                 goto="inspect_and_draft",
             )
@@ -844,6 +922,8 @@ def build_coding_graph(
         except CodingWorkspaceError as exc:
             return {"coding_result": _failed(state, exc.code)}
         update: dict[str, object] = {"verification_evidence": list(result.evidence)}
+        if result.status in {"passed", "failed"}:
+            update["last_verification_status"] = result.status
         if result.status == "format_approval_required":
             validation = result.formatter_validation
             if validation is None:
@@ -879,15 +959,27 @@ def build_coding_graph(
                 if current_attempt is not None
                 else repair_history
             )
+            eligible_failure = select_repairable_failure(result, 0)
             repairable = select_repairable_failure(result, current_repair_round)
-            if repairable is not None:
+            repair_budget_exhausted = (
+                state.get("repair_status") == "active"
+                and int(state.get("repair_model_calls", 0)) >= MAX_REPAIR_ROUNDS
+            )
+            if repairable is not None and not repair_budget_exhausted:
                 update.update(
                     repair_failure_evidence=repairable,
                     repair_status="pending",
                 )
                 return update
             terminal_repair_status = (
-                "exhausted" if state.get("repair_status") == "active" else None
+                "exhausted"
+                if state.get("repair_status") == "active"
+                and eligible_failure is not None
+                and (
+                    current_repair_round >= MAX_REPAIR_ROUNDS
+                    or repair_budget_exhausted
+                )
+                else None
             )
             if terminal_repair_status is not None:
                 update["repair_status"] = terminal_repair_status
@@ -1222,7 +1314,7 @@ def _failed(
         ),
         error_code=code,
         verification_status=(
-            "passed" if state.get("verification_evidence") else None
+            state.get("last_verification_status")
         ),
         verification_evidence=tuple(state.get("verification_evidence", ())),
         repair_status=(

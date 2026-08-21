@@ -146,6 +146,7 @@ class CodingState(AgentState):
     verification_evidence: NotRequired[
         Annotated[list[CodingCommandEvidence], operator.add]
     ]
+    last_verification_status: NotRequired[Literal["passed", "failed"]]
     integration_required: NotRequired[bool]
     commit_result: NotRequired[CodingCommitResult | None]
     merge_preview: NotRequired[CodingMergePreview | None]
@@ -156,6 +157,10 @@ class CodingState(AgentState):
     ]
     repair_failure_evidence: NotRequired[CodingRepairFailureEvidence | None]
     repair_history: NotRequired[Annotated[list[CodingRepairAttempt], operator.add]]
+    repair_model_calls: NotRequired[int]
+    repair_proposal_digests: NotRequired[
+        Annotated[list[str], _merge_unique_strings]
+    ]
     repair_approval_context: NotRequired[CodingRepairApprovalContext | None]
     coding_result: NotRequired[CodingTerminalResult]
 

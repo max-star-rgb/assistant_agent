@@ -39,21 +39,33 @@ def select_repairable_failure(
     repair_round: int,
 ) -> CodingRepairFailureEvidence | None:
     """Return the single normal command failure eligible for repair."""
-    if result.status != "failed" or repair_round >= MAX_REPAIR_ROUNDS:
+    if (
+        result.status != "failed"
+        or result.error_code != "verification_command_failed"
+        or repair_round >= MAX_REPAIR_ROUNDS
+    ):
         return None
-    eligible = [
-        evidence
-        for evidence in result.evidence
-        if evidence.kind in {"test", "lint", "build"}
+    failures = [evidence for evidence in result.evidence if evidence.status != "passed"]
+    if len(failures) != 1:
+        return None
+    evidence = failures[0]
+    if not (
+        evidence.kind in {"test", "lint", "build"}
         and evidence.status == "failed"
         and evidence.exit_code is not None
-        and evidence.exit_code != 0
+        and evidence.exit_code > 0
         and evidence.error_code == "verification_command_failed"
-    ]
-    if len(eligible) != 1:
+        and not evidence.timed_out
+        and not evidence.oom_killed
+        and evidence.cleanup_status != "failed"
+        and evidence.credential_cleanup_status != "failed"
+        and evidence.dependency_install_status != "failed"
+        and evidence.artifact_ingress_status != "failed"
+        and evidence.artifact_export_status != "failed"
+    ):
         return None
     return CodingRepairFailureEvidence.model_validate(
-        eligible[0].model_dump(
+        evidence.model_dump(
             include={
                 "command_id",
                 "kind",
@@ -92,11 +104,22 @@ def render_repair_context(
 
 def repair_interrupt_payload(
     context: CodingRepairApprovalContext,
+    *,
+    workspace_ref: str,
+    base_commit: str,
+    changed_paths: Sequence[str],
+    summary: str,
+    diff_preview: str,
 ) -> dict[str, object]:
     """Return the digest-bound interrupt payload for a repair patch approval."""
     return {
         "action": "coding_patch_apply",
         "origin": "repair",
+        "workspace_ref": workspace_ref,
+        "base_commit": base_commit,
+        "changed_paths": list(changed_paths),
+        "summary": summary,
+        "diff_preview": diff_preview,
         "repair_round": context.repair_round,
         "patch_digest": context.patch_digest,
         "workspace_diff_digest": context.workspace_diff_digest,
