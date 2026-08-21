@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from typing import Literal
+from urllib.error import HTTPError, URLError
 
+import httpx
+from langgraph.errors import GraphBubbleUp, NodeCancelledError
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from assistant_agent.coding.models import (
@@ -107,9 +111,84 @@ def merge_analysis_results(
 ) -> list[CodingAnalysisResult]:
     """Replace replayed worker output by stable task ID in fixed order."""
 
+    if update is not None and not update:
+        return []
     by_id = {item.task_id: item for item in current or ()}
     by_id.update({item.task_id: item for item in update or ()})
     return [by_id[task_id] for task_id in ANALYSIS_TASK_IDS if task_id in by_id]
+
+
+def build_analysis_failure_result(
+    *,
+    task: CodingAnalysisTask,
+    snapshot: CodingAnalysisSnapshot,
+) -> CodingAnalysisResult:
+    """Return the stable, redacted result for exhausted operational retries."""
+
+    return normalize_analysis_result(
+        task=task,
+        snapshot=snapshot,
+        raw_result={
+            "status": "failed",
+            "findings": (),
+            "covered_paths": (),
+            "error_code": "coding_analysis_task_failed",
+        },
+    )
+
+
+def is_transient_analysis_failure(error: BaseException) -> bool:
+    """Classify only operational failures safe for advisory degradation."""
+
+    pending: list[BaseException] = [error]
+    visited: set[int] = set()
+    operational = False
+    while pending:
+        current = pending.pop(0)
+        if id(current) in visited:
+            continue
+        visited.add(id(current))
+        if isinstance(
+            current,
+            (
+                asyncio.CancelledError,
+                GraphBubbleUp,
+                NodeCancelledError,
+                PermissionError,
+                AssertionError,
+                TypeError,
+                ValueError,
+                LookupError,
+                ArithmeticError,
+                ImportError,
+                NameError,
+                SyntaxError,
+            ),
+        ):
+            return False
+        recognized = False
+        if isinstance(current, (TimeoutError, ConnectionError, httpx.TransportError)):
+            operational = True
+            recognized = True
+        status_code = _exception_status_code(current)
+        if status_code is not None:
+            if status_code in {408, 409, 425, 429} or status_code >= 500:
+                operational = True
+                recognized = True
+            else:
+                return False
+        if isinstance(current, URLError):
+            operational = True
+            recognized = True
+            if isinstance(current.reason, BaseException):
+                pending.append(current.reason)
+        if not recognized:
+            return False
+        if isinstance(current.__cause__, BaseException):
+            pending.append(current.__cause__)
+        if isinstance(current.__context__, BaseException):
+            pending.append(current.__context__)
+    return operational
 
 
 def join_analysis_results(
@@ -234,6 +313,17 @@ def _canonical_json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
+def _exception_status_code(error: BaseException) -> int | None:
+    if isinstance(error, HTTPError):
+        return error.code
+    status_code = getattr(error, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code
+    response = getattr(error, "response", None)
+    status_code = getattr(response, "status_code", None)
+    return status_code if isinstance(status_code, int) else None
+
+
 __all__ = [
     "ANALYSIS_READ_TOOL_NAMES",
     "ANALYSIS_TASK_IDS",
@@ -241,7 +331,9 @@ __all__ = [
     "MAX_FINDINGS_PER_TASK",
     "MAX_TASK_CONTEXT_CHARS",
     "CodingAnalysisResponse",
+    "build_analysis_failure_result",
     "build_analysis_tasks",
+    "is_transient_analysis_failure",
     "join_analysis_results",
     "merge_analysis_results",
     "normalize_analysis_result",

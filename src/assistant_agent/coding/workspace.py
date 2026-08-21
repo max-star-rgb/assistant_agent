@@ -1759,7 +1759,7 @@ class CodingWorkspaceService:
                 except CodingWorkspaceError:
                     self._quarantine_analysis_snapshot(snapshot_root)
                     continue
-                if metadata.active_lease and metadata.snapshot.expires_at > self._clock():
+                if metadata.snapshot.expires_at > self._clock():
                     continue
                 try:
                     self._remove_analysis_snapshot_directory(snapshot_root)

@@ -42,6 +42,7 @@ from assistant_agent.native_agent.models import (
 ExecutionMode = Literal["fast", "planning", "coding"]
 MemoryStatus = Literal["ready", "empty", "degraded"]
 AgentPhase = Literal["fast", "planner", "worker", "finalizer"]
+AnalysisSnapshotReleaseStatus = Literal["active", "released", "cleanup_pending"]
 
 
 class AssistantRootInput(BaseModel):
@@ -166,6 +167,9 @@ class CodingState(AgentState):
         Annotated[list[CodingAnalysisResult], merge_analysis_results]
     ]
     analysis_status: NotRequired[AnalysisStatus | Literal["pending"] | None]
+    analysis_snapshot_release_status: NotRequired[
+        AnalysisSnapshotReleaseStatus | None
+    ]
     analysis_context_consumed: NotRequired[bool]
     draft_artifact: NotRequired[dict[str, object] | None]
     proposal: NotRequired[CodingPatchProposal | None]
@@ -247,6 +251,7 @@ def _merge_planner_evidence(
 
 __all__ = [
     "AgentPhase",
+    "AnalysisSnapshotReleaseStatus",
     "AssistantRootInput",
     "AssistantRootState",
     "CodingAnalysisWorkerState",
