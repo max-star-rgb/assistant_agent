@@ -290,3 +290,18 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
   tests/core/contract/test_gateway_contract.py \
   tests/core/integration/test_runtime_lifecycle.py
 ```
+
+### Stage5B snapshot bounded-enumeration addendum
+
+Coding analysis 的 baseline index 不得通过 `subprocess.run(capture_output=True)` 物化完整
+`git ls-files -z` 输出。实现使用受治理的 `Popen` stdout 分块读取和跨 chunk NUL record
+解析，在读取及 record 边界即时消耗 scan bytes/entries；达到硬限后立即终止并回收 Git
+子进程，stderr 只保留固定上限。源仓库 object format 必须通过禁 lazy fetch、禁 credential
+prompt、隔离 system/global config 的 `git rev-parse --show-object-format` 获得，并且只接受
+`sha1` 或 `sha256`；canonical bare metadata 根据该枚举生成全新 config，不复制源仓库 config。
+
+周期 reaper 只保留常数数量的分层 cursor：完成当前 workspace 的 snapshots 与临时 index
+枚举后才推进 workspace root，从而对任意数量 workspace 保持 eventual progress。目录回收先在
+同一文件系统 atomic rename 为 tombstone，再由跨轮保留的单一增量 DFS cursor 按共享 entry/time
+budget 执行 `scandir`、`unlink` 与 `rmdir`；不得把任意大小目录作为一次 `rmtree` 操作。
+workspace/root 消失、进程关闭或 traversal 重置时必须关闭并清除所有 descendant cursor。

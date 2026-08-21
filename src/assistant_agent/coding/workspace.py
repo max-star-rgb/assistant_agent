@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from fnmatch import fnmatchcase
 from pathlib import Path
+from typing import BinaryIO, Callable, Iterator, Mapping, Sequence
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -59,7 +60,11 @@ _ANALYSIS_QUARANTINE_PREFIX = ".analysis-quarantine-"
 _ANALYSIS_QUARANTINE_SECONDS = 300
 _ANALYSIS_METADATA_TEMP_PREFIX = ".metadata-"
 _MAX_GIT_OUTPUT = 262_144
-_REAPER_CURSOR_LIMIT = 256
+_REAPER_CURSOR_LIMIT = 4
+_REAPER_TOMBSTONE_PREFIX = ".assistant-agent-reap-"
+_REAPER_TIME_BUDGET_SECONDS = 0.05
+_REAPER_DEFAULT_WORKSPACE_BUDGET = 32
+_REAPER_DEFAULT_CHILD_BUDGET = 64
 _ANALYSIS_INDEX_ENTRY_MAX_BYTES = 1_152
 
 
@@ -162,6 +167,11 @@ class CodingWorkspaceService:
         self._snapshot_reaper_task: asyncio.Task[None] | None = None
         self._reaper_cursor_lock = threading.RLock()
         self._reaper_cursors: OrderedDict[str, _ReaperCursor] = OrderedDict()
+        self._hierarchical_reaper = _HierarchicalReaperTraversal(
+            self.config.workspace_root,
+            child_directories=(("snapshot", _ANALYSIS_SNAPSHOTS_DIR), ("management", ".")),
+        )
+        self._incremental_reaper_deletion: _IncrementalTombstoneDeletion | None = None
 
     def resolve(self, identity: str, thread_id: str, repo_id: str) -> CodingWorkspace:
         if not self.config.enabled or repo_id not in self.config.repositories:
@@ -1231,68 +1241,76 @@ class CodingWorkspaceService:
         git_env: Mapping[str, str],
         budget: _AnalysisScanBudget,
     ) -> dict[str, tuple[str, bytes]]:
-        raw_entries = self._run_git_bytes(
-            workspace.root,
-            "ls-files",
-            "--stage",
-            "-z",
-            error_code="coding_analysis_snapshot_failed",
-            extra_env=git_env,
-            max_output_bytes=min(
-                self.config.analysis_snapshot_max_scan_entries
-                * _ANALYSIS_INDEX_ENTRY_MAX_BYTES,
-                self.config.analysis_snapshot_max_scan_bytes,
-            ),
-        )
-        budget.consume_read(len(raw_entries))
         files: dict[str, tuple[str, bytes]] = {}
-        removed_paths: list[bytes] = []
         blob_cache: dict[str, bytes | None] = {}
-        for raw_entry in _iter_nul_records(raw_entries):
-            budget.visit_entry()
+        governed_env = _governed_git_environment(git_env)
+        command = ("git", "-C", str(workspace.root), "ls-files", "--stage", "-z")
+        with tempfile.TemporaryFile() as removed_paths:
+            removed_count = 0
+
+            def consume_record(_size: int) -> None:
+                budget.visit_entry()
+
             try:
-                raw_metadata, raw_path = raw_entry.split(b"\t", 1)
-                mode_bytes, object_bytes, stage_bytes = raw_metadata.split(b" ", 2)
-                mode = mode_bytes.decode("ascii")
-                object_id = object_bytes.decode("ascii")
-                stage = stage_bytes.decode("ascii")
-                path = raw_path.decode("utf-8")
-            except (UnicodeDecodeError, ValueError) as exc:
-                raise CodingWorkspaceError(
-                    "coding_analysis_snapshot_failed"
-                ) from exc
-            if stage != "0":
-                raise CodingWorkspaceError("coding_analysis_snapshot_failed")
-            if not self._analysis_path_is_allowed(workspace.root, path, mode):
-                removed_paths.append(raw_path)
-                continue
-            if object_id not in blob_cache:
-                blob_cache[object_id] = self._read_analysis_git_blob(
-                    workspace.root,
-                    object_id,
-                    git_env,
-                    budget,
+                records = _iter_git_nul_records_process(
+                    command,
+                    cwd=workspace.root,
+                    env=governed_env,
+                    timeout_seconds=20.0,
+                    max_record_bytes=_ANALYSIS_INDEX_ENTRY_MAX_BYTES,
+                    consume_record=consume_record,
+                    consume_bytes=budget.consume_read,
                 )
-            blob = blob_cache[object_id]
-            if blob is None:
-                removed_paths.append(raw_path)
-                continue
-            files[path] = (mode, blob)
-            budget.include_file(len(blob))
-
-        if removed_paths:
-            self._run_git_bytes(
-                workspace.root,
-                "update-index",
-                "--force-remove",
-                "-z",
-                "--stdin",
-                error_code="coding_analysis_snapshot_failed",
-                extra_env=git_env,
-                input_bytes=b"\0".join(removed_paths) + b"\0",
-            )
+                for raw_entry in records:
+                    try:
+                        raw_metadata, raw_path = raw_entry.split(b"\t", 1)
+                        mode_bytes, object_bytes, stage_bytes = raw_metadata.split(b" ", 2)
+                        mode = mode_bytes.decode("ascii")
+                        object_id = object_bytes.decode("ascii")
+                        stage = stage_bytes.decode("ascii")
+                        path = raw_path.decode("utf-8")
+                    except (UnicodeDecodeError, ValueError) as exc:
+                        raise CodingWorkspaceError("coding_analysis_snapshot_failed") from exc
+                    if stage != "0":
+                        raise CodingWorkspaceError("coding_analysis_snapshot_failed")
+                    if not self._analysis_path_is_allowed(workspace.root, path, mode):
+                        removed_paths.write(raw_path)
+                        removed_paths.write(b"\0")
+                        removed_count += 1
+                        continue
+                    if object_id not in blob_cache:
+                        blob_cache[object_id] = self._read_analysis_git_blob(
+                            workspace.root,
+                            object_id,
+                            git_env,
+                            budget,
+                        )
+                    blob = blob_cache[object_id]
+                    if blob is None:
+                        removed_paths.write(raw_path)
+                        removed_paths.write(b"\0")
+                        removed_count += 1
+                        continue
+                    files[path] = (mode, blob)
+                    budget.include_file(len(blob))
+            except CodingWorkspaceError:
+                raise
+            except (OSError, subprocess.TimeoutExpired, _GitProcessFailed) as exc:
+                raise CodingWorkspaceError("coding_analysis_snapshot_failed") from exc
+            if removed_count:
+                removed_paths.flush()
+                removed_paths.seek(0)
+                self._run_git_stream_input(
+                    workspace.root,
+                    "update-index",
+                    "--force-remove",
+                    "-z",
+                    "--stdin",
+                    error_code="coding_analysis_snapshot_failed",
+                    extra_env=git_env,
+                    input_file=removed_paths,
+                )
         return files
-
     def _analysis_path_is_allowed(self, root: Path, path: str, mode: str) -> bool:
         if len(path.encode("utf-8")) > 1_024 or mode not in {"100644", "100755"} or any(
             character in path for character in ("\x00", "\n", "\r")
@@ -1504,23 +1522,16 @@ class CodingWorkspaceService:
         main_objects = (common / "objects").resolve()
         if not main_objects.is_dir():
             raise CodingWorkspaceError("coding_analysis_snapshot_failed")
+        governed_env = _governed_git_environment()
+        object_format = _detect_git_object_format(workspace.root, governed_env)
         isolated_git_dir = object_root / ".canonical-git"
-        (isolated_git_dir / "refs" / "heads").mkdir(parents=True)
-        (isolated_git_dir / "HEAD").write_text(
-            "ref: refs/heads/analysis\n",
-            encoding="ascii",
-        )
-        (isolated_git_dir / "config").write_text(
-            "[core]\n\trepositoryformatversion = 0\n\tbare = true\n",
-            encoding="ascii",
-        )
+        _initialize_isolated_git_dir(isolated_git_dir, object_format)
         return {
             "GIT_INDEX_FILE": str(index_path),
             "GIT_OBJECT_DIRECTORY": str(object_root),
             "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(main_objects),
             "ASSISTANT_AGENT_ANALYSIS_GIT_DIR": str(isolated_git_dir),
         }
-
     def _analysis_git_diff_result(
         self,
         workspace: CodingWorkspace,
@@ -1782,16 +1793,10 @@ class CodingWorkspaceService:
             raise CodingWorkspaceError("coding_analysis_snapshot_failed") from exc
 
     def _remove_analysis_snapshot_directory(self, path: Path) -> None:
-        if not path.exists():
-            return
-        for directory, child_directories, _ in os.walk(path):
-            root = Path(directory)
-            child_directories[:] = [
-                name for name in child_directories if not (root / name).is_symlink()
-            ]
-            root.chmod(0o700)
-        shutil.rmtree(path, ignore_errors=False)
-
+        try:
+            self._schedule_incremental_removal(path, advance=True)
+        except OSError as exc:
+            raise CodingWorkspaceError("coding_analysis_snapshot_failed") from exc
     def _base_file_digests(
         self,
         workspace: CodingWorkspace,
@@ -1889,55 +1894,46 @@ class CodingWorkspaceService:
     ) -> None:
         root = self.config.workspace_root
         if not root.is_dir():
-            self._drop_reaper_cursor(f"workspaces:{root}")
+            self._hierarchical_reaper.drop_under(root)
             return
-        for entry in self._iter_reaper_entries(
-            root,
-            limit=max_workspaces,
-            cursor_key=f"workspaces:{root}",
-        ):
-            try:
-                if not entry.is_dir(follow_symlinks=False):
+        if self._hierarchical_reaper.exhausted:
+            self._hierarchical_reaper.restart()
+        workspace_budget = (
+            _REAPER_DEFAULT_WORKSPACE_BUDGET if max_workspaces is None else max(0, max_workspaces)
+        )
+        child_budget = (
+            _REAPER_DEFAULT_CHILD_BUDGET
+            if max_snapshots_per_workspace is None
+            else max(0, max_snapshots_per_workspace)
+        )
+        remaining = workspace_budget + child_budget
+        root_remaining = workspace_budget
+        if remaining <= 0:
+            return
+        deadline = time.monotonic() + _REAPER_TIME_BUDGET_SECONDS
+        while remaining > 0 and time.monotonic() < deadline:
+            deletion = self._incremental_reaper_deletion
+            if deletion is not None:
+                consumed = deletion.step(max_entries=remaining)
+                remaining -= consumed
+                if deletion.done:
+                    deletion.close()
+                    self._incremental_reaper_deletion = None
                     continue
-            except OSError:
+                if consumed == 0:
+                    break
                 continue
-            management_root = Path(entry.path)
-            metadata_path = management_root / _METADATA_FILE
-            if not metadata_path.is_file():
-                continue
-            try:
-                metadata = self._load_metadata(metadata_path)
-            except CodingWorkspaceError:
-                continue
-            lock_path = management_root / _LOCK_FILE
-            lock_path.touch(mode=0o600, exist_ok=True)
-            remove_workspace = False
-            with lock_path.open("a+") as handle:
-                try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    continue
-                self._reap_analysis_snapshots_locked(
-                    management_root,
-                    max_snapshots=max_snapshots_per_workspace,
-                )
-                if metadata.expires_at <= self._clock():
-                    repository = self.config.repositories.get(metadata.repo_id)
-                    if repository is None:
-                        continue
-                    self._run_git(
-                        repository.path,
-                        "worktree",
-                        "remove",
-                        "--force",
-                        str(management_root / _REPO_DIR),
-                        error_code="workspace_cleanup_failed",
-                    )
-                    remove_workspace = True
-            if remove_workspace:
-                self._drop_reaper_cursors_under(management_root)
-                shutil.rmtree(management_root, ignore_errors=False)
-
+            advancing_root = self._hierarchical_reaper.current_workspace is None
+            if advancing_root and root_remaining <= 0:
+                break
+            entry = self._hierarchical_reaper.next_entry()
+            if entry is None:
+                self._hierarchical_reaper.restart()
+                break
+            if advancing_root:
+                root_remaining -= 1
+            remaining -= 1
+            self._process_hierarchical_reaper_entry(entry)
     def _reap_analysis_snapshots_locked(
         self,
         management_root: Path,
@@ -2107,18 +2103,30 @@ class CodingWorkspaceService:
         if cursor is not None:
             cursor.close()
 
-    def _drop_reaper_cursors_under(self, root: Path) -> None:
+    def _drop_reaper_cursors_under(self, path: Path) -> None:
+        resolved = path.resolve(strict=False)
         with self._reaper_cursor_lock:
-            for key, cursor in tuple(self._reaper_cursors.items()):
-                if cursor.path == root or cursor.path.is_relative_to(root):
-                    self._drop_reaper_cursor_locked(key)
-
+            keys = [
+                key
+                for key, cursor in self._reaper_cursors.items()
+                if cursor.path.resolve(strict=False) == resolved
+                or cursor.path.resolve(strict=False).is_relative_to(resolved)
+            ]
+            cursors = [self._reaper_cursors.pop(key) for key in keys]
+        for cursor in cursors:
+            cursor.close()
+        self._hierarchical_reaper.drop_under(resolved)
     def _close_all_reaper_cursors(self) -> None:
         with self._reaper_cursor_lock:
-            for cursor in self._reaper_cursors.values():
-                cursor.close()
+            cursors = tuple(self._reaper_cursors.values())
             self._reaper_cursors.clear()
-
+        for cursor in cursors:
+            cursor.close()
+        self._hierarchical_reaper.close()
+        deletion = self._incremental_reaper_deletion
+        self._incremental_reaper_deletion = None
+        if deletion is not None:
+            deletion.close()
     def start_snapshot_reaper(
         self,
         *,
@@ -2139,6 +2147,147 @@ class CodingWorkspaceService:
             name="assistant-agent-coding-snapshot-reaper",
         )
 
+    def _run_git_stream_input(
+        self,
+        repo: Path,
+        *args: str,
+        error_code: str,
+        extra_env: Mapping[str, str] | None,
+        input_file: BinaryIO,
+    ) -> bytes:
+        try:
+            return _run_git_bytes_process(
+                ("git", "-C", str(repo), *args),
+                cwd=repo,
+                env=_governed_git_environment(extra_env),
+                timeout_seconds=20.0,
+                max_output_bytes=262_144,
+                input_file=input_file,
+            )
+        except _GitOutputLimitExceeded as exc:
+            raise CodingWorkspaceError("coding_analysis_snapshot_limit_exceeded") from exc
+        except (OSError, subprocess.TimeoutExpired, _GitProcessFailed) as exc:
+            raise CodingWorkspaceError(error_code) from exc
+
+
+    def _open_reaper_workspace_lock(self, management_root: Path):
+        try:
+            lock_path = management_root / _LOCK_FILE
+            lock_path.touch(mode=0o600, exist_ok=True)
+            handle = lock_path.open("a+")
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                handle.close()
+                return None
+            return handle
+        except OSError:
+            return None
+
+
+    def _schedule_incremental_removal(self, path: Path, *, advance: bool) -> None:
+        if not path.exists():
+            return
+        if path.name.startswith(_REAPER_TOMBSTONE_PREFIX):
+            deletion = _IncrementalTombstoneDeletion.from_existing(path)
+        else:
+            deletion = _IncrementalTombstoneDeletion.rename(path)
+        self._drop_reaper_cursors_under(path)
+        if self._incremental_reaper_deletion is None:
+            self._incremental_reaper_deletion = deletion
+            if advance:
+                deletion.step(max_entries=_REAPER_DEFAULT_CHILD_BUDGET)
+                if deletion.done:
+                    deletion.close()
+                    self._incremental_reaper_deletion = None
+        else:
+            deletion.close()
+
+
+    def _process_hierarchical_reaper_entry(self, entry: _HierarchicalReaperEntry) -> None:
+        path = entry.path
+        if entry.kind == "root":
+            return
+        if entry.kind == "tombstone" or path.name.startswith(_REAPER_TOMBSTONE_PREFIX):
+            self._schedule_incremental_removal(path, advance=False)
+            return
+        if entry.kind == "workspace_missing":
+            self._drop_reaper_cursors_under(entry.workspace)
+            return
+        if entry.kind == "workspace_start":
+            metadata_path = entry.workspace / _METADATA_FILE
+            if not metadata_path.is_file():
+                self._hierarchical_reaper.skip_current_workspace()
+                return
+            try:
+                self._load_metadata(metadata_path)
+            except CodingWorkspaceError:
+                self._hierarchical_reaper.skip_current_workspace()
+            return
+        handle = self._open_reaper_workspace_lock(entry.workspace)
+        if handle is None:
+            if entry.kind in {"snapshot", "management"}:
+                self._hierarchical_reaper.skip_current_workspace()
+            return
+        try:
+            if entry.kind == "snapshot":
+                self._reap_snapshot_path_bounded(path)
+            elif entry.kind == "management":
+                if path.name.startswith(".analysis-index-") and path.is_file():
+                    path.unlink(missing_ok=True)
+            elif entry.kind == "workspace":
+                self._reap_workspace_path_bounded(entry.workspace)
+        finally:
+            handle.close()
+
+
+    def _reap_snapshot_path_bounded(self, snapshot_root: Path) -> None:
+        try:
+            if not snapshot_root.is_dir():
+                return
+            if snapshot_root.name.startswith(_ANALYSIS_BUILD_PREFIX):
+                self._schedule_incremental_removal(snapshot_root, advance=False)
+                return
+            if snapshot_root.name.startswith(_ANALYSIS_QUARANTINE_PREFIX):
+                quarantined_at = datetime.fromtimestamp(
+                    snapshot_root.stat(follow_symlinks=False).st_mtime,
+                    timezone.utc,
+                )
+                if quarantined_at + timedelta(seconds=_ANALYSIS_QUARANTINE_SECONDS) <= self._clock():
+                    self._schedule_incremental_removal(snapshot_root, advance=False)
+                return
+            try:
+                metadata = self._load_analysis_snapshot_metadata(
+                    snapshot_root / _ANALYSIS_SNAPSHOT_METADATA_FILE
+                )
+            except CodingWorkspaceError:
+                self._quarantine_analysis_snapshot(snapshot_root)
+                return
+            if metadata.snapshot.expires_at <= self._clock():
+                self._schedule_incremental_removal(snapshot_root, advance=False)
+        except OSError:
+            return
+
+
+    def _reap_workspace_path_bounded(self, management_root: Path) -> None:
+        try:
+            metadata = self._load_metadata(management_root / _METADATA_FILE)
+        except CodingWorkspaceError:
+            return
+        if metadata.expires_at > self._clock():
+            return
+        repository = self.config.repositories.get(metadata.repo_id)
+        if repository is None:
+            return
+        self._run_git(
+            repository.path,
+            "worktree",
+            "remove",
+            "--force",
+            str(management_root / _REPO_DIR),
+            error_code="workspace_cleanup_failed",
+        )
+        self._schedule_incremental_removal(management_root, advance=False)
     async def _run_snapshot_reaper(
         self,
         *,
@@ -2317,38 +2466,495 @@ class CodingWorkspaceService:
         input_bytes: bytes | None = None,
         max_output_bytes: int | None = None,
     ) -> bytes:
-        env = {
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-            "LANG": "C.UTF-8",
-            "LC_ALL": "C.UTF-8",
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_TERMINAL_PROMPT": "0",
-            "GIT_NO_LAZY_FETCH": "1",
-        }
-        if extra_env is not None:
-            env.update(extra_env)
+        env = _governed_git_environment(extra_env)
+        input_file = None
         try:
-            completed = subprocess.run(
-                ["git", "-C", str(repo), *args],
-                input=input_bytes,
-                capture_output=True,
-                timeout=20,
+            if input_bytes is not None:
+                input_file = tempfile.TemporaryFile()
+                input_file.write(input_bytes)
+                input_file.seek(0)
+            return _run_git_bytes_process(
+                ("git", "-C", str(repo), *args),
+                cwd=repo,
                 env=env,
-                check=False,
+                timeout_seconds=20.0,
+                max_output_bytes=max_output_bytes if max_output_bytes is not None else 262_144,
+                input_file=input_file,
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        except _GitOutputLimitExceeded as exc:
+            raise CodingWorkspaceError("coding_analysis_snapshot_limit_exceeded") from exc
+        except (OSError, subprocess.TimeoutExpired, _GitProcessFailed) as exc:
             raise CodingWorkspaceError(error_code) from exc
-        if completed.returncode != 0:
-            raise CodingWorkspaceError(error_code)
-        if max_output_bytes is not None and len(completed.stdout) > max_output_bytes:
-            raise CodingWorkspaceError("coding_analysis_snapshot_limit_exceeded")
-        return completed.stdout
-
+        finally:
+            if input_file is not None:
+                input_file.close()
 
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
+
+class _GitOutputLimitExceeded(RuntimeError):
+    pass
+
+
+class _GitProcessFailed(RuntimeError):
+    def __init__(self, returncode: int, stderr: bytes) -> None:
+        super().__init__(f"git exited with status {returncode}")
+        self.returncode = returncode
+        self.stderr = stderr
+
+
+def _governed_git_environment(extra_env: Mapping[str, str] | None = None) -> dict[str, str]:
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_NO_LAZY_FETCH": "1",
+    }
+    if extra_env:
+        env.update(extra_env)
+    return env
+
+
+class _BoundedStderrCapture:
+    def __init__(self, *, limit: int = 8_192) -> None:
+        self._limit = limit
+        self._read_fd, self.write_fd = os.pipe()
+        self._buffer = bytearray()
+        self._started = False
+        self._thread = threading.Thread(target=self._drain, daemon=True)
+
+    def _drain(self) -> None:
+        try:
+            while True:
+                chunk = os.read(self._read_fd, 4_096)
+                if not chunk:
+                    break
+                remaining = self._limit - len(self._buffer)
+                if remaining > 0:
+                    self._buffer.extend(chunk[:remaining])
+        finally:
+            try:
+                os.close(self._read_fd)
+            except OSError:
+                pass
+
+    def child_started(self) -> None:
+        os.close(self.write_fd)
+        self.write_fd = -1
+        self._started = True
+        self._thread.start()
+
+    def abort(self) -> None:
+        if self.write_fd >= 0:
+            try:
+                os.close(self.write_fd)
+            except OSError:
+                pass
+            self.write_fd = -1
+        if self._started:
+            self._thread.join(timeout=1.0)
+        else:
+            try:
+                os.close(self._read_fd)
+            except OSError:
+                pass
+
+    def finish(self) -> bytes:
+        self.abort()
+        return bytes(self._buffer)
+
+
+def _terminate_git_process(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        process.terminate()
+        process.wait(timeout=0.5)
+    except (OSError, subprocess.TimeoutExpired):
+        try:
+            process.kill()
+        finally:
+            try:
+                process.wait(timeout=0.5)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+
+
+def _run_git_bytes_process(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    env: Mapping[str, str],
+    timeout_seconds: float,
+    max_output_bytes: int,
+    input_file: BinaryIO | None = None,
+) -> bytes:
+    stderr_capture = _BoundedStderrCapture()
+    process: subprocess.Popen[bytes] | None = None
+    stdout = None
+    chunks: list[bytes] = []
+    total = 0
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        process = subprocess.Popen(
+            tuple(command),
+            cwd=cwd,
+            env=dict(env),
+            stdin=input_file if input_file is not None else subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=stderr_capture.write_fd,
+            close_fds=True,
+        )
+        stderr_capture.child_started()
+        stdout = process.stdout
+        if stdout is None:
+            raise OSError("git stdout pipe was not created")
+        while True:
+            if time.monotonic() > deadline:
+                raise subprocess.TimeoutExpired(tuple(command), timeout_seconds)
+            remaining = max_output_bytes - total
+            chunk = stdout.read(min(65_536, max(1, remaining + 1)))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_output_bytes:
+                raise _GitOutputLimitExceeded
+            chunks.append(chunk)
+        wait_timeout = max(0.001, deadline - time.monotonic())
+        returncode = process.wait(timeout=wait_timeout)
+        stderr = stderr_capture.finish()
+        if returncode != 0:
+            raise _GitProcessFailed(returncode, stderr)
+        return b"".join(chunks)
+    finally:
+        if process is not None:
+            _terminate_git_process(process)
+        if stdout is not None:
+            stdout.close()
+        stderr_capture.abort()
+
+
+def _iter_git_nul_records_process(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    env: Mapping[str, str],
+    timeout_seconds: float,
+    max_record_bytes: int,
+    consume_record: Callable[[int], None],
+    consume_bytes: Callable[[int], None] | None = None,
+    chunk_bytes: int = 65_536,
+) -> Iterator[bytes]:
+    stderr_capture = _BoundedStderrCapture()
+    process: subprocess.Popen[bytes] | None = None
+    stdout = None
+    pending = bytearray()
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        process = subprocess.Popen(
+            tuple(command),
+            cwd=cwd,
+            env=dict(env),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=stderr_capture.write_fd,
+            close_fds=True,
+        )
+        stderr_capture.child_started()
+        stdout = process.stdout
+        if stdout is None:
+            raise OSError("git stdout pipe was not created")
+        while True:
+            if time.monotonic() > deadline:
+                raise subprocess.TimeoutExpired(tuple(command), timeout_seconds)
+            chunk = stdout.read(max(1, min(chunk_bytes, 65_536)))
+            if not chunk:
+                break
+            if consume_bytes is not None:
+                consume_bytes(len(chunk))
+            offset = 0
+            while offset < len(chunk):
+                terminator = chunk.find(b"\0", offset)
+                if terminator < 0:
+                    pending.extend(chunk[offset:])
+                    if len(pending) > max_record_bytes:
+                        raise CodingWorkspaceError("coding_analysis_snapshot_limit_exceeded")
+                    break
+                pending.extend(chunk[offset:terminator])
+                if len(pending) > max_record_bytes:
+                    raise CodingWorkspaceError("coding_analysis_snapshot_limit_exceeded")
+                record_size = len(pending) + 1
+                consume_record(record_size)
+                yield bytes(pending)
+                pending.clear()
+                offset = terminator + 1
+        if pending:
+            raise CodingWorkspaceError("coding_analysis_snapshot_failed")
+        wait_timeout = max(0.001, deadline - time.monotonic())
+        returncode = process.wait(timeout=wait_timeout)
+        stderr = stderr_capture.finish()
+        if returncode != 0:
+            raise _GitProcessFailed(returncode, stderr)
+    finally:
+        if process is not None:
+            _terminate_git_process(process)
+        if stdout is not None:
+            stdout.close()
+        stderr_capture.abort()
+
+
+def _detect_git_object_format(repository: Path, env: Mapping[str, str]) -> str:
+    try:
+        output = _run_git_bytes_process(
+            ("git", "-C", str(repository), "rev-parse", "--show-object-format"),
+            cwd=repository,
+            env=env,
+            timeout_seconds=20.0,
+            max_output_bytes=16,
+        )
+        object_format = output.decode("ascii").strip()
+    except (OSError, UnicodeDecodeError, subprocess.TimeoutExpired, _GitProcessFailed, _GitOutputLimitExceeded) as exc:
+        raise CodingWorkspaceError("coding_analysis_snapshot_failed") from exc
+    if object_format not in {"sha1", "sha256"}:
+        raise CodingWorkspaceError("coding_analysis_snapshot_failed")
+    return object_format
+
+
+def _initialize_isolated_git_dir(git_dir: Path, object_format: str) -> None:
+    if object_format not in {"sha1", "sha256"}:
+        raise CodingWorkspaceError("coding_analysis_snapshot_failed")
+    (git_dir / "refs" / "heads").mkdir(parents=True, exist_ok=True)
+    (git_dir / "objects" / "info").mkdir(parents=True, exist_ok=True)
+    (git_dir / "objects" / "pack").mkdir(parents=True, exist_ok=True)
+    (git_dir / "HEAD").write_text("ref: refs/heads/analysis\n", encoding="ascii")
+    repository_format = "1" if object_format == "sha256" else "0"
+    extensions = "[extensions]\n\tobjectFormat = sha256\n" if object_format == "sha256" else ""
+    (git_dir / "config").write_text(
+        "[core]\n"
+        f"\trepositoryformatversion = {repository_format}\n"
+        "\tbare = true\n"
+        f"{extensions}",
+        encoding="ascii",
+    )
+
+
+@dataclass(frozen=True)
+class _HierarchicalReaperEntry:
+    kind: str
+    workspace: Path
+    path: Path
+
+
+class _HierarchicalReaperTraversal:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        child_directories: Sequence[tuple[str, str]],
+    ) -> None:
+        self.root = root
+        self.child_directories = tuple(child_directories)
+        self.current_workspace: Path | None = None
+        self._root_iterator: os.ScandirIterator[str] | None = None
+        self._child_iterator: os.ScandirIterator[str] | None = None
+        self._child_root: Path | None = None
+        self._child_phase = 0
+        self._workspace_started = False
+        self._exhausted = False
+
+    @property
+    def active_paths(self) -> tuple[Path, ...]:
+        paths = [self.root]
+        if self.current_workspace is not None:
+            paths.append(self.current_workspace)
+        if self._child_root is not None:
+            paths.append(self._child_root)
+        return tuple(paths)
+
+    @property
+    def exhausted(self) -> bool:
+        return self._exhausted
+
+    def _close_child(self) -> None:
+        if self._child_iterator is not None:
+            self._child_iterator.close()
+        self._child_iterator = None
+        self._child_root = None
+
+    def _clear_workspace(self) -> None:
+        self._close_child()
+        self.current_workspace = None
+        self._child_phase = 0
+        self._workspace_started = False
+
+    def skip_current_workspace(self) -> None:
+        self._clear_workspace()
+
+    def next_entry(self) -> _HierarchicalReaperEntry | None:
+        while True:
+            if self.current_workspace is None:
+                if self._exhausted:
+                    return None
+                if self._root_iterator is None:
+                    try:
+                        self._root_iterator = os.scandir(self.root)
+                    except (FileNotFoundError, NotADirectoryError):
+                        self._exhausted = True
+                        return None
+                try:
+                    root_entry = next(self._root_iterator)
+                except StopIteration:
+                    self._root_iterator.close()
+                    self._root_iterator = None
+                    self._exhausted = True
+                    return None
+                except OSError:
+                    self.close()
+                    return None
+                root_path = Path(root_entry.path)
+                try:
+                    is_directory = root_entry.is_dir(follow_symlinks=False)
+                except OSError:
+                    return _HierarchicalReaperEntry("root", root_path, root_path)
+                if not is_directory:
+                    return _HierarchicalReaperEntry("root", root_path, root_path)
+                if root_path.name.startswith(_REAPER_TOMBSTONE_PREFIX):
+                    return _HierarchicalReaperEntry("tombstone", root_path, root_path)
+                self.current_workspace = root_path
+                self._child_phase = 0
+                self._workspace_started = False
+            workspace = self.current_workspace
+            if not self._workspace_started:
+                self._workspace_started = True
+                return _HierarchicalReaperEntry("workspace_start", workspace, workspace)
+            while self._child_phase < len(self.child_directories):
+                kind, relative_root = self.child_directories[self._child_phase]
+                if self._child_iterator is None:
+                    child_root = workspace if relative_root == "." else workspace / relative_root
+                    try:
+                        self._child_iterator = os.scandir(child_root)
+                        self._child_root = child_root
+                    except (FileNotFoundError, NotADirectoryError):
+                        self._child_phase += 1
+                        continue
+                try:
+                    child_entry = next(self._child_iterator)
+                except StopIteration:
+                    self._close_child()
+                    self._child_phase += 1
+                    continue
+                except OSError:
+                    self._clear_workspace()
+                    return _HierarchicalReaperEntry("workspace_missing", workspace, workspace)
+                return _HierarchicalReaperEntry(kind, workspace, Path(child_entry.path))
+            completed = workspace
+            self._clear_workspace()
+            return _HierarchicalReaperEntry("workspace", completed, completed)
+
+    def drop_under(self, path: Path) -> None:
+        path = path.resolve(strict=False)
+        workspace = self.current_workspace
+        if workspace is not None:
+            resolved_workspace = workspace.resolve(strict=False)
+            if resolved_workspace == path or resolved_workspace.is_relative_to(path):
+                self._clear_workspace()
+            elif self._child_root is not None:
+                child_root = self._child_root.resolve(strict=False)
+                if child_root == path or child_root.is_relative_to(path):
+                    self._close_child()
+        resolved_root = self.root.resolve(strict=False)
+        if resolved_root == path or resolved_root.is_relative_to(path):
+            self.close()
+
+    def restart(self) -> None:
+        self.close()
+        self._exhausted = False
+
+    def close(self) -> None:
+        self._clear_workspace()
+        if self._root_iterator is not None:
+            self._root_iterator.close()
+        self._root_iterator = None
+        self._exhausted = True
+
+
+class _IncrementalTombstoneDeletion:
+    def __init__(self, tombstone_root: Path) -> None:
+        self.tombstone_root = tombstone_root
+        self._current_directory = tombstone_root
+        self._iterator: os.ScandirIterator[str] | None = None
+        self.done = not tombstone_root.exists()
+
+    @classmethod
+    def rename(cls, source: Path) -> _IncrementalTombstoneDeletion:
+        for attempt in range(8):
+            tombstone = source.with_name(
+                f"{_REAPER_TOMBSTONE_PREFIX}{source.name}-{os.getpid()}-{time.monotonic_ns()}-{attempt}"
+            )
+            try:
+                os.replace(source, tombstone)
+                return cls(tombstone)
+            except FileExistsError:
+                continue
+        raise CodingWorkspaceError("coding_analysis_snapshot_failed")
+
+    @classmethod
+    def from_existing(cls, tombstone: Path) -> _IncrementalTombstoneDeletion:
+        return cls(tombstone)
+
+    def _close_iterator(self) -> None:
+        if self._iterator is not None:
+            self._iterator.close()
+        self._iterator = None
+
+    def step(self, *, max_entries: int) -> int:
+        consumed = 0
+        while not self.done and consumed < max_entries:
+            if self._iterator is None:
+                try:
+                    self._current_directory.chmod(0o700)
+                    self._iterator = os.scandir(self._current_directory)
+                except (FileNotFoundError, NotADirectoryError):
+                    if self._current_directory == self.tombstone_root:
+                        self.done = True
+                    else:
+                        self._current_directory = self._current_directory.parent
+                    continue
+            try:
+                entry = next(self._iterator)
+            except StopIteration:
+                self._close_iterator()
+                current = self._current_directory
+                try:
+                    current.rmdir()
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    continue
+                consumed += 1
+                if current == self.tombstone_root:
+                    self.done = True
+                else:
+                    self._current_directory = current.parent
+                continue
+            consumed += 1
+            entry_path = Path(entry.path)
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    self._close_iterator()
+                    self._current_directory = entry_path
+                else:
+                    entry_path.unlink(missing_ok=True)
+            except FileNotFoundError:
+                continue
+        return consumed
+
+    def close(self) -> None:
+        self._close_iterator()
 
 def _iter_nul_records(payload: bytes) -> Iterator[bytes]:
     start = 0
