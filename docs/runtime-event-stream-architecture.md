@@ -278,3 +278,15 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
 - 合法 respond 先原子冻结最多 12 条 findings 的有界 repair context，并使旧 patch、validation、review 与 integration authorization 失效；随后必须依次经过独立 checkpoint 节点 `consume_review_repair_budget`、`consume_review_repair_context`，才可把该 context 一次性投影给既有 `inspect_and_draft`。review repair 固定最多两轮且与 validation repair budget 独立；第三次 respond 不调用模型、不产生 patch，进入 exhausted terminal。
 - 新 proposal 不能复用旧授权，必须重新执行 proposal validation、patch approval、apply、deterministic validation、final snapshot、只读 review 与 review decision。累计 approved path inventory 在 mutation 前与受信 live workspace 精确复核，mutation 后只允许在旧 inventory 与当前批准 proposal paths 的并集中安全收敛；reviewer 仍只持有 snapshot-bound read Tools，不获得 patch、validation、commit、merge 或 approval authority。
 - respond 后不再需要的 validation/review snapshot lease 必须确定性、幂等释放；释放失败只记录 `cleanup_pending` 供既有 owner reaper 收敛，不掩盖原 decision/resume 错误。START、resume 和 non-terminal checkpoint 在任何 workspace/apply side effect 前校验 repair count/history lineage、一次性 context、互斥 authorization channel、path inventory 与 workspace/digest/schema/identity/permission binding；stale、orphaned 或恶意组合均 fail closed。
+
+### Stage 5D final review repair invariants
+
+Stage 5D 的 review repair checkpoint 必须绑定完整、可重建且不可变的决策来源，而不是只绑定 finding ID。`CodingReviewRepairContext` 同时冻结 canonical findings projection digest、context digest，以及 `workspace_ref`、`base_commit`、generation、snapshot ref/schema/timestamps、tree digest、workspace diff digest、patch digest、validation evidence digest、report digest 和 response digest；history attempt 必须绑定该 context digest。任一 report、projection、history 或 workspace lineage 漂移均 fail closed。
+
+在消费 repair budget、消费 repair context 和向 inspect model 投影上下文前，Runtime 必须从 live workspace 重新 materialize immutable snapshot，并与冻结的 tree/workspace-diff/content identity 对照；仅检查 checkpoint state 或路径清单不足以授权 model call 或 budget side effect。临时复核 lease 在比较后释放，cleanup 失败只记录 `cleanup_pending`，不得替换原业务结论。`legacy_v1` 兼容只允许既有的 schema materialization 差异，不放宽 content identity。
+
+repair patch apply 前，live dirty paths 必须是上一轮 approved inventory 的子集，因此允许某个先前路径已经恢复到 base 后成为 ghost inventory；任何 live 新增未授权路径仍必须在 apply side effect 前拒绝。apply 后的实际 dirty paths 必须收敛为“上一轮 inventory 与当前 approved proposal paths”并集的子集，并以 live inventory 覆盖 checkpoint。
+
+repair validator 按阶段校验 authorization channel：pending 和 projection checkpoint 不允许残留 current review、integration 或 patch approval channel；未 apply 的 active proposal 只允许与 latest `proposed` history 一致的唯一 patch authorization；已 apply 后才允许完整、由既有 review/integration validator 继续认证的 current review 或 integration channel。单个孤立字段、伪造 approval 或跨阶段混合状态一律 fail closed；明确合法的 consumed canonical projection checkpoint 必须可重放。
+
+所有含 review repair history 的 terminal 都必须把 latest attempt 终结为 `terminal` 或 `exhausted`，并原子清除 active status、context 和 projection。`exhausted` 还必须保留最终 canonical review report、decision summary 与 validation evidence 供审计，并在 terminal cleanup 中释放不再需要的 snapshot lease；非 exhausted 终态不得把旧 source report 重新投影成当前 public review report。
