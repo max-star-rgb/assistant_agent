@@ -8,11 +8,14 @@ from typing import Any
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
     HumanInTheLoopMiddleware,
+    ModelCallLimitMiddleware,
     ModelRequest,
     SummarizationMiddleware,
+    ToolCallLimitMiddleware,
     ToolRetryMiddleware,
     dynamic_prompt,
 )
+from langchain.agents.structured_output import ToolStrategy
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     ModelResponse,
@@ -34,7 +37,7 @@ from assistant_agent.media.visual_perception.history_probe import (
     VisualObservationHistoryProbe,
 )
 from assistant_agent.native_agent.state import FastAgentState
-from assistant_agent.native_agent.models import PlanningAuthorizationEnvelope
+from assistant_agent.native_agent.models import WorkerResultSchema
 from assistant_agent.native_agent.runtime_facts import (
     TrustedRuntimeFacts,
     trusted_runtime_facts_message,
@@ -43,14 +46,7 @@ from assistant_agent.tools.ids import LIVE_VIEW_INSPECT_TOOL_NAME
 from assistant_agent.native_agent.conditional_tool_exposure import (
     ConditionalToolExposureMiddleware,
 )
-from assistant_agent.native_agent.planning_phase import (
-    PlanningPhaseMiddleware,
-    shared_response_format,
-)
-from assistant_agent.native_agent.planning_budget import (
-    PhaseBudgetMiddleware,
-    PlanningBudgetPolicy,
-)
+from assistant_agent.native_agent.planning_worker import PlanningWorkerMiddleware
 from assistant_agent.native_agent.tool_exposure import (
     ProgressiveToolExposureMiddleware,
     discoverable_skill_descriptors,
@@ -70,7 +66,8 @@ def build_fast_agent(
     model: BaseChatModel,
     tools: Sequence[BaseTool],
     *,
-    budget_policy: PlanningBudgetPolicy | None = None,
+    model_call_limit: int = 8,
+    tool_call_limit: int = 8,
     context_window_tokens: int = 128_000,
     compaction_trigger_ratio: float = 0.75,
     compaction_target_ratio: float = 0.15,
@@ -87,25 +84,21 @@ def build_fast_agent(
         raise ValueError("context window must contain at least 100 tokens")
     if not 0 < compaction_target_ratio < compaction_trigger_ratio <= 1:
         raise ValueError("compaction ratios must satisfy 0 < target < trigger <= 1")
-    resolved_skill_catalog = skill_catalog or load_repo_skill_descriptors(
-        default_repo_root()
+    resolved_skill_catalog = (
+        skill_catalog
+        if skill_catalog is not None
+        else load_repo_skill_descriptors(default_repo_root())
     )
-    resolved_budget_policy = budget_policy or PlanningBudgetPolicy.from_base(8)
+    if model_call_limit < 1 or tool_call_limit < 1:
+        raise ValueError("agent call limits must be positive")
     skill_index = discoverable_skill_descriptors(resolved_skill_catalog)
 
     @dynamic_prompt
     def assistant_prompt(request: ModelRequest[AssistantRunContext]) -> str:
-        raw_envelope = request.state.get("authorization_envelope")
-        authorization_skill_ids = (
-            PlanningAuthorizationEnvelope.model_validate(raw_envelope).skill_ids
-            if raw_envelope is not None
-            else None
-        )
         return render_assistant_system_prompt(
             request.runtime.context,
             skill_descriptors=skill_index,
             active_skill_ids=tuple(request.state.get("active_skill_ids", ())),
-            authorization_skill_ids=authorization_skill_ids,
         )
 
     read_tool_names = _retryable_read_tool_names(tools)
@@ -120,15 +113,13 @@ def build_fast_agent(
     middleware = [
         assistant_prompt,
         ProgressiveToolExposureMiddleware(resolved_skill_catalog),
-        PlanningPhaseMiddleware(),
+        PlanningWorkerMiddleware(),
         ConditionalToolExposureMiddleware(
             visual_history_probe,
             live_view_resolver,
         ),
-        PhaseBudgetMiddleware(
-            resolved_budget_policy,
-            business_tool_names=frozenset(tool.name for tool in tools),
-        ),
+        ModelCallLimitMiddleware(run_limit=model_call_limit, exit_behavior="end"),
+        ToolCallLimitMiddleware(run_limit=tool_call_limit, exit_behavior="end"),
     ]
     tool_retry_middleware = (
         ToolRetryMiddleware(
@@ -174,7 +165,7 @@ def build_fast_agent(
         state_schema=state_schema,
         context_schema=AssistantRunContext,
         middleware=middleware,
-        response_format=shared_response_format(),
+        response_format=ToolStrategy(WorkerResultSchema),
         name="AssistantFastAgent",
     )
 
@@ -294,20 +285,8 @@ def render_assistant_system_prompt(
     *,
     skill_descriptors: Sequence[SkillDescriptor] = (),
     active_skill_ids: Sequence[str] = (),
-    authorization_skill_ids: Sequence[str] | None = None,
 ) -> str:
     """Render concise instructions that directly affect model decisions."""
-
-    if authorization_skill_ids is not None:
-        authorized = frozenset(authorization_skill_ids)
-        skill_descriptors = tuple(
-            descriptor
-            for descriptor in skill_descriptors
-            if descriptor.name in authorized
-        )
-        active_skill_ids = tuple(
-            skill_id for skill_id in active_skill_ids if skill_id in authorized
-        )
 
     skill_lines = "\n".join(
         f"- {descriptor.name}：{descriptor.description}"
@@ -317,7 +296,7 @@ def render_assistant_system_prompt(
         "\n\n可按需加载的专业流程：\n"
         f"{skill_lines}\n"
         "当请求明确匹配其中某项时，必须先调用 load_skill 阅读完整说明；"
-        "业务工具的可见范围由系统根据已加载 Skill 和当前阶段确定，planner 只能把可见能力委派给 worker；"
+        "业务工具的可见范围由系统根据已加载 Skill 和当前运行角色确定；"
         "不得用模型原生联网搜索替代该 Skill 明确要求的业务工具。"
         if skill_lines
         else ""

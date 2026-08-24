@@ -1,6 +1,6 @@
 # LangGraph-native 可观测性
 
-最后更新：2026-08-19
+最后更新：2026-08-24
 
 ## Authority contract
 
@@ -15,7 +15,7 @@
 
 ## 生产 tracing
 
-`assistant-native-v2` 直接依赖 LangChain/LangGraph callback。Agent Server、父图、子图、node、LLM 与 Tool 的
+`assistant-native-v3` 直接依赖 LangChain/LangGraph callback。Agent Server、父图、子图、node、LLM 与 Tool 的
 实际执行树由 LangSmith native tracing 观察；生产 composition 不创建 `ProductEventProjector`、canonical
 run tree、JSONL lifecycle shadow tree 或 OTel 重建层。
 

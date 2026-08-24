@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from typing import Any
 
@@ -11,6 +12,7 @@ from langchain_core.messages import (
     AIMessageChunk,
     AnyMessage,
     HumanMessage,
+    SystemMessage,
 )
 from langchain_core.outputs import (
     ChatGeneration,
@@ -107,7 +109,10 @@ class MockAssistantChatModel(BaseChatModel):
         return self.bind(tools=normalized, tool_choice=tool_choice, **kwargs)
 
     def _response_message(self, messages: list[AnyMessage], **kwargs: Any) -> AIMessage:
-        structured = _mock_structured_tool_call(kwargs.get("tools"))
+        supervisor = _mock_planning_supervisor_response(messages, kwargs.get("tools"))
+        if supervisor is not None:
+            return supervisor
+        structured = _mock_structured_tool_call(kwargs.get("tools"), messages)
         if structured is not None and kwargs.get("tool_choice") == "any":
             name, arguments = structured
             return AIMessage(
@@ -212,6 +217,12 @@ def coding_analysis_model_view(model: BaseChatModel) -> BaseChatModel:
     return model
 
 
+def planning_supervisor_model_view(model: BaseChatModel) -> BaseChatModel:
+    """Return a Supervisor view with provider-native search disabled."""
+
+    return coding_analysis_model_view(model)
+
+
 def coding_analysis_model_settings(model: BaseChatModel) -> dict[str, Any]:
     """Return protocol-native request settings for the fixed offline profile."""
 
@@ -253,7 +264,10 @@ def _last_human_text(messages: list[AnyMessage]) -> str:
     return ""
 
 
-def _mock_structured_tool_call(tools: Any) -> tuple[str, dict[str, Any]] | None:
+def _mock_structured_tool_call(
+    tools: Any,
+    messages: Sequence[AnyMessage],
+) -> tuple[str, dict[str, Any]] | None:
     if not isinstance(tools, list):
         return None
     for item in tools:
@@ -269,30 +283,111 @@ def _mock_structured_tool_call(tools: Any) -> tuple[str, dict[str, Any]] | None:
                 "findings": [],
                 "covered_paths": [],
             }
-        if name == "NativePlanProposal":
+        if name == "WorkerResult":
+            todo_id = "answer"
+            try:
+                payload = json.loads(_last_human_text(list(messages)))
+                if isinstance(payload, Mapping) and isinstance(payload.get("todo_id"), str):
+                    todo_id = payload["todo_id"]
+            except (TypeError, ValueError):
+                pass
             return name, {
-                "schema_version": "native_plan_v2",
-                "nodes": [
-                    {
-                        "node_id": "answer",
-                        "objective": "完成用户目标并给出可靠答案",
-                        "depends_on": [],
-                    }
-                ],
-                "deliverables": [
-                    {
-                        "deliverable_id": "answer",
-                        "description": "形成最终回答",
-                        "producer_node_ids": ["answer"],
-                    }
-                ],
-            }
-        if name == "WorkerCompletion":
-            return name, {
-                "status": "completed",
-                "content": "mock worker completion",
+                "todo_id": todo_id,
+                "status": "succeeded",
+                "summary": "mock worker completion",
             }
     return None
+
+
+def _mock_planning_supervisor_response(
+    messages: Sequence[AnyMessage],
+    tools: Any,
+) -> AIMessage | None:
+    names = _mock_tool_names(tools)
+    if not {"write_todos", "task"} <= names or "WorkerResult" in names:
+        return None
+    marker = "当前 planning working memory（只读 JSON）：\n"
+    state: dict[str, Any] = {"todos": [], "worker_results": {}}
+    for message in messages:
+        if not isinstance(message, SystemMessage) or not isinstance(message.content, str):
+            continue
+        if marker not in message.content:
+            continue
+        try:
+            candidate = json.loads(message.content.split(marker, 1)[1])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(candidate, dict):
+            state = candidate
+        break
+    todos = state.get("todos") if isinstance(state.get("todos"), list) else []
+    results = (
+        state.get("worker_results")
+        if isinstance(state.get("worker_results"), Mapping)
+        else {}
+    )
+    if not todos:
+        content = _last_human_text(list(messages)).strip() or "mock planning task"
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_todos",
+                    "args": {
+                        "todos": [
+                            {
+                                "todo_id": "answer",
+                                "content": content[:4_000],
+                                "status": "pending",
+                            }
+                        ]
+                    },
+                    "id": "mock-write-todos",
+                    "type": "tool_call",
+                }
+            ],
+        )
+    pending_ids = [
+        item.get("todo_id")
+        for item in todos
+        if isinstance(item, Mapping)
+        and item.get("status") == "pending"
+        and isinstance(item.get("todo_id"), str)
+        and item.get("todo_id") not in results
+    ]
+    if pending_ids:
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "task",
+                    "args": {"todo_id": todo_id},
+                    "id": f"mock-task-{todo_id}",
+                    "type": "tool_call",
+                }
+                for todo_id in pending_ids
+            ],
+        )
+    summaries = [
+        str(result.get("summary"))
+        for result in results.values()
+        if isinstance(result, Mapping) and result.get("summary")
+    ]
+    return AIMessage(
+        content=f"已完成 planning mock：{'；'.join(summaries) or '无可执行结果'}"
+    )
+
+
+def _mock_tool_names(tools: Any) -> set[str]:
+    if not isinstance(tools, list):
+        return set()
+    return {
+        name
+        for item in tools
+        if isinstance(item, Mapping)
+        and isinstance((function := item.get("function")), Mapping)
+        and isinstance((name := function.get("name")), str)
+    }
 
 
 __all__ = [
@@ -301,4 +396,5 @@ __all__ = [
     "coding_analysis_model_settings",
     "coding_analysis_model_view",
     "create_chat_model",
+    "planning_supervisor_model_view",
 ]

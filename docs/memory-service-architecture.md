@@ -1,6 +1,6 @@
 # LangGraph-native 长期记忆架构
 
-最后更新：2026-08-18
+最后更新：2026-08-24
 
 ## Authority contract
 
@@ -18,7 +18,7 @@
 Memory 是领域和 backend protocol 边界，不是必须整体嵌入主图的 compiled subgraph。实际编译拓扑拆成：
 
 ```text
-assistant-native-v2: capture_trusted_runtime_facts -> memory_recall -> fast/planning -> refresh delayed memory -> END
+assistant-native-v3: capture_trusted_runtime_facts -> memory_recall -> fast/planning -> refresh delayed memory -> END
 assistant-memory-v1: memory_extract -> END
 ```
 
@@ -77,7 +77,7 @@ messages state、checkpoint 或 summarization。Memory 不能覆盖当前请求�
 操作参数或 Tool schema。
 
 旧 `MemoryNodeBundle`、commit ledger 与 time-travel Memory 兼容层已随旧 Runtime 删除。Mem0 HTTP client 与
-identity adapter 继续由当前最小 `MemoryBackend` 复用；旧 checkpoint 不迁移进 `assistant-native-v2`。
+identity adapter 继续由当前最小 `MemoryBackend` 复用；旧 checkpoint 不迁移进 `assistant-native-v3`。
 
 ## 验证
 

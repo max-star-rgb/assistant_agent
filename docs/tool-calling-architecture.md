@@ -30,32 +30,18 @@ fast agent 子图当前执行的 state/checkpoint namespace 内 `active_skill_id
 `active_skill_ids` 与窄 `skill_reference_grants` 写入 state；Tool observation/artifact 不返回 Tool 名或 capability
 grant。下一次模型调用时，独立 exposure middleware 才从 state 与 composition 注入的受信 catalog 机械派生可见
 Tool schema。Skill/reference channel 不进入父图或 Memory Graph。Tool 名只从 `skill.toml` 重新解析，不接受模型或 Tool
-artifact 声明任意 grant；该可见性层不替代具体 Tool 的身份、授权、参数和副作用校验。fast phase 在 Skill
-加载后可获得对应业务 Tool schema；planning 的 Planner phase 则始终只可调用 `load_skill` 与
-`load_skill_reference` 两个 Skill 控制 Tool，不能执行默认可见或 Skill 治理的业务 Tool。admission 与 worker phase
-都禁止 worker 调用 `load_skill`，避免 worker 扩大 Planner 冻结的 Skill 快照。worker 可显式调用
-`load_skill_reference`，但 ToolContext 只读取 scheduler 投影的既有
-`skill_reference_grants`，未投影 reference 必须 fail closed，调用本身不产生新 grant。
+artifact 声明任意 grant；该可见性层不替代具体 Tool 的身份、授权、参数和副作用校验。fast 在 Skill 加载后获得对应
+业务 Tool schema。planning Supervisor 是普通 LLM node，只绑定 `load_skill`、`load_skill_reference`、`write_todos`
+和仅用于路由的 `task` schema；前三者进入标准 `ToolNode`，`task` 不进入 ToolNode，而由 conditional edge 转成
+`Send("worker", ...)`。Supervisor 固定关闭 Provider-native search，业务联网与执行只发生在 Worker。
+`write_todos` 只能创建或改写 pending Todo；completed 状态只能由 join 根据 Worker succeeded 结果写入，模型不能
+通过 control Tool 伪造已完成执行。
 
-planning 不另建 Planner Tool executor。Planner 以 `agent_phase="planner"` 复用同一个
-`AssistantFastAgent` model→ToolNode→model loop，但 phase projection 会在每次 model call 把可执行 schema
-收窄到上述两个控制 Tool，并关闭 Provider-native search。Planner 只能通过标准 `ToolNode` 加载 Skill 正文或
-已授权 reference；业务执行从计划准入后才进入 worker。
-
-成功的 `load_skill` 通过 Tool 返回的标准 `Command(update=...)` 写入受信 `active_skill_ids` 和 reference grant；
-其模型观察与 artifact 只包含 Skill 指导、Skill/reference 标识和加载状态，不包含 Tool capability。后续 Planner
-model call 会从同一受信 catalog 将对应完整 Skill 正文加入 system prompt；独立 exposure middleware 再把当前渐进式投影中的业务
-能力转换为不可执行的有界 worker capability catalog。Planner 只用其中的 Tool 名称、effect、短用途、必填参数名和
-标准 `content|artifact` 结果通道做委派；完整 Tool schema 仅在计划准入后按节点 allowlist 与 Skill grant 的交集投影给
-worker。首次成功 admission
-只冻结该计划实际声明或使用的 Skill ID、reference ID 与 Tool name 为 checkpointed strict
-authorization envelope，而不是冻结完整 inventory；后续 generation 只允许其子集。Planner prompt/context 与
-scheduler projection 都只暴露 envelope 内 scope；replan 不再允许 `load_skill`，只有 frozen reference grant
-非空时才保留 `load_skill_reference`，capability catalog 也只列 envelope 中的 Tool。admission 对任何新增 scope
-继续 fail closed。envelope reducer
-相同 replay 幂等、冲突拒绝，且只保存标识符，不保存原始 Tool 参数或结果。scheduler 只把节点
-`required_skill_ids` 与该 envelope 的交集投影给 worker；worker 的空 Tool allowlist 为 fail closed，且不能重新调用 `load_skill` 扩权。finalizer phase 则确定性
-使用空 Tool projection，不允许任何 Tool 调用。
+成功的 `load_skill` 继续通过标准 `Command(update=...)` 写入受信 `active_skill_ids` 和 reference grant；成功
+`load_skill_reference` 的标准 `ToolMessage` 表明本轮实际读取的 reference。dispatch 只把这些已加载 Skill/reference
+投影给对应 Worker，不建立 authorization envelope、capability catalog 或节点 Tool allowlist。Worker 复用同一个
+`AssistantFastAgent`，`PlanningWorkerMiddleware` 隐藏 Skill control Tool，渐进暴露 middleware 仍按受信 Skill state
+决定业务 Tool schema；默认业务 Tool 仍按静态 inventory 可见。Todo、Worker 输出或 Tool artifact 都不能声明新 grant。
 
 媒体 Tool 使用另一条与 Skill 正交的条件暴露链。`ConditionalToolExposureMiddleware` 只过滤已经静态注册在
 `request.tools` 中的 Tool，并按 Tool metadata 的封闭 `availability` 枚举读取可信运行事实：
@@ -96,21 +82,13 @@ WebSocket 已成功完成 `callType=VIDEO` 的 control 握手，且本轮冻结�
 `live_view_inspect` 为避免重复当前画面调用而不进入 read retry 清单，但仍单独启用同一个
 `BaseTool.handle_tool_error` 边界；关键帧 capability 在暴露后失效时只返回一次 error `ToolMessage`。
 
-`PhaseBudgetMiddleware` 位于同一个 fast agent 的 model→ToolNode loop 中，按当前 phase 对 model call 与已注册
-业务 Tool call 计数。Tool 预算超限时，它不调用实际 Tool，而是为每个被阻止的 tool call 生成标准
-`ToolMessage(status="error")` 并有界结束该 phase；未超限调用仍原样进入同一个标准 `ToolNode`，继续使用官方
-`ToolRuntime` 注入、`ToolRetryMiddleware` 与 state-aware `HumanInTheLoopMiddleware`。因此预算层不是第二个
-executor，也不接管 Tool schema、身份、授权、retry、HITL 或副作用幂等。需要独立 run 上限的 Tool 在受信静态
+共享 fast/Worker `create_agent` 使用官方 `ModelCallLimitMiddleware` 与 `ToolCallLimitMiddleware` 提供 per-invocation
+安全上限，不向 planning 父 state 写 usage、reservation 或 recovery ledger。需要独立 run 上限的 Tool 在受信静态
 metadata 中声明正整数 `run_call_limit`；composition 从全部 Tool 机械构造唯一
 `PerToolCallLimitMiddleware.after_model` 节点，由一个 Tool-name→limit 映射分别计数并为超限调用生成标准 error
 `ToolMessage`，不执行被阻止的 Tool，未配置 Tool 原样放行。该策略不读取用户文本、模型参数或运行时 artifact，
 也不是全 inventory limiter。当前 `live_view_inspect` 声明 `run_call_limit=1`，避免同一个 run 重复执行昂贵实时观察；
 后续其他 Tool 可通过相同 metadata 进入同一通用节点，fast agent 装配不识别具体 Tool 名。
-
-production composition 从一个受信 base 值构造唯一 `PlanningBudgetPolicy`，phase middleware 与 planning graph
-共享该实例。planning graph 的 global model/tool/node-attempt/replan cap 通过 typed usage、wave reservation 与
-reconciliation 防止并行 worker 超卖；global/phase budget failure 只产生稳定 failure code、typed outcome 与
-controlled standard-message terminal。模型、客户端和 Tool 参数都不能提交或扩大 policy。
 
 fast agent 的最内层 `ToolProgressMiddleware` 使用官方 `ToolRuntime.stream_writer` 向原生 custom stream 发出
 每次逻辑 Tool 调用的 `started` 和 `completed|failed` 生命周期。事件只携带 `type=tool_progress`、标准
@@ -140,7 +118,7 @@ Tool 的 `artifact` 保留全部规范化 `ShoppingSearchResult`，`content` 按
 能力直接使用官方 adapter 生成的标准 Tool。MCP tool discovery 属于 worker 进程 composition，只执行一次；schema、history、state 与
 run 复用同一个 compiled graph 和 Tool 集合，实际 MCP Tool 调用仍遵循官方按调用创建 session 的行为。
 production composition 在构造 inventory 前只加载一次 repo `SkillCatalog`，并把同一实例显式注入
-`SkillLoadingPlugin`、fast agent 和 planning admission；Skill loading plugin 不在 production inventory 构造时
+`SkillLoadingPlugin`、fast agent 和 planning Supervisor/Worker；Skill loading plugin 不在 production inventory 构造时
 再次读盘。只有直接省略 catalog 的非 production fixture 保留 plugin 自行加载的兼容行为。
 高德 `amap_maps` 的驾车、公交、骑行和步行路线调用通过官方 MCP adapter 的 `tool_interceptors`
 扩展点，在成功结果中追加由受信起终点坐标确定性生成的高德 HTTPS 路线规划链接；链接不包含 API Key，
@@ -218,8 +196,8 @@ Graph，不能借由 Tool inventory 创建 commit 或 merge。
 Qwen 等模型原生联网参数属于 `BaseChatModel` 请求能力，不伪装成本地 Tool。real 模式选择 qwen 且
 `QWEN_CHAT_API_PROTOCOL=dashscope` 时，生产主链构造实现标准 LangChain `BaseChatModel` 的
 `DashScopeNativeChatModel`，使用官方 text-generation Generation API；不得静默回退到 OpenAI-compatible。
-显式选择 `openai_compatible` 时才构造 `ChatOpenAI`。planning 的 planner phase 无论全局配置如何都强制关闭
-Provider-native search；联网检索若属于计划，只能委派给准入后的 worker。
+显式选择 `openai_compatible` 时才构造 `ChatOpenAI`。planning Supervisor 无论全局配置如何都强制关闭
+Provider-native search；联网检索若属于计划，只能委派给 Worker。
 
 `QWEN_CHAT_ENABLE_SEARCH=true` 时原生请求设置 `enable_search=true`，默认使用 turbo、
 `forced_search=false`，同时设置 `enable_source=true`、`enable_citation=true` 和 `citation_format=[<number>]`。

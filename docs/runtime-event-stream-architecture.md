@@ -30,8 +30,8 @@ AssistantRootGraph
 ```
 
 `execution_mode` 是结构化输入字段，只允许 `fast|planning|coding`；省略时按公开 input schema 默认使用 `fast`，以兼容
-Studio 的标准 messages-only run。同一 `assistant-native-v2` graph 还可由 Agent Server 中固定的
-`assistant-native-v2-planning` assistant 资源提供 `assistant_execution_mode=planning` context preset；
+Studio 的标准 messages-only run。同一 `assistant-native-v3` graph 还可由 Agent Server 中固定的
+`assistant-native-v3-planning` assistant 资源提供 `assistant_execution_mode=planning` context preset；
 `execution_router` 先把该 preset 规范化进 state，因此选择该 assistant 时即使 input schema 补入 fast 也固定进入
 planning。普通 assistant 没有 preset，仍完全遵循结构化 input。路由函数不从用户文本、关键词、Tool 或 Memory
 推断模式。父图不绑定 saver，
@@ -121,104 +121,58 @@ approved changed paths 与严格 lockfile，只有 lockfile 变化才生成 depe
 表述为已观测到的用户物理位置。节点完成后快照随 checkpoint 冻结：从其后的 interrupt 恢复不会重新采集；
 从更早 checkpoint replay 并重新执行该节点时允许刷新。这与 `memory_recall` 的原生节点恢复语义一致。
 
-fast 与 planning 直接作为父图节点装配。fast 分支是 `create_agent` 编译出的 `AssistantFastAgent`，使用标准 `BaseChatModel`、`BaseTool`、`ToolRuntime`、
-messages channel 和官方 middleware，不维护项目自建 assistant/tool loop。planning 的 planner、worker 和 finalizer
-也复用这一个 compiled fast graph：分别通过 `agent_phase="planner|worker|finalizer"` 选择 model-call 投影，
-不创建独立 Agent 或模型调用链。planner phase 的可执行 Tool projection 固定收窄到 `load_skill` 与
-`load_skill_reference`，同时关闭 Provider-native search；默认可见和 Skill 治理的业务 Tool 都不能由 planner
-执行。它使用 planner system role 与严格 `NativePlanProposal` structured response，把业务工作委派给 worker。
+fast 与 planning 直接作为父图节点装配。fast 分支是 `create_agent` 编译出的唯一共享
+`AssistantFastAgent`，使用标准 `BaseChatModel`、`BaseTool`、`ToolRuntime`、messages channel 和官方
+middleware，不维护项目自建 assistant/tool loop。
 
-planning 分支是显式 `AssistantPlanningGraph`：production composition 从 `max_tool_iterations` 构造唯一
-`PlanningBudgetPolicy`，并把同一实例注入共享 fast agent 与 planning graph；该 policy 是受信进程配置，不进入
-公开 Graph input。planner 可在共享的 model→ToolNode→model loop 中调用上述 Skill 控制 Tool；成功
-`load_skill` 只加载指导正文与 reference，并通过 Tool 原生返回的 `Command(update=...)` 把 active Skill/reference
-state 交给既有 `ToolNode` 和 planning state reducer 保存；其 Tool observation/artifact 不携带 Tool capability。
-独立 exposure middleware 在后续原生 model-call hook 中按 phase 投影业务 Tool：fast phase 获得可调用 Tool schema，
-planner phase 只获得不可执行的有界 worker capability catalog，worker phase 则只在计划准入后按节点
-allowlist 与 Skill grant 的交集获得可调用 schema。capability catalog 不暴露完整参数 schema，只机械提供 Tool 名称、
-effect、短用途、必填参数名以及标准 `content|artifact` 结果通道，供 planner 进行委派和数据依赖拆分；
-未加载 Skill 时被治理的能力不出现，默认业务能力可列入 catalog，但都只能写进 worker 节点 allowlist。planner
-随后输出严格 `NativePlanProposal`，其中 deliverable 必须引用 producer node 或既有 planner evidence。本地 admission 根据
-composition 注入的静态 Tool inventory 与同一份 Skill catalog 确定性校验节点 Tool、Planner 实际激活 Skill、
-节点 Skill grant、真实 planner evidence 引用、deliverable producer/evidence 引用、节点上限、DAG 无环和依赖深度；
-校验还读取 checkpointed global usage、未 reconciliation 的 wave reservation 与同一 policy：每个候选 worker
-至少预留一次 model call 和一次 node attempt，并始终为 finalizer 再保留一次 model call 和一次 node attempt；
-最小需求超过当前剩余 graph budget 时以稳定 `insufficient_graph_budget` 拒绝，Tool 最小需求为零。该计算只按
-checkpoint state 和稳定 ID 顺序完成，不依赖并行结果 arrival 顺序。
-未知或未授权事实一律 fail closed，且不读取用户文本或内置领域规则。admission 失败时把有界错误码写入
-planning state，并由原生 conditional edge 回到同一个 planner；最多允许两次 proposal revision，第三次失败以
-有界 `NativePlanAdmissionError` 终止 run。`PlannerEvidence` channel 仅为既有 checkpoint/revision 契约保留；
-新 planner phase 不执行业务 Tool，因此不会新增业务 evidence。revision 输入只增加既有 evidence 的只读投影和错误码；
-该投影以 `trust=tool-output` 标记，JSON 在嵌入标签前转义 `<>&`，并以最终渲染字符数硬限制为 48,000。
-预算先保留稳定顺序的 evidence ID、Tool 名与状态，再有界保留 content/artifact ref，不输出半个 JSON。
-它不注入旧 planner transcript、Tool schema 或原始异常；evidence、已激活 Skill 与 reference grant 沿用原生 state
-reducer，只有候选计划被覆盖。generation 0 可在首次成功 admission 前通过 revision 修正 scope；首次成功
-admission 冻结该计划实际声明或使用的 Skill ID、reference ID 与 Tool name 为 checkpointed strict authorization
-envelope。后续 generation 只能使用它的子集，任一新增 scope 以稳定 `authorization_expansion` fail closed；planner
-prompt/context 与 scheduler projection 同时收窄到 envelope。replan 禁止再次调用 `load_skill`，只有 frozen
-reference grant 非空时才保留 `load_skill_reference`；其 worker capability catalog 也只列 envelope 内 Tool。
-checkpoint 不保存原始 Tool 参数或结果。
-成功 admission 清除错误并进入 scheduler。`Send` 按依赖分 wave 并行派发 worker。调度器根据 `depends_on` 自动把直接上游
-`WorkerResult` 组装为运行时 `dependency_results`，worker 将其作为明确的只读数据输入交给同一个 fast graph；
-该字段不是 planner 输出 schema。其 generation-aware 原生拓扑是
-`planner -> assess_planner -> admit_plan|planner|prepare_replan|controlled_finalize`，其中
-`assess_planner -> planner` 承担同一 generation 内有界的 operational retry；worker 路径为
-`scheduler -> reserve_wave_budget -> Send(worker) -> join -> reconcile_wave_budget -> assess_workers`。
-planner 和 worker 都把预期结果收敛为严格 `PlannerOutcome` / `WorkerOutcome`；明确可重试的超时、连接或临时
-HTTP 执行失败先在同一 generation 内有界 retry，业务不足、phase budget 耗尽或 operational retry 耗尽后经
-`assess_workers -> prepare_replan -> planner` 进入下一 generation。`prepare_replan` 先冻结已成功
-`WorkerResult`，新计划只能替换失败工作并显式引用 frozen result；checkpointed 单调 replacement claim ledger
-允许相同 claim replay 幂等，但拒绝 later generation 用不同 replacement 再次 claim 同一 historical node。
-scheduler 从 checkpointed generation、plan、outcome 与 frozen result 重算 ready wave，已成功 worker不重放。
-`GraphBubbleUp` / interrupt / cancel、准入、鉴权与程序契约错误不进入该预期失败边界，仍保持 LangGraph 原生
-传播。planner、worker、finalizer 在 operational 分类与 sanitizer 前使用同一 cause/context chain 检查并原样
-抛出 control-flow；checkpoint 不写入外层 wrapper marker。checkpoint 中出现没有 live exception 的
-`RecoveryDecision(action="propagate")` 属于契约错误，明确 fail closed，不进入 controlled finalizer。零节点 plan 不派发 worker，沿
-`scheduler -> reserve_wave_budget -> finalize` 完成；`reserve_wave_budget` 的条件路线还会依据 ready wave 与预算
-进入 worker 或 `controlled_finalize`。worker 只能继承节点 required Skill 与
-Planner 实际快照的交集；admission 禁止节点把
-`load_skill` 放入 worker Tool allowlist，worker phase 也确定性过滤该 Tool。显式允许 `load_skill_reference` 时，Tool
-只能读取 scheduler 投影的既有 `skill_reference_grants`，不能扩大 Skill 或 reference grant。全部节点完成后，
-finalizer 仍调用共享 `AssistantFastAgent`，但 `agent_phase="finalizer"` 确定性清空 Tool 与 structured response，
-根据原始请求、deliverables、planner evidence 和按 plan 排序的 worker results 返回标准 `AIMessage`，不机械拼接输出。
-finalizer 的 operational failure 只有有预算时才有界重试；模型终态不合约或 planner/worker/global recovery
-耗尽时进入确定性 `controlled_finalize`，只用稳定 failure code、deliverable ID、generation 与冻结结果生成
-标准 `AIMessage`，不暴露原始异常或另建产品终态。
-worker 的直接依赖与所引用 PlannerEvidence 使用最终转义字符计数的 48,000 字符单消息预算；
-finalizer 的最新请求、deliverables、全部 PlannerEvidence 和按 plan 排序的 WorkerResult 使用 96,000 字符单消息预算。
-两者先保留 ID、状态、来源与 artifact ref，再确定性公平分配 content 字符并在 JSON 中标记裁剪；
-始终生成完整 JSON，不依赖 `SummarizationMiddleware` 压缩巨型单条 `HumanMessage`。兼容 checkpoint 中既有的
-Planner Tool artifact 在读取时按深度 8、最多 512 个 mapping/sequence item 增量遍历，检测循环并过滤 raw/unsafe key；
-`structured_content` 最终 JSON 不超过 50,000 bytes，超限或未知对象只产生 JSON-safe truncation marker，
-在边界内遇到的受信 `output_ref` / `artifact_ref` 仍单独保留。
-planning 不创建第二套 Runtime，也不重复父图 Memory 节点。当前不维护
-verifier、repair ledger、acceptance contract 或 artifact provenance；deliverable 当前只做 producer/evidence
-引用准入，不建立运行期 artifact binding。只有真实产品需求出现后才增加。
+planning 分支是显式 `AssistantPlanningGraph`，其运行时角色只有：
+
+```text
+supervisor -> controls -> supervisor
+supervisor -> Send(worker) * N -> join -> supervisor
+supervisor -> END
+```
+
+Supervisor 是直接绑定 `load_skill`、`load_skill_reference`、`write_todos` 和 `task` 的普通 LLM node，
+不是 `create_agent`。一次 `AIMessage` 只能包含一个 control call、一个或多个纯 `task(todo_id)` call，或
+不含 ToolCall 的最终回答；混合、未知、重复、指向不存在或 completed Todo 的调用均 fail closed。三个 control
+Tool 进入标准 `ToolNode`；`task` 只是模型可见的路由 schema，不进入 ToolNode。Supervisor 固定关闭
+Provider-native search。
+Supervisor 每次模型调用只投影经过官方 token-aware trimming 的父级自然对话，不回灌 planning control/task
+transcript；Todo、Worker result、冻结 Memory/TrustedRuntimeFacts、已加载 Skill 与成功读取的 reference 正文通过
+受信 catalog 机械重读后进入单独的有界上下文。
+
+Todo 只有 `todo_id/content/status=pending|completed`，是 Supervisor working memory，不是依赖 DAG。
+一次多个 task call 由 conditional edge 转换为同一 super-step 的多个 `Send("worker", ...)`。Worker 是共享
+`AssistantFastAgent` 的 scoped invocation：`agent_phase="worker"` 时隐藏 Skill control Tool，保留静态业务
+Tool、渐进 Skill exposure、read retry、per-Tool limit、summarization、官方 model/tool call limit 与 planning
+非 read HITL，并要求严格 `WorkerResult(todo_id,status=succeeded|blocked,summary)`。每个 Worker 只获得当前 Todo、
+本轮已加载的必要 Skill/reference、冻结 Memory/TrustedRuntimeFacts 和私有 messages；父 conversation 与 Worker
+业务 Tool transcript 不写回父 messages。
+
+join 不做调度决策，只在同一 wave 完整成功后合并 `WorkerResult`：succeeded 将 Todo 标为 completed，blocked
+保持 pending；每个结果以原 task `tool_call_id` 生成父级标准 `ToolMessage`，随后返回 Supervisor。Supervisor
+自行决定 retry、改写未来 Todo 或 finish。business blocked 是正常数据；provider timeout、连接错误、control-flow
+和其他 operational exception 原样传播，LangGraph checkpoint/pending writes 在 resume 时只重跑失败分支，join
+不会基于半提交 wave 执行。planning 不维护 Planner、Scheduler、Finalizer、admission、authorization envelope、
+generation/attempt、budget reservation 或 recovery ledger，也不创建第二套 Runtime。
+
 
 ## State 与恢复
 
-生产 state channel、checkpoint 和 reducer 调度全部使用 LangGraph 原生能力。生产 state 以
-`AgentState.messages` 的 `add_messages` reducer 为主；planning 并行 attempt 使用 canonical execution ID
-映射累积 typed `WorkerOutcome`，成功 `WorkerResult` 再按 work item ID 单调冻结。父图只增加：
+生产 state channel、checkpoint 和 reducer 调度全部使用 LangGraph 原生能力。父图继续以标准
+`AgentState.messages` / `add_messages` 为事实源，并只增加 `execution_mode`、冻结的
+`memory_context/memory_status` 与 `trusted_runtime_facts`。fast agent 子图使用成功 `load_skill` 产生的
+`active_skill_ids` 和窄 `skill_reference_grants`。
 
-- `execution_mode`；
-- 冻结的 `memory_context` 与 `memory_status`；
-- 冻结的 `trusted_runtime_facts`；
-
-fast agent 子图才增加由成功 `load_skill` 标准 Tool 结果产生的 `active_skill_ids`
-与窄 `skill_reference_grants`；这两个 channel 只在子图的 model→tool→model 循环中累积，不进入
-父图节点、父图输出或独立 Memory Graph。planning 子图内部另外持有 plan、worker result，
-并在 `Send` 派发时从直接依赖结果派生窄 `dependency_results` worker 输入。
-其 `plan_candidate`、`admission_error` 与 `revision_count` 只服务原生 revision edge；recovery 另外保存有界的
-`plan_generation`、typed planner/worker outcome、budget usage、wave reservation、recovery decision/history/context、
-首次成功 admission 冻结的 strict authorization envelope、单调 replacement claim ledger、
-`frozen_worker_results` 与 superseded ID，不建立数据库、队列、checkpoint adapter 或 shadow state。恢复后
-scheduler 只从这些 checkpointed typed channels 重算下一 wave，不保存平行 ready/completed channel；冻结成功
-结果的 reducer 拒绝同 ID 冲突，replan/resume 都不会再次派发它。`WorkerResult.sources` 在 JsonPlus/msgpack 的 JSON list 边界
-规范化回 tuple，避免 strict Pydantic checkpoint 恢复退化为未校验构造。
-planning 的 planner、worker 与 finalizer 都读取父图传入的同一份可信事实快照，不在子图内重新采集。
-`trusted_runtime_facts` 写入 checkpoint 时保存为 JSON-safe 字典（时间为 ISO 8601 字符串），模型调用边界再校验为
-严格 Pydantic 值；它不依赖 checkpoint 对项目自定义类型的宽松 msgpack 反序列化。
+planning 子图只保存 `todos`、按 todo ID 合并的 `worker_results`、一次 wave 的 `worker_writes` 以及上述
+Skill/reference state。`write_todos` 只能创建或改写 pending Todo；completed 只能由 join 根据 succeeded result
+写入，之后不得被 `write_todos` 删除、改写或降级。pending 内容变化会清除同 ID 的旧 blocked result，避免目标与
+结果错配；succeeded result 相同 replay 幂等、不同覆盖冲突拒绝，blocked 可由后续 retry 的最新正常结果替换。
+join 使用 `Overwrite([])` 清空
+`worker_writes`。当前 Supervisor `AIMessage.tool_calls` 就是 wave 请求事实，不另存 pending task、ready set、
+execution ID、attempt、generation、reservation 或 recovery state。operational exception 不写业务失败结果，
+由 Agent Server/LangGraph 原生 checkpoint 与 pending writes 保存已成功分支。
 
 coding 子图内部的 analysis channel 是 opaque `CodingAnalysisSnapshot`、三个固定 task，以及通过 state schema
 显式声明的确定性 task-ID replacement reducer 所维护的有界 `CodingAnalysisResult`；该 reducer 在 checkpoint replay
@@ -241,15 +195,16 @@ snapshot；completed checkpoint 从上述有界 contract 恢复 decision，不�
 视觉模块生成的可信目标边界，但 JPEG、Provider client、task 和 lease 不进入 state。父图只通过标准 ToolNode
 消费视觉结果，逐帧并发、等待和晚到结果语义见视觉 authority。
 
-已完成节点直接从 frozen result 与当代 typed outcome 推导，不保存平行 completed-ID channel，也不维护
-项目自建 result/artifact runtime。Provider/Tool client、Memory backend、投递 Store、身份对象和 callback
-不写入 checkpoint。旧
-`AssistantTurnState` checkpoint 不迁移进新图；旧 assistant/thread 仅作只读历史或外围兼容，新图使用版本化
-assistant ID `assistant-native-v2`。项目创建的可运行 thread 以 metadata `assistant_graph_id` 绑定具体 graph；
-普通 v2 run/resume/stream 在创建 run 前精确验证该值。`assistant-native-v1` 或缺失 identity 的 unknown thread
-及其 checkpoint 同样只读，不能进入 v2 run/resume/replay；该 graph ID 升级没有自动 migration。历史 state、
-thread 和 stream inspection 不因此被禁止，部署阶段仍可 drain/cancel legacy run；校验函数接收调用方期望的
-graph ID，不阻止 Memory 等独立 Graph 使用自己的 thread 与版本身份。
+A-lite planning checkpoint schema 与旧 v1/v2 planning topology 不兼容，因此生产 Graph 使用版本化
+`assistant-native-v3`。Agent Server auth 按 graph-aware create 把 chat thread 的 metadata `assistant_graph_id`
+规范为 v3，同时保留独立 Memory graph identity；chat run-create 与显式 graph metadata update 以 owner + v3 identity
+过滤，旧 identity 不能通过更新伪装升级。旧 run 的 interrupt/rollback 只按 owner 授权，以便部署时 drain/cancel。
+SDK adapter 还会在 create/stream 边界复核相同 identity。v1/v2
+或缺失 identity 的 unknown thread 及其 checkpoint 只读，不能进入 v3 run/resume/replay。部署前必须 drain 或
+cancel v2 pending/interrupt run；completed 历史可 inspection，但不做 planning state migration。固定 planning
+assistant UUID 保留并改绑 v3，Studio 需要在该 assistant 下创建新 thread。校验函数仍接收调用方期望的 graph ID，
+不阻止 Memory 等独立 Graph 使用自己的 thread 与版本身份。
+
 
 完整 Tool inventory 仍静态注册给 fast `create_agent` 的 `ToolNode`；每次 model call 的可见子集由原生 middleware
 从上述 Skill 激活状态与受信 manifest 派生。该过滤不创建第二套 Tool runtime，也不改变 ToolNode 对已注册 Tool
@@ -276,18 +231,16 @@ Tool 执行通过官方 runtime stream writer 向 custom mode 发送 `tool_progr
 `stream_mode=["messages", "updates", "custom"]` 并设置 `stream_subgraphs=True`；进程内调用
 `graph.astream(...)` 时使用相同的 `stream_mode`，并设置 `subgraphs=True`。`stream_mode` 选择事件类型，subgraph
 开关决定嵌套 namespace 是否可见，两者互不替代。
-planning recovery 节点同样只通过原生 custom mode 发出 `recovery_transition`，字段固定为 `from`、`to`、
-`reason_code` 与 `plan_generation`；节点 state 变化仍由 updates/values 提供，终态仍由 messages 提供。
-Graph Studio 用于查看 graph/subgraph 执行、trace 与调试信息；其具体 UI 能力随 Studio 版本演进，不作为任意
-custom payload 的通用渲染承诺。需要完整核验恢复事件和嵌套 namespace 时，应使用上述 SDK/API 订阅。媒体
-custom route 不订阅或重解释该事件，也不建立 shadow event bus。
+A-lite 不定义 planning 专用 recovery custom event。Supervisor、controls、worker、join 的 state update 与嵌套
+Worker model/tools 事件直接使用原生 updates/messages/subgraph stream；Graph Studio 可以看到这些父节点与 Worker
+`create_agent` 子图。媒体 custom route 不订阅或重解释 planning 内部事件，也不建立 shadow event bus。
 
-`HumanInTheLoopMiddleware` 使用 state-aware `when` predicate：fast 模式自动放行；planning worker 对非 read
-Tool 在执行前触发原生 interrupt，planner 只有 Skill 加载控制 Tool。恢复使用 Agent Server/LangGraph
-`Command(resume=...)`，已完成的 Skill 加载、冻结 worker 和已结算 wave 不重放，scheduler 从 checkpoint state
-重算后续 wave。
-phase model/tool call limit 由 `PhaseBudgetMiddleware` 承担，planning graph 再以同一 policy 结算 global
-model/tool/node/replan budget；只读 Tool retry 与 summarization 继续使用官方 middleware。
+
+`HumanInTheLoopMiddleware` 使用 state-aware `when` predicate：fast 模式自动放行；planning Worker 对非 read
+业务 Tool 在执行前触发原生 interrupt，Supervisor 的 control Tool 均为 read。恢复使用 Agent Server/LangGraph
+`Command(resume=...)`，已完成 Worker 分支由 pending writes 保留，不重放。共享 fast/Worker agent 使用官方
+`ModelCallLimitMiddleware`、`ToolCallLimitMiddleware`、只读 Tool retry、summarization 与 metadata-driven
+per-Tool limiter；planning 父图不维护全局 budget ledger。
 coding patch、final review decision 和 merge approval 各自使用独立原生 interrupt；review decision 不属于 Tool
 middleware HITL，不能授权 patch apply 或 merge apply，也不能被 `unavailable` report、integration-disabled 配置或
 snapshot cleanup 自动跳过。
@@ -307,7 +260,7 @@ runner 因绑定旧 state/evidence 合同而删除，后续行为评测必须基
 ```bash
 MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
   tests/core/integration/test_runtime_lifecycle.py \
-  tests/tdd/native-high-agency-planner
+  tests/tdd/supervisor-todo-planning-alite-production
 ```
 
 ### Stage 5C final review 运行时契约（2026-08-24）

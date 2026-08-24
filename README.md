@@ -56,7 +56,7 @@ Provider profiles and external-provider configuration are documented in [docs/to
 `context/models.py` 和 `multi_agent/a2a_protocol.py`。
 
 旧外围入口仍可通过 `MULTIMODAL_AGENT_TOOL_PLUGIN_MODULES` 使用动态 Python Plugin；该机制会执行所配置
-module 的进程内代码，不是不可信代码沙箱。生产 `assistant-native-v2` 只使用受信静态 Tool 清单和官方 MCP
+module 的进程内代码，不是不可信代码沙箱。生产 `assistant-native-v3` 只使用受信静态 Tool 清单和官方 MCP
 allowlist，不加载动态 module。具体边界见 Tool calling 文档。
 
 长期记忆由父图固定的 `memory_recall` / `memory_commit` 节点定位，正文冻结在 `state.memory_context`。

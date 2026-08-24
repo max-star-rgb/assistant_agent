@@ -29,9 +29,9 @@ dynamic prompt 的 L0 index 只用于发现可加载 Skill。成功执行 `load_
 state-update 契约返回包含标准 `ToolMessage` 的 `Command(update=...)`，把受信 `skill_id` 写入当前 fast agent
 子图的 `active_skill_ids`；每次后续 model call 都以该 ID 从 composition 注入的受信 catalog 重新取得并把完整
 Skill 正文追加到 system prompt。`load_skill` 的模型观察与 artifact 只返回指导、Skill/reference 标识和加载状态，
-不返回 Tool capability。独立 exposure middleware 只在原生 model-call hook 中执行 phase-aware 投影：fast phase
-根据 manifest 的 `governed_tools` 派生可调用 Tool schema，planner phase 只获得可委派给 worker 的有界 capability
-descriptor，worker phase 仅按已准入节点 allowlist 与 Skill grant 的交集获得 schema。专项 reference 再由
+不返回 Tool capability。独立 exposure middleware 只在共享 fast/Worker `create_agent` 的原生 model-call hook 中
+根据 manifest 的 `governed_tools` 与当前 `active_skill_ids` 派生业务 Tool schema；planning Worker 另由窄
+middleware 隐藏 Skill control Tool，Supervisor 自己只绑定 control 与 task schema。专项 reference 再由
 `load_skill_reference` 按当前 state/checkpoint namespace 中的窄 grant 读取。checkpoint 只保存受信 Skill ID 和
 注册的 reference ID，不复制
 Skill 正文、Tool schema 或任意 Tool 名；这些状态不进入父图、后续 chat run 或 Memory Graph。
@@ -48,13 +48,13 @@ Memory 每一行以引用文本呈现，并明确为可能过时或错误的背�
 模型可见临时消息使用“用户默认地点”中文字段，并明确该地点不是已观测用户物理位置。用户在当前请求中明确指定的任务地点可以
 覆盖本次任务参数，但不能改写可信事实的来源。最后一条用户消息始终是本轮真实请求。
 
-模型与业务 Tool 调用由 `PhaseBudgetMiddleware` 按 `fast|planner|worker|finalizer` 分 phase 计数；production
-composition 把同一 `PlanningBudgetPolicy` 同时交给该 middleware 和 planning graph，后者再结算有界的全图
-model/tool/node attempt/replan budget。phase middleware 只在调用前形成标准预算终态，不把 policy、余额或计数
-加入公开 Graph input。只读 Tool retry、长对话 summarization 与 planning 模式非 read Tool HITL 继续使用官方
+共享 fast/Worker `create_agent` 使用官方 `ModelCallLimitMiddleware` 与 `ToolCallLimitMiddleware` 提供每次 invocation
+的 model/tool call 安全上限，不把 usage 或 reservation 写入 planning 父 state。只读 Tool retry、长对话
+summarization 与 planning 模式非 read Tool HITL 继续使用官方
 middleware；需要独立 run 上限的 Tool 由同一个 metadata-driven per-Tool limiter 分别计数，不是全 Tool global
-limiter；当前 live-view 声明每个 run 最多一次，fast agent 不识别具体 Tool 名。fast 模式自动放行，planning 的 planner 与 worker 阶段均在非 read Tool 执行前
-interrupt，并从原生 checkpoint approve/resume，不重放已完成的 Planner Tool 或 worker。summarization 默认采用输入窗口 75% 触发、保留 15% 的
+limiter；当前 live-view 声明每个 run 最多一次，fast agent 不识别具体 Tool 名。fast 模式自动放行，planning
+Worker 的非 read 业务 Tool 在执行前 interrupt，并从原生 checkpoint approve/resume，不重放已完成分支。
+Supervisor 的三个 control Tool 都是 read。summarization 默认采用输入窗口 75% 触发、保留 15% 的
 token 阈值，两者可由现有环境变量覆盖。DeepSeek V4 Flash 使用其官方 tokenizer 与
 `encoding_dsv4.py` 对标准 messages 做调用前计数；结构化 user content 只在文本 encoder 的计数副本中
 提取 text block，原始多模态 message 与媒体引用保持不变。摘要读取被淘汰的完整消息前缀，不再应用默认
@@ -64,24 +64,19 @@ token 阈值，两者可由现有环境变量覆盖。DeepSeek V4 Flash 使用�
 `ToolMessage`，不维护项目
 自建 conversation、完整问答边界或 summary state。
 
-planning 的 planner、worker 与 finalizer 都通过 `agent_phase` 复用同一个 `AssistantFastAgent`，不是直接调用
-独立模型。Planner 在共享 Tool loop 中成功加载 Skill 后，后续 Planner call 获得上述受信完整正文；首次成功
-admission 冻结该计划实际声明或使用的 Skill ID、reference ID 与 Tool name 为 strict authorization envelope。
-generation 0 在首次成功前仍可 revision；成功后 planner prompt/context、scheduler 和 worker 只看到 envelope
-子集，不能从计划文本、完整 inventory 或 worker 输出扩展 scope。envelope 只 checkpoint 标识符，不保存 Tool
-参数、结果或 schema。
+planning Supervisor 是普通 LLM node；每次调用只读取经官方 token-aware trimming 的父自然对话，并从单独的
+有界受信上下文读取 Todo、当前 Worker result、冻结 Memory/TrustedRuntimeFacts、Skill state 与从受信 catalog
+机械重读的已成功加载 reference 正文。
+planning control/task transcript 仍由 checkpoint 保存，但不重复投影给 Supervisor；它不使用 `create_agent`，
+无 ToolCall 时直接形成标准终态 `AIMessage`。Todo 是 working memory，不是依赖或授权协议。
 
-planning worker 只获得自己的 objective、父图 Memory 与 TrustedRuntimeFacts 快照、调度器按 `depends_on` 派生的直接上游
-`dependency_results`、节点引用的 planner evidence、当次 phase allowance 和同一个 fast agent；objective 必须自包含并保留相关用户约束。
-依赖结果与 evidence 都是只读数据，不能覆盖当前任务、身份、权限或 Tool 约束。worker transcript 不并入父图
-对话；worker 只返回严格 `WorkerCompletion`，Graph 边界将其与稳定 failure fact、attempt/generation 和实际
-budget usage 收敛为 typed `WorkerOutcome`。成功结果单调冻结；下一 generation 只获得 frozen result ID、失败码、
-可重规划 work item ID、未完成 deliverable ID 与既有 evidence ID 组成的 recovery context。该 context 是
-JSON-safe、只读、长度有界的临时 `HumanMessage`，转义 `<>&`，不含旧 transcript、Tool schema、异常正文或
-Provider 原始响应，也不写回父图对话 messages。finalizer 仍复用同一 agent，但 phase projection 清空全部 Tool 和
-structured response，再根据原始请求、deliverables、planner evidence 与按 plan 排序的 worker results 综合标准
-`AIMessage`，显式处理冲突、缺失和失败，不把中间结果机械拼接成最终答案。三个 phase 都获得父图冻结的同一份
-TrustedRuntimeFacts；子图不会自行读取系统时钟或地点。
+每个 planning Worker 通过 `agent_phase="worker"` 复用同一个 `AssistantFastAgent`，但只获得当前 Todo、已加载的
+必要 Skill/reference、父图冻结的 Memory 与 TrustedRuntimeFacts，以及一条新建的私有 `HumanMessage`。完整父
+conversation、其他 Todo 和 Worker 内部业务 Tool transcript 不进入该私有消息。Worker 只返回严格
+`WorkerResult(todo_id,status,summary)`；join 只把受控结果作为原 `task` call 对应的父级 `ToolMessage` 写回。
+只有 join 能根据 `succeeded` result 把 Todo 标成 completed；`write_todos` 只能维护 pending，改写 pending 内容时
+同步清除同 ID 的旧 blocked result。`succeeded` result 与 completed Todo 单调保护，`blocked` 保持 pending 并由 Supervisor 决定 retry/replan/finish；
+operational exception 不转换为业务结果，由 LangGraph pending writes/resume 恢复。
 
 Provider 联网来源属于产生该回复的 `AIMessage.response_metadata`，不会作为新上下文消息重新注入后续模型调用。
 终态入口只读取最新最终 AIMessage 的来源；中间 tool-call 或历史 AIMessage 的来源不聚合到当前答案。

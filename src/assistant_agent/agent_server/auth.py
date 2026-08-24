@@ -7,9 +7,11 @@ from langgraph_sdk import Auth
 from assistant_agent.agent_server.config import (
     ASSISTANT_EXECUTION_MODE_CONTEXT_KEY,
     ASSISTANT_GRAPH_ID,
+    MEMORY_GRAPH_ID,
     PLANNING_ASSISTANT_ID,
     PLANNING_ASSISTANT_NAME,
 )
+from assistant_agent.agent_server.client import THREAD_GRAPH_METADATA_KEY
 
 
 auth = Auth()
@@ -108,9 +110,17 @@ async def authorize_planning_assistant_update(
 async def authorize_thread_create(
     ctx: Auth.types.AuthContext,
     value: Auth.types.on.threads.create.value,
-) -> None:
+) -> bool | None:
     metadata = value.setdefault("metadata", {})
+    requested_graph_id = value.get("graph_id") or metadata.get(
+        THREAD_GRAPH_METADATA_KEY
+    )
+    graph_id = str(requested_graph_id or ASSISTANT_GRAPH_ID)
+    if graph_id not in {ASSISTANT_GRAPH_ID, MEMORY_GRAPH_ID}:
+        return False
     metadata["owner"] = str(ctx.user.identity)
+    metadata[THREAD_GRAPH_METADATA_KEY] = graph_id
+    return None
 
 
 @auth.on.threads.read
@@ -126,9 +136,16 @@ async def authorize_thread_read(
 async def authorize_thread_update(
     ctx: Auth.types.AuthContext,
     value: Auth.types.on.threads.update.value,
-) -> Auth.types.FilterType:
-    _ = value
-    return {"owner": str(ctx.user.identity)}
+) -> Auth.types.FilterType | bool:
+    if value.get("action") in {"interrupt", "rollback"}:
+        return {"owner": str(ctx.user.identity)}
+    metadata = value.get("metadata")
+    if not isinstance(metadata, dict) or THREAD_GRAPH_METADATA_KEY not in metadata:
+        return {"owner": str(ctx.user.identity)}
+    graph_id = str(metadata[THREAD_GRAPH_METADATA_KEY])
+    if graph_id not in {ASSISTANT_GRAPH_ID, MEMORY_GRAPH_ID}:
+        return False
+    return {"owner": str(ctx.user.identity), THREAD_GRAPH_METADATA_KEY: graph_id}
 
 
 @auth.on.threads.delete
@@ -156,7 +173,12 @@ async def authorize_run_create(
 ) -> Auth.types.FilterType:
     metadata = value.setdefault("metadata", {})
     metadata["owner"] = str(ctx.user.identity)
-    return {"owner": str(ctx.user.identity)}
+    if str(value.get("assistant_id")) == MEMORY_GRAPH_ID:
+        return {"owner": str(ctx.user.identity)}
+    return {
+        "owner": str(ctx.user.identity),
+        THREAD_GRAPH_METADATA_KEY: ASSISTANT_GRAPH_ID,
+    }
 
 
 @auth.on.store

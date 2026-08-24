@@ -147,27 +147,30 @@ terminal，不隐式启用 Git integration。
 `langgraph.json` 只注册当前两张原生 Graph：
 
 ```text
-assistant-native-v2 -> assistant_agent.agent_server.graph:native_assistant_graph
+assistant-native-v3 -> assistant_agent.agent_server.graph:native_assistant_graph
 assistant-memory-v1 -> assistant_agent.agent_server.graph:native_memory_graph
 ```
 
-`assistant-native-v1` 不作为指向当前图的 alias 注册：planning checkpoint schema 与恢复路由已经不兼容，v2
-不能解释或 replay v1 checkpoint。这是一次显式 graph ID 升级，不是 checkpoint 自动 migration。部署 v2 前，
-operator 必须按 graph ID 枚举 v1 的 pending/interrupt runs，并逐个 drain 或 cancel；v1 历史 checkpoint 只读，
-不得从 v2 resume/replay。项目控制的可运行 thread 在创建时同时写入 SDK 原生 `graph_id` 和稳定 metadata
-`assistant_graph_id`；两者均为调用方传入的 expected graph ID。`SdkAgentServerClient` 对返回的新建或
+`assistant-native-v1` 与 `assistant-native-v2` 都不作为指向当前图的 alias 注册：A-lite planning checkpoint
+schema 与恢复路由已经不兼容，v3 不能解释或 replay v1/v2 planning checkpoint。这是一次显式 graph ID 升级，
+不是 checkpoint 自动 migration。部署 v3 前，operator 必须按 graph ID 枚举 v2 的 pending/interrupt runs，
+并逐个 drain 或 cancel；v1/v2 历史 checkpoint 只读，不得从 v3 resume/replay。项目控制的可运行 thread 在创建时
+同时写入 SDK 原生 `graph_id` 和稳定 metadata `assistant_graph_id`。Agent Server auth 按 create 的 graph identity
+把 Studio/项目 chat thread 规范为 v3，同时允许独立 Memory graph 使用自己的 identity；chat run create 与显式
+metadata identity update 使用 owner + graph identity 过滤，因此旧 thread 不能靠 update 或 Studio 直连进入新图。
+旧 run 的 interrupt/rollback 只按 owner 授权，仍可执行部署前的 v2 drain/cancel。`SdkAgentServerClient` 对返回的新建或
 `if_exists="do_nothing"` existing thread 校验 `assistant_graph_id`，并在开始 `runs.stream` 前重新读取 thread
-做同一精确校验。`assistant-native-v1` 或缺失该字段的 unknown thread 在任何 v2 普通 run、resume 或 stream
+做同一精确校验。`assistant-native-v1`、`assistant-native-v2` 或缺失该字段的 unknown thread 在任何 v3 普通 run、resume 或 stream
 开始前稳定拒绝，因此不会创建 run 或改变 checkpoint；thread/state/history 与既有 stream 的只读检查仍允许。
-部署迁移所需的 v1 drain/cancel 也不受该 guard 阻止。guard 接受每次调用的 expected graph ID，不把 v2
+部署迁移所需的 v2 drain/cancel 也不受该 guard 阻止。guard 接受每次调用的 expected graph ID，不把 v3
 硬编码成所有独立 Graph 的全局限制；Memory 等独立 Graph 在自己的运行边界使用自己的 graph ID。
 
-`assistant-native-v2` graph 下保留系统创建的同名默认 assistant，并增加一个固定 planning preset assistant：
+`assistant-native-v3` graph 下保留系统创建的同名默认 assistant，并增加一个固定 planning preset assistant：
 
 ```text
 assistant_id: 4cf38057-6071-50ca-a565-98b7854d763e
-name: assistant-native-v2-planning
-graph_id: assistant-native-v2
+name: assistant-native-v3-planning
+graph_id: assistant-native-v3
 context.assistant_execution_mode: planning
 ```
 
@@ -177,8 +180,8 @@ input 的 `execution_mode` 路由并在省略时使用 fast。tokenless 本地 a
 并把 graph、name、context 与 metadata 强制规范为仓库定义；任意其他 assistant 写入和 delete 继续由默认 deny
 拒绝。
 
-新 assistant 与 run 必须选择 `assistant-native-v2`，Studio 用户也必须切换到该新 graph ID。媒体确定性
-thread UUID 的 seed 包含 `assistant-native-v2`，因此同一 v2 connection 重连仍稳定，但不会命中旧 v1 UUID；即便
+新 assistant 与 run 必须选择 `assistant-native-v3`，Studio 用户也必须切换到该新 graph ID。媒体确定性
+thread UUID 的 seed 包含 `assistant-native-v3`，因此同一 v3 connection 重连仍稳定，但不会命中旧 v1/v2 UUID；即便
 命中一个外部指定的既有 ID，中央 metadata 校验仍然生效。CLI 的新 thread 与普通 `--thread-id` run 复用同一
 guard。Agent Server 原生拥有 assistant、thread、run、
 queue、checkpoint、interrupt/resume、cancel、stream 和 LangGraph Store。项目不再在生产入口维护第二份 run
@@ -233,7 +236,7 @@ Provider、MCP discovery 与静态 graph composition 在媒体 WebSocket 握手�
 关闭；媒体 WebSocket 只关闭自己创建的 `VisualPerceptionSession`。
 
 composition 在构造 Tool inventory 前只加载一次 repo Skill catalog，并把同一实例显式注入 inventory 的
-Skill loading plugin、fast agent 和 planning admission；composition 构造标准模型、该 Tool inventory、Memory
+Skill loading plugin、fast agent 和 planning Supervisor/Worker；composition 构造标准模型、该 Tool inventory、Memory
 backend 与两张静态原生 Graph，不构造平行 Graph Runtime、产品状态投影器或 Workflow host。
 
 ## 本地部署与持久化
@@ -289,7 +292,7 @@ checkpoint 创建 replay 分支，`runs.cancel(action="rollback", wait=True)` �
 checkpoints。replay 与 rollback 都要求精确确认；项目不读取 saver、不维护 checkpoint facade，也不把 Graph
 state 回滚描述为已完成外部 Tool 副作用的自动撤销。
 
-所有当前 chat 入口最终调用同一个 `assistant-native-v2`，因此 Memory debounce 不散落在 Studio、CLI、HTTP 或
+所有当前 chat 入口最终调用同一个 `assistant-native-v3`，因此 Memory debounce 不散落在 Studio、CLI、HTTP 或
 WebSocket adapter：主图在回答后使用官方 SDK 查找并 rollback 同 thread、带专用 metadata 的旧 pending Memory
 run，随后 enqueue 一个新的 delayed `assistant-memory-v1` run。Agent Server 继续拥有真正的 delay 与
 queue；项目不创建 timer 或第二套队列。

@@ -8,7 +8,12 @@ from typing import Any
 
 import pytest
 
-from assistant_agent.agent_server.auth import authenticate
+from assistant_agent.agent_server.auth import (
+    authenticate,
+    authorize_run_create,
+    authorize_thread_create,
+    authorize_thread_update,
+)
 from assistant_agent.agent_server.client import (
     IncompatibleCheckpointGraphError,
     IncompatibleThreadGraphError,
@@ -27,7 +32,7 @@ def test_agent_server_owns_the_production_graph_and_authenticated_media_route() 
     root = Path(__file__).resolve().parents[3]
     manifest = json.loads((root / "langgraph.json").read_text(encoding="utf-8"))
     assert manifest["graphs"] == {
-        "assistant-native-v2": (
+        "assistant-native-v3": (
             "assistant_agent.agent_server.graph:native_assistant_graph"
         ),
         "assistant-memory-v1": (
@@ -41,29 +46,33 @@ def test_agent_server_owns_the_production_graph_and_authenticated_media_route() 
 
 
 @pytest.mark.core_invariant("GATE-001")
-def test_current_clients_reject_v1_checkpoint_and_thread_at_graph_id_boundary(
+def test_current_clients_reject_v1_v2_checkpoint_and_thread_at_graph_id_boundary(
     monkeypatch,
 ) -> None:
-    """Catches normal or replayed v1 state entering the incompatible v2 graph."""
+    """Catches normal or replayed legacy state entering the incompatible v3 graph."""
 
-    assert ASSISTANT_GRAPH_ID == "assistant-native-v2"
+    assert ASSISTANT_GRAPH_ID == "assistant-native-v3"
     monkeypatch.setenv("ASSISTANT_AGENT_SERVER_PORT", "8089")
     assert _native_graph_warmup_url() == (
-        "http://127.0.0.1:8089/assistants/assistant-native-v2/graph"
+        "http://127.0.0.1:8089/assistants/assistant-native-v3/graph"
     )
     assert require_current_checkpoint_graph(
-        {"metadata": {"graph_id": "assistant-native-v2"}}
-    ) == "assistant-native-v2"
+        {"metadata": {"graph_id": "assistant-native-v3"}}
+    ) == "assistant-native-v3"
     with pytest.raises(IncompatibleCheckpointGraphError):
         require_current_checkpoint_graph(
             {"metadata": {"graph_id": "assistant-native-v1"}}
+        )
+    with pytest.raises(IncompatibleCheckpointGraphError):
+        require_current_checkpoint_graph(
+            {"metadata": {"graph_id": "assistant-native-v2"}}
         )
 
     class Threads:
         async def get(self, _thread_id: str) -> dict[str, Any]:
             return {
                 "thread_id": "legacy-thread",
-                "metadata": {"assistant_graph_id": "assistant-native-v1"},
+                "metadata": {"assistant_graph_id": "assistant-native-v2"},
             }
 
     class Runs:
@@ -92,6 +101,52 @@ def test_current_clients_reject_v1_checkpoint_and_thread_at_graph_id_boundary(
     with pytest.raises(IncompatibleThreadGraphError):
         asyncio.run(consume())
     assert sdk.runs.called is False
+
+
+@pytest.mark.core_invariant("GATE-001")
+def test_agent_server_auth_binds_studio_threads_and_runs_to_v3() -> None:
+    ctx = SimpleNamespace(user=SimpleNamespace(identity="studio-user"))
+    created = {"metadata": {}}
+    assert asyncio.run(authorize_thread_create(ctx, created)) is None
+    assert created["metadata"] == {
+        "assistant_graph_id": ASSISTANT_GRAPH_ID,
+        "owner": "studio-user",
+    }
+    legacy_create = {"metadata": {"assistant_graph_id": "assistant-native-v2"}}
+    assert asyncio.run(authorize_thread_create(ctx, legacy_create)) is False
+    memory_create = {"graph_id": "assistant-memory-v1", "metadata": {}}
+    assert asyncio.run(authorize_thread_create(ctx, memory_create)) is None
+    assert memory_create["metadata"]["assistant_graph_id"] == "assistant-memory-v1"
+
+    updated = {
+        "thread_id": "thread-v3",
+        "metadata": {"assistant_graph_id": ASSISTANT_GRAPH_ID, "label": "kept"},
+    }
+    update_filter = asyncio.run(authorize_thread_update(ctx, updated))
+    assert update_filter == {
+        "owner": "studio-user",
+        "assistant_graph_id": ASSISTANT_GRAPH_ID,
+    }
+    legacy_update = {
+        "thread_id": "thread-v2",
+        "metadata": {"assistant_graph_id": "assistant-native-v2"},
+    }
+    assert asyncio.run(authorize_thread_update(ctx, legacy_update)) is False
+    rollback = {"thread_id": "thread-v2", "action": "rollback"}
+    assert asyncio.run(authorize_thread_update(ctx, rollback)) == {
+        "owner": "studio-user"
+    }
+
+    run = {"assistant_id": ASSISTANT_GRAPH_ID, "metadata": {}}
+    run_filter = asyncio.run(authorize_run_create(ctx, run))
+    assert run_filter == {
+        "owner": "studio-user",
+        "assistant_graph_id": ASSISTANT_GRAPH_ID,
+    }
+    memory_run = {"assistant_id": "assistant-memory-v1", "metadata": {}}
+    assert asyncio.run(authorize_run_create(ctx, memory_run)) == {
+        "owner": "studio-user"
+    }
 
 
 @pytest.mark.core_invariant("GATE-001")

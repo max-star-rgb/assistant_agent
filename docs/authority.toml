@@ -89,7 +89,7 @@ source_globs = [
 thin_references = ["README.md", "docs/agent-server-architecture.md"]
 verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/integration/test_runtime_lifecycle.py",
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/native-high-agency-planner",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/supervisor-todo-planning-alite-production",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
