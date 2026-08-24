@@ -551,6 +551,8 @@ class CodingReviewRepairContext(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    previous_history_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    created_at: datetime
     attempt: int = Field(ge=1, le=MAX_CODING_REVIEW_REPAIR_ATTEMPTS)
     report_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     validation_evidence_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -597,6 +599,7 @@ class CodingReviewRepairAttempt(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    previous_history_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     attempt: int = Field(ge=1, le=MAX_CODING_REVIEW_REPAIR_ATTEMPTS)
     report_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     validation_evidence_digest: str = Field(pattern=r"^[0-9a-f]{64}$")

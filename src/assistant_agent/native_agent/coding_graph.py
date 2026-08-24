@@ -1026,14 +1026,32 @@ def build_coding_graph(
             workspace = _resolve_workspace(state, runtime, config, workspace_service)
             if workspace.workspace_ref != state.get("workspace_ref"):
                 raise CodingWorkspaceError("workspace_identity_mismatch")
+            authorization = _unconsumed_patch_authorization(state)
+            if authorization is None:
+                raise CodingWorkspaceError("approval_required")
+            proposal, validation = authorization
+            if proposal.base_commit != workspace.base_commit:
+                raise CodingWorkspaceError("base_commit_changed")
+            prior_approved_paths: tuple[str, ...] = ()
+            if int(state.get("review_repair_count", 0)) > 0:
+                prior_approved_paths = _canonical_changed_path_inventory(
+                    state.get("approved_changed_paths")
+                )
+                live_paths = _canonical_changed_path_inventory(
+                    workspace_service.changed_paths(workspace)
+                )
+                if live_paths != prior_approved_paths:
+                    raise CodingWorkspaceError("patch_apply_path_mismatch")
             applied = workspace_service.apply_validated_patch(workspace, validation)
             approved_changed_paths: object = list(applied.changed_paths)
             if int(state.get("review_repair_count", 0)) > 0:
                 allowed_paths = {
-                    *state.get("approved_changed_paths", ()),
-                    *validation.proposal.changed_paths,
+                    *prior_approved_paths,
+                    *proposal.changed_paths,
                 }
-                actual_changed_paths = workspace_service.changed_paths(workspace)
+                actual_changed_paths = _canonical_changed_path_inventory(
+                    workspace_service.changed_paths(workspace)
+                )
                 if not set(actual_changed_paths).issubset(allowed_paths):
                     raise CodingWorkspaceError("patch_apply_path_mismatch")
                 approved_changed_paths = Overwrite(list(actual_changed_paths))
@@ -2330,6 +2348,7 @@ def begin_coding_cycle_node(state: CodingState) -> dict[str, object]:
 
 
 def _resolve_workspace(state, runtime, config, service):
+    _validate_review_repair_checkpoint_state(state)
     identity = authenticated_user_identity(runtime)
     thread_id = _thread_id(config)
     repo_id = str(state.get("coding_repo_id", "")).strip()
@@ -2369,7 +2388,6 @@ def _resolve_workspace(state, runtime, config, service):
         workspace=workspace,
         service=service,
     )
-    _validate_review_repair_checkpoint_state(state)
     return workspace
 
 
@@ -2800,6 +2818,7 @@ def _pending_review_repair_attempt(
     context: CodingReviewRepairContext,
 ) -> CodingReviewRepairAttempt:
     return CodingReviewRepairAttempt(
+        previous_history_digest=context.previous_history_digest,
         attempt=context.attempt,
         report_digest=context.report_digest,
         validation_evidence_digest=context.validation_evidence_digest,
@@ -2808,7 +2827,7 @@ def _pending_review_repair_attempt(
         finding_ids=tuple(
             finding.finding_id for finding in context.findings_summary
         ),
-        created_at=datetime.now(UTC),
+        created_at=context.created_at,
         outcome="pending",
     )
 
@@ -2818,7 +2837,9 @@ def _review_repair_attempt_matches_context(
     context: CodingReviewRepairContext,
 ) -> bool:
     return (
-        attempt.attempt == context.attempt
+        attempt.previous_history_digest == context.previous_history_digest
+        and attempt.created_at == context.created_at
+        and attempt.attempt == context.attempt
         and attempt.report_digest == context.report_digest
         and attempt.validation_evidence_digest
         == context.validation_evidence_digest
@@ -2857,6 +2878,67 @@ def _review_repair_projection(
     }
 
 
+def _canonical_changed_path_inventory(value: object) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, (tuple, list)):
+        raise CodingWorkspaceError("patch_apply_path_mismatch")
+    paths: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise CodingWorkspaceError("patch_apply_path_mismatch")
+        parts = item.split("/")
+        if (
+            not item
+            or item != item.strip()
+            or item.startswith("/")
+            or any(part in {"", ".", "..", ".git"} for part in parts)
+            or any(character in item for character in ("\\", "\x00", "\n", "\r"))
+            or item in paths
+        ):
+            raise CodingWorkspaceError("patch_apply_path_mismatch")
+        paths.append(item)
+    return tuple(sorted(paths))
+
+
+def _unconsumed_patch_authorization(
+    state: CodingState,
+) -> tuple[object, CodingPatchValidation] | None:
+    approval_status = state.get("approval_status")
+    if approval_status not in {"pending", "approved"}:
+        return None
+    if state.get("applied_result") is not None:
+        if approval_status == "pending":
+            raise CodingWorkspaceError("approval_digest_mismatch")
+        return None
+    try:
+        raw_validation = state.get("validation")
+        validation_payload = (
+            raw_validation.model_dump()
+            if isinstance(raw_validation, BaseModel)
+            else raw_validation
+        )
+        validation = CodingPatchValidation.model_validate(validation_payload)
+        raw_proposal = state.get("proposal")
+        proposal_payload = (
+            raw_proposal.model_dump()
+            if isinstance(raw_proposal, BaseModel)
+            else raw_proposal
+        )
+        proposal = type(validation.proposal).model_validate(proposal_payload)
+    except (TypeError, ValueError) as exc:
+        raise CodingWorkspaceError("approval_digest_mismatch") from exc
+    if (
+        validation.proposal != proposal
+        or not proposal.changed_paths
+        or hashlib.sha256(proposal.patch.encode("utf-8")).hexdigest()
+        != proposal.patch_digest
+    ):
+        raise CodingWorkspaceError("approval_digest_mismatch")
+    _canonical_changed_path_inventory(proposal.changed_paths)
+    return proposal, validation
+
+
 def _validate_review_repair_checkpoint_state(state: CodingState) -> None:
     """Reject impossible repair and approval channel combinations."""
 
@@ -2877,7 +2959,14 @@ def _validate_review_repair_checkpoint_state(state: CodingState) -> None:
             "coding_review_repair_binding_mismatch"
         ) from exc
 
-    patch_approval_active = state.get("approval_status") == "pending"
+    try:
+        patch_approval_active = _unconsumed_patch_authorization(state) is not None
+    except CodingWorkspaceError as exc:
+        if status is not None:
+            raise CodingWorkspaceError(
+                "coding_review_repair_binding_mismatch"
+            ) from exc
+        raise
     review_approval_active = bool(
         state.get("review_required")
         and state.get("review_report") is not None

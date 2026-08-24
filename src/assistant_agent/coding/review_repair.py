@@ -6,6 +6,7 @@ import hashlib
 import json
 import unicodedata
 from collections.abc import Mapping, Sequence
+from datetime import datetime, timezone
 
 from assistant_agent.coding.models import (
     MAX_CODING_REVIEW_REPAIR_ATTEMPTS,
@@ -70,6 +71,10 @@ def build_review_repair_context(
     workspace_diff_digest = _required_digest(canonical_report, "workspace_diff_digest")
     normalized_response = normalize_review_response(response)
     return CodingReviewRepairContext(
+        previous_history_digest=_review_repair_history_digest_unchecked(
+            normalized_history
+        ),
+        created_at=datetime.now(timezone.utc),
         attempt=review_repair_count + 1,
         report_digest=report_digest,
         validation_evidence_digest=validation_evidence_digest,
@@ -94,6 +99,10 @@ def validate_review_repair_history(
             raise ValueError("coding_review_repair_history_duplicate_attempt")
         if item.attempt != expected_attempt:
             raise ValueError("coding_review_repair_history_non_contiguous")
+        if item.previous_history_digest != _review_repair_history_digest_unchecked(
+            normalized[: expected_attempt - 1]
+        ):
+            raise ValueError("coding_review_repair_history_mismatch")
         seen.add(item.attempt)
     return normalized
 
@@ -104,7 +113,13 @@ def review_repair_history_digest(
     """Return a canonical token binding a decision to its exact audit history."""
 
     normalized = validate_review_repair_history(history)
-    payload = [item.model_dump(mode="json") for item in normalized]
+    return _review_repair_history_digest_unchecked(normalized)
+
+
+def _review_repair_history_digest_unchecked(
+    history: Sequence[CodingReviewRepairAttempt],
+) -> str:
+    payload = [item.model_dump(mode="json") for item in history]
     canonical = json.dumps(
         payload,
         ensure_ascii=False,
@@ -208,7 +223,9 @@ def _attempt_matches_context(
     context: CodingReviewRepairContext,
 ) -> bool:
     return (
-        attempt.attempt == context.attempt
+        attempt.previous_history_digest == context.previous_history_digest
+        and attempt.created_at == context.created_at
+        and attempt.attempt == context.attempt
         and attempt.report_digest == context.report_digest
         and attempt.validation_evidence_digest
         == context.validation_evidence_digest
