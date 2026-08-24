@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
+
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent import planning_graph
 from assistant_agent.native_agent.models import PlanningTodo, WorkerResult
+from assistant_agent.native_agent.runtime_facts import capture_trusted_runtime_facts_node
 from assistant_agent.skills.loading import SkillCatalog, SkillDescriptor
 
 
@@ -159,32 +162,61 @@ def test_succeeded_worker_result_is_monotonic_but_blocked_can_be_retried() -> No
     ) == {"B": retried.model_dump(mode="json")}
 
 
-def test_supervisor_projection_excludes_internal_transcript_and_bounds_parent() -> None:
+def test_supervisor_projection_uses_transient_user_context_before_latest_request() -> None:
     internal_call = _calls(("write_todos", {"todos": []}, "write-internal"))
+    parent_messages = [
+        HumanMessage(content="old-user-sentinel"),
+        AIMessage(content="old-assistant-sentinel"),
+        internal_call,
+        ToolMessage(
+            content="internal-tool-sentinel",
+            name="write_todos",
+            tool_call_id="write-internal",
+        ),
+        HumanMessage(content="latest-user-sentinel"),
+    ]
     messages = planning_graph._supervisor_messages(
         {
-            "messages": [
-                HumanMessage(content="old"),
-                internal_call,
-                ToolMessage(
-                    content="internal-tool-sentinel",
-                    name="write_todos",
-                    tool_call_id="write-internal",
-                ),
-                HumanMessage(content="latest-" + "x" * 200_000),
+            "messages": parent_messages,
+            "todos": [
+                {
+                    "todo_id": "todo-sentinel",
+                    "content": "planning-work-sentinel",
+                    "status": "pending",
+                }
             ],
             "memory_context": ("memory-sentinel",),
             "memory_status": "ready",
-            "trusted_runtime_facts": {"timezone": "Asia/Shanghai"},
+            "trusted_runtime_facts": capture_trusted_runtime_facts_node({})[
+                "trusted_runtime_facts"
+            ],
         },
         AssistantRunContext(),
         SkillCatalog(),
     )
 
-    assert "memory-sentinel" in str(messages[0].content)
+    assert isinstance(messages[0], SystemMessage)
+    assert "planning-work-sentinel" not in str(messages[0].content)
+    assert "memory-sentinel" not in str(messages[0].content)
+    assert "用户默认地点" not in str(messages[0].content)
     assert "internal-tool-sentinel" not in str(messages)
     assert internal_call not in messages
-    assert len(str(messages[-1].content)) < 100_000
+    humans = [message for message in messages if isinstance(message, HumanMessage)]
+    assert humans[-4].name == "planning_working_memory"
+    assert humans[-4].additional_kwargs == {
+        "assistant_agent_context": "planning_working_memory_v1"
+    }
+    assert [
+        "planning-work-sentinel" in str(humans[-4].content),
+        "memory-sentinel" in str(humans[-3].content),
+        "用户默认地点" in str(humans[-2].content),
+        humans[-1].content == "latest-user-sentinel",
+    ] == [True, True, True, True]
+    assert [
+        message.content
+        for message in parent_messages
+        if isinstance(message, HumanMessage)
+    ] == ["old-user-sentinel", "latest-user-sentinel"]
 
 
 def test_supervisor_reprojects_only_observed_and_state_granted_reference(
@@ -193,7 +225,7 @@ def test_supervisor_reprojects_only_observed_and_state_granted_reference(
     descriptor = SkillDescriptor(
         name="reference-probe",
         description="probe",
-        body="body",
+        body="active-skill-sentinel",
         governed_tools=["probe_tool"],
         references={"details": "references/details.md"},
     )
@@ -229,5 +261,23 @@ def test_supervisor_reprojects_only_observed_and_state_granted_reference(
         state, AssistantRunContext(), SkillCatalog(descriptors=[descriptor])
     )
 
-    assert "trusted-reference-sentinel" in str(messages[0].content)
-    assert "reference-call" not in str(messages[1:])
+    assert "active-skill-sentinel" not in str(messages[0].content)
+    assert "trusted-reference-sentinel" not in str(messages[0].content)
+    working_memory = json.loads(str(messages[-2].content))
+    assert set(working_memory) == {
+        "active_skills",
+        "available_skills",
+        "loaded_references",
+        "todos",
+        "worker_results",
+    }
+    assert working_memory["available_skills"] == [
+        {"description": "probe", "skill_id": "reference-probe"}
+    ]
+    assert working_memory["active_skills"] == [
+        {"content": "active-skill-sentinel", "skill_id": "reference-probe"}
+    ]
+    assert working_memory["loaded_references"][0]["content"] == (
+        "trusted-reference-sentinel"
+    )
+    assert "reference-call" not in str(messages)

@@ -12,7 +12,6 @@ from langchain_core.messages import (
     AIMessageChunk,
     AnyMessage,
     HumanMessage,
-    SystemMessage,
 )
 from langchain_core.outputs import (
     ChatGeneration,
@@ -24,6 +23,11 @@ from langchain_core.tools import BaseTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from assistant_agent.config import ProviderConfig
+from assistant_agent.native_agent.context import (
+    PLANNING_WORKING_MEMORY_MARKER_KEY,
+    PLANNING_WORKING_MEMORY_MARKER_VALUE,
+    PLANNING_WORKING_MEMORY_MESSAGE_NAME,
+)
 from assistant_agent.providers.provider_http import without_unsupported_socks_proxy_env
 
 
@@ -306,20 +310,27 @@ def _mock_planning_supervisor_response(
     names = _mock_tool_names(tools)
     if not {"write_todos", "task"} <= names or "WorkerResult" in names:
         return None
-    marker = "当前 planning working memory（只读 JSON）：\n"
     state: dict[str, Any] = {"todos": [], "worker_results": {}}
-    for message in messages:
-        if not isinstance(message, SystemMessage) or not isinstance(message.content, str):
-            continue
-        if marker not in message.content:
+    for message in reversed(messages[:-1]):
+        if (
+            not isinstance(message, HumanMessage)
+            or not isinstance(message.content, str)
+            or message.name != PLANNING_WORKING_MEMORY_MESSAGE_NAME
+            or message.additional_kwargs.get(PLANNING_WORKING_MEMORY_MARKER_KEY)
+            != PLANNING_WORKING_MEMORY_MARKER_VALUE
+        ):
             continue
         try:
-            candidate = json.loads(message.content.split(marker, 1)[1])
+            candidate = json.loads(message.content)
         except (TypeError, ValueError):
             continue
-        if isinstance(candidate, dict):
+        if (
+            isinstance(candidate, dict)
+            and "todos" in candidate
+            and "worker_results" in candidate
+        ):
             state = candidate
-        break
+            break
     todos = state.get("todos") if isinstance(state.get("todos"), list) else []
     results = (
         state.get("worker_results")

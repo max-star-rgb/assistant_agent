@@ -138,9 +138,15 @@ Supervisor 是直接绑定 `load_skill`、`load_skill_reference`、`write_todos`
 不含 ToolCall 的最终回答；混合、未知、重复、指向不存在或 completed Todo 的调用均 fail closed。三个 control
 Tool 进入标准 `ToolNode`；`task` 只是模型可见的路由 schema，不进入 ToolNode。Supervisor 固定关闭
 Provider-native search。
-Supervisor 每次模型调用只投影经过官方 token-aware trimming 的父级自然对话，不回灌 planning control/task
-transcript；Todo、Worker result、冻结 Memory/TrustedRuntimeFacts、已加载 Skill 与成功读取的 reference 正文通过
-受信 catalog 机械重读后进入单独的有界上下文。
+Supervisor 每次模型调用由独立构造函数生成专用 `SystemMessage`，其正文直接来自锁定的
+`langchain==1.3.15` 模块级常量 `langchain.agents.middleware.todo.WRITE_TODOS_SYSTEM_PROMPT`，生产代码直接导入
+该常量而不在仓库复制 prompt 正文；上游原文要求模型自行完成 Todo，与只有 join
+可写 completed 的 A-lite 契约存在用户明确接受的已知语义冲突，运行时确定性校验仍以后者为准。Supervisor 只投影经过
+官方 token-aware trimming 的父级自然对话，不回灌 planning control/task transcript；随后在最新真实用户请求前依次
+临时插入 planning working-memory、MemoryContext 与 TrustedRuntimeFacts 三条独立 `HumanMessage`。working-memory
+只包含 Todo、Worker result、可发现 L0 Skill catalog 的 `skill_id/description`、从受信 catalog 机械重读的 active
+Skill 与成功授权的 reference 正文，并携带固定 `name`/`additional_kwargs` 来源标识；三条临时消息不写入
+父 messages 或 checkpoint，模型请求最后一条始终是本轮真实用户 `HumanMessage`。
 
 Todo 只有 `todo_id/content/status=pending|completed`，是 Supervisor working memory，不是依赖 DAG。
 一次多个 task call 由 conditional edge 转换为同一 super-step 的多个 `Send("worker", ...)`。Worker 是共享

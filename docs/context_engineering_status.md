@@ -64,11 +64,23 @@ token 阈值，两者可由现有环境变量覆盖。DeepSeek V4 Flash 使用�
 `ToolMessage`，不维护项目
 自建 conversation、完整问答边界或 summary state。
 
-planning Supervisor 是普通 LLM node；每次调用只读取经官方 token-aware trimming 的父自然对话，并从单独的
-有界受信上下文读取 Todo、当前 Worker result、冻结 Memory/TrustedRuntimeFacts、Skill state 与从受信 catalog
-机械重读的已成功加载 reference 正文。
-planning control/task transcript 仍由 checkpoint 保存，但不重复投影给 Supervisor；它不使用 `create_agent`，
-无 ToolCall 时直接形成标准终态 `AIMessage`。Todo 是 working memory，不是依赖或授权协议。
+planning Supervisor 是普通 LLM node，不使用 `create_agent`。每次调用由独立 prompt 构造函数重新生成
+`SystemMessage`；其正文直接来自锁定依赖 `langchain==1.3.15` 的
+模块级常量 `langchain.agents.middleware.todo.WRITE_TODOS_SYSTEM_PROMPT`，生产代码直接导入该常量而不在仓库复制
+prompt 正文；来源固定到
+[`langchain==1.3.15/todo.py`](https://github.com/langchain-ai/langchain/blob/langchain%3D%3D1.3.15/libs/langchain_v1/langchain/agents/middleware/todo.py#L119-L136)。
+该上游原文要求模型自行标记 completed，与 A-lite“只有 join 能完成 Todo”的状态契约存在已知语义冲突；本次按用户明确选择
+保留原文、不添加项目修订，确定性状态校验仍拒绝 Supervisor 直接完成 Todo。
+
+Supervisor 每次调用先读取经官方 token-aware trimming 的父自然对话，再在最新真实用户请求前临时插入四类上下文，
+顺序固定为：planning working memory、MemoryContext、TrustedRuntimeFacts、最新真实 `HumanMessage`。planning working
+memory 本身也是独立 `HumanMessage`，只包含 Todo、当前 Worker result、从受信 catalog 机械重读的 active Skill 正文与
+已成功授权并重读的 reference 正文，以及可发现 L0 Skill catalog 的 `skill_id/description`。planning working-memory
+消息带有固定 `name` 和 `additional_kwargs` 来源标识，使离线 mock 及其他受信消费者不会把用户提交的同形 JSON 当作
+内部 working memory；Memory 与 TrustedRuntimeFacts 各自使用 fast/Worker 相同的安全文案和独立
+`HumanMessage`。这些临时消息均不写入父 `messages`、checkpoint messages 或摘要，最后一条消息始终是本轮真实用户请求。
+planning control/task transcript 仍由 checkpoint 保存，但不重复投影给 Supervisor；无 ToolCall 时直接形成标准终态
+`AIMessage`。Todo 是 working memory，不是依赖或授权协议。
 
 每个 planning Worker 通过 `agent_phase="worker"` 复用同一个 `AssistantFastAgent`，但只获得当前 Todo、已加载的
 必要 Skill/reference、父图冻结的 Memory 与 TrustedRuntimeFacts，以及一条新建的私有 `HumanMessage`。完整父

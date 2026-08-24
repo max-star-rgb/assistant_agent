@@ -8,6 +8,11 @@ from langgraph.runtime import Runtime
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+PLANNING_WORKING_MEMORY_MESSAGE_NAME = "planning_working_memory"
+PLANNING_WORKING_MEMORY_MARKER_KEY = "assistant_agent_context"
+PLANNING_WORKING_MEMORY_MARKER_VALUE = "planning_working_memory_v1"
+
+
 class AuthenticatedUserRequired(PermissionError):
     """A production operation requires Agent Server authenticated identity."""
 
@@ -47,5 +52,8 @@ def authenticated_user_identity(runtime: Runtime[object]) -> str:
 __all__ = [
     "AssistantRunContext",
     "AuthenticatedUserRequired",
+    "PLANNING_WORKING_MEMORY_MARKER_KEY",
+    "PLANNING_WORKING_MEMORY_MARKER_VALUE",
+    "PLANNING_WORKING_MEMORY_MESSAGE_NAME",
     "authenticated_user_identity",
 ]

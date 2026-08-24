@@ -7,6 +7,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, Literal
 
+from langchain.agents.middleware.todo import WRITE_TODOS_SYSTEM_PROMPT
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
@@ -22,10 +23,16 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command, Overwrite, Send
 from pydantic import Field
 
-from assistant_agent.native_agent.context import AssistantRunContext
-from assistant_agent.native_agent.fast_agent import render_assistant_system_prompt
+from assistant_agent.native_agent.context import (
+    PLANNING_WORKING_MEMORY_MARKER_KEY,
+    PLANNING_WORKING_MEMORY_MARKER_VALUE,
+    PLANNING_WORKING_MEMORY_MESSAGE_NAME,
+    AssistantRunContext,
+)
+from assistant_agent.native_agent.fast_agent import memory_context_message
 from assistant_agent.native_agent.models import PlanningTodo, WorkerResult, WorkerWrite
 from assistant_agent.native_agent.providers import planning_supervisor_model_view
+from assistant_agent.native_agent.runtime_facts import trusted_runtime_facts_message
 from assistant_agent.native_agent.state import (
     PlanningState,
     WorkerState,
@@ -94,7 +101,7 @@ def create_write_todos_tool() -> BaseTool:
         todos: Annotated[list[PlanningTodo], Field(max_length=_MAX_TODOS)],
         runtime: ToolRuntime[AssistantRunContext],
     ) -> Command:
-        """Replace pending Todos while preserving every completed Todo unchanged."""
+        """替换待办事项列表，同时原样保留所有已完成的待办事项。"""
 
         updated = replace_todos(runtime.state.get("todos", ()), todos)
         retained_ids = {str(item["todo_id"]) for item in updated}
@@ -142,7 +149,7 @@ def create_task_tool() -> BaseTool:
 
     @tool("task")
     def task(todo_id: str) -> str:
-        """Delegate exactly one existing pending Todo to a Worker."""
+        """将一个现有的待处理 Todo 委派给 Worker 执行。"""
 
         del todo_id
         raise AssertionError("task is a graph routing protocol, not an executable tool")
@@ -349,12 +356,6 @@ def _supervisor_messages(
     context: AssistantRunContext,
     catalog: SkillCatalog,
 ) -> list[Any]:
-    descriptors = discoverable_skill_descriptors(catalog)
-    base_prompt = render_assistant_system_prompt(
-        context,
-        skill_descriptors=descriptors,
-        active_skill_ids=tuple(state.get("active_skill_ids", ())),
-    )
     payload = {
         "todos": [
             PlanningTodo.model_validate(item).model_dump(mode="json")
@@ -364,25 +365,67 @@ def _supervisor_messages(
             todo_id: WorkerResult.model_validate(result).model_dump(mode="json")
             for todo_id, result in state.get("worker_results", {}).items()
         },
-        "memory_context": [str(item) for item in state.get("memory_context", ())],
-        "memory_status": state.get("memory_status", "empty"),
-        "trusted_runtime_facts": state.get("trusted_runtime_facts", {}),
+        "available_skills": [
+            {"skill_id": descriptor.name, "description": descriptor.description}
+            for descriptor in discoverable_skill_descriptors(catalog)
+        ],
+        "active_skills": _read_active_skill_payload(state, catalog),
         "loaded_references": _read_reference_payload(
             _authorized_loaded_skill_references(state), catalog
         ),
     }
     working_memory = _render_working_memory(payload)
-    prompt = (
-        f"{base_prompt}\n\n"
-        "你是 planning 模式的 Supervisor。Todo 是你的显式工作记忆，不是依赖 DAG。"
-        "需要专业流程时先调用 load_skill，必要时再调用 load_skill_reference；"
-        "用 write_todos 创建或修改未来工作；用 task(todo_id) 委派一个现有 pending Todo。"
-        "一次回复只能是：单个 control ToolCall、一个或多个纯 task ToolCall、或无 ToolCall 的最终回答。"
-        "不得混合 control 与 task，不得委派未知或 completed Todo。Worker 的 blocked 是业务结果，"
-        "由你决定重试、改写 Todo 或直接完成。不要披露 Supervisor、Todo、Worker、Tool schema 或运行时实现。"
-        f"\n\n当前 planning working memory（只读 JSON）：\n{working_memory}"
+    parent_messages = _bounded_parent_messages(state)
+    transient_context = [
+        HumanMessage(
+            content=working_memory,
+            name=PLANNING_WORKING_MEMORY_MESSAGE_NAME,
+            additional_kwargs={
+                PLANNING_WORKING_MEMORY_MARKER_KEY: (
+                    PLANNING_WORKING_MEMORY_MARKER_VALUE
+                ),
+            },
+        ),
+        memory_context_message(tuple(state.get("memory_context", ()))),
+        trusted_runtime_facts_message(state.get("trusted_runtime_facts")),
+    ]
+    return [
+        _planning_system_message(state, context, catalog),
+        *_insert_before_latest_human(
+            parent_messages,
+            [message for message in transient_context if message is not None],
+        ),
+    ]
+
+
+def _planning_system_message(
+    _state: PlanningState,
+    _context: AssistantRunContext,
+    _catalog: SkillCatalog,
+) -> SystemMessage:
+    """Build the planning prompt afresh for each Supervisor model call."""
+
+    return SystemMessage(content=WRITE_TODOS_SYSTEM_PROMPT)
+
+
+def _insert_before_latest_human(
+    messages: Sequence[Any], transient: Sequence[HumanMessage]
+) -> list[Any]:
+    latest_human_index = next(
+        (
+            index
+            for index in range(len(messages) - 1, -1, -1)
+            if isinstance(messages[index], HumanMessage)
+        ),
+        None,
     )
-    return [SystemMessage(content=prompt), *_bounded_parent_messages(state)]
+    if latest_human_index is None:
+        return list(messages)
+    return [
+        *messages[:latest_human_index],
+        *transient,
+        *messages[latest_human_index:],
+    ]
 
 
 def _bounded_parent_messages(state: PlanningState) -> list[Any]:
@@ -421,11 +464,19 @@ def _render_working_memory(payload: Mapping[str, object]) -> str:
             for todo_id, result in payload.get("worker_results", {}).items()
             if isinstance(result, Mapping)
         },
-        "memory_context": [
-            str(item)[:512] for item in payload.get("memory_context", [])
-        ][:32],
-        "memory_status": payload.get("memory_status", "empty"),
-        "trusted_runtime_facts": payload.get("trusted_runtime_facts", {}),
+        "available_skills": [
+            {
+                "skill_id": str(item["skill_id"]),
+                "description": str(item["description"])[:512],
+            }
+            for item in payload.get("available_skills", [])
+            if isinstance(item, Mapping)
+        ],
+        "active_skills": [
+            {**item, "content": str(item["content"])[:512]}
+            for item in payload.get("active_skills", [])
+            if isinstance(item, Mapping)
+        ],
         "loaded_references": [
             {**item, "content": str(item["content"])[:512]}
             for item in payload.get("loaded_references", [])
@@ -539,6 +590,22 @@ def _authorized_loaded_skill_references(
         for skill_id, reference_id in observed
         if skill_id in active and reference_id in grants.get(skill_id, ())
     }
+
+
+def _read_active_skill_payload(
+    state: PlanningState,
+    catalog: SkillCatalog,
+) -> list[dict[str, str]]:
+    """Re-read active Skill instructions from the trusted catalog."""
+
+    descriptors = {item.name: item for item in catalog.descriptors}
+    payload: list[dict[str, str]] = []
+    for skill_id in state.get("active_skill_ids", ()):
+        descriptor = descriptors.get(skill_id)
+        if descriptor is None:
+            raise ValueError(f"active skill is no longer registered: {skill_id}")
+        payload.append({"skill_id": skill_id, "content": descriptor.body})
+    return payload
 
 
 def _read_reference_payload(

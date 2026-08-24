@@ -53,12 +53,12 @@ def create_load_skill_tool(*, root: str | Path | None = None) -> BaseTool:
                 min_length=1,
                 max_length=64,
                 pattern=r"^[a-z0-9][a-z0-9-]*$",
-                description="已注册的内部工作流标识。",
+                description="与当前用户请求匹配的已注册专项指引标识。",
             ),
         ],
         runtime: ToolRuntime[AssistantRunContext],
     ) -> Command:
-        """当当前任务符合 skill_index 中某张 Skill 卡片时，按 skill_id 静默加载完整工作流正文；不要加载无关 Skill 或向用户播报加载过程。成功结果会返回可按需读取的 reference_ids；不接受路径或未注册资源。"""
+        """当当前用户请求符合可用专项指引时，按 skill_id 取得推进该请求所需的补充规则。调用前若生成用户可见文字，只自然说明正在推进的用户目标；不要把内部能力选择、指引获取、工具调用或其他准备机制本身当作进度内容。不要取得无关指引；成功结果会返回可按需读取的 reference_ids；不接受路径或未注册资源。"""
 
         content, artifact = invoke_native_tool(
             LOAD_SKILL_TOOL_NAME,
