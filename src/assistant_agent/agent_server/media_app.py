@@ -610,11 +610,16 @@ async def _handle_frame(
                 ),
             )
             if video_archive is not None:
-                video_archive.open_session(
+                archive_enabled = video_archive.open_session(
                     connection_id=session.connection_id,
                     user_id=authenticated_identity,
                     session_id=thread_id,
                 )
+                if not archive_enabled:
+                    logger.warning(
+                        "remote_visual_memory_connection_capacity connection=%s",
+                        session.connection_id,
+                    )
         await artifact_hub.register(
             session_id=thread_id,
             subscriber_id=session.connection_id,
@@ -865,17 +870,24 @@ async def _handle_frame(
             )
         if video_archive is not None:
             frame_rate = _positive_float(video_config.get("frameRate"), 25.0)
-            for _packet_video_index, video_content, config, captured_at in packets:
-                archived = video_archive.enqueue_frame(
-                    connection_id=session.connection_id,
-                    h264_bytes=validate_h264_bytes(video_content, config),
-                    captured_at=captured_at,
-                    frame_rate=frame_rate,
+            archive_frames = tuple(
+                (
+                    validate_h264_bytes(video_content, config),
+                    captured_at,
+                    frame_rate,
                 )
-                if not archived:
-                    raise MediaProtocolError(
-                        "video archive backlog is full; frame was not accepted"
-                    )
+                for _packet_video_index, video_content, config, captured_at in packets
+            )
+            archived = video_archive.enqueue_frames(
+                connection_id=session.connection_id,
+                frames=archive_frames,
+            )
+            if not archived:
+                logger.warning(
+                    "remote_visual_memory_archive_degraded connection=%s packets=%s",
+                    session.connection_id,
+                    len(archive_frames),
+                )
         accepted = visual_perception.enqueue_video(
             lambda: _ingest_video_packets(
                 websocket,

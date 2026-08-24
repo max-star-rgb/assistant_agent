@@ -55,8 +55,8 @@ Content-Type: application/json
 ```
 
 只有 `completed` 才撤销 URL 并删除本机 MP4。完成切片在调度后台上传前先写入本机 SQLite manifest，Agent
-Server lifespan 重启后以同一稳定 `file_id` 重新提交。归档或远端依赖失败不影响实时视觉与 chat run；但若
-连接级归档积压超过受控字节预算，该视频帧会被明确拒绝而不会伪造成功 ACK。
+Server lifespan 重启后以同一稳定 `file_id` 重新提交。归档、容量或远端依赖失败只降级历史视觉记忆，不影响
+视频 ACK、实时视觉或 chat run。
 
 ### 视觉记忆召回
 
