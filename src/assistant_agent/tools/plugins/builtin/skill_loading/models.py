@@ -1,8 +1,6 @@
 """Contracts for governed project Skill loading."""
 
-from typing import Literal
-
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 
 class LoadSkillRequest(BaseModel):
@@ -23,25 +21,11 @@ class LoadSkillReferenceRequest(LoadSkillRequest):
     )
 
 
-class SkillCapabilityActivation(BaseModel):
-    """Phase-neutral capability activation produced by one loaded Skill."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
-    projection: Literal["phase_aware"] = "phase_aware"
-    tool_names: tuple[str, ...] = Field(default=(), max_length=128)
-
-
 class LoadSkillResult(BaseModel):
     status: str
     skill_id: str
     content: str
     reference_ids: list[str] = Field(default_factory=list)
-    capability_activation: SkillCapabilityActivation
-    # Compatibility-only artifact field. Model-facing observations use the
-    # explicit phase-aware activation contract above.
-    granted_tools: list[str] = Field(default_factory=list)
-    unavailable_tools: list[str] = Field(default_factory=list)
 
 
 class LoadSkillReferenceResult(BaseModel):

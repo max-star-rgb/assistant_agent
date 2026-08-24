@@ -316,8 +316,8 @@ def render_assistant_system_prompt(
     skill_guidance = (
         "\n\n可按需加载的专业流程：\n"
         f"{skill_lines}\n"
-        "当请求明确匹配其中某项时，必须先调用 load_skill 激活完整说明与分阶段能力；"
-        "fast 阶段可使用激活后的业务工具，planner 阶段只能把能力委派给 worker；"
+        "当请求明确匹配其中某项时，必须先调用 load_skill 阅读完整说明；"
+        "业务工具的可见范围由系统根据已加载 Skill 和当前阶段确定，planner 只能把可见能力委派给 worker；"
         "不得用模型原生联网搜索替代该 Skill 明确要求的业务工具。"
         if skill_lines
         else ""

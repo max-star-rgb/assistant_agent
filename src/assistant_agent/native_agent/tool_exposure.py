@@ -2,25 +2,21 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
-from typing import Any
+from collections.abc import Awaitable, Callable
 
 from langchain.agents.middleware import ModelRequest
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     ModelResponse,
-    ToolCallRequest,
 )
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage
 from langchain_core.tools import BaseTool
-from langgraph.types import Command
 
 from assistant_agent.skills.loading import SkillCatalog, SkillDescriptor
-from assistant_agent.tools.ids import LOAD_SKILL_TOOL_NAME
 
 
 class ProgressiveToolExposureMiddleware(AgentMiddleware):
-    """Expose Skill-governed Tool schemas only after trusted Skill activation."""
+    """Project pre-registered Tool schemas from trusted loaded-Skill state."""
 
     def __init__(self, catalog: SkillCatalog) -> None:
         super().__init__()
@@ -50,23 +46,6 @@ class ProgressiveToolExposureMiddleware(AgentMiddleware):
     ) -> ModelResponse | AIMessage:
         return await handler(self._request_with_visible_tools(request))
 
-    def wrap_tool_call(
-        self,
-        request: ToolCallRequest,
-        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
-    ) -> ToolMessage | Command[Any]:
-        return self._activation_update(request, handler(request))
-
-    async def awrap_tool_call(
-        self,
-        request: ToolCallRequest,
-        handler: Callable[
-            [ToolCallRequest],
-            Awaitable[ToolMessage | Command[Any]],
-        ],
-    ) -> ToolMessage | Command[Any]:
-        return self._activation_update(request, await handler(request))
-
     def _request_with_visible_tools(self, request: ModelRequest) -> ModelRequest:
         active_skill_ids = _string_values(request.state.get("active_skill_ids"))
         granted_tool_names = {
@@ -84,37 +63,10 @@ class ProgressiveToolExposureMiddleware(AgentMiddleware):
         ]
         return request.override(tools=visible_tools)
 
-    def _activation_update(
-        self,
-        request: ToolCallRequest,
-        result: ToolMessage | Command[Any],
-    ) -> ToolMessage | Command[Any]:
-        if request.tool_call.get("name") != LOAD_SKILL_TOOL_NAME:
-            return result
-        if not isinstance(result, ToolMessage) or result.status == "error":
-            return result
-        artifact = result.artifact
-        if not isinstance(artifact, Mapping) or artifact.get("status") != "succeeded":
-            return result
-        skill_id = artifact.get("skill_id")
-        requested_skill_id = request.tool_call.get("args", {}).get("skill_id")
-        if not isinstance(skill_id, str) or skill_id != requested_skill_id:
-            return result
-        descriptor = self._descriptors.get(skill_id)
-        if descriptor is None:
-            return result
-        return Command(
-            update={
-                "messages": [result],
-                "active_skill_ids": [skill_id],
-                "skill_reference_grants": {
-                    skill_id: sorted(descriptor.references),
-                },
-            }
-        )
 
-
-def discoverable_skill_descriptors(catalog: SkillCatalog) -> tuple[SkillDescriptor, ...]:
+def discoverable_skill_descriptors(
+    catalog: SkillCatalog,
+) -> tuple[SkillDescriptor, ...]:
     """Return the trusted L0 index entries available to model-driven loading."""
 
     return tuple(

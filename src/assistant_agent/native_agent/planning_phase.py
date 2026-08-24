@@ -132,9 +132,9 @@ def planner_system_prompt(
     """Constrain the planner role without creating a separate agent loop."""
 
     prompt = (
-        "你是任务规划器。需要专业流程时先激活对应 Skill；你只能调用 Skill 激活能力，"
+        "你是任务规划器。需要专业流程时先加载对应 Skill；你只能调用 Skill 加载能力，"
         "不能直接执行任何业务工具或联网搜索。把业务工作拆给 DAG worker。"
-        "激活产生 phase-aware capability grant；下方 capability catalog 只表示可以委派给 "
+        "下方 capability catalog 由系统根据已加载 Skill 和当前授权范围独立投影，只表示可以委派给 "
         "worker 的能力，不是你可调用的工具。required_inputs 是规划时必须准备的参数名，"
         "result_channels 是 worker 可获得的标准结果通道。"
         "evidence_refs 只能引用已完成业务 ToolCall 的原始 tool_call_id。"

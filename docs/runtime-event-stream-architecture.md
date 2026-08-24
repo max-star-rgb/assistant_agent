@@ -108,9 +108,10 @@ messages channel 和官方 middleware，不维护项目自建 assistant/tool loo
 planning 分支是显式 `AssistantPlanningGraph`：production composition 从 `max_tool_iterations` 构造唯一
 `PlanningBudgetPolicy`，并把同一实例注入共享 fast agent 与 planning graph；该 policy 是受信进程配置，不进入
 公开 Graph input。planner 可在共享的 model→ToolNode→model loop 中调用上述 Skill 控制 Tool；成功
-`load_skill` 同时加载指导正文并产生 phase-aware capability activation；active Skill/reference grant 随 planning
-state reducer 保存。该 activation 不承诺当前 phase 可直接调用业务 Tool：fast phase 把它投影为可调用 Tool schema，
-planner phase 只把它投影为不可执行的有界 worker capability catalog，worker phase 则只在计划准入后按节点
+`load_skill` 只加载指导正文与 reference，并通过 Tool 原生返回的 `Command(update=...)` 把 active Skill/reference
+state 交给既有 `ToolNode` 和 planning state reducer 保存；其 Tool observation/artifact 不携带 Tool capability。
+独立 exposure middleware 在后续原生 model-call hook 中按 phase 投影业务 Tool：fast phase 获得可调用 Tool schema，
+planner phase 只获得不可执行的有界 worker capability catalog，worker phase 则只在计划准入后按节点
 allowlist 与 Skill grant 的交集获得可调用 schema。capability catalog 不暴露完整参数 schema，只机械提供 Tool 名称、
 effect、短用途、必填参数名以及标准 `content|artifact` 结果通道，供 planner 进行委派和数据依赖拆分；
 未加载 Skill 时被治理的能力不出现，默认业务能力可列入 catalog，但都只能写进 worker 节点 allowlist。planner

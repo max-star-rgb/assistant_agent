@@ -22,14 +22,16 @@
 discovery 或 Registry lookup。
 
 进程 composition 仍把完整静态 `BaseTool` inventory 注册给 `create_agent` / `ToolNode`，但完整注册不等于每次
-模型调用全部可见。`ProgressiveToolExposureMiddleware` 在原生 `wrap_model_call` 中按受信 Skill manifest 和
+模型调用全部可见。`ProgressiveToolExposureMiddleware` 只使用原生 `wrap_model_call`，按受信 Skill manifest 和
 fast agent 子图当前执行的 state/checkpoint namespace 内 `active_skill_ids` 缩小 `ModelRequest.tools`：
 未加载 Skill 时，其 `governed_tools` schema 不发给
-模型；成功执行 `load_skill` 后，middleware 把原 `ToolMessage` 与窄 Skill/reference grant 一起写入标准
-`Command(update=...)`，下一次模型调用才暴露对应 Tool。Skill/reference channel 不进入父图或 Memory
-Graph。Tool 名只从 `skill.toml` 重新解析，不接受模型或 Tool
+模型；它不处理 `load_skill` 的 Tool 调用或结果。`load_skill` 自身只加载指导正文与 reference，并按 LangGraph
+原生 Tool state-update 契约直接返回包含标准 `ToolMessage` 的 `Command(update=...)`，由既有 `ToolNode` 把
+`active_skill_ids` 与窄 `skill_reference_grants` 写入 state；Tool observation/artifact 不返回 Tool 名或 capability
+grant。下一次模型调用时，独立 exposure middleware 才从 state 与 composition 注入的受信 catalog 机械派生可见
+Tool schema。Skill/reference channel 不进入父图或 Memory Graph。Tool 名只从 `skill.toml` 重新解析，不接受模型或 Tool
 artifact 声明任意 grant；该可见性层不替代具体 Tool 的身份、授权、参数和副作用校验。fast phase 在 Skill
-激活后可获得对应业务 Tool schema；planning 的 Planner phase 则始终只可调用 `load_skill` 与
+加载后可获得对应业务 Tool schema；planning 的 Planner phase 则始终只可调用 `load_skill` 与
 `load_skill_reference` 两个 Skill 控制 Tool，不能执行默认可见或 Skill 治理的业务 Tool。admission 与 worker phase
 都禁止 worker 调用 `load_skill`，避免 worker 扩大 Planner 冻结的 Skill 快照。worker 可显式调用
 `load_skill_reference`，但 ToolContext 只读取 scheduler 投影的既有
@@ -40,10 +42,9 @@ planning 不另建 Planner Tool executor。Planner 以 `agent_phase="planner"` �
 收窄到上述两个控制 Tool，并关闭 Provider-native search。Planner 只能通过标准 `ToolNode` 加载 Skill 正文或
 已授权 reference；业务执行从计划准入后才进入 worker。
 
-成功的 `load_skill` 通过标准 `Command(update=...)` 写入受信 `active_skill_ids` 和 reference grant，并在标准 Tool
-artifact 中返回 `capability_activation={projection: phase_aware, tool_names: [...]}`。该字段表示 Skill 激活产生能力授权，
-不表示当前 phase 可立即调用业务 Tool；历史 `granted_tools` 只作为完整 artifact 的兼容字段保留，不再进入模型观察。
-后续 Planner model call 会从同一受信 catalog 将对应完整 Skill 正文加入 system prompt，并把当前渐进式投影中的业务
+成功的 `load_skill` 通过 Tool 返回的标准 `Command(update=...)` 写入受信 `active_skill_ids` 和 reference grant；
+其模型观察与 artifact 只包含 Skill 指导、Skill/reference 标识和加载状态，不包含 Tool capability。后续 Planner
+model call 会从同一受信 catalog 将对应完整 Skill 正文加入 system prompt；独立 exposure middleware 再把当前渐进式投影中的业务
 能力转换为不可执行的有界 worker capability catalog。Planner 只用其中的 Tool 名称、effect、短用途、必填参数名和
 标准 `content|artifact` 结果通道做委派；完整 Tool schema 仅在计划准入后按节点 allowlist 与 Skill grant 的交集投影给
 worker。首次成功 admission

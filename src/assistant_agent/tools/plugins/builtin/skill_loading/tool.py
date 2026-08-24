@@ -5,8 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated, Any
 
+from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, tool
 from langgraph.prebuilt import ToolRuntime
+from langgraph.types import Command
 from pydantic import Field
 
 from assistant_agent.native_agent.context import AssistantRunContext
@@ -31,7 +33,6 @@ from assistant_agent.tools.plugins.builtin.skill_loading.models import (
     LoadSkillReferenceResult,
     LoadSkillRequest,
     LoadSkillResult,
-    SkillCapabilityActivation,
 )
 from assistant_agent.tools.runtime import ToolContext, tool_context
 
@@ -40,11 +41,11 @@ MAX_SKILL_REFERENCE_CHARS = 20_000
 
 
 def create_load_skill_tool(*, root: str | Path | None = None) -> BaseTool:
-    """Create the native Tool that activates one model-invocable Skill."""
+    """Create the native Tool that loads one model-invocable Skill."""
 
     resolved_root = Path(root).resolve() if root is not None else default_repo_root()
 
-    @tool(LOAD_SKILL_TOOL_NAME, response_format="content_and_artifact")
+    @tool(LOAD_SKILL_TOOL_NAME)
     def load_skill(
         skill_id: Annotated[
             str,
@@ -56,15 +57,31 @@ def create_load_skill_tool(*, root: str | Path | None = None) -> BaseTool:
             ),
         ],
         runtime: ToolRuntime[AssistantRunContext],
-    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """当当前任务符合 skill_index 中某张 Skill 卡片时，按 skill_id 静默激活完整工作流正文与分阶段能力；fast 可获得相应业务 Tool，planner 只能把能力委派给 worker。不要加载无关 Skill 或向用户播报激活过程。成功结果会返回可按需读取的 reference_ids；不接受路径或未注册资源。"""
+    ) -> Command:
+        """当当前任务符合 skill_index 中某张 Skill 卡片时，按 skill_id 静默加载完整工作流正文；不要加载无关 Skill 或向用户播报加载过程。成功结果会返回可按需读取的 reference_ids；不接受路径或未注册资源。"""
 
-        return invoke_native_tool(
+        content, artifact = invoke_native_tool(
             LOAD_SKILL_TOOL_NAME,
             lambda: _execute_load_skill(
                 resolved_root,
                 LoadSkillRequest(skill_id=skill_id),
             ),
+        )
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=content,
+                        artifact=artifact,
+                        name=LOAD_SKILL_TOOL_NAME,
+                        tool_call_id=runtime.tool_call_id,
+                    )
+                ],
+                "active_skill_ids": [skill_id],
+                "skill_reference_grants": {
+                    skill_id: list(artifact.get("reference_ids", ())),
+                },
+            }
         )
 
     return configure_builtin_tool(load_skill, "read")
@@ -128,10 +145,6 @@ def _execute_load_skill(root: Path, input: LoadSkillRequest) -> ToolResult:
         skill_id=descriptor.name,
         content=content,
         reference_ids=list(descriptor.references),
-        capability_activation=SkillCapabilityActivation(
-            tool_names=tuple(descriptor.governed_tools),
-        ),
-        granted_tools=list(descriptor.governed_tools),
     )
     data = result.model_dump(mode="json")
     return ToolResult(
@@ -140,23 +153,15 @@ def _execute_load_skill(root: Path, input: LoadSkillRequest) -> ToolResult:
         data=data,
         model_observation={
             "status": result.status,
-            "summary": "专业流程与分阶段能力已激活。",
+            "summary": "内部工作流已加载。",
             "skill_id": result.skill_id,
             "reference_ids": result.reference_ids,
-            "capability_activation": result.capability_activation.model_dump(
-                mode="json"
-            ),
-            "unavailable_tools": result.unavailable_tools,
         },
         trace_summary={
             "status": result.status,
             "skill_id": result.skill_id,
             "content_chars": len(result.content),
             "reference_count": len(result.reference_ids),
-            "capability_activation": result.capability_activation.model_dump(
-                mode="json"
-            ),
-            "unavailable_tools": result.unavailable_tools,
         },
     )
 
