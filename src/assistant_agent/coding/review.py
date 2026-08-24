@@ -53,7 +53,8 @@ def canonicalize_review_report(
         report_digest="0" * 64,
     )
     payload = unsigned.model_dump(mode="json", exclude={"report_digest"})
-    if len(_canonical_json(payload)) > MAX_REVIEW_REPORT_JSON_CHARS:
+    signed_payload = {**payload, "report_digest": "0" * 64}
+    if len(_canonical_json(signed_payload)) > MAX_REVIEW_REPORT_JSON_CHARS:
         raise ValueError("coding_review_report_limit_exceeded")
     return unsigned.model_copy(update={"report_digest": _canonical_digest(payload)})
 
@@ -69,7 +70,8 @@ def _validate_result(result: CodingReviewerResult, review_input: CodingReviewInp
     payload = result.model_dump(mode="json", exclude={"output_digest"})
     if result.output_digest != _canonical_digest(payload):
         raise ValueError("coding_review_contract_invalid")
-    if len(_canonical_json(payload)) > MAX_REVIEW_RESULT_JSON_CHARS:
+    signed_payload = result.model_dump(mode="json")
+    if len(_canonical_json(signed_payload)) > MAX_REVIEW_RESULT_JSON_CHARS:
         raise ValueError("coding_review_result_limit_exceeded")
     for finding in result.findings:
         if finding.task_id != result.task_id:
