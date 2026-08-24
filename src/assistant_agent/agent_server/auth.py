@@ -4,6 +4,13 @@ from __future__ import annotations
 
 from langgraph_sdk import Auth
 
+from assistant_agent.agent_server.config import (
+    ASSISTANT_EXECUTION_MODE_CONTEXT_KEY,
+    ASSISTANT_GRAPH_ID,
+    PLANNING_ASSISTANT_ID,
+    PLANNING_ASSISTANT_NAME,
+)
+
 
 auth = Auth()
 
@@ -52,6 +59,49 @@ async def allow_assistant_search(
 ) -> bool:
     _ = ctx, value
     return True
+
+
+@auth.on.assistants.create
+async def authorize_planning_assistant_create(
+    ctx: Auth.types.AuthContext,
+    value: Auth.types.on.assistants.create.value,
+) -> bool | None:
+    """Allow only the repository-owned planning preset assistant definition."""
+
+    del ctx
+    if str(value.get("assistant_id")) != PLANNING_ASSISTANT_ID:
+        return False
+    value["graph_id"] = ASSISTANT_GRAPH_ID
+    value["name"] = PLANNING_ASSISTANT_NAME
+    value["config"] = {}
+    value["context"] = {ASSISTANT_EXECUTION_MODE_CONTEXT_KEY: "planning"}
+    value["metadata"] = {
+        "assistant_agent_preset": "planning",
+        "managed_by": "assistant_agent",
+    }
+    value["if_exists"] = "do_nothing"
+    return None
+
+
+@auth.on.assistants.update
+async def authorize_planning_assistant_update(
+    ctx: Auth.types.AuthContext,
+    value: Auth.types.on.assistants.update.value,
+) -> bool | None:
+    """Keep updates confined to the repository-owned planning preset."""
+
+    del ctx
+    if str(value.get("assistant_id")) != PLANNING_ASSISTANT_ID:
+        return False
+    value["graph_id"] = ASSISTANT_GRAPH_ID
+    value["name"] = PLANNING_ASSISTANT_NAME
+    value["config"] = {}
+    value["context"] = {ASSISTANT_EXECUTION_MODE_CONTEXT_KEY: "planning"}
+    value["metadata"] = {
+        "assistant_agent_preset": "planning",
+        "managed_by": "assistant_agent",
+    }
+    return None
 
 
 @auth.on.threads.create
@@ -125,6 +175,8 @@ __all__ = [
     "allow_assistant_read",
     "allow_assistant_search",
     "authenticate",
+    "authorize_planning_assistant_create",
+    "authorize_planning_assistant_update",
     "authorize_run_create",
     "authorize_thread_create",
     "authorize_thread_delete",

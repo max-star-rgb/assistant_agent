@@ -146,6 +146,21 @@ operator 必须按 graph ID 枚举 v1 的 pending/interrupt runs，并逐个 dra
 部署迁移所需的 v1 drain/cancel 也不受该 guard 阻止。guard 接受每次调用的 expected graph ID，不把 v2
 硬编码成所有独立 Graph 的全局限制；Memory 等独立 Graph 在自己的运行边界使用自己的 graph ID。
 
+`assistant-native-v2` graph 下保留系统创建的同名默认 assistant，并增加一个固定 planning preset assistant：
+
+```text
+assistant_id: 4cf38057-6071-50ca-a565-98b7854d763e
+name: assistant-native-v2-planning
+graph_id: assistant-native-v2
+context.assistant_execution_mode: planning
+```
+
+它是同一 graph 的 Agent Server assistant 资源，不是第三张 graph，也不建立新的 Runtime 或 checkpoint schema。
+Studio 选择该 assistant 后，messages-only input 在 `execution_router` 归一化为 planning；默认 assistant 仍按公开
+input 的 `execution_mode` 路由并在省略时使用 fast。tokenless 本地 auth 只允许 create/update 上述固定 assistant ID，
+并把 graph、name、context 与 metadata 强制规范为仓库定义；任意其他 assistant 写入和 delete 继续由默认 deny
+拒绝。
+
 新 assistant 与 run 必须选择 `assistant-native-v2`，Studio 用户也必须切换到该新 graph ID。媒体确定性
 thread UUID 的 seed 包含 `assistant-native-v2`，因此同一 v2 connection 重连仍稳定，但不会命中旧 v1 UUID；即便
 命中一个外部指定的既有 ID，中央 metadata 校验仍然生效。CLI 的新 thread 与普通 `--thread-id` run 复用同一
@@ -167,8 +182,10 @@ Memory Graph 的严格输入只有标准
 messages；它由 Assistant Graph 通过 Agent Server SDK 调度，不向普通用户入口暴露 run type。
 认证用户唯一来自 Agent Server 原生
 `Runtime.server_info.user.identity`；`AssistantRunContext` 不复制用户或租户身份，只保存有默认值的
-入口 profile、媒体能力以及媒体入口在 chat 开始时签发的 opaque 视觉 capability token。执行模式不放入
-context；窗口内容不进入标准 messages/context，也不由模型或普通 Graph 输入提交。middleware 和 Tool 必须以
+入口 profile、媒体能力以及媒体入口在 chat 开始时签发的 opaque 视觉 capability token。每次 run 的公开
+`execution_mode` 不放入 context；只有上述服务端持久 assistant 资源可通过窄
+`assistant_execution_mode=planning` preset 覆盖 messages-only 默认值。窗口内容不进入标准 messages/context，
+也不由模型或普通 Graph 输入提交。middleware 和 Tool 必须以
 认证身份、thread 与 token 回到进程视觉模块解析冻结投影，伪造或过期 token 均 fail closed。
 
 ## 资源模型与 composition

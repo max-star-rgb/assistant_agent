@@ -30,7 +30,11 @@ AssistantRootGraph
 ```
 
 `execution_mode` 是结构化输入字段，只允许 `fast|planning|coding`；省略时按公开 input schema 默认使用 `fast`，以兼容
-Studio 的标准 messages-only run。路由函数不从用户文本、关键词、Tool 或 Memory 推断模式。父图不绑定 saver，
+Studio 的标准 messages-only run。同一 `assistant-native-v2` graph 还可由 Agent Server 中固定的
+`assistant-native-v2-planning` assistant 资源提供 `assistant_execution_mode=planning` context preset；
+`execution_router` 先把该 preset 规范化进 state，因此选择该 assistant 时即使 input schema 补入 fast 也固定进入
+planning。普通 assistant 没有 preset，仍完全遵循结构化 input。路由函数不从用户文本、关键词、Tool 或 Memory
+推断模式。父图不绑定 saver，
 由 LangGraph Agent Server 注入 checkpoint、thread、run、cancel、resume 与 Store 资源。
 
 coding 分支是显式 `AssistantCodingGraph`，只在结构化输入同时提供受信 allowlist 中的

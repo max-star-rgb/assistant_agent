@@ -145,11 +145,13 @@ def test_native_run_context_contains_capabilities_not_identity() -> None:
         }
     )
     assert set(type(context).model_fields) == {
+        "assistant_execution_mode",
         "entry_profile",
         "media_capabilities",
         "realtime_media_mode",
         "visual_capability_token",
     }
+    assert context.assistant_execution_mode is None
     assert context.realtime_media_mode == "none"
     assert context.media_capabilities == ("audio",)
 

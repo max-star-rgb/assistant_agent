@@ -8,6 +8,7 @@ from typing import Any
 from langchain_core.runnables import RunnableConfig
 from langgraph.errors import NodeError
 from langgraph.graph import END, START, StateGraph
+from langgraph.runtime import Runtime
 from langgraph.types import Command, RetryPolicy
 from langgraph_sdk import get_client
 
@@ -97,10 +98,16 @@ def build_assistant_root_graph(
     return builder.compile(name="AssistantRootGraph")
 
 
-def execution_router_node(_state: AssistantRootState) -> dict[str, object]:
-    """Expose one stable trace point before structured execution routing."""
+def execution_router_node(
+    state: AssistantRootState,
+    runtime: Runtime[AssistantRunContext],
+) -> dict[str, object]:
+    """Normalize an optional assistant-scoped planning preset into graph state."""
 
-    return {}
+    preset = runtime.context.assistant_execution_mode
+    if preset is None:
+        return {"execution_mode": state.get("execution_mode", "fast")}
+    return {"execution_mode": "planning"}
 
 
 def route_execution_mode(state: AssistantRootState) -> str:

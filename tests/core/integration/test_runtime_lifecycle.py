@@ -681,11 +681,13 @@ def test_public_input_separates_mode_from_non_identity_runtime_context() -> None
     assert value.execution_mode == "fast"
     assert "run_type" not in type(value).model_fields
     assert set(type(context).model_fields) == {
+        "assistant_execution_mode",
         "entry_profile",
         "media_capabilities",
         "realtime_media_mode",
         "visual_capability_token",
     }
+    assert context.assistant_execution_mode is None
     with pytest.raises(ValidationError):
         AssistantRootInput.model_validate(
             {"messages": [], "execution_mode": "legacy-sentinel"}
