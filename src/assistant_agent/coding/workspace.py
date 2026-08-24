@@ -84,6 +84,21 @@ class CodingWorkspaceError(RuntimeError):
         super().__init__(f"{code}: {message or 'coding workspace operation failed'}")
 
 
+class _AnalysisSnapshotManifestEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    path: str = Field(min_length=1, max_length=1_024)
+    kind: Literal["directory", "file"]
+    device: int = Field(ge=0)
+    inode: int = Field(ge=0)
+    mode: int = Field(ge=0)
+    size_bytes: int | None = Field(default=None, ge=0)
+    content_digest: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+
+
 class _AnalysisSnapshotMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -100,9 +115,18 @@ class _AnalysisSnapshotMetadata(BaseModel):
         default="0" * 64,
         pattern=r"^[0-9a-f]{64}$",
     )
+    materialization_manifest: tuple[_AnalysisSnapshotManifestEntry, ...] = ()
     status: CodingStatusResult
     diff: CodingDiffResult
     active_lease: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class _AnalysisSnapshotReadView:
+    workspace: CodingWorkspace
+    metadata: _AnalysisSnapshotMetadata
+    tree_descriptor: int
+    manifest: Mapping[str, _AnalysisSnapshotManifestEntry]
 
 
 @dataclass(slots=True)
@@ -449,14 +473,24 @@ class CodingWorkspaceService:
                 tree_root.mkdir(mode=0o700)
                 self._materialize_analysis_files(tree_root, current_files)
                 self._make_analysis_tree_read_only(tree_root)
+                manifest_digest, materialization_manifest = (
+                    self._analysis_snapshot_materialization_manifest(
+                        temporary_root,
+                        error_code="coding_analysis_snapshot_failed",
+                    )
+                )
+                metadata = metadata.model_copy(
+                    update={
+                        "materialization_manifest": materialization_manifest,
+                    }
+                )
                 metadata = metadata.model_copy(
                     update={
                         "materialization_digest": (
-                            self._analysis_snapshot_materialization_digest(
+                            self._analysis_snapshot_materialization_mac(
                                 snapshot,
                                 metadata,
-                                temporary_root,
-                                error_code="coding_analysis_snapshot_failed",
+                                manifest_digest,
                             )
                         )
                     }
@@ -554,7 +588,7 @@ class CodingWorkspaceService:
         thread_id: str,
         workspace: CodingWorkspace,
         require_active: bool,
-    ) -> None:
+    ) -> _AnalysisSnapshotMetadata:
         """Validate a checkpoint binding without recreating or renewing it."""
 
         snapshot_root = self._analysis_snapshot_root(snapshot)
@@ -592,6 +626,7 @@ class CodingWorkspaceService:
                 metadata,
                 snapshot_root,
             )
+            return metadata
 
     def release_analysis_snapshot(
         self,
@@ -642,9 +677,9 @@ class CodingWorkspaceService:
             identity=identity,
             thread_id=thread_id,
             workspace=workspace,
-        ) as snapshot_workspace:
-            return self.list_files(
-                snapshot_workspace,
+        ) as snapshot_view:
+            return self._list_analysis_snapshot_manifest(
+                snapshot_view,
                 path=path,
                 depth=depth,
                 cursor=cursor,
@@ -669,9 +704,9 @@ class CodingWorkspaceService:
             identity=identity,
             thread_id=thread_id,
             workspace=workspace,
-        ) as snapshot_workspace:
-            return self.search(
-                snapshot_workspace,
+        ) as snapshot_view:
+            return self._search_analysis_snapshot_manifest(
+                snapshot_view,
                 query=query,
                 paths=paths,
                 globs=globs,
@@ -695,13 +730,12 @@ class CodingWorkspaceService:
             identity=identity,
             thread_id=thread_id,
             workspace=workspace,
-        ) as snapshot_workspace:
-            return self._read_file(
-                snapshot_workspace,
+        ) as snapshot_view:
+            return self._read_analysis_snapshot_manifest(
+                snapshot_view,
                 path,
                 start_line=start_line,
                 end_line=end_line,
-                preserve_raw_newlines=True,
             )
 
     def status_analysis_snapshot(
@@ -717,8 +751,8 @@ class CodingWorkspaceService:
             identity=identity,
             thread_id=thread_id,
             workspace=workspace,
-        ):
-            return self._analysis_snapshot_metadata(snapshot).status
+        ) as snapshot_view:
+            return snapshot_view.metadata.status
 
     def diff_analysis_snapshot(
         self,
@@ -733,8 +767,8 @@ class CodingWorkspaceService:
             identity=identity,
             thread_id=thread_id,
             workspace=workspace,
-        ):
-            return self._analysis_snapshot_metadata(snapshot).diff
+        ) as snapshot_view:
+            return snapshot_view.metadata.diff
 
     @contextmanager
     def _analysis_snapshot_read_workspace(
@@ -744,7 +778,7 @@ class CodingWorkspaceService:
         identity: str,
         thread_id: str,
         workspace: CodingWorkspace,
-    ) -> Iterator[CodingWorkspace]:
+    ) -> Iterator[_AnalysisSnapshotReadView]:
         resolved = self.resolve_analysis_snapshot(
             snapshot,
             identity=identity,
@@ -789,7 +823,7 @@ class CodingWorkspaceService:
                 )
 
         try:
-            self.validate_analysis_snapshot(
+            metadata = self.validate_analysis_snapshot(
                 snapshot,
                 identity=identity,
                 thread_id=thread_id,
@@ -797,8 +831,19 @@ class CodingWorkspaceService:
                 require_active=True,
             )
             confirm_open_tree_is_current()
-            yield resolved.model_copy(
-                update={"root": Path(f"/proc/self/fd/{tree_descriptor}")}
+            manifest = {
+                entry.path: entry
+                for entry in metadata.materialization_manifest
+            }
+            if len(manifest) != len(metadata.materialization_manifest):
+                raise CodingWorkspaceError("coding_analysis_snapshot_mismatch")
+            yield _AnalysisSnapshotReadView(
+                workspace=resolved.model_copy(
+                    update={"root": Path(f"/proc/self/fd/{tree_descriptor}")}
+                ),
+                metadata=metadata,
+                tree_descriptor=tree_descriptor,
+                manifest=manifest,
             )
             self.validate_analysis_snapshot(
                 snapshot,
@@ -810,6 +855,328 @@ class CodingWorkspaceService:
             confirm_open_tree_is_current()
         finally:
             os.close(tree_descriptor)
+
+    def _normalize_analysis_snapshot_path(
+        self,
+        raw_path: str,
+        *,
+        allow_root: bool,
+    ) -> str:
+        normalized = str(raw_path).strip()
+        if allow_root and normalized in {"", "."}:
+            return ""
+        relative = Path(normalized)
+        if (
+            not normalized
+            or relative.is_absolute()
+            or any(part in {"", ".", ".."} for part in relative.parts)
+        ):
+            raise CodingWorkspaceError("path_invalid")
+        relative_posix = relative.as_posix()
+        if any(
+            fnmatchcase(relative_posix, pattern)
+            for pattern in self.policy.protected_globs
+        ):
+            raise CodingWorkspaceError("path_protected")
+        return relative_posix
+
+    @staticmethod
+    def _analysis_snapshot_entry_matches(
+        entry: _AnalysisSnapshotManifestEntry,
+        details: os.stat_result,
+    ) -> bool:
+        expected_type = (
+            stat.S_ISDIR(details.st_mode)
+            if entry.kind == "directory"
+            else stat.S_ISREG(details.st_mode)
+        )
+        return (
+            expected_type
+            and entry.device == details.st_dev
+            and entry.inode == details.st_ino
+            and entry.mode == stat.S_IMODE(details.st_mode)
+            and (
+                entry.kind == "directory"
+                or entry.size_bytes == details.st_size
+            )
+        )
+
+    def _open_analysis_snapshot_manifest_directory(
+        self,
+        view: _AnalysisSnapshotReadView,
+        components: tuple[str, ...],
+    ) -> int:
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        descriptor = os.dup(view.tree_descriptor)
+        try:
+            traversed: list[str] = []
+            for component in components:
+                traversed.append(component)
+                expected = view.manifest.get("/".join(traversed))
+                if expected is None or expected.kind != "directory":
+                    raise CodingWorkspaceError(
+                        "coding_analysis_snapshot_mismatch"
+                    )
+                initial = os.stat(
+                    component,
+                    dir_fd=descriptor,
+                    follow_symlinks=False,
+                )
+                opened = os.open(component, flags, dir_fd=descriptor)
+                opened_details = os.fstat(opened)
+                if (
+                    not self._analysis_snapshot_entry_matches(expected, initial)
+                    or not self._analysis_snapshot_entry_matches(
+                        expected,
+                        opened_details,
+                    )
+                ):
+                    os.close(opened)
+                    raise CodingWorkspaceError(
+                        "coding_analysis_snapshot_mismatch"
+                    )
+                os.close(descriptor)
+                descriptor = opened
+            return descriptor
+        except CodingWorkspaceError:
+            os.close(descriptor)
+            raise
+        except OSError as exc:
+            os.close(descriptor)
+            raise CodingWorkspaceError(
+                "coding_analysis_snapshot_mismatch"
+            ) from exc
+
+    def _read_analysis_snapshot_manifest_entry(
+        self,
+        view: _AnalysisSnapshotReadView,
+        entry: _AnalysisSnapshotManifestEntry,
+    ) -> bytes:
+        if (
+            entry.kind != "file"
+            or entry.size_bytes is None
+            or entry.content_digest is None
+        ):
+            raise CodingWorkspaceError("coding_analysis_snapshot_mismatch")
+        components = tuple(Path(entry.path).parts)
+        parent_descriptor = self._open_analysis_snapshot_manifest_directory(
+            view,
+            components[:-1],
+        )
+        descriptor = -1
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+        )
+        try:
+            initial = os.stat(
+                components[-1],
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            if not self._analysis_snapshot_entry_matches(entry, initial):
+                raise CodingWorkspaceError("coding_analysis_snapshot_mismatch")
+            descriptor = os.open(
+                components[-1],
+                flags,
+                dir_fd=parent_descriptor,
+            )
+            opened = os.fstat(descriptor)
+            if not self._analysis_snapshot_entry_matches(entry, opened):
+                raise CodingWorkspaceError("coding_analysis_snapshot_mismatch")
+            content = bytearray()
+            content_digest = hashlib.sha256()
+            while True:
+                chunk = os.read(descriptor, 65_536)
+                if not chunk:
+                    break
+                content.extend(chunk)
+                content_digest.update(chunk)
+                if len(content) > entry.size_bytes:
+                    raise CodingWorkspaceError(
+                        "coding_analysis_snapshot_mismatch"
+                    )
+            confirmed = os.fstat(descriptor)
+            if (
+                not self._analysis_snapshot_entry_matches(entry, confirmed)
+                or len(content) != entry.size_bytes
+                or not hmac.compare_digest(
+                    content_digest.hexdigest(),
+                    entry.content_digest,
+                )
+            ):
+                raise CodingWorkspaceError("coding_analysis_snapshot_mismatch")
+            return bytes(content)
+        except CodingWorkspaceError:
+            raise
+        except OSError as exc:
+            raise CodingWorkspaceError(
+                "coding_analysis_snapshot_mismatch"
+            ) from exc
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            os.close(parent_descriptor)
+
+    def _list_analysis_snapshot_manifest(
+        self,
+        view: _AnalysisSnapshotReadView,
+        *,
+        path: str,
+        depth: int,
+        cursor: int,
+        limit: int,
+    ) -> CodingListResult:
+        if depth < 1 or depth > 8 or cursor < 0 or limit < 1 or limit > 200:
+            raise CodingWorkspaceError("invalid_tool_input")
+        normalized = self._normalize_analysis_snapshot_path(
+            path,
+            allow_root=True,
+        )
+        if normalized:
+            root_entry = view.manifest.get(normalized)
+            if root_entry is None or root_entry.kind != "directory":
+                raise CodingWorkspaceError("path_invalid")
+        base_depth = len(Path(normalized).parts) if normalized else 0
+        prefix = f"{normalized}/" if normalized else ""
+        entries: list[CodingListEntry] = []
+        for entry in sorted(view.manifest.values(), key=lambda item: item.path):
+            if prefix and not entry.path.startswith(prefix):
+                continue
+            current_depth = len(Path(entry.path).parts) - base_depth
+            if current_depth < 1 or current_depth > depth:
+                continue
+            if entry.kind == "directory":
+                entries.append(CodingListEntry(path=entry.path, kind="directory"))
+            else:
+                if entry.size_bytes is None:
+                    raise CodingWorkspaceError(
+                        "coding_analysis_snapshot_mismatch"
+                    )
+                entries.append(
+                    CodingListEntry(
+                        path=entry.path,
+                        kind="file",
+                        size_bytes=entry.size_bytes,
+                    )
+                )
+        page = tuple(entries[cursor : cursor + limit])
+        next_cursor = (
+            cursor + len(page)
+            if cursor + len(page) < len(entries)
+            else None
+        )
+        return CodingListResult(entries=page, next_cursor=next_cursor)
+
+    def _read_analysis_snapshot_manifest(
+        self,
+        view: _AnalysisSnapshotReadView,
+        path: str,
+        *,
+        start_line: int,
+        end_line: int,
+    ) -> CodingReadResult:
+        if start_line < 1 or end_line < start_line or end_line - start_line > 2_000:
+            raise CodingWorkspaceError("invalid_tool_input")
+        normalized = self._normalize_analysis_snapshot_path(
+            path,
+            allow_root=False,
+        )
+        entry = view.manifest.get(normalized)
+        if entry is None or entry.kind != "file":
+            raise CodingWorkspaceError("path_invalid")
+        raw_content = self._read_analysis_snapshot_manifest_entry(view, entry)
+        try:
+            lines = raw_content.decode("utf-8").splitlines(keepends=True)
+        except UnicodeDecodeError as exc:
+            raise CodingWorkspaceError("file_encoding_unsupported") from exc
+        selected = lines[start_line - 1 : end_line]
+        actual_end = start_line + len(selected) - 1 if selected else start_line - 1
+        return CodingReadResult(
+            path=normalized,
+            content="".join(selected),
+            start_line=start_line,
+            end_line=actual_end,
+            total_lines=len(lines),
+            next_line=actual_end + 1 if actual_end < len(lines) else None,
+        )
+
+    def _search_analysis_snapshot_manifest(
+        self,
+        view: _AnalysisSnapshotReadView,
+        *,
+        query: str,
+        paths: tuple[str, ...],
+        globs: tuple[str, ...],
+        cursor: int,
+        limit: int,
+    ) -> CodingSearchResult:
+        if not query or len(query) > 1_000 or cursor < 0 or limit < 1 or limit > 200:
+            raise CodingWorkspaceError("invalid_tool_input")
+        roots: list[tuple[str, Literal["directory", "file"]]] = []
+        for raw_path in paths or ("",):
+            normalized = self._normalize_analysis_snapshot_path(
+                raw_path,
+                allow_root=True,
+            )
+            if not normalized:
+                roots.append(("", "directory"))
+                continue
+            entry = view.manifest.get(normalized)
+            if entry is None:
+                raise CodingWorkspaceError("path_invalid")
+            roots.append((normalized, entry.kind))
+
+        candidates: dict[str, _AnalysisSnapshotManifestEntry] = {}
+        for entry in view.manifest.values():
+            if entry.kind != "file":
+                continue
+            for root_path, root_kind in roots:
+                if (
+                    (root_kind == "file" and entry.path == root_path)
+                    or (
+                        root_kind == "directory"
+                        and (
+                            not root_path
+                            or entry.path.startswith(f"{root_path}/")
+                        )
+                    )
+                ):
+                    candidates[entry.path] = entry
+                    break
+
+        matches: list[CodingSearchMatch] = []
+        for relative, entry in sorted(candidates.items()):
+            if globs and not any(
+                fnmatchcase(relative, pattern) for pattern in globs
+            ):
+                continue
+            raw_content = self._read_analysis_snapshot_manifest_entry(view, entry)
+            try:
+                lines = raw_content.decode("utf-8").splitlines()
+            except UnicodeDecodeError:
+                continue
+            for line_number, line in enumerate(lines, start=1):
+                if query in line:
+                    matches.append(
+                        CodingSearchMatch(
+                            path=relative,
+                            line_number=line_number,
+                            line=line[:2_000],
+                        )
+                    )
+        page = tuple(matches[cursor : cursor + limit])
+        next_cursor = (
+            cursor + len(page)
+            if cursor + len(page) < len(matches)
+            else None
+        )
+        return CodingSearchResult(matches=page, next_cursor=next_cursor)
 
     def list_files(
         self,
@@ -1386,10 +1753,24 @@ class CodingWorkspaceService:
         *,
         error_code: str,
     ) -> str:
-        manifest_digest = self._analysis_snapshot_materialization_manifest(
+        manifest_digest, manifest = self._analysis_snapshot_materialization_manifest(
             snapshot_root,
             error_code=error_code,
         )
+        if metadata.materialization_manifest != manifest:
+            raise CodingWorkspaceError(error_code)
+        return self._analysis_snapshot_materialization_mac(
+            snapshot,
+            metadata,
+            manifest_digest,
+        )
+
+    def _analysis_snapshot_materialization_mac(
+        self,
+        snapshot: CodingAnalysisSnapshot,
+        metadata: _AnalysisSnapshotMetadata,
+        manifest_digest: str,
+    ) -> str:
         payload = json.dumps(
             {
                 "schema": "coding-analysis-materialization-v1",
@@ -1401,6 +1782,10 @@ class CodingWorkspaceService:
                 "tree_object": metadata.tree_object,
                 "status": metadata.status.model_dump(mode="json"),
                 "diff": metadata.diff.model_dump(mode="json"),
+                "materialization_manifest": [
+                    entry.model_dump(mode="json")
+                    for entry in metadata.materialization_manifest
+                ],
                 "manifest_digest": manifest_digest,
             },
             sort_keys=True,
@@ -1413,7 +1798,7 @@ class CodingWorkspaceService:
         snapshot_root: Path,
         *,
         error_code: str,
-    ) -> str:
+    ) -> tuple[str, tuple[_AnalysisSnapshotManifestEntry, ...]]:
         directory_flags = (
             os.O_RDONLY
             | getattr(os, "O_DIRECTORY", 0)
@@ -1427,6 +1812,7 @@ class CodingWorkspaceService:
         parent_descriptor = root_descriptor = tree_descriptor = -1
         budget = _AnalysisScanBudget(self.config)
         digest = hashlib.sha256()
+        manifest: list[_AnalysisSnapshotManifestEntry] = []
 
         def fail(exc: BaseException | None = None) -> None:
             if exc is None:
@@ -1562,6 +1948,15 @@ class CodingWorkspaceService:
                             include(details.st_dev)
                             include(details.st_ino)
                             include(stat.S_IMODE(details.st_mode))
+                            manifest.append(
+                                _AnalysisSnapshotManifestEntry(
+                                    path=relative_path,
+                                    kind="directory",
+                                    device=details.st_dev,
+                                    inode=details.st_ino,
+                                    mode=stat.S_IMODE(details.st_mode),
+                                )
+                            )
                             pending.append(path_components)
                             continue
                         if not stat.S_ISREG(initial.st_mode):
@@ -1598,6 +1993,17 @@ class CodingWorkspaceService:
                         include(stat.S_IMODE(confirmed.st_mode))
                         include(total_bytes)
                         include(content_digest.digest())
+                        manifest.append(
+                            _AnalysisSnapshotManifestEntry(
+                                path=relative_path,
+                                kind="file",
+                                device=confirmed.st_dev,
+                                inode=confirmed.st_ino,
+                                mode=stat.S_IMODE(confirmed.st_mode),
+                                size_bytes=total_bytes,
+                                content_digest=content_digest.hexdigest(),
+                            )
+                        )
                     finally:
                         os.close(parent)
 
@@ -1616,7 +2022,7 @@ class CodingWorkspaceService:
                 current_root,
             ):
                 fail()
-            return digest.hexdigest()
+            return digest.hexdigest(), tuple(manifest)
         except CodingWorkspaceError:
             raise
         except (OSError, ValueError) as exc:
