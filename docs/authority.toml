@@ -82,6 +82,9 @@ source_globs = [
   "src/assistant_agent/native_agent/state.py",
   "src/assistant_agent/native_agent/models.py",
   "src/assistant_agent/native_agent/coding_graph.py",
+  "src/assistant_agent/native_agent/coding_phase.py",
+  "src/assistant_agent/coding/analysis.py",
+  "src/assistant_agent/coding/models.py",
 ]
 thin_references = ["README.md", "docs/agent-server-architecture.md"]
 verification = [

@@ -21,12 +21,39 @@ source repository 只能从服务端 JSON allowlist 通过 opaque `coding_repo_i
 `user.identity + thread_id + repo_id` 解析到独立临时 Git worktree，workspace ref 使用服务端 HMAC 派生，
 metadata、锁和 TTL 位于受管 workspace root，不进入 Graph state。
 
+每个 repository 的 `parallel_analysis_enabled` 也是服务端静态配置且默认关闭。显式启用时，同一 process-owned
+`CodingWorkspaceService` 在首次 draft 前创建内容寻址、只读、identity/thread/workspace 绑定的 analysis snapshot；
+snapshot 覆盖创建时允许访问的已跟踪修改和新增文本文件，不修改真实 worktree 或 Git index。三个原生 `Send`
+worker 只借用 snapshot-bound read 接口。join 后 owner 释放 active lease；释放清理失败只登记
+`cleanup_pending`，已释放 snapshot 仍保留到 TTL，并由 workspace owner 的受管 reaper 清理过期、构建残留或隔离
+异常目录。process owner 在 coding 启用时启动唯一有界周期 reaper，每轮只从增量 `scandir` cursor 读取配置上限内的
+management root/snapshot entry，不预收集或排序完整目录；root traversal 与每个 workspace 的固定大小 directory cookie
+保证跨任意数量 workspace 的有界轮转，目录消失与 shutdown 都会关闭并清除对应句柄。该周期入口只删除
+`analysis-snapshots` 下的受管目录，不调用 Git、不删除 workspace repo，也不读取或修改 `.git/worktrees` admin metadata。
+workspace TTL 仍沿用 resolve 触发的既有 `cleanup_expired()` 生命周期。`aclose` 会取消该 task 并执行一次安全有界的
+snapshot-only 清理；它不创建 Graph、run 或第二套 Runtime。pending checkpoint
+恢复严格校验既有物理 snapshot，过期、身份或 digest 不匹配时不静默重建；join 后的 approval/repair resume 只校验
+checkpoint contract 与 workspace/base，不要求 released snapshot 仍在物理 TTL 内，因此 snapshot 不是 mutation gate。
+
+所有 workspace、snapshot 与 integration Git 子进程都设置 `GIT_NO_LAZY_FETCH=1`、关闭 credential prompt 和 system/
+global config；partial/promisor repository 缺少本地对象时稳定 fail closed，不允许 Git 隐式 lazy fetch。analysis diff
+在临时 bare `GIT_DIR` 中只通过受管 object directory/alternate 读取两棵 tree，隔离 source repository 的 local config 与
+`info/attributes`；同时固定 full object index、Myers、order file、inter-hunk context、quotePath、prefix、rename、
+textconv 与 external-diff 参数，因此同一 baseline/current tree 的 digest 只由 tree object 与固定协议决定。snapshot
+scanner 使用增量 `scandir`，每取得一个 entry 就以 O(1) 累计 visited entry、directory、attempted/read bytes 与
+included file/bytes 硬限制；不会在预算前收集或排序单目录全部 entry。protected、non-UTF-8、unreadable 和 oversize
+entry 也消耗扫描预算，Git baseline index 输出同样按 scan entry/byte 上限约束，不能用最终被排除的文件绕过资源上限。
+
 Graph checkpoint 只保存 opaque workspace ref、base commit、proposal/validation、结构化 repair
-failure evidence/history/digests 和结构化结果，不保存完整命令日志、宿主路径、Git client、文件句柄或进程
-对象。repair evidence 仅含有界命令投影及其 digest，模型使用的临时 context 不写入对话
+failure evidence/history/digests、opaque analysis snapshot contract、有界规范化 analysis result/status 和结构化结果，
+不保存完整命令日志、snapshot 或 workspace 宿主路径、Git client/process、backend client、文件句柄或进程对象。
+analysis worker transcript 与临时 task/context 不进入主对话 `messages`；repair evidence 仅含有界命令投影及其
+digest，模型使用的临时 context 也不写入对话
 `messages`。interrupt/resume 由 Agent Server/LangGraph 原生所有；resume 时 backend 重新校验唯一认证
 身份、thread、base commit、目标文件 digest、patch digest 与 repair 累计 diff digests，项目不保存
-平行 resume 机制。integration 默认关闭，且只在最终一轮完整 validation gates 通过后才能进入；
+平行 resume 机制。analysis 的 `partial|unavailable` 只降低 advisory evidence 质量；repair、patch、dependency、
+credential、artifact 与 merge approval resume 不重跑已完成分析，所有 mutation 仍由同一顺序治理 lane 执行。
+integration 默认关闭，且只在最终一轮完整 validation gates 通过后才能进入；
 关闭时终态保留 worktree 到 TTL，不 commit、merge、push 或写回 source repository。
 
 repository 可独立显式启用本地 Docker sandbox。Agent Server process owner 只构造一份
@@ -281,3 +308,53 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
   tests/core/contract/test_gateway_contract.py \
   tests/core/integration/test_runtime_lifecycle.py
 ```
+
+### Stage5B snapshot bounded-enumeration addendum
+
+Coding analysis 的 baseline index 不得通过 `subprocess.run(capture_output=True)` 物化完整
+`git ls-files -z` 输出。实现使用受治理的 `Popen` stdout 分块读取和跨 chunk NUL record
+解析，在读取及 record 边界即时消耗 scan bytes/entries；达到硬限后立即终止并回收 Git
+子进程，stderr 只保留固定上限。源仓库 object format 必须通过禁 lazy fetch、禁 credential
+prompt、隔离 system/global config 的 `git rev-parse --show-object-format` 获得，并且只接受
+`sha1` 或 `sha256`；canonical bare metadata 根据该枚举生成全新 config，不复制源仓库 config。
+
+周期 reaper 只保留常数数量的 root traversal 与单一 active snapshot deletion cursor；每个 round 对当前
+management root 只读取固定 snapshot child slice 后立即推进下一个 root，各 workspace 的固定大小 directory
+cookie 保存 snapshot 枚举进度，从而对任意数量 workspace 保持 eventual progress。过期 snapshot 目录先在其
+`analysis-snapshots` 父目录内 atomic rename 为固定前缀 tombstone，再由跨轮单一增量 DFS cursor 按共享
+entry/time budget 执行 `scandir`、`unlink` 与 `rmdir`；不得把任意大小 snapshot 目录作为一次 `rmtree`
+操作。DFS 每轮从受管 `analysis-snapshots` parent dirfd 重新开始，只以 relative component、directory cookie
+和 expected device/inode 保存有界跨轮状态，不跨轮持有 fd、Path iterator 或 `scandir` handle；每层必须通过
+`openat(O_DIRECTORY|O_NOFOLLOW)` 与 `fstat` 复核，所有 `stat`、`unlink`、`rmdir` 都使用 parent dirfd-relative
+操作，并在 mutation 前重新校验完整 ancestor/target inode chain。root 或 nested replacement 必须 fail closed，
+不得跟随 symlink 或操作受管 parent 之外的对象。workspace root 消失、进程关闭或 traversal 重置时必须关闭并
+清除所有 descendant cursor。
+
+### Stage5B reaper fairness and process-deadline addendum
+
+所有 coding snapshot Git `Popen` 的 stdout/stderr pipe 必须设为 nonblocking，并由 selector
+以 absolute deadline 的剩余时间等待；实际读取只使用事件就绪后的 `os.read`。deadline 到达、
+输出预算超限或 parser/budget 失败时，owner 必须 terminate、bounded wait、必要时 kill/wait，
+随后关闭 selector 与全部 pipe。不得在 deadline 检查后调用可能阻塞的 file-object `read`。
+
+周期 reaper 对 workspace root 使用 round-robin traversal；每个 cleanup round 对单个受管 management root
+只消费固定 snapshot child slice，然后推进下一个 root。snapshot Linux directory cookie 通过固定大小、atomic
+replace 的受管 progress metadata 跨轮保存，避免关闭 cursor 后从大目录开头重扫；内存只保留 root traversal、
+当前 page 和至多一个 active snapshot tombstone DFS。root 消失时必须同时清理 hierarchical traversal 与兼容
+cursor 的全部 descendant iterator。progress metadata 只能由 management-root dirfd 通过
+`O_RDONLY|O_NONBLOCK|O_NOFOLLOW` 打开，且必须是当前 uid 所有、大小不超过固定上限的 ordinary file；读取循环
+受 absolute deadline 与 byte limit 约束。FIFO、symlink、directory、oversize、I/O error 或 schema 错误一律安全
+回到 cookie `0`，不得阻塞或传播卡死；JSON 只接受字段精确、`schema_version` 为整数 `1` 的 object，`null`、
+list、scalar、missing/wrong schema、bool-as-int 或字段越界均无效。写入继续使用 no-follow temporary file、`fsync`
+与同 parent dirfd atomic replace。periodic cleanup 与 `aclose` 通过 process-owned mutex 串行。
+
+snapshot tombstone DFS 一旦发现 root/nested inode replacement，必须立即关闭并释放全局 deletion slot，不删除
+可疑对象。owner 以常数上限 LRU cooldown 和 tombstone 同目录、ordinary/no-follow/atomic 写入的 poison marker
+避免每轮重新抢占同一可疑目录；marker reader 同样只接受字段精确、`schema_version` 为整数 `1` 且字段类型/范围
+有效的 JSON object，所有其他形状或 contract 异常均视为 marker 不存在且不得传播。其他 snapshot 仍须获得
+eventual cleanup。workspace root 消失时同步清空进程内 deny/cooldown state。
+
+本 Stage 不改变 Git worktree retirement 协议。周期 owner 和 `aclose` 不得调用 `cleanup_expired()`、
+`git worktree remove` 或任何 Git common-dir/admin registry 清理，也不得 tombstone 或递归删除 management root；
+workspace 到期仍由后续 `resolve()` 进入既有同步 cleanup 路径处理。该边界避免 advisory snapshot TTL cleanup
+引入第二套 workspace/admin 事务。

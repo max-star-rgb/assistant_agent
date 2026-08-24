@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterator, Sequence
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
@@ -191,6 +191,35 @@ def create_chat_model(config: ProviderConfig | None = None) -> BaseChatModel:
         )
 
 
+def coding_analysis_model_view(model: BaseChatModel) -> BaseChatModel:
+    """Return a read-only analysis view with provider-native search disabled."""
+
+    llm_type = getattr(model, "_llm_type", "")
+    if llm_type == "assistant-agent-dashscope-native":
+        return model.model_copy(update={"enable_search": False})
+    metadata = getattr(model, "metadata", None)
+    provider = metadata.get("provider") if isinstance(metadata, Mapping) else None
+    extra_body = getattr(model, "extra_body", None)
+    if llm_type == "openai-chat" and provider == "qwen" and isinstance(
+        extra_body, Mapping
+    ):
+        filtered = {
+            key: value
+            for key, value in extra_body.items()
+            if key not in {"enable_search", "search_options"}
+        }
+        return model.model_copy(update={"extra_body": filtered or None})
+    return model
+
+
+def coding_analysis_model_settings(model: BaseChatModel) -> dict[str, Any]:
+    """Return protocol-native request settings for the fixed offline profile."""
+
+    if getattr(model, "_llm_type", "") == "assistant-agent-dashscope-native":
+        return {"provider_search_profile": "none"}
+    return {}
+
+
 def _provider_extra_body(
     config: ProviderConfig,
     provider: str,
@@ -234,6 +263,12 @@ def _mock_structured_tool_call(tools: Any) -> tuple[str, dict[str, Any]] | None:
         if not isinstance(function, dict):
             continue
         name = function.get("name")
+        if name == "CodingAnalysisResponse":
+            return name, {
+                "status": "succeeded",
+                "findings": [],
+                "covered_paths": [],
+            }
         if name == "NativePlanProposal":
             return name, {
                 "schema_version": "native_plan_v2",
@@ -263,5 +298,7 @@ def _mock_structured_tool_call(tools: Any) -> tuple[str, dict[str, Any]] | None:
 __all__ = [
     "MockAssistantChatModel",
     "ProviderConfigurationError",
+    "coding_analysis_model_settings",
+    "coding_analysis_model_view",
     "create_chat_model",
 ]

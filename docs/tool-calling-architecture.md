@@ -163,6 +163,13 @@ coding 模式使用独立静态 Tool inventory：`coding_repo_list`、`coding_re
 `effect=generate`，只返回经受信 backend 验证的候选 patch artifact，不写文件。身份、thread 和 workspace
 均由 `ToolRuntime` 与 Agent Server 事实解析，不进入模型 schema。
 
+只读并行 analysis agent 精确复用前五项 read Tool，且每次调用只能通过 checkpoint 中的精确
+`workspace_ref + base_commit` 对 process-owned service 执行只读认证 lookup，再访问同一 active snapshot；它不调用
+会创建、续期、reap 或清理 workspace 的 resolve 路径。analysis inventory 不包含 proposal 或任何 mutation Tool，
+其模型调用固定 `provider_search_profile=none`，即使普通主链显式启用了 Provider-native search 也不得带入分析阶段。
+analysis Tool 的 retry 只覆盖明确 transient cause chain；身份、权限、snapshot、schema、路径和其他安全错误立即传播，
+耗尽后的 transient 错误也传播到 worker 的受信失败分类，不能转换成供模型继续生成 succeeded result 的 error ToolMessage。
+
 实际 patch apply 是 `AssistantCodingGraph` 的确定性节点，不注册为 Tool。coding inventory 不加入普通
 fast/planning Agent；coding 不提供 shell、delete、commit、merge、push 或任意宿主路径访问。路径、symlink、
 protected glob、UTF-8、大小、base commit、file digest 和 patch digest 均由 Tool/backend fail closed 校验。

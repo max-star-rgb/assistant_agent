@@ -4,9 +4,38 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from types import MappingProxyType
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+_CODING_ANALYSIS_READ_TOOL_NAMES = (
+    "coding_repo_list",
+    "coding_repo_search",
+    "coding_repo_read",
+    "coding_repo_status",
+    "coding_repo_diff",
+)
+CODING_ANALYSIS_TASK_SPECS = MappingProxyType(
+    {
+        "structure_context": (
+            "Identify relevant modules, interfaces, data flow, and existing "
+            "implementation patterns in the frozen workspace snapshot.",
+            _CODING_ANALYSIS_READ_TOOL_NAMES,
+        ),
+        "change_test_impact": (
+            "Identify likely change surfaces, test entry points, compatibility "
+            "constraints, and regression risks in the frozen workspace snapshot.",
+            _CODING_ANALYSIS_READ_TOOL_NAMES,
+        ),
+        "safety_governance": (
+            "Identify permission, credential, network, path, persistence, HITL, "
+            "and governance boundaries in the frozen workspace snapshot.",
+            _CODING_ANALYSIS_READ_TOOL_NAMES,
+        ),
+    }
+)
 
 
 class CodingWorkspace(BaseModel):
@@ -31,6 +60,162 @@ class CodingWorkspaceMetadata(BaseModel):
     created_at: datetime
     expires_at: datetime
     frozen: bool = False
+
+
+class CodingAnalysisSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    snapshot_ref: str = Field(min_length=16, max_length=128)
+    workspace_ref: str = Field(min_length=16, max_length=128)
+    base_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    tree_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    workspace_diff_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    created_at: datetime
+    expires_at: datetime
+
+    @model_validator(mode="after")
+    def _expiry_follows_creation(self) -> "CodingAnalysisSnapshot":
+        if self.created_at.utcoffset() is None or self.expires_at.utcoffset() is None:
+            raise ValueError("analysis snapshot timestamps must be timezone-aware")
+        if self.expires_at <= self.created_at:
+            raise ValueError("analysis snapshot expiry must follow creation")
+        return self
+
+
+class CodingAnalysisTask(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    task_id: Literal[
+        "structure_context",
+        "change_test_impact",
+        "safety_governance",
+    ]
+    dimension: Literal[
+        "structure_context",
+        "change_test_impact",
+        "safety_governance",
+    ]
+    objective: str = Field(min_length=1, max_length=2_000)
+    allowed_tool_names: tuple[
+        Literal[
+            "coding_repo_list",
+            "coding_repo_search",
+            "coding_repo_read",
+            "coding_repo_status",
+            "coding_repo_diff",
+        ],
+        ...,
+    ] = Field(min_length=1, max_length=5)
+
+    @field_validator("allowed_tool_names", mode="before")
+    @classmethod
+    def _tuple_tool_names(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @model_validator(mode="after")
+    def _task_matches_dimension(self) -> "CodingAnalysisTask":
+        if self.task_id != self.dimension:
+            raise ValueError("analysis task dimension must match task id")
+        objective, allowed_tool_names = CODING_ANALYSIS_TASK_SPECS[self.task_id]
+        if self.objective != objective:
+            raise ValueError("analysis task objective must match the canonical task")
+        if self.allowed_tool_names != allowed_tool_names:
+            raise ValueError("analysis task tools must match the canonical task")
+        return self
+
+
+class CodingAnalysisFinding(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    finding_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    category: str = Field(
+        min_length=1,
+        max_length=80,
+        pattern=r"^[a-z][a-z0-9_.-]*$",
+    )
+    severity: Literal["info", "low", "moderate", "important"]
+    summary: str = Field(min_length=1, max_length=2_000)
+    path: str | None = Field(default=None, max_length=240)
+    start_line: int | None = Field(default=None, ge=1, le=10_000_000)
+    end_line: int | None = Field(default=None, ge=1, le=10_000_000)
+    evidence_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("path")
+    @classmethod
+    def _safe_path(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        parts = value.split("/")
+        if (
+            value.startswith("/")
+            or any(part in {"", ".", "..", ".git"} for part in parts)
+            or any(item in value for item in ("\\", "\x00", "\n", "\r"))
+        ):
+            raise ValueError("analysis finding path is invalid")
+        return value
+
+    @model_validator(mode="after")
+    def _line_range_is_consistent(self) -> "CodingAnalysisFinding":
+        if (self.start_line is None) != (self.end_line is None):
+            raise ValueError("analysis finding line range must be supplied together")
+        if self.start_line is not None:
+            if self.path is None:
+                raise ValueError("analysis finding line range requires a path")
+            if self.end_line is not None and self.end_line < self.start_line:
+                raise ValueError("analysis finding line range is reversed")
+        return self
+
+
+class CodingAnalysisResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    task_id: Literal[
+        "structure_context",
+        "change_test_impact",
+        "safety_governance",
+    ]
+    snapshot_ref: str = Field(min_length=16, max_length=128)
+    tree_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    status: Literal["succeeded", "failed", "stale"]
+    findings: tuple[CodingAnalysisFinding, ...] = Field(max_length=12)
+    covered_paths: tuple[str, ...] = Field(max_length=128)
+    output_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    error_code: str | None = Field(
+        default=None,
+        max_length=128,
+        pattern=r"^coding_analysis_[a-z0-9_]+$",
+    )
+
+    @field_validator("findings", "covered_paths", mode="before")
+    @classmethod
+    def _tuple_values(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @field_validator("covered_paths")
+    @classmethod
+    def _safe_covered_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for path in value:
+            parts = path.split("/")
+            if (
+                not path
+                or len(path) > 240
+                or path.startswith("/")
+                or any(part in {"", ".", "..", ".git"} for part in parts)
+                or any(item in path for item in ("\\", "\x00", "\n", "\r"))
+            ):
+                raise ValueError("analysis covered path is invalid")
+        return value
+
+    @model_validator(mode="after")
+    def _status_matches_payload(self) -> "CodingAnalysisResult":
+        if self.status == "succeeded" and self.error_code is not None:
+            raise ValueError("successful analysis result cannot carry an error")
+        if self.status != "succeeded":
+            if self.error_code is None:
+                raise ValueError("unsuccessful analysis result requires an error code")
+            if self.findings:
+                raise ValueError("unsuccessful analysis result cannot carry findings")
+        return self
 
 
 class CodingPatchProposal(BaseModel):
@@ -772,7 +957,12 @@ class CodingDiffResult(BaseModel):
 
 
 __all__ = [
+    "CODING_ANALYSIS_TASK_SPECS",
     "CodingApprovalDecision",
+    "CodingAnalysisFinding",
+    "CodingAnalysisResult",
+    "CodingAnalysisSnapshot",
+    "CodingAnalysisTask",
     "CodingArtifactApprovalDecision",
     "CodingArtifactDescriptor",
     "CodingArtifactIngressPlan",

@@ -1,0 +1,360 @@
+"""Deterministic contracts and aggregation for read-only coding analysis."""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+from collections.abc import Mapping, Sequence
+from typing import Literal
+from urllib.error import HTTPError, URLError
+
+import httpx
+from langgraph.errors import GraphBubbleUp, NodeCancelledError
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+try:
+    from openai import APIConnectionError, APIStatusError, APITimeoutError
+except ImportError:  # pragma: no cover - OpenAI is optional outside that provider.
+    _OPENAI_CONNECTION_ERRORS: tuple[type[BaseException], ...] = ()
+    _OPENAI_STATUS_ERRORS: tuple[type[BaseException], ...] = ()
+else:
+    _OPENAI_CONNECTION_ERRORS = (APIConnectionError, APITimeoutError)
+    _OPENAI_STATUS_ERRORS = (APIStatusError,)
+
+from assistant_agent.coding.models import (
+    CODING_ANALYSIS_TASK_SPECS,
+    CodingAnalysisFinding,
+    CodingAnalysisResult,
+    CodingAnalysisSnapshot,
+    CodingAnalysisTask,
+)
+from assistant_agent.coding.workspace import CodingWorkspaceError
+
+ANALYSIS_TASK_IDS = tuple(CODING_ANALYSIS_TASK_SPECS)
+ANALYSIS_READ_TOOL_NAMES = CODING_ANALYSIS_TASK_SPECS["structure_context"][1]
+MAX_FINDINGS_PER_TASK = 12
+MAX_TASK_CONTEXT_CHARS = 6_000
+MAX_ANALYSIS_CONTEXT_CHARS = 24_000
+
+AnalysisStatus = Literal["completed", "partial", "unavailable"]
+
+
+class CodingAnalysisResponse(BaseModel):
+    """Public untrusted structured response before trusted worker binding."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    status: Literal["succeeded", "failed", "stale"]
+    findings: tuple[dict[str, object], ...] = Field(max_length=MAX_FINDINGS_PER_TASK)
+    covered_paths: tuple[str, ...] = Field(max_length=128)
+    output_digest: object | None = None
+    error_code: str | None = None
+
+    @field_validator("findings", "covered_paths", mode="before")
+    @classmethod
+    def _tuple_values(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+
+def build_analysis_tasks() -> tuple[CodingAnalysisTask, ...]:
+    """Return the complete static read-only analysis inventory."""
+
+    return tuple(
+        CodingAnalysisTask(
+            task_id=task_id,
+            dimension=task_id,
+            objective=objective,
+            allowed_tool_names=allowed_tool_names,
+        )
+        for task_id, (objective, allowed_tool_names) in CODING_ANALYSIS_TASK_SPECS.items()
+    )
+
+
+def normalize_analysis_result(
+    *,
+    task: CodingAnalysisTask,
+    snapshot: CodingAnalysisSnapshot,
+    raw_result: Mapping[str, object],
+) -> CodingAnalysisResult:
+    """Bind untrusted model output to trusted task and snapshot facts."""
+
+    raw = CodingAnalysisResponse.model_validate(raw_result)
+    findings: list[CodingAnalysisFinding] = []
+    for raw_finding in raw.findings:
+        payload = dict(raw_finding)
+        payload.pop("finding_id", None)
+        payload["finding_id"] = "0" * 64
+        parsed = CodingAnalysisFinding.model_validate(payload)
+        finding_payload = parsed.model_dump(
+            mode="json",
+            exclude={"finding_id"},
+        )
+        findings.append(
+            parsed.model_copy(
+                update={
+                    "finding_id": _canonical_digest(
+                        {"task_id": task.task_id, **finding_payload}
+                    )
+                }
+            )
+        )
+
+    normalized = CodingAnalysisResult(
+        task_id=task.task_id,
+        snapshot_ref=snapshot.snapshot_ref,
+        tree_digest=snapshot.tree_digest,
+        status=raw.status,
+        findings=tuple(sorted(findings, key=lambda item: item.finding_id)),
+        covered_paths=tuple(sorted(set(raw.covered_paths))),
+        output_digest="0" * 64,
+        error_code=raw.error_code,
+    )
+    return normalized.model_copy(
+        update={"output_digest": _result_output_digest(normalized)}
+    )
+
+
+def merge_analysis_results(
+    current: Sequence[CodingAnalysisResult] | None,
+    update: Sequence[CodingAnalysisResult] | None,
+) -> list[CodingAnalysisResult]:
+    """Replace replayed worker output by stable task ID in fixed order."""
+
+    if update is not None and not update:
+        return []
+    by_id = {item.task_id: item for item in current or ()}
+    by_id.update({item.task_id: item for item in update or ()})
+    return [by_id[task_id] for task_id in ANALYSIS_TASK_IDS if task_id in by_id]
+
+
+def build_analysis_failure_result(
+    *,
+    task: CodingAnalysisTask,
+    snapshot: CodingAnalysisSnapshot,
+) -> CodingAnalysisResult:
+    """Return the stable, redacted result for exhausted operational retries."""
+
+    return normalize_analysis_result(
+        task=task,
+        snapshot=snapshot,
+        raw_result={
+            "status": "failed",
+            "findings": (),
+            "covered_paths": (),
+            "error_code": "coding_analysis_task_failed",
+        },
+    )
+
+
+def is_transient_analysis_failure(error: BaseException) -> bool:
+    """Classify trusted operational failures without masking unsafe causes."""
+
+    pending: list[BaseException] = [error]
+    visited: set[int] = set()
+    operational = False
+    while pending:
+        current = pending.pop(0)
+        if id(current) in visited:
+            continue
+        visited.add(id(current))
+        if isinstance(
+            current,
+            (
+                asyncio.CancelledError,
+                GraphBubbleUp,
+                NodeCancelledError,
+                PermissionError,
+                AssertionError,
+                TypeError,
+                ValueError,
+                LookupError,
+                ArithmeticError,
+                ImportError,
+                NameError,
+                SyntaxError,
+                CodingWorkspaceError,
+            ),
+        ):
+            return False
+        if isinstance(current, (TimeoutError, ConnectionError, *_OPENAI_CONNECTION_ERRORS)):
+            operational = True
+        elif isinstance(
+            current,
+            (
+                httpx.ConnectError,
+                httpx.ConnectTimeout,
+                httpx.PoolTimeout,
+                httpx.ReadError,
+                httpx.ReadTimeout,
+                httpx.RemoteProtocolError,
+                httpx.WriteError,
+                httpx.WriteTimeout,
+            ),
+        ):
+            operational = True
+        elif isinstance(current, (HTTPError, httpx.HTTPStatusError, *_OPENAI_STATUS_ERRORS)):
+            status_code = _exception_status_code(current)
+            if status_code in {408, 409, 425, 429} or status_code >= 500:
+                operational = True
+            else:
+                return False
+        elif isinstance(current, URLError):
+            operational = True
+            if isinstance(current.reason, BaseException):
+                pending.append(current.reason)
+        if isinstance(current.__cause__, BaseException):
+            pending.append(current.__cause__)
+        if isinstance(current.__context__, BaseException):
+            pending.append(current.__context__)
+    return operational
+
+
+def join_analysis_results(
+    snapshot: CodingAnalysisSnapshot,
+    results: Sequence[CodingAnalysisResult] | None,
+) -> tuple[AnalysisStatus, tuple[CodingAnalysisResult, ...]]:
+    """Validate, order, and deduplicate snapshot-bound worker results."""
+
+    ordered = merge_analysis_results((), results)
+    seen_evidence: set[tuple[str | None, str, str]] = set()
+    joined: list[CodingAnalysisResult] = []
+    for result in ordered:
+        if (
+            result.snapshot_ref != snapshot.snapshot_ref
+            or result.tree_digest != snapshot.tree_digest
+        ):
+            raise ValueError("coding_analysis_snapshot_mismatch")
+        if result.output_digest != _result_output_digest(result):
+            raise ValueError("coding_analysis_contract_invalid")
+
+        findings: list[CodingAnalysisFinding] = []
+        for finding in sorted(result.findings, key=lambda item: item.finding_id):
+            evidence_key = (
+                finding.path,
+                finding.category,
+                finding.evidence_digest,
+            )
+            if evidence_key in seen_evidence:
+                continue
+            seen_evidence.add(evidence_key)
+            findings.append(finding)
+
+        normalized = result.model_copy(
+            update={
+                "findings": tuple(findings[:MAX_FINDINGS_PER_TASK]),
+                "covered_paths": tuple(sorted(set(result.covered_paths))),
+                "output_digest": "0" * 64,
+            }
+        )
+        joined.append(
+            normalized.model_copy(
+                update={"output_digest": _result_output_digest(normalized)}
+            )
+        )
+
+    succeeded = sum(item.status == "succeeded" for item in joined)
+    if succeeded == len(ANALYSIS_TASK_IDS) and len(joined) == len(ANALYSIS_TASK_IDS):
+        status: AnalysisStatus = "completed"
+    elif succeeded:
+        status = "partial"
+    else:
+        status = "unavailable"
+    return status, tuple(joined)
+
+
+def render_analysis_context(
+    status: AnalysisStatus,
+    results: Sequence[CodingAnalysisResult],
+) -> str:
+    """Render complete finding objects within deterministic per-task budgets."""
+
+    task_payloads: list[dict[str, object]] = []
+    for result in merge_analysis_results((), results):
+        task_payload: dict[str, object] = {
+            "task_id": result.task_id,
+            "status": result.status,
+            "output_digest": result.output_digest,
+            "error_code": result.error_code,
+            "covered_paths": [],
+            "covered_paths_truncated": False,
+            "findings": [],
+            "truncated": False,
+        }
+        rendered_findings = task_payload["findings"]
+        assert isinstance(rendered_findings, list)
+        for finding in sorted(result.findings, key=lambda item: item.finding_id):
+            candidate = [*rendered_findings, finding.model_dump(mode="json")]
+            candidate_payload = {**task_payload, "findings": candidate}
+            if len(_canonical_json(candidate_payload)) > MAX_TASK_CONTEXT_CHARS:
+                task_payload["truncated"] = True
+                break
+            rendered_findings.append(finding.model_dump(mode="json"))
+
+        rendered_paths = task_payload["covered_paths"]
+        assert isinstance(rendered_paths, list)
+        for path in sorted(set(result.covered_paths)):
+            candidate = [*rendered_paths, path]
+            candidate_payload = {
+                **task_payload,
+                "covered_paths": candidate,
+            }
+            if len(_canonical_json(candidate_payload)) > MAX_TASK_CONTEXT_CHARS:
+                task_payload["covered_paths_truncated"] = True
+                break
+            rendered_paths.append(path)
+        if len(_canonical_json(task_payload)) > MAX_TASK_CONTEXT_CHARS:
+            raise ValueError("coding_analysis_task_context_limit_exceeded")
+        task_payloads.append(task_payload)
+
+    payload = {
+        "trust": "advisory",
+        "analysis_status": status,
+        "tasks": task_payloads,
+    }
+    rendered = _canonical_json(payload)
+    if len(rendered) > MAX_ANALYSIS_CONTEXT_CHARS:
+        raise ValueError("coding_analysis_context_limit_exceeded")
+    return rendered
+
+
+def _result_output_digest(result: CodingAnalysisResult) -> str:
+    return _canonical_digest(
+        result.model_dump(mode="json", exclude={"output_digest"})
+    )
+
+
+def _canonical_digest(value: object) -> str:
+    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _exception_status_code(error: BaseException) -> int | None:
+    if isinstance(error, HTTPError):
+        return error.code
+    status_code = getattr(error, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code
+    response = getattr(error, "response", None)
+    status_code = getattr(response, "status_code", None)
+    return status_code if isinstance(status_code, int) else None
+
+
+__all__ = [
+    "ANALYSIS_READ_TOOL_NAMES",
+    "ANALYSIS_TASK_IDS",
+    "MAX_ANALYSIS_CONTEXT_CHARS",
+    "MAX_FINDINGS_PER_TASK",
+    "MAX_TASK_CONTEXT_CHARS",
+    "CodingAnalysisResponse",
+    "build_analysis_failure_result",
+    "build_analysis_tasks",
+    "is_transient_analysis_failure",
+    "join_analysis_results",
+    "merge_analysis_results",
+    "normalize_analysis_result",
+    "render_analysis_context",
+]

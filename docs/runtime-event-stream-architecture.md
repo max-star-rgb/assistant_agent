@@ -7,9 +7,9 @@
 | 字段 | 内容 |
 | --- | --- |
 | 定位 | 生产 Assistant 父图、fast/planning 子图与原生 stream 的当前权威 |
-| Owns | 父图拓扑、模式路由、标准 messages、create_agent、planning super-step、原生 stream/interrupt/checkpoint |
+| Owns | 父图拓扑、模式路由、标准 messages、create_agent、planning/coding super-step、原生 stream/interrupt/checkpoint |
 | Does not own | Agent Server HTTP 生命周期、Tool schema、Memory 后端、媒体 wire、Provider 凭据 |
-| 源码与 schema 入口 | `src/assistant_agent/native_agent/` |
+| 源码与 schema 入口 | `src/assistant_agent/native_agent/`、`src/assistant_agent/coding/analysis.py`、`src/assistant_agent/coding/models.py` |
 | 验证入口 | `docs/authority.toml` 中 `runtime-event-stream.verification` |
 | 相邻 authority | Agent Server 见 [`agent-server-architecture.md`](agent-server-architecture.md)；Tool 见 [`tool-calling-architecture.md`](tool-calling-architecture.md)；视觉能力见 [`visual-perception-architecture.md`](visual-perception-architecture.md) |
 
@@ -33,7 +33,7 @@ AssistantRootGraph
 Studio 的标准 messages-only run。路由函数不从用户文本、关键词、Tool 或 Memory 推断模式。父图不绑定 saver，
 由 LangGraph Agent Server 注入 checkpoint、thread、run、cancel、resume 与 Store 资源。
 
-coding 分支是顺序 `AssistantCodingGraph`，只在结构化输入同时提供受信 allowlist 中的
+coding 分支是显式 `AssistantCodingGraph`，只在结构化输入同时提供受信 allowlist 中的
 `coding_repo_id` 时启用。它在 thread-scoped 临时 Git worktree 中执行 inspect/draft、确定性 patch validation、
 digest-bound 原生 interrupt、受信 apply 和 apply 后的确定性 `run_validation`；模型不可见 apply、validation
 进程、shell、delete、commit、merge 或 push。验证成功后才形成 applied terminal result；失败返回结构化
@@ -43,6 +43,29 @@ command evidence。formatter 只在 scratch 中生成增量 diff，该 diff 重�
 merge_approval -> apply_merge`。merge approval 是独立原生 interrupt，绑定 frozen source commit、expected
 target HEAD 和 preview digest；apply 不调用模型，目标漂移或审批不匹配不会重新生成 preview。integration
 关闭时保持阶段 2 applied terminal。coding 不复用 planning 并行 worker，所有 mutation 通过单一顺序节点完成。
+
+repository 的 `parallel_analysis_enabled` 静态配置默认关闭；关闭时从 `resolve_workspace` 直接进入既有
+`inspect_and_draft`。显式启用后，首次 draft 前由 `prepare_analysis` 冻结同一 identity/thread/workspace 绑定的
+只读 snapshot，并通过原生 `Send` 在一个 super-step 中把三个固定 task 派发给共享只读 analysis agent；worker
+只暴露 snapshot-bound list/search/read/status/diff Tool，不提供 shell、network、proposal、command、credential、
+artifact 或 integration Tool；每个 worker state 强制 `provider_search_profile=none`，从模型调用边界禁用
+Provider-native search。`join_analysis` 确定性校验、去重、排序并裁剪有界 `CodingAnalysisResult`，随后只进入唯一
+`inspect_and_draft -> validate_proposal` 顺序入口。单个普通分析失败形成
+`partial`，全部普通失败形成 `unavailable`，两者都只降级 advisory evidence，不绕过后续 validator、HITL、gate、
+validation 或 integration。身份、权限、snapshot 隔离与 contract 错误仍 fail closed。
+
+analysis worker 的临时 task instruction、AI/Tool transcript 和原始 structured response 不写入主 `messages`；
+primary inspect 只在首次 draft 获得一次有界临时 context，并仍须用实时 workspace read Tool 自行确认。
+analysis 相关 checkpoint channel 保存 opaque snapshot contract、固定 task、有界规范化 result、
+`pending|completed|partial|unavailable` status、`active|released|cleanup_pending` release status 与布尔
+`analysis_context_consumed`，不保存 snapshot 宿主路径、文件句柄、Git process、backend client 或 worker transcript。
+pending analysis 恢复仍严格校验 active 物理 snapshot、身份、workspace/base 与 digest；join 且临时 context 已消费后，
+approval/repair 等后续恢复只校验 checkpoint 中的有界 contract、固定 task inventory、result digest、workspace 与 base，
+不再把已释放 snapshot 的物理目录或 TTL 当作 mutation gate。
+repair 回边从
+`prepare_repair -> consume_repair_budget -> inspect_and_draft` 恢复，formatter/patch/dependency/credential/artifact/
+merge approval resume 也不重新进入分析；所有写入、命令、凭据、artifact 与 Git integration 继续位于唯一顺序
+mutation lane。
 
 `run_validation` 遇到一个确定性 `test|lint|build` 命令的普通非零退出，且错误码为
 `verification_command_failed` 时，才由本地策略选中 eligible failure，沿原生
@@ -165,6 +188,13 @@ scheduler 只从这些 checkpointed typed channels 重算下一 wave，不保存
 planning 的 planner、worker 与 finalizer 都读取父图传入的同一份可信事实快照，不在子图内重新采集。
 `trusted_runtime_facts` 写入 checkpoint 时保存为 JSON-safe 字典（时间为 ISO 8601 字符串），模型调用边界再校验为
 严格 Pydantic 值；它不依赖 checkpoint 对项目自定义类型的宽松 msgpack 反序列化。
+
+coding 子图内部的 analysis channel 是 opaque `CodingAnalysisSnapshot`、三个固定 task，以及通过 state schema
+显式声明的确定性 task-ID replacement reducer 所维护的有界 `CodingAnalysisResult`；该 reducer 在 checkpoint replay
+时以同 task 新结果替换旧结果，不使用并行 append reducer。其余 channel 包括 `pending|completed|partial|unavailable` 状态、
+`active|released|cleanup_pending` snapshot release 状态和 `analysis_context_consumed`。pending checkpoint 恢复时只
+派发尚未完成的 task；已 join、repair active 或任一 approval resume 都从既有 checkpoint 继续，不创建新 snapshot
+或重跑已完成分析。
 
 父图不投影或改写生成图片。`image_generation` 直接使用标准 `ToolMessage(content, artifact)`：模型下一次调用
 只读取窄文本 `content`，程序消费者从 `artifact.images[]` 读取受管图片引用。最终 `AIMessage` 保持模型原始

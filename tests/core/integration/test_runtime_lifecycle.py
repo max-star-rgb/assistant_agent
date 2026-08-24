@@ -14,6 +14,7 @@ import pytest
 
 from assistant_agent.agent_server import services
 from assistant_agent.agent_server.services import AgentServerExecutionOwner
+from assistant_agent.coding.config import CodingRepositoryConfig
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.fast_agent import build_fast_agent
 from assistant_agent.native_agent.models import (
@@ -323,6 +324,14 @@ def test_parent_graph_has_fast_planning_and_coding_native_branches(monkeypatch) 
         assert graph.nodes["fast_agent"].data.name == "AssistantFastAgent"
         assert graph.nodes["planning_graph"].data.name == "AssistantPlanningGraph"
         assert graph.nodes["coding_graph"].data.name == "AssistantCodingGraph"
+        assert (
+            CodingRepositoryConfig(
+                repo_id="core-probe",
+                path=owner.coding_workspace_service.config.workspace_root.parent,
+                target_branch="main",
+            ).parallel_analysis_enabled
+            is False
+        )
         planning_nodes = {
             name
             for name in graph.nodes["planning_graph"].data.get_graph().nodes
@@ -374,17 +383,65 @@ def test_parent_graph_has_fast_planning_and_coding_native_branches(monkeypatch) 
             ("finalize", "__end__"),
             ("controlled_finalize", "__end__"),
         }
-        coding_nodes = set(graph.nodes["coding_graph"].data.get_graph().nodes)
-        assert "prepare_repair" in coding_nodes
+        coding_graph = graph.nodes["coding_graph"].data.get_graph()
+        coding_nodes = set(coding_graph.nodes)
+        analysis_super_step_nodes = {
+            "prepare_analysis",
+            "analyze_workspace",
+            "join_analysis",
+        }
+        assert analysis_super_step_nodes.issubset(coding_nodes)
+        coding_edges = {
+            (edge.source, edge.target) for edge in coding_graph.edges
+        }
         assert {
-            "approval",
-            "apply_patch",
+            ("prepare_analysis", "analyze_workspace"),
+            ("prepare_analysis", "join_analysis"),
+            ("analyze_workspace", "join_analysis"),
+            ("join_analysis", "inspect_and_draft"),
+            ("inspect_and_draft", "validate_proposal"),
+        }.issubset(coding_edges)
+        assert {
+            target
+            for source, target in coding_edges
+            if source == "analyze_workspace"
+        } == {"join_analysis"}
+        assert {
+            source
+            for source, target in coding_edges
+            if target == "validate_proposal"
+        } == {"inspect_and_draft"}
+        assert {
+            ("apply_patch", "plan_dependencies"),
+            ("plan_dependencies", "plan_credentials"),
+            ("plan_credentials", "plan_artifacts"),
+            ("plan_artifacts", "run_validation"),
+        }.issubset(coding_edges)
+        assert {
+            ("run_validation", "prepare_repair"),
+            ("prepare_repair", "consume_repair_budget"),
+            ("consume_repair_budget", "inspect_and_draft"),
+        }.issubset(coding_edges)
+        repair_lane_nodes = {
             "run_validation",
-            "create_commit",
-            "prepare_merge",
-            "merge_approval",
-            "apply_merge",
-        }.issubset(coding_nodes)
+            "prepare_repair",
+            "consume_repair_budget",
+            "approval",
+        }
+        assert not any(
+            source in repair_lane_nodes and target in analysis_super_step_nodes
+            for source, target in coding_edges
+        )
+        assert {
+            ("run_validation", "create_commit"),
+            ("create_commit", "prepare_merge"),
+            ("prepare_merge", "merge_approval"),
+            ("merge_approval", "apply_merge"),
+            ("apply_merge", "summarize"),
+        }.issubset(coding_edges)
+        assert {
+            source for source, target in coding_edges if target == "create_commit"
+        } == {"run_validation"}
         assert owner.graph.checkpointer is None
     finally:
         asyncio.run(owner.aclose())

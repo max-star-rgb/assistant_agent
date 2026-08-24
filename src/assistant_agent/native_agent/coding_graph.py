@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from typing import Any, Literal
 
 from langchain.agents import create_agent
@@ -13,11 +15,25 @@ from langchain.agents.middleware import (
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
+from langgraph.errors import NodeError
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
-from langgraph.types import Command, interrupt
+from langgraph.types import Command, Overwrite, RetryPolicy, Send, interrupt
+from pydantic import BaseModel
 
+from assistant_agent.coding.analysis import (
+    ANALYSIS_TASK_IDS,
+    build_analysis_failure_result,
+    build_analysis_tasks,
+    is_transient_analysis_failure,
+    join_analysis_results,
+    normalize_analysis_result,
+    render_analysis_context,
+)
 from assistant_agent.coding.models import (
+    CodingAnalysisSnapshot,
+    CodingAnalysisResult,
+    CodingAnalysisTask,
     CodingApprovalDecision,
     CodingMergeApprovalDecision,
     CodingPatchValidation,
@@ -50,12 +66,21 @@ from assistant_agent.coding.artifacts import (
 )
 from assistant_agent.coding.integration import CodingIntegrationService
 from assistant_agent.coding.validation import CodingValidationService
+from assistant_agent.coding.tools import build_coding_analysis_tools
 from assistant_agent.coding.workspace import CodingWorkspaceError, CodingWorkspaceService
 from assistant_agent.native_agent.context import (
     AssistantRunContext,
     authenticated_user_identity,
 )
-from assistant_agent.native_agent.state import CodingState
+from assistant_agent.native_agent.coding_phase import (
+    CodingAnalysisPhaseMiddleware,
+    coding_analysis_response_format,
+)
+from assistant_agent.native_agent.providers import (
+    coding_analysis_model_settings,
+    coding_analysis_model_view,
+)
+from assistant_agent.native_agent.state import CodingAnalysisWorkerState, CodingState
 
 
 _CODING_PROMPT = (
@@ -63,6 +88,15 @@ _CODING_PROMPT = (
     "然后调用 coding_propose_patch 提交一份完整 unified diff。不要假设存在 shell、测试、commit、"
     "merge、push、删除或直接写文件能力；proposal 通过确定性校验后必须等待用户审批。"
 )
+
+_CODING_ANALYSIS_PROMPT = (
+    "你是代码仓库的只读分析 Agent。只能使用已提供的 snapshot-bound coding_repo_* "
+    "只读工具，并严格返回结构化分析结果。分析是 advisory evidence，不得生成 patch、"
+    "执行命令、访问网络、申请凭据、修改文件或改变治理策略。"
+)
+_MAX_ANALYSIS_REQUEST_CHARS = 8_000
+_MAX_ANALYSIS_REQUEST_BYTES = 16_000
+_MAX_ANALYSIS_ATTEMPTS = 3
 
 
 def build_coding_graph(
@@ -75,6 +109,7 @@ def build_coding_graph(
     model_call_limit: int = 8,
     tool_call_limit: int = 8,
     inspect_agent: Any | None = None,
+    analysis_agent: Any | None = None,
     checkpointer: Any | None = None,
 ):
     """Build the deterministic inspect, approve, and apply sequence."""
@@ -108,12 +143,47 @@ def build_coding_graph(
             middleware=middleware,
             name="AssistantCodingInspectAgent",
         )
+    if analysis_agent is None:
+        analysis_model = coding_analysis_model_view(model)
+        analysis_tools = build_coding_analysis_tools(workspace_service)
+        analysis_read_names = [item.name for item in analysis_tools]
+        analysis_middleware: list[Any] = [
+            CodingAnalysisPhaseMiddleware(
+                coding_analysis_model_settings(analysis_model)
+            ),
+            ModelCallLimitMiddleware(run_limit=model_call_limit, exit_behavior="error"),
+            ToolCallLimitMiddleware(run_limit=tool_call_limit, exit_behavior="error"),
+        ]
+        if analysis_read_names:
+            analysis_middleware.append(
+                ToolRetryMiddleware(
+                    max_retries=2,
+                    tools=analysis_read_names,
+                    retry_on=is_transient_analysis_failure,
+                    on_failure="error",
+                    initial_delay=0,
+                    backoff_factor=0,
+                    jitter=False,
+                )
+            )
+        analysis_agent = create_agent(
+            model=analysis_model,
+            tools=analysis_tools,
+            system_prompt=_CODING_ANALYSIS_PROMPT,
+            response_format=coding_analysis_response_format(),
+            state_schema=CodingAnalysisWorkerState,
+            context_schema=AssistantRunContext,
+            middleware=analysis_middleware,
+            name="AssistantCodingAnalysisAgent",
+        )
 
     def resolve_workspace_node(
         state: CodingState,
         runtime: Runtime[AssistantRunContext],
         config: RunnableConfig,
     ) -> dict[str, object]:
+        if state.get("coding_result") is not None:
+            return {}
         try:
             workspace = _resolve_workspace(state, runtime, config, workspace_service)
         except CodingWorkspaceError as exc:
@@ -124,18 +194,157 @@ def build_coding_graph(
                 )
             }
         return {
+            "coding_repo_id": workspace.repo_id,
             "workspace_ref": workspace.workspace_ref,
             "base_commit": workspace.base_commit,
         }
 
+    def prepare_analysis_node(
+        state: CodingState,
+        runtime: Runtime[AssistantRunContext],
+        config: RunnableConfig,
+    ) -> dict[str, object]:
+        workspace = _resolve_workspace(state, runtime, config, workspace_service)
+        if state.get("analysis_status") == "pending":
+            snapshot = CodingAnalysisSnapshot.model_validate(
+                state.get("analysis_snapshot")
+            )
+            tasks = tuple(
+                CodingAnalysisTask.model_validate(task)
+                for task in state.get("analysis_tasks", ())
+            )
+            if tasks != build_analysis_tasks():
+                raise ValueError("coding_analysis_contract_invalid")
+            workspace_service.resolve_analysis_snapshot(
+                snapshot,
+                identity=authenticated_user_identity(runtime),
+                thread_id=_thread_id(config),
+                workspace=workspace,
+            )
+            if state.get("analysis_results"):
+                join_analysis_results(snapshot, state["analysis_results"])
+            return {"analysis_snapshot_release_status": "active"}
+        snapshot = workspace_service.create_analysis_snapshot(
+            workspace,
+            identity=authenticated_user_identity(runtime),
+            thread_id=_thread_id(config),
+        )
+        return {
+            "analysis_snapshot": snapshot,
+            "analysis_tasks": build_analysis_tasks(),
+            "analysis_results": [],
+            "analysis_status": "pending",
+            "analysis_snapshot_release_status": "active",
+            "analysis_context_consumed": False,
+            "draft_artifact": None,
+        }
+
+    async def analyze_workspace_node(
+        state: CodingAnalysisWorkerState,
+        runtime: Runtime[AssistantRunContext],
+        config: RunnableConfig,
+    ) -> dict[str, object]:
+        task = CodingAnalysisTask.model_validate(state["analysis_task"])
+        snapshot = CodingAnalysisSnapshot.model_validate(state["analysis_snapshot"])
+        try:
+            result = await analysis_agent.ainvoke(
+                dict(state),
+                config=config,
+                context=runtime.context,
+            )
+        except BaseException as exc:
+            attempt = (
+                runtime.execution_info.node_attempt
+                if runtime.execution_info is not None
+                else 0
+            )
+            if (
+                is_transient_analysis_failure(exc)
+                and attempt >= _MAX_ANALYSIS_ATTEMPTS
+            ):
+                return {
+                    "analysis_results": [
+                        build_analysis_failure_result(task=task, snapshot=snapshot)
+                    ]
+                }
+            raise
+        structured = result.get("structured_response")
+        if isinstance(structured, BaseModel):
+            raw_result = structured.model_dump(mode="json")
+        elif isinstance(structured, Mapping):
+            raw_result = dict(structured)
+        else:
+            raise ValueError("coding_analysis_contract_invalid")
+        normalized = normalize_analysis_result(
+            task=task,
+            snapshot=snapshot,
+            raw_result=raw_result,
+        )
+        return {"analysis_results": [normalized]}
+
+    def analysis_failure_node(
+        state: CodingAnalysisWorkerState,
+        error: NodeError,
+    ) -> Command[str]:
+        if not is_transient_analysis_failure(error.error):
+            raise error.error
+        task = CodingAnalysisTask.model_validate(state["analysis_task"])
+        snapshot = CodingAnalysisSnapshot.model_validate(state["analysis_snapshot"])
+        return Command(
+            update={
+                "analysis_results": [
+                    build_analysis_failure_result(task=task, snapshot=snapshot)
+                ]
+            },
+            goto="join_analysis",
+        )
+
+    def join_analysis_node(
+        state: CodingState,
+        runtime: Runtime[AssistantRunContext],
+        config: RunnableConfig,
+    ) -> dict[str, object]:
+        workspace = _resolve_workspace(state, runtime, config, workspace_service)
+        snapshot = CodingAnalysisSnapshot.model_validate(state["analysis_snapshot"])
+        status, results = join_analysis_results(
+            snapshot,
+            state.get("analysis_results", ()),
+        )
+        if {result.task_id for result in results} != set(ANALYSIS_TASK_IDS):
+            return {
+                "analysis_results": list(results),
+                "analysis_status": "pending",
+                "analysis_snapshot_release_status": "active",
+            }
+        release_status = "released"
+        try:
+            workspace_service.release_analysis_snapshot(
+                snapshot,
+                identity=authenticated_user_identity(runtime),
+                thread_id=_thread_id(config),
+                workspace=workspace,
+            )
+        except CodingWorkspaceError as exc:
+            if exc.code != "coding_analysis_snapshot_failed":
+                raise
+            release_status = "cleanup_pending"
+        return {
+            "analysis_results": list(results),
+            "analysis_status": status,
+            "analysis_snapshot_release_status": release_status,
+        }
+
     async def inspect_and_draft_node(
         state: CodingState,
+        runtime: Runtime[AssistantRunContext],
         config: RunnableConfig,
     ) -> dict[str, object]:
         if state.get("coding_result") is not None:
             return {}
+        _resolve_workspace(state, runtime, config, workspace_service)
         call_state = dict(state)
         call_messages = list(state.get("messages", ()))
+        analysis_context_added = False
         if state.get("repair_status") == "active":
             repair_model_calls = int(state.get("repair_model_calls", 0))
             if repair_model_calls < 1 or repair_model_calls > MAX_REPAIR_ROUNDS:
@@ -174,6 +383,19 @@ def build_coding_graph(
                     )
                 )
             )
+        elif (
+            state.get("analysis_status") in {"completed", "partial", "unavailable"}
+            and not state.get("analysis_context_consumed", False)
+        ):
+            call_messages.append(
+                HumanMessage(
+                    content=render_analysis_context(
+                        state["analysis_status"],
+                        state.get("analysis_results", ()),
+                    )
+                )
+            )
+            analysis_context_added = True
         call_state["messages"] = call_messages
         before = len(call_messages)
         result = await inspect_agent.ainvoke(call_state, config=config)
@@ -191,6 +413,8 @@ def build_coding_graph(
             "messages": new_messages,
             "draft_artifact": artifact,
         }
+        if analysis_context_added:
+            update["analysis_context_consumed"] = True
         return update
 
     def validate_proposal_node(
@@ -200,6 +424,7 @@ def build_coding_graph(
     ) -> dict[str, object]:
         if state.get("coding_result") is not None:
             return {}
+        _resolve_workspace(state, runtime, config, workspace_service)
         artifact = state.get("draft_artifact")
         if not isinstance(artifact, dict):
             if state.get("repair_status") == "active":
@@ -295,7 +520,12 @@ def build_coding_graph(
         )
         return update
 
-    def prepare_repair_node(state: CodingState) -> dict[str, object]:
+    def prepare_repair_node(
+        state: CodingState,
+        runtime: Runtime[AssistantRunContext],
+        config: RunnableConfig,
+    ) -> dict[str, object]:
+        _resolve_workspace(state, runtime, config, workspace_service)
         evidence = state.get("repair_failure_evidence")
         try:
             normalized_evidence = CodingRepairFailureEvidence.model_validate(evidence)
@@ -331,10 +561,15 @@ def build_coding_graph(
             "coding_result": None,
         }
 
-    def consume_repair_budget_node(state: CodingState) -> dict[str, object]:
+    def consume_repair_budget_node(
+        state: CodingState,
+        runtime: Runtime[AssistantRunContext],
+        config: RunnableConfig,
+    ) -> dict[str, object]:
         """Persist one active-repair model-call attempt before invoking the model."""
         if state.get("coding_result") is not None:
             return {}
+        _resolve_workspace(state, runtime, config, workspace_service)
         if state.get("repair_status") != "active":
             return {
                 "coding_result": _failed(
@@ -366,6 +601,7 @@ def build_coding_graph(
             "summarize",
         ]
     ]:
+        _resolve_workspace(state, runtime, config, workspace_service)
         validation = state.get("validation")
         if validation is None:
             return Command(goto="summarize")
@@ -636,6 +872,7 @@ def build_coding_graph(
         runtime: Runtime[AssistantRunContext],
         config: RunnableConfig,
     ) -> Command[Literal["plan_credentials", "summarize"]]:
+        _resolve_workspace(state, runtime, config, workspace_service)
         plan = state.get("dependency_plan")
         applied = state.get("applied_result")
         if plan is None or applied is None:
@@ -747,6 +984,7 @@ def build_coding_graph(
         runtime: Runtime[AssistantRunContext],
         config: RunnableConfig,
     ) -> Command[Literal["run_validation", "summarize"]]:
+        _resolve_workspace(state, runtime, config, workspace_service)
         request = state.get("credential_request")
         plan = state.get("dependency_plan")
         applied = state.get("applied_result")
@@ -845,6 +1083,7 @@ def build_coding_graph(
         runtime: Runtime[AssistantRunContext],
         config: RunnableConfig,
     ) -> Command[Literal["run_validation", "summarize"]]:
+        _resolve_workspace(state, runtime, config, workspace_service)
         plan = state.get("artifact_ingress_plan")
         applied = state.get("applied_result")
         if plan is None or applied is None:
@@ -1117,7 +1356,10 @@ def build_coding_graph(
 
     def merge_approval_node(
         state: CodingState,
+        runtime: Runtime[AssistantRunContext],
+        config: RunnableConfig,
     ) -> Command[Literal["apply_merge", "summarize"]]:
+        _resolve_workspace(state, runtime, config, workspace_service)
         preview = state.get("merge_preview")
         if preview is None:
             return Command(
@@ -1228,6 +1470,15 @@ def build_coding_graph(
             return "summarize"
         if state.get("repair_status") == "active":
             return "consume_repair_budget"
+        if state.get("analysis_status") in {"completed", "partial", "unavailable"}:
+            return "inspect_and_draft"
+        if state.get("analysis_status") == "pending":
+            return "prepare_analysis"
+        repository = workspace_service.config.repositories.get(
+            str(state.get("coding_repo_id", ""))
+        )
+        if repository is not None and repository.parallel_analysis_enabled:
+            return "prepare_analysis"
         return "inspect_and_draft"
 
     def after_validation(state: CodingState) -> str:
@@ -1272,7 +1523,23 @@ def build_coding_graph(
         return "summarize" if state.get("coding_result") is not None else "merge_approval"
 
     builder = StateGraph(CodingState, context_schema=AssistantRunContext)
+    builder.add_node("begin_coding_cycle", begin_coding_cycle_node)
     builder.add_node("resolve_workspace", resolve_workspace_node)
+    builder.add_node("prepare_analysis", prepare_analysis_node)
+    builder.add_node(
+        "analyze_workspace",
+        analyze_workspace_node,
+        input_schema=CodingAnalysisWorkerState,
+        retry_policy=RetryPolicy(
+            initial_interval=0,
+            backoff_factor=0,
+            max_attempts=_MAX_ANALYSIS_ATTEMPTS,
+            jitter=False,
+            retry_on=is_transient_analysis_failure,
+        ),
+        error_handler=analysis_failure_node,
+    )
+    builder.add_node("join_analysis", join_analysis_node)
     builder.add_node("inspect_and_draft", inspect_and_draft_node)
     builder.add_node("validate_proposal", validate_proposal_node)
     builder.add_node("prepare_repair", prepare_repair_node)
@@ -1291,31 +1558,337 @@ def build_coding_graph(
     builder.add_node("merge_approval", merge_approval_node)
     builder.add_node("apply_merge", apply_merge_node)
     builder.add_node("summarize", summarize_node)
-    builder.add_edge(START, "resolve_workspace")
-    builder.add_conditional_edges("resolve_workspace", after_resolve)
+    builder.add_edge(START, "begin_coding_cycle")
+    builder.add_edge("begin_coding_cycle", "resolve_workspace")
+    builder.add_conditional_edges(
+        "resolve_workspace",
+        after_resolve,
+        [
+            "consume_repair_budget",
+            "inspect_and_draft",
+            "prepare_analysis",
+            "summarize",
+        ],
+    )
+    builder.add_conditional_edges(
+        "prepare_analysis",
+        route_analysis_workers,
+        ["analyze_workspace", "join_analysis"],
+    )
+    builder.add_edge("analyze_workspace", "join_analysis")
+    builder.add_edge("join_analysis", "inspect_and_draft")
     builder.add_edge("inspect_and_draft", "validate_proposal")
-    builder.add_conditional_edges("validate_proposal", after_validation)
+    builder.add_conditional_edges(
+        "validate_proposal",
+        after_validation,
+        ["approval", "summarize"],
+    )
     builder.add_edge("prepare_repair", "consume_repair_budget")
     builder.add_edge("consume_repair_budget", "inspect_and_draft")
     builder.add_edge("apply_patch", "plan_dependencies")
-    builder.add_conditional_edges("plan_dependencies", after_dependency_plan)
-    builder.add_conditional_edges("plan_credentials", after_credential_plan)
-    builder.add_conditional_edges("plan_artifacts", after_artifact_plan)
-    builder.add_conditional_edges("run_validation", after_run_validation)
-    builder.add_conditional_edges("create_commit", after_integration_step)
-    builder.add_conditional_edges("prepare_merge", after_merge_preview)
+    builder.add_conditional_edges(
+        "plan_dependencies",
+        after_dependency_plan,
+        ["dependency_approval", "plan_credentials", "summarize"],
+    )
+    builder.add_conditional_edges(
+        "plan_credentials",
+        after_credential_plan,
+        ["credential_approval", "plan_artifacts", "summarize"],
+    )
+    builder.add_conditional_edges(
+        "plan_artifacts",
+        after_artifact_plan,
+        ["artifact_approval", "run_validation", "summarize"],
+    )
+    builder.add_conditional_edges(
+        "run_validation",
+        after_run_validation,
+        ["approval", "create_commit", "prepare_repair", "summarize"],
+    )
+    builder.add_conditional_edges(
+        "create_commit",
+        after_integration_step,
+        ["prepare_merge", "summarize"],
+    )
+    builder.add_conditional_edges(
+        "prepare_merge",
+        after_merge_preview,
+        ["merge_approval", "summarize"],
+    )
     builder.add_edge("apply_merge", "summarize")
     builder.add_edge("summarize", END)
     return builder.compile(name="AssistantCodingGraph", checkpointer=checkpointer)
 
 
+def begin_coding_cycle_node(state: CodingState) -> dict[str, object]:
+    """Start a plain-input cycle and atomically discard prior local state."""
+
+    return {
+        "coding_cycle_generation": int(state.get("coding_cycle_generation") or 0) + 1,
+        "workspace_ref": None,
+        "base_commit": None,
+        "analysis_snapshot": None,
+        "analysis_tasks": (),
+        "analysis_results": Overwrite([]),
+        "analysis_status": None,
+        "analysis_snapshot_release_status": None,
+        "analysis_context_consumed": False,
+        "draft_artifact": None,
+        "proposal": None,
+        "validation": None,
+        "approval_status": None,
+        "approval_origin": None,
+        "applied_result": None,
+        "approved_changed_paths": Overwrite([]),
+        "dependency_plan": None,
+        "dependency_approval_status": None,
+        "credential_request": None,
+        "credential_approval_status": None,
+        "artifact_ingress_plan": None,
+        "artifact_approval_status": None,
+        "format_round": 0,
+        "verification_evidence": Overwrite([]),
+        "last_verification_status": None,
+        "integration_required": False,
+        "commit_result": None,
+        "merge_preview": None,
+        "merge_result": None,
+        "repair_round": 0,
+        "repair_status": None,
+        "repair_failure_evidence": None,
+        "repair_history": Overwrite([]),
+        "repair_model_calls": 0,
+        "repair_proposal_digests": Overwrite([]),
+        "repair_approval_context": None,
+        "coding_result": None,
+    }
+
+
 def _resolve_workspace(state, runtime, config, service):
     identity = authenticated_user_identity(runtime)
-    thread_id = str(config.get("configurable", {}).get("thread_id", "")).strip()
+    thread_id = _thread_id(config)
     repo_id = str(state.get("coding_repo_id", "")).strip()
     if not thread_id or not repo_id:
         raise CodingWorkspaceError("workspace_not_allowed")
-    return service.resolve(identity, thread_id, repo_id)
+    workspace_ref = state.get("workspace_ref")
+    base_commit = state.get("base_commit")
+    binding_required = _has_checkpointed_cycle_state(state)
+    if workspace_ref is None and base_commit is None:
+        if binding_required:
+            raise CodingWorkspaceError("workspace_identity_mismatch")
+        return service.resolve(identity, thread_id, repo_id)
+    if not workspace_ref or not base_commit:
+        raise CodingWorkspaceError("workspace_identity_mismatch")
+    workspace = service.get(
+        str(workspace_ref),
+        identity=identity,
+        thread_id=thread_id,
+    )
+    if (
+        workspace.workspace_ref != workspace_ref
+        or workspace.base_commit != base_commit
+        or workspace.repo_id != repo_id
+    ):
+        raise CodingWorkspaceError("workspace_identity_mismatch")
+    _validate_analysis_checkpoint(
+        state,
+        identity=identity,
+        thread_id=thread_id,
+        workspace=workspace,
+        service=service,
+    )
+    return workspace
+
+
+def _has_checkpointed_cycle_state(state: CodingState) -> bool:
+    if (
+        state.get("analysis_tasks")
+        or state.get("analysis_results")
+        or state.get("analysis_snapshot_release_status") is not None
+        or state.get("analysis_context_consumed", False)
+    ):
+        return True
+    return any(
+        state.get(field) is not None
+        for field in (
+            "analysis_snapshot",
+            "analysis_status",
+            "draft_artifact",
+            "proposal",
+            "validation",
+            "approval_status",
+            "applied_result",
+            "dependency_plan",
+            "credential_request",
+            "artifact_ingress_plan",
+            "repair_status",
+            "coding_result",
+        )
+    )
+
+
+def _validate_analysis_checkpoint(
+    state: CodingState,
+    *,
+    identity: str,
+    thread_id: str,
+    workspace,
+    service: CodingWorkspaceService,
+) -> None:
+    status = state.get("analysis_status")
+    snapshot_value = state.get("analysis_snapshot")
+    if status is None and snapshot_value is None:
+        if (
+            state.get("analysis_tasks")
+            or state.get("analysis_results")
+            or state.get("analysis_snapshot_release_status") is not None
+            or state.get("analysis_context_consumed", False)
+        ):
+            raise ValueError("coding_analysis_contract_invalid")
+        return
+    if status not in {"pending", "completed", "partial", "unavailable"}:
+        raise ValueError("coding_analysis_contract_invalid")
+    snapshot = CodingAnalysisSnapshot.model_validate(snapshot_value)
+    if (
+        snapshot.workspace_ref != state.get("workspace_ref")
+        or snapshot.base_commit != state.get("base_commit")
+    ):
+        raise CodingWorkspaceError("coding_analysis_snapshot_mismatch")
+    tasks = tuple(
+        CodingAnalysisTask.model_validate(task)
+        for task in state.get("analysis_tasks", ())
+    )
+    if tasks != build_analysis_tasks():
+        raise ValueError("coding_analysis_contract_invalid")
+    results = tuple(
+        CodingAnalysisResult.model_validate(result)
+        for result in state.get("analysis_results", ())
+    )
+    task_ids = tuple(result.task_id for result in results)
+    if len(task_ids) != len(set(task_ids)) or any(
+        task_id not in ANALYSIS_TASK_IDS for task_id in task_ids
+    ):
+        raise ValueError("coding_analysis_contract_invalid")
+    if status != "pending" and set(task_ids) != set(ANALYSIS_TASK_IDS):
+        raise ValueError("coding_analysis_contract_invalid")
+    joined_status, _ = join_analysis_results(snapshot, results)
+    if status != "pending" and joined_status != status:
+        raise ValueError("coding_analysis_contract_invalid")
+    release_status = state.get("analysis_snapshot_release_status")
+    if status == "pending":
+        if release_status != "active":
+            raise ValueError("coding_analysis_contract_invalid")
+    elif release_status not in {"released", "cleanup_pending"}:
+        raise ValueError("coding_analysis_contract_invalid")
+    if status == "pending":
+        service.validate_analysis_snapshot(
+            snapshot,
+            identity=identity,
+            thread_id=thread_id,
+            workspace=workspace,
+            require_active=True,
+        )
+
+
+def _thread_id(config: RunnableConfig) -> str:
+    return str(config.get("configurable", {}).get("thread_id", "")).strip()
+
+
+def route_analysis_workers(state: CodingState) -> list[Send] | str:
+    """Fan out the fixed analysis tasks against one immutable snapshot."""
+
+    snapshot = state.get("analysis_snapshot")
+    tasks = tuple(state.get("analysis_tasks", ()))
+    if snapshot is None or not tasks:
+        return "join_analysis"
+    completed_task_ids = {
+        CodingAnalysisResult.model_validate(result).task_id
+        for result in state.get("analysis_results", ())
+    }
+    pending_tasks = tuple(
+        task for task in tasks if task.task_id not in completed_task_ids
+    )
+    if not pending_tasks:
+        return "join_analysis"
+    return [
+        Send(
+            "analyze_workspace",
+            {
+                "messages": _analysis_worker_messages(state, task, snapshot),
+                "coding_repo_id": state["coding_repo_id"],
+                "workspace_ref": state["workspace_ref"],
+                "base_commit": state["base_commit"],
+                "analysis_snapshot": snapshot,
+                "analysis_task": task,
+                "provider_search_profile": "none",
+            },
+        )
+        for task in pending_tasks
+        if task.task_id in ANALYSIS_TASK_IDS
+    ]
+
+
+def _analysis_worker_messages(
+    state: CodingState,
+    task: CodingAnalysisTask,
+    snapshot: CodingAnalysisSnapshot,
+) -> list[HumanMessage]:
+    request = ""
+    for message in reversed(state.get("messages", ())):
+        if isinstance(message, HumanMessage):
+            request = _bounded_analysis_user_text(message.content)
+            break
+    task_context = json.dumps(
+        {
+            "task_id": task.task_id,
+            "objective": task.objective,
+            "allowed_tool_names": list(task.allowed_tool_names),
+            "snapshot_ref": snapshot.snapshot_ref,
+            "tree_digest": snapshot.tree_digest,
+            "instruction": (
+                "Analyze only this immutable snapshot and return bounded findings. "
+                "Do not propose or apply a patch."
+            ),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    messages = [HumanMessage(content=request)] if request else []
+    messages.append(HumanMessage(content=task_context))
+    return messages
+
+
+def _bounded_analysis_user_text(content: object) -> str:
+    parts: list[str] = []
+    remaining_chars = _MAX_ANALYSIS_REQUEST_CHARS
+    remaining_bytes = _MAX_ANALYSIS_REQUEST_BYTES
+
+    def append_text(value: str) -> None:
+        nonlocal remaining_chars, remaining_bytes
+        if remaining_chars <= 0 or remaining_bytes <= 0:
+            return
+        candidate = value[:remaining_chars]
+        encoded = candidate.encode("utf-8")
+        if len(encoded) > remaining_bytes:
+            candidate = encoded[:remaining_bytes].decode("utf-8", errors="ignore")
+            encoded = candidate.encode("utf-8")
+        parts.append(candidate)
+        remaining_chars -= len(candidate)
+        remaining_bytes -= len(encoded)
+
+    if isinstance(content, str):
+        append_text(content)
+    elif isinstance(content, (list, tuple)):
+        for block in content:
+            if remaining_chars <= 0 or remaining_bytes <= 0:
+                break
+            if not isinstance(block, Mapping) or block.get("type") != "text":
+                continue
+            text_value = block.get("text")
+            if isinstance(text_value, str):
+                append_text(text_value)
+    return "".join(parts)
 
 
 def _approved_changed_paths(
@@ -1390,4 +1963,4 @@ def _failed(
     )
 
 
-__all__ = ["build_coding_graph"]
+__all__ = ["build_coding_graph", "route_analysis_workers"]

@@ -11,7 +11,11 @@ from langchain_core.messages import AnyMessage
 from langgraph.graph import MessagesState
 from pydantic import BaseModel, ConfigDict, model_validator
 
+from assistant_agent.coding.analysis import AnalysisStatus, merge_analysis_results
 from assistant_agent.coding.models import (
+    CodingAnalysisResult,
+    CodingAnalysisSnapshot,
+    CodingAnalysisTask,
     CodingCommandEvidence,
     CodingCommitResult,
     CodingArtifactIngressPlan,
@@ -46,6 +50,7 @@ from pydantic import JsonValue
 ExecutionMode = Literal["fast", "planning", "coding"]
 MemoryStatus = Literal["ready", "empty", "degraded"]
 AgentPhase = Literal["fast", "planner", "worker", "finalizer"]
+AnalysisSnapshotReleaseStatus = Literal["active", "released", "cleanup_pending"]
 
 
 class AssistantRootInput(BaseModel):
@@ -150,6 +155,17 @@ class WorkerState(AgentState):
     planner_evidence: Required[tuple[PlannerEvidence, ...]]
 
 
+class CodingAnalysisWorkerState(AgentState):
+    """Narrow input state for one snapshot-bound coding analysis branch."""
+
+    coding_repo_id: Required[str]
+    workspace_ref: Required[str]
+    base_commit: Required[str]
+    analysis_snapshot: Required[CodingAnalysisSnapshot]
+    analysis_task: Required[CodingAnalysisTask]
+    provider_search_profile: Required[Literal["none"]]
+
+
 class PlanningState(AgentState):
     """Planning-only channels kept out of the fast branch."""
 
@@ -210,18 +226,29 @@ class PlanningState(AgentState):
 class CodingState(AgentState):
     """Sequential coding channels kept out of fast and planning branches."""
 
+    coding_cycle_generation: NotRequired[int]
     memory_context: NotRequired[tuple[str, ...]]
     memory_status: NotRequired[MemoryStatus]
     execution_mode: NotRequired[ExecutionMode]
     trusted_runtime_facts: NotRequired[dict[str, object]]
     coding_repo_id: Required[str]
-    workspace_ref: NotRequired[str]
-    base_commit: NotRequired[str]
+    workspace_ref: NotRequired[str | None]
+    base_commit: NotRequired[str | None]
+    analysis_snapshot: NotRequired[CodingAnalysisSnapshot | None]
+    analysis_tasks: NotRequired[tuple[CodingAnalysisTask, ...]]
+    analysis_results: NotRequired[
+        Annotated[list[CodingAnalysisResult], merge_analysis_results]
+    ]
+    analysis_status: NotRequired[AnalysisStatus | Literal["pending"] | None]
+    analysis_snapshot_release_status: NotRequired[
+        AnalysisSnapshotReleaseStatus | None
+    ]
+    analysis_context_consumed: NotRequired[bool]
     draft_artifact: NotRequired[dict[str, object] | None]
     proposal: NotRequired[CodingPatchProposal | None]
     validation: NotRequired[CodingPatchValidation | None]
     approval_status: NotRequired[Literal["pending", "approved", "rejected"] | None]
-    approval_origin: NotRequired[Literal["model", "formatter", "repair"]]
+    approval_origin: NotRequired[Literal["model", "formatter", "repair"] | None]
     applied_result: NotRequired[CodingPatchApplyResult | None]
     approved_changed_paths: NotRequired[Annotated[list[str], _merge_unique_strings]]
     dependency_plan: NotRequired[CodingDependencyPlan | None]
@@ -240,7 +267,7 @@ class CodingState(AgentState):
     verification_evidence: NotRequired[
         Annotated[list[CodingCommandEvidence], operator.add]
     ]
-    last_verification_status: NotRequired[Literal["passed", "failed"]]
+    last_verification_status: NotRequired[Literal["passed", "failed"] | None]
     integration_required: NotRequired[bool]
     commit_result: NotRequired[CodingCommitResult | None]
     merge_preview: NotRequired[CodingMergePreview | None]
@@ -254,7 +281,7 @@ class CodingState(AgentState):
     repair_model_calls: NotRequired[int]
     repair_proposal_digests: NotRequired[Annotated[list[str], _merge_unique_strings]]
     repair_approval_context: NotRequired[CodingRepairApprovalContext | None]
-    coding_result: NotRequired[CodingTerminalResult]
+    coding_result: NotRequired[CodingTerminalResult | None]
 
 
 def _merge_unique_strings(
@@ -436,8 +463,10 @@ def _validated_replacement_claim_mapping(
 __all__ = [
     "AgentPhase",
     "add_budget_usage",
+    "AnalysisSnapshotReleaseStatus",
     "AssistantRootInput",
     "AssistantRootState",
+    "CodingAnalysisWorkerState",
     "CodingState",
     "ExecutionMode",
     "FastAgentState",
