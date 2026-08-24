@@ -110,6 +110,12 @@ _MAX_ANALYSIS_REQUEST_BYTES = 16_000
 _MAX_ANALYSIS_ATTEMPTS = 3
 
 
+class _MissingModelCodingReviewGraph:
+    async def ainvoke(self, state: object, *, config: object, context: object):
+        del state, config, context
+        raise PermissionError("coding_review_requires_configured_model")
+
+
 def build_coding_graph(
     model: Any,
     tools: list[BaseTool],
@@ -189,7 +195,11 @@ def build_coding_graph(
             name="AssistantCodingAnalysisAgent",
         )
     if review_graph is None:
-        review_graph = create_coding_review_graph(model, workspace_service)
+        review_graph = (
+            create_coding_review_graph(model, workspace_service)
+            if model is not None
+            else _MissingModelCodingReviewGraph()
+        )
 
     def resolve_workspace_node(
         state: CodingState,
