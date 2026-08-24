@@ -278,13 +278,20 @@ def test_parent_graph_has_native_fast_alite_planning_and_coding_branches(monkeyp
             ("coding_review_decision", "summarize"),
         }.issubset(coding_edges)
         assert {
-            ("coding_review_decision", "consume_review_repair_budget"),
-            ("consume_review_repair_budget", "consume_review_repair_context"),
-            ("consume_review_repair_budget", "summarize"),
-            ("consume_review_repair_context", "inspect_and_draft"),
-            ("consume_review_repair_context", "summarize"),
-        }.issubset(coding_edges)
-        assert ("coding_review_decision", "inspect_and_draft") not in coding_edges
+            target
+            for source, target in coding_edges
+            if source == "coding_review_decision"
+        } == {"consume_review_repair_budget", "create_commit", "summarize"}
+        assert {
+            target
+            for source, target in coding_edges
+            if source == "consume_review_repair_budget"
+        } == {"consume_review_repair_context", "summarize"}
+        assert {
+            target
+            for source, target in coding_edges
+            if source == "consume_review_repair_context"
+        } == {"inspect_and_draft", "summarize"}
         repair_lane_nodes = {
             "run_validation",
             "prepare_repair",
