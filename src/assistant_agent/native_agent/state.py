@@ -26,6 +26,10 @@ from assistant_agent.coding.models import (
     CodingPatchApplyResult,
     CodingPatchProposal,
     CodingPatchValidation,
+    CodingReviewInput,
+    CodingReviewReport,
+    CodingReviewerResult,
+    CodingReviewTask,
     CodingRepairApprovalContext,
     CodingRepairAttempt,
     CodingRepairFailureEvidence,
@@ -268,6 +272,22 @@ class CodingState(AgentState):
         Annotated[list[CodingCommandEvidence], operator.add]
     ]
     last_verification_status: NotRequired[Literal["passed", "failed"] | None]
+    review_required: NotRequired[bool]
+    review_generation: NotRequired[int | None]
+    review_snapshot: NotRequired[CodingAnalysisSnapshot | None]
+    review_snapshot_release_status: NotRequired[
+        Literal["active", "released"] | None
+    ]
+    review_input: NotRequired[CodingReviewInput | None]
+    review_tasks: NotRequired[tuple[CodingReviewTask, ...]]
+    review_results: NotRequired[
+        Annotated[list[CodingReviewerResult], operator.add]
+    ]
+    review_report: NotRequired[CodingReviewReport | None]
+    review_status: NotRequired[Literal["clean", "findings", "unavailable"] | None]
+    review_validation_digest: NotRequired[str | None]
+    review_decision_context: NotRequired[dict[str, JsonValue] | None]
+    review_decision: NotRequired[Literal["approved", "rejected"] | None]
     integration_required: NotRequired[bool]
     commit_result: NotRequired[CodingCommitResult | None]
     merge_preview: NotRequired[CodingMergePreview | None]
