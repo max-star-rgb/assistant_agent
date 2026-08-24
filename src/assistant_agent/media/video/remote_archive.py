@@ -155,6 +155,7 @@ class H264ArchiveRecorder:
         segment_seconds: float = 30.0,
         muxer: Muxer | None = None,
         ffmpeg_binary: str = "/usr/bin/ffmpeg",
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if segment_seconds <= 0:
             raise ValueError("segment_seconds must be positive")
@@ -170,7 +171,9 @@ class H264ArchiveRecorder:
         )
         self._open: dict[str, _OpenSegment] = {}
         self._next_sequence: dict[str, int] = {}
-        self._lock = Lock()
+        self._clock = clock
+        self._locks_guard = Lock()
+        self._session_locks: dict[str, Lock] = {}
 
     def append(
         self,
@@ -184,16 +187,33 @@ class H264ArchiveRecorder:
             raise ValueError("archive session_id is required")
         if not h264_bytes:
             raise ValueError("archive frame is empty")
-        timestamp, normalized_time = _capture_time(captured_at)
+        timestamp = self._clock()
+        _ignored_timestamp, normalized_time = _capture_time(captured_at)
         completed: list[ArchivedVideoSegment] = []
-        with self._lock:
+        with self._session_lock(session_id):
             current = self._open.get(session_id)
             if (
                 current is not None
                 and timestamp - current.started_at_seconds >= self.segment_seconds
             ):
-                completed.append(self._finalize(session_id, current))
-                current = None
+                previous = current
+                current = self._start_segment(
+                    session_id,
+                    timestamp=timestamp,
+                    start_time=normalized_time,
+                    frame_rate=frame_rate,
+                )
+                with current.raw_path.open("ab") as handle:
+                    handle.write(h264_bytes)
+                try:
+                    completed.append(self._finalize(previous))
+                except Exception:
+                    with previous.raw_path.open("ab") as handle:
+                        handle.write(current.raw_path.read_bytes())
+                    current.raw_path.unlink(missing_ok=True)
+                    self._open[session_id] = previous
+                    raise
+                return tuple(completed)
             if current is None:
                 current = self._start_segment(
                     session_id,
@@ -206,11 +226,14 @@ class H264ArchiveRecorder:
         return tuple(completed)
 
     def flush(self, session_id: str) -> ArchivedVideoSegment | None:
-        with self._lock:
+        with self._session_lock(session_id):
             current = self._open.get(session_id)
             if current is None:
                 return None
-            return self._finalize(session_id, current)
+            segment = self._finalize(current)
+            if self._open.get(session_id) is current:
+                self._open.pop(session_id, None)
+            return segment
 
     def segment_for_existing_file(
         self,
@@ -249,14 +272,11 @@ class H264ArchiveRecorder:
         self._open[session_id] = current
         return current
 
-    def _finalize(
-        self,
-        session_id: str,
-        current: _OpenSegment,
-    ) -> ArchivedVideoSegment:
-        self._open.pop(session_id, None)
+    def _finalize(self, current: _OpenSegment) -> ArchivedVideoSegment:
         digest = hashlib.sha256(
-            f"{session_id}:{current.sequence}:{current.start_time}".encode("utf-8")
+            f"{current.raw_path}:{current.sequence}:{current.start_time}".encode(
+                "utf-8"
+            )
         ).hexdigest()[:24]
         file_id = f"video-{digest}"
         output_path = current.raw_path.with_name(f"{file_id}.mp4")
@@ -266,14 +286,19 @@ class H264ArchiveRecorder:
             if not partial_path.is_file() or partial_path.stat().st_size == 0:
                 raise RuntimeError("H264 muxer did not produce an MP4")
             partial_path.replace(output_path)
-        finally:
-            current.raw_path.unlink(missing_ok=True)
+        except Exception:
             partial_path.unlink(missing_ok=True)
+            raise
+        current.raw_path.unlink(missing_ok=True)
         return ArchivedVideoSegment(
             file_id=file_id,
             path=output_path.resolve(),
             start_time=current.start_time,
         )
+
+    def _session_lock(self, session_id: str) -> Lock:
+        with self._locks_guard:
+            return self._session_locks.setdefault(session_id, Lock())
 
 
 @dataclass(frozen=True)
@@ -353,7 +378,7 @@ class RemoteVideoArchiveUploader:
         user_id: str,
         session_id: str,
     ) -> str:
-        self._save(segment, user_id=user_id, session_id=session_id, status="ready")
+        self.preserve(segment, user_id=user_id, session_id=session_id)
         published = self.registry.publish(segment.path, file_id=segment.file_id)
         try:
             self._save(
@@ -417,6 +442,12 @@ class RemoteVideoArchiveUploader:
             )
             return "timeout"
         except Exception as exc:  # noqa: BLE001 - background dependency boundary.
+            self._save(
+                segment,
+                user_id=user_id,
+                session_id=session_id,
+                status="failed",
+            )
             logger.warning(
                 "remote_visual_memory_upload_failed file=%s error_type=%s",
                 segment.file_id,
@@ -425,6 +456,17 @@ class RemoteVideoArchiveUploader:
             return "failed"
         finally:
             self.registry.revoke(published.token)
+
+    def preserve(
+        self,
+        segment: ArchivedVideoSegment,
+        *,
+        user_id: str,
+        session_id: str,
+    ) -> None:
+        """Durably register a completed MP4 before background scheduling."""
+
+        self._save(segment, user_id=user_id, session_id=session_id, status="ready")
 
     def _save(
         self,
@@ -446,11 +488,20 @@ class RemoteVideoArchiveUploader:
 
 
 @dataclass
+class _QueuedFrame:
+    h264_bytes: bytes
+    captured_at: str | None
+    frame_rate: float
+
+
+@dataclass
 class _ArchiveConnection:
     user_id: str
     session_id: str
-    tail: asyncio.Task[None] | None = None
-    pending_frames: int = 0
+    queue: asyncio.Queue[_QueuedFrame | None]
+    worker: asyncio.Task[None] | None = None
+    rotation_task: asyncio.Task[None] | None = None
+    pending_bytes: int = 0
 
 
 class RemoteVideoArchiveService:
@@ -461,11 +512,11 @@ class RemoteVideoArchiveService:
         *,
         recorder: H264ArchiveRecorder,
         uploader: RemoteVideoArchiveUploader,
-        max_pending_frames: int = 512,
+        max_pending_bytes: int = 64 * 1024 * 1024,
     ) -> None:
         self.recorder = recorder
         self.uploader = uploader
-        self.max_pending_frames = max_pending_frames
+        self.max_pending_bytes = max_pending_bytes
         self._connections: dict[str, _ArchiveConnection] = {}
         self._upload_tasks: set[asyncio.Task[str]] = set()
 
@@ -478,10 +529,16 @@ class RemoteVideoArchiveService:
     ) -> None:
         if connection_id in self._connections:
             raise ValueError("archive connection is already open")
-        self._connections[connection_id] = _ArchiveConnection(
+        connection = _ArchiveConnection(
             user_id=user_id,
             session_id=session_id,
+            queue=asyncio.Queue(),
         )
+        connection.worker = asyncio.create_task(
+            self._run_connection(connection),
+            name=f"remote-visual-memory-archive:{connection_id}",
+        )
+        self._connections[connection_id] = connection
 
     def enqueue_frame(
         self,
@@ -492,63 +549,94 @@ class RemoteVideoArchiveService:
         frame_rate: float,
     ) -> bool:
         connection = self._connections.get(connection_id)
-        if connection is None or connection.pending_frames >= self.max_pending_frames:
+        frame_size = len(h264_bytes)
+        if (
+            connection is None
+            or frame_size <= 0
+            or connection.pending_bytes + frame_size > self.max_pending_bytes
+        ):
             return False
-        previous = connection.tail
-        connection.pending_frames += 1
-        connection.tail = asyncio.create_task(
-            self._append_after(
-                previous,
-                connection=connection,
+        connection.pending_bytes += frame_size
+        connection.queue.put_nowait(
+            _QueuedFrame(
                 h264_bytes=h264_bytes,
                 captured_at=captured_at,
                 frame_rate=frame_rate,
-            ),
-            name="remote-visual-memory-archive-frame",
+            )
         )
+        if connection.rotation_task is None:
+            connection.rotation_task = asyncio.create_task(
+                self._rotate_periodically(connection),
+                name=f"remote-visual-memory-rotate:{connection_id}",
+            )
         return True
 
-    async def _append_after(
-        self,
-        previous: asyncio.Task[None] | None,
-        *,
-        connection: _ArchiveConnection,
-        h264_bytes: bytes,
-        captured_at: str | None,
-        frame_rate: float,
-    ) -> None:
+    async def _run_connection(self, connection: _ArchiveConnection) -> None:
+        while True:
+            frame = await connection.queue.get()
+            if frame is None:
+                connection.queue.task_done()
+                return
+            try:
+                segments = await asyncio.to_thread(
+                    self.recorder.append,
+                    session_id=connection.session_id,
+                    h264_bytes=frame.h264_bytes,
+                    captured_at=frame.captured_at,
+                    frame_rate=frame.frame_rate,
+                )
+                for segment in segments:
+                    self._schedule_upload(segment, connection=connection)
+            except Exception as exc:  # noqa: BLE001 - optional archive lane.
+                logger.warning(
+                    "remote_visual_memory_archive_failed error_type=%s",
+                    type(exc).__name__,
+                )
+            finally:
+                connection.pending_bytes -= len(frame.h264_bytes)
+                connection.queue.task_done()
+
+    async def _rotate_periodically(self, connection: _ArchiveConnection) -> None:
         try:
-            if previous is not None:
-                await asyncio.gather(previous, return_exceptions=True)
-            segments = await asyncio.to_thread(
-                self.recorder.append,
-                session_id=connection.session_id,
-                h264_bytes=h264_bytes,
-                captured_at=captured_at,
-                frame_rate=frame_rate,
-            )
-            for segment in segments:
-                self._schedule_upload(segment, connection=connection)
-        except Exception as exc:  # noqa: BLE001 - optional archive lane.
-            logger.warning(
-                "remote_visual_memory_archive_failed error_type=%s",
-                type(exc).__name__,
-            )
-        finally:
-            connection.pending_frames -= 1
+            while True:
+                await asyncio.sleep(self.recorder.segment_seconds)
+                try:
+                    segment = await asyncio.to_thread(
+                        self.recorder.flush,
+                        connection.session_id,
+                    )
+                    if segment is not None:
+                        self._schedule_upload(segment, connection=connection)
+                except Exception as exc:  # noqa: BLE001 - optional archive lane.
+                    logger.warning(
+                        "remote_visual_memory_rotation_failed error_type=%s",
+                        type(exc).__name__,
+                    )
+        except asyncio.CancelledError:
+            raise
 
     async def close_session(self, connection_id: str) -> None:
         connection = self._connections.pop(connection_id, None)
         if connection is None:
             return
-        if connection.tail is not None:
-            await asyncio.gather(connection.tail, return_exceptions=True)
-        segment = await asyncio.to_thread(
-            self.recorder.flush,
-            connection.session_id,
-        )
-        if segment is not None:
-            self._schedule_upload(segment, connection=connection)
+        if connection.rotation_task is not None:
+            connection.rotation_task.cancel()
+            await asyncio.gather(connection.rotation_task, return_exceptions=True)
+        connection.queue.put_nowait(None)
+        if connection.worker is not None:
+            await asyncio.gather(connection.worker, return_exceptions=True)
+        try:
+            segment = await asyncio.to_thread(
+                self.recorder.flush,
+                connection.session_id,
+            )
+            if segment is not None:
+                self._schedule_upload(segment, connection=connection)
+        except Exception as exc:  # noqa: BLE001 - optional archive lane.
+            logger.warning(
+                "remote_visual_memory_close_flush_failed error_type=%s",
+                type(exc).__name__,
+            )
 
     def _schedule_upload(
         self,
@@ -556,6 +644,13 @@ class RemoteVideoArchiveService:
         *,
         connection: _ArchiveConnection,
     ) -> None:
+        preserve = getattr(self.uploader, "preserve", None)
+        if callable(preserve):
+            preserve(
+                segment,
+                user_id=connection.user_id,
+                session_id=connection.session_id,
+            )
         task = asyncio.create_task(
             self.uploader.process(
                 segment,
@@ -585,6 +680,7 @@ class RemoteVideoArchiveService:
                 connection=_ArchiveConnection(
                     user_id=entry.user_id,
                     session_id=entry.session_id,
+                    queue=asyncio.Queue(),
                 ),
             )
 

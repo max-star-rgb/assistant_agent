@@ -54,8 +54,9 @@ Content-Type: application/json
 {"user_id":"<authenticated-identity>","task_id":"<task-id>"}
 ```
 
-只有 `completed` 才撤销 URL 并删除本机 MP4。未完成项保存在本机 SQLite manifest，Agent Server lifespan
-重启后以同一稳定 `file_id` 重新提交。失败不影响 WebSocket ACK、实时视觉或 chat run。
+只有 `completed` 才撤销 URL 并删除本机 MP4。完成切片在调度后台上传前先写入本机 SQLite manifest，Agent
+Server lifespan 重启后以同一稳定 `file_id` 重新提交。归档或远端依赖失败不影响实时视觉与 chat run；但若
+连接级归档积压超过受控字节预算，该视频帧会被明确拒绝而不会伪造成功 ACK。
 
 ### 视觉记忆召回
 
@@ -78,7 +79,12 @@ adapter 只消费 `results[]` 中 `type=text` 的非空 `content`。图片、Bas
 和原始响应都不进入 Graph state。视觉分支具有独立 timeout，任何失败规范化为空结果；LangMem 和当前 turn
 继续。两路文本带来源标签合并后，仍受 `memory_context` 既有预算约束。
 
-## 身份
+### 远端视觉服务身份
+
+远端视觉请求的 `user_id` 来自 Agent Server 认证 principal，`session_id` 使用 native thread ID；客户端媒体
+payload 不能覆盖这两个字段。当前 tokenless developer auth 只适用于受信内网，不能当作公网认证机制。
+
+## Mem0 身份
 
 召回节点从可信 Runtime 身份生成不透明 `user_id` 和 `agent_id`；写入请求还必须
 携带由 `user_id + agent_id + session_id` 稳定生成的不透明 `run_id`。用户输入不能直接覆盖这些字段。

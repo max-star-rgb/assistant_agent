@@ -520,7 +520,14 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
             await asyncio.gather(*chat_tasks.values(), return_exceptions=True)
         await visual_perception.aclose_video_tasks()
         if video_archive is not None:
-            await video_archive.close_session(session.connection_id)
+            try:
+                await video_archive.close_session(session.connection_id)
+            except Exception as exc:  # noqa: BLE001 - optional archive cleanup.
+                logger.warning(
+                    "remote_visual_memory_close_failed connection=%s error_type=%s",
+                    session.connection_id,
+                    type(exc).__name__,
+                )
         if visual_perception.session is not None:
             await visual_perception.session.aclose()
         for video_id in session.video_ids:
@@ -866,9 +873,8 @@ async def _handle_frame(
                     frame_rate=frame_rate,
                 )
                 if not archived:
-                    logger.warning(
-                        "remote_visual_memory_archive_queue_full connection=%s",
-                        session.connection_id,
+                    raise MediaProtocolError(
+                        "video archive backlog is full; frame was not accepted"
                     )
         accepted = visual_perception.enqueue_video(
             lambda: _ingest_video_packets(
@@ -1554,6 +1560,8 @@ def _create_remote_video_archive_service(
 ) -> RemoteVideoArchiveService | None:
     if not config.remote_visual_memory_enabled:
         return None
+    if config.provider_mode != "real":
+        raise ValueError("remote visual memory requires provider mode real")
     if not (config.remote_visual_memory_download_base_url or "").strip():
         raise ValueError(
             "remote visual memory video upload requires a download base URL"

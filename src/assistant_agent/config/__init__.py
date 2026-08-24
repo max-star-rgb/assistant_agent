@@ -264,6 +264,8 @@ class ProviderConfig:
         if self.memory_extraction_delay_seconds <= 0:
             raise ValueError("memory extraction delay must be positive")
         if self.remote_visual_memory_enabled:
+            if self.provider_mode != "real":
+                raise ValueError("remote visual memory requires provider mode real")
             if self.memory_backend != "langmem":
                 raise ValueError("remote visual memory requires MEMORY_BACKEND=langmem")
             if not (self.remote_visual_memory_base_url or "").strip():
@@ -596,9 +598,7 @@ class ProviderConfig:
                 source.get("REMOTE_VISUAL_MEMORY_ENABLED"),
                 False,
             ),
-            remote_visual_memory_base_url=source.get(
-                "REMOTE_VISUAL_MEMORY_BASE_URL"
-            ),
+            remote_visual_memory_base_url=source.get("REMOTE_VISUAL_MEMORY_BASE_URL"),
             remote_visual_memory_query_timeout_seconds=_float_env(
                 source.get("REMOTE_VISUAL_MEMORY_QUERY_TIMEOUT_SECONDS"),
                 5.0,
@@ -837,9 +837,7 @@ class ProviderConfig:
             ark_image_output_format="png",
             local_image_base_url=source.get("LOCAL_IMAGE_BASE_URL"),
             local_image_model=source.get("LOCAL_IMAGE_MODEL", "local-image"),
-            artifact_base_url=source.get(
-                "ARTIFACT_BASE_URL", "http://127.0.0.1:8089"
-            ),
+            artifact_base_url=source.get("ARTIFACT_BASE_URL", "http://127.0.0.1:8089"),
             td_gen_ip=source.get("TD_GEN_IP"),
             td_gen_port=_optional_int_env(source.get("TD_GEN_PORT")),
             public_ip=source.get("PUBLIC_IP"),

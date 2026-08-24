@@ -216,6 +216,7 @@ capability token。每次 run 的公开
 | delivery ID | custom route/outbox | 媒体 ACK 关联，不是 run 或 checkpoint |
 | proactive delivery Store | custom route 与显式产品 publisher | 媒体连接 presence/claim/ACK；不是 LangGraph Store |
 | Visual Perception Module | Agent Server 进程资源 | 视觉 authority 的进程级 owner，包含共享 embedding coordinator 与连接级视觉提醒 registry；不是 Graph Runtime |
+| remote video archive | custom-app lifespan | 连接级 H.264 顺序归档、30 秒 MP4 切片、待上传 manifest 与临时下载 capability；不是 Graph Runtime |
 
 Agent Server async factory 在每个 worker 进程首次取图时创建唯一 `AgentServerExecutionOwner`，持有标准
 `BaseChatModel` Provider adapter、静态本地 `BaseTool`、一次发现得到的官方 MCP tools、一个
@@ -318,6 +319,11 @@ custom route 只负责：
 受管图片。该路由只接受受管目录中的单层文件名，并限制文件大小和可识别图片 MIME；配置
 `ARTIFACT_BASE_URL` 时，图像 Tool 会在 `ToolMessage.artifact.images[].url` 中附带客户端可访问的绝对 URL。
 当前 Studio 不保证渲染 Tool artifact。
+
+显式启用远端视觉记忆时，同一 custom app 还提供
+`/internal/memory-media/{opaque-token}`。该路由只解析进程内、带 TTL 的一次任务 capability，返回已完成的
+受管 MP4；不接受任意路径，也不承担视频处理或 Memory 调度。归档服务及 SQLite 待上传 manifest 由
+custom-app lifespan 创建、恢复和关闭。
 
 它不读取 checkpoint，不执行 Tool/Memory，不构造旧 Runtime，也不翻译项目 run/error 状态机。媒体 SDK stream
 只订阅 messages/values：messages 投影模型正文增量，values 读取权威终态；updates/custom 仅留给显式选择这些
