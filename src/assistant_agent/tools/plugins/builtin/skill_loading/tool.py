@@ -31,6 +31,7 @@ from assistant_agent.tools.plugins.builtin.skill_loading.models import (
     LoadSkillReferenceResult,
     LoadSkillRequest,
     LoadSkillResult,
+    SkillCapabilityActivation,
 )
 from assistant_agent.tools.runtime import ToolContext, tool_context
 
@@ -56,7 +57,7 @@ def create_load_skill_tool(*, root: str | Path | None = None) -> BaseTool:
         ],
         runtime: ToolRuntime[AssistantRunContext],
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """当当前任务符合 skill_index 中某张 Skill 卡片时，在调用其相关业务工具前按 skill_id 静默加载完整工作流正文；不要加载无关 Skill 或向用户播报加载过程。成功结果会返回可按需读取的 reference_ids；不接受路径或未注册资源。"""
+        """当当前任务符合 skill_index 中某张 Skill 卡片时，按 skill_id 静默激活完整工作流正文与分阶段能力；fast 可获得相应业务 Tool，planner 只能把能力委派给 worker。不要加载无关 Skill 或向用户播报激活过程。成功结果会返回可按需读取的 reference_ids；不接受路径或未注册资源。"""
 
         return invoke_native_tool(
             LOAD_SKILL_TOOL_NAME,
@@ -127,6 +128,9 @@ def _execute_load_skill(root: Path, input: LoadSkillRequest) -> ToolResult:
         skill_id=descriptor.name,
         content=content,
         reference_ids=list(descriptor.references),
+        capability_activation=SkillCapabilityActivation(
+            tool_names=tuple(descriptor.governed_tools),
+        ),
         granted_tools=list(descriptor.governed_tools),
     )
     data = result.model_dump(mode="json")
@@ -136,10 +140,12 @@ def _execute_load_skill(root: Path, input: LoadSkillRequest) -> ToolResult:
         data=data,
         model_observation={
             "status": result.status,
-            "summary": "内部工作流已加载。",
+            "summary": "专业流程与分阶段能力已激活。",
             "skill_id": result.skill_id,
             "reference_ids": result.reference_ids,
-            "granted_tools": result.granted_tools,
+            "capability_activation": result.capability_activation.model_dump(
+                mode="json"
+            ),
             "unavailable_tools": result.unavailable_tools,
         },
         trace_summary={
@@ -147,7 +153,9 @@ def _execute_load_skill(root: Path, input: LoadSkillRequest) -> ToolResult:
             "skill_id": result.skill_id,
             "content_chars": len(result.content),
             "reference_count": len(result.reference_ids),
-            "granted_tools": result.granted_tools,
+            "capability_activation": result.capability_activation.model_dump(
+                mode="json"
+            ),
             "unavailable_tools": result.unavailable_tools,
         },
     )

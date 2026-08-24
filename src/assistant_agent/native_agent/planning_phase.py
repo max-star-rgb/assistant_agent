@@ -24,6 +24,7 @@ from assistant_agent.tools.ids import (
 
 _PLANNER_CAPABILITY_LIMIT = 128
 _PLANNER_CAPABILITY_PURPOSE_LIMIT = 320
+_PLANNER_CAPABILITY_REQUIRED_INPUT_LIMIT = 32
 
 
 class PlanningPhaseMiddleware(AgentMiddleware):
@@ -70,9 +71,7 @@ class PlanningPhaseMiddleware(AgentMiddleware):
                 capability_catalog=_planner_capability_catalog(
                     request.tools,
                     allowed_names=(
-                        frozenset(envelope.tool_names)
-                        if envelope is not None
-                        else None
+                        frozenset(envelope.tool_names) if envelope is not None else None
                     ),
                 )
             )
@@ -133,9 +132,11 @@ def planner_system_prompt(
     """Constrain the planner role without creating a separate agent loop."""
 
     prompt = (
-        "你是任务规划器。需要专业流程时先加载对应 Skill；你只能调用 Skill 加载能力，"
+        "你是任务规划器。需要专业流程时先激活对应 Skill；你只能调用 Skill 激活能力，"
         "不能直接执行任何业务工具或联网搜索。把业务工作拆给 DAG worker。"
-        "下方 capability catalog 只表示可以委派给 worker 的工具名称，不是你可调用的工具。"
+        "激活产生 phase-aware capability grant；下方 capability catalog 只表示可以委派给 "
+        "worker 的能力，不是你可调用的工具。required_inputs 是规划时必须准备的参数名，"
+        "result_channels 是 worker 可获得的标准结果通道。"
         "evidence_refs 只能引用已完成业务 ToolCall 的原始 tool_call_id。"
         "最终只提交符合 NativePlanProposal schema 的最小可执行 native_plan_v2，不直接回答用户。"
     )
@@ -220,12 +221,30 @@ def _planner_capability_catalog(
             ]
             if purpose:
                 item["purpose"] = purpose
+            item["required_inputs"] = list(_required_tool_inputs(tool))
+            item["result_channels"] = list(_tool_result_channels(tool))
         projected.append(item)
     return tuple(
-        sorted(projected, key=lambda item: item["name"])[
-            :_PLANNER_CAPABILITY_LIMIT
+        sorted(projected, key=lambda item: item["name"])[:_PLANNER_CAPABILITY_LIMIT]
+    )
+
+
+def _required_tool_inputs(tool: BaseTool) -> tuple[str, ...]:
+    schema = tool.tool_call_schema.model_json_schema()
+    required = schema.get("required", ())
+    if not isinstance(required, list):
+        return ()
+    return tuple(
+        sorted(name for name in required if isinstance(name, str) and name)[
+            :_PLANNER_CAPABILITY_REQUIRED_INPUT_LIMIT
         ]
     )
+
+
+def _tool_result_channels(tool: BaseTool) -> tuple[str, ...]:
+    if tool.response_format == "content_and_artifact":
+        return ("content", "artifact")
+    return ("content",)
 
 
 def _worker_tool_allowlist(request: ModelRequest) -> frozenset[str]:

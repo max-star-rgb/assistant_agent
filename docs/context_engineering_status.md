@@ -1,6 +1,6 @@
 # LangChain-native Context Engineering
 
-最后更新：2026-08-21
+最后更新：2026-08-24
 
 ## Authority contract
 
@@ -25,10 +25,13 @@ system/developer instructions、隐藏上下文、runtime/checkpoint、路由、
 实时 VIDEO 会话中的当前画面属于瞬时事实；每个新的指示性视觉问题都重新调用 `live_view_inspect`，不得把历史
 视觉 Tool observation 当作本轮当前画面证据。
 
-dynamic prompt 的 L0 index 只用于发现可加载 Skill。成功执行 `load_skill` 后，标准 `Command(update=...)` 把
+dynamic prompt 的 L0 index 只用于发现可激活 Skill。成功执行 `load_skill` 后，标准 `Command(update=...)` 把
 受信 `skill_id` 写入当前 fast agent 子图的 `active_skill_ids`；每次后续 model call 都以该 ID 从 composition
-注入的受信 catalog 重新取得并把完整 Skill 正文追加到 system prompt，同时由原生 model-call middleware 根据
-manifest 的 `governed_tools` 派生可见 Tool schema。专项 reference 再由 `load_skill_reference` 按当前
+注入的受信 catalog 重新取得并把完整 Skill 正文追加到 system prompt，同时形成 phase-aware capability
+activation：fast phase 根据 manifest 的 `governed_tools` 派生可调用 Tool schema，planner phase 只获得可委派给
+worker 的有界 capability descriptor，worker phase 仅按已准入节点 allowlist 与 Skill grant 的交集获得 schema。
+Tool 返回给模型的 observation 使用显式 `capability_activation`，不把历史兼容字段 `granted_tools` 表述为当前
+phase 已可直接调用。专项 reference 再由 `load_skill_reference` 按当前
 state/checkpoint namespace 中的窄 grant 读取。checkpoint 只保存受信 Skill ID 和注册的 reference ID，不复制
 Skill 正文、Tool schema 或任意 Tool 名；这些状态不进入父图、后续 chat run 或 Memory Graph。
 

@@ -1,6 +1,6 @@
 # LangChain-native Tool 与扩展架构
 
-最后更新：2026-08-21
+最后更新：2026-08-24
 
 ## Authority contract
 
@@ -40,10 +40,13 @@ planning 不另建 Planner Tool executor。Planner 以 `agent_phase="planner"` �
 收窄到上述两个控制 Tool，并关闭 Provider-native search。Planner 只能通过标准 `ToolNode` 加载 Skill 正文或
 已授权 reference；业务执行从计划准入后才进入 worker。
 
-成功的 `load_skill` 通过标准 `Command(update=...)` 写入受信 `active_skill_ids` 和 reference grant；后续 Planner
-model call 会从同一受信 catalog 将对应完整 Skill 正文加入 system prompt，并把当前渐进式投影中的业务能力转换为
-不可执行、无参数 schema 的有界 worker capability catalog。Planner 只用其中的 Tool 名称、effect 和短用途说明
-做委派；Tool schema 仅在计划准入后按节点 allowlist 与 Skill grant 的交集投影给 worker。首次成功 admission
+成功的 `load_skill` 通过标准 `Command(update=...)` 写入受信 `active_skill_ids` 和 reference grant，并在标准 Tool
+artifact 中返回 `capability_activation={projection: phase_aware, tool_names: [...]}`。该字段表示 Skill 激活产生能力授权，
+不表示当前 phase 可立即调用业务 Tool；历史 `granted_tools` 只作为完整 artifact 的兼容字段保留，不再进入模型观察。
+后续 Planner model call 会从同一受信 catalog 将对应完整 Skill 正文加入 system prompt，并把当前渐进式投影中的业务
+能力转换为不可执行的有界 worker capability catalog。Planner 只用其中的 Tool 名称、effect、短用途、必填参数名和
+标准 `content|artifact` 结果通道做委派；完整 Tool schema 仅在计划准入后按节点 allowlist 与 Skill grant 的交集投影给
+worker。首次成功 admission
 只冻结该计划实际声明或使用的 Skill ID、reference ID 与 Tool name 为 checkpointed strict
 authorization envelope，而不是冻结完整 inventory；后续 generation 只允许其子集。Planner prompt/context 与
 scheduler projection 都只暴露 envelope 内 scope；replan 不再允许 `load_skill`，只有 frozen reference grant
