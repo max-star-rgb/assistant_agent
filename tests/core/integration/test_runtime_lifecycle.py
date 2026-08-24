@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections import Counter
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -14,7 +16,10 @@ import pytest
 
 from assistant_agent.agent_server import services
 from assistant_agent.agent_server.services import AgentServerExecutionOwner
+from assistant_agent.coding import review as coding_review
 from assistant_agent.coding.config import CodingRepositoryConfig
+from assistant_agent.coding.models import CodingAnalysisSnapshot, CodingReviewInput
+from assistant_agent.coding.workspace import CodingWorkspaceError
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.fast_agent import build_fast_agent
 from assistant_agent.native_agent.models import (
@@ -332,6 +337,14 @@ def test_parent_graph_has_fast_planning_and_coding_native_branches(monkeypatch) 
             ).parallel_analysis_enabled
             is False
         )
+        assert (
+            CodingRepositoryConfig(
+                repo_id="core-review-probe",
+                path=owner.coding_workspace_service.config.workspace_root.parent,
+                target_branch="main",
+            ).code_review_enabled
+            is False
+        )
         planning_nodes = {
             name
             for name in graph.nodes["planning_graph"].data.get_graph().nodes
@@ -422,6 +435,19 @@ def test_parent_graph_has_fast_planning_and_coding_native_branches(monkeypatch) 
             ("prepare_repair", "consume_repair_budget"),
             ("consume_repair_budget", "inspect_and_draft"),
         }.issubset(coding_edges)
+        review_gate_nodes = {
+            "prepare_review_snapshot",
+            "run_code_review",
+            "coding_review_decision",
+        }
+        assert review_gate_nodes.issubset(coding_nodes)
+        assert {
+            ("run_validation", "prepare_review_snapshot"),
+            ("prepare_review_snapshot", "run_code_review"),
+            ("run_code_review", "coding_review_decision"),
+            ("coding_review_decision", "create_commit"),
+            ("coding_review_decision", "summarize"),
+        }.issubset(coding_edges)
         repair_lane_nodes = {
             "run_validation",
             "prepare_repair",
@@ -441,7 +467,7 @@ def test_parent_graph_has_fast_planning_and_coding_native_branches(monkeypatch) 
         }.issubset(coding_edges)
         assert {
             source for source, target in coding_edges if target == "create_commit"
-        } == {"run_validation"}
+        } == {"run_validation", "coding_review_decision"}
         assert owner.graph.checkpointer is None
     finally:
         asyncio.run(owner.aclose())
@@ -481,6 +507,211 @@ def test_production_composition_reuses_one_planning_budget_policy(monkeypatch) -
         assert fast_policies[0] is planning_policies[0]
     finally:
         asyncio.run(owner.aclose())
+
+
+@pytest.mark.core_invariant("LOOP-001")
+def test_coding_review_agent_consumes_eight_reads_then_structured_result(
+    monkeypatch,
+) -> None:
+    """Catches ToolStrategy's final result consuming the read-Tool allowance."""
+
+    @tool("review_read_probe")
+    def review_read_probe() -> str:
+        """Return one generic immutable review sentinel."""
+
+        return "review-read-sentinel"
+
+    class ReviewLoopProbeModel(MockAssistantChatModel):
+        def _response_message(self, messages, **kwargs):
+            completed_reads = sum(
+                isinstance(message, ToolMessage)
+                and message.name == "review_read_probe"
+                for message in messages
+            )
+            if completed_reads < 8:
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "review_read_probe",
+                            "args": {},
+                            "id": f"review-read-{completed_reads + 1}",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            structured_name = next(
+                item["function"]["name"]
+                for item in kwargs.get("tools", ())
+                if item["function"]["name"] != "review_read_probe"
+            )
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": structured_name,
+                        "args": {
+                            "status": "completed",
+                            "findings": [],
+                            "error_code": None,
+                        },
+                        "id": "review-result",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+
+    monkeypatch.setattr(
+        coding_review,
+        "build_coding_review_tools",
+        lambda _service: [review_read_probe],
+    )
+    now = datetime.now(UTC)
+    snapshot = CodingAnalysisSnapshot(
+        materialization_schema_version="immutable_manifest_v2",
+        snapshot_ref="snapshot-core-review-loop-0001",
+        workspace_ref="workspace-core-review-loop-0001",
+        base_commit="a" * 40,
+        tree_digest="b" * 64,
+        workspace_diff_digest="c" * 64,
+        created_at=now,
+        expires_at=now + timedelta(minutes=30),
+    )
+    review_input = CodingReviewInput(
+        workspace_ref=snapshot.workspace_ref,
+        base_commit=snapshot.base_commit,
+        patch_digest="d" * 64,
+        workspace_diff_digest=snapshot.workspace_diff_digest,
+        snapshot_materialization_schema_version=snapshot.materialization_schema_version,
+        snapshot_created_at=snapshot.created_at,
+        snapshot_expires_at=snapshot.expires_at,
+        generation=1,
+        snapshot_ref=snapshot.snapshot_ref,
+        tree_digest=snapshot.tree_digest,
+        validation_evidence_digest="e" * 64,
+        review_tasks=coding_review.REVIEW_TASK_IDS,
+    )
+    graph = coding_review.create_coding_review_graph(
+        model=ReviewLoopProbeModel(),
+        workspace_service=object(),
+    )
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {
+                "messages": [],
+                "coding_repo_id": "core-probe",
+                "workspace_ref": snapshot.workspace_ref,
+                "base_commit": snapshot.base_commit,
+                "review_snapshot": snapshot,
+                "review_input": review_input,
+            },
+            context=AssistantRunContext(),
+        )
+    )
+
+    assert result["review_report"].status == "clean"
+    assert all(item.status == "completed" for item in result["review_results"])
+
+
+@pytest.mark.core_invariant("LOOP-001")
+def test_coding_review_distinguishes_binding_failure_from_unavailable() -> None:
+    """Catches current snapshot evidence becoming an approvable unavailable report."""
+
+    now = datetime.now(UTC)
+    snapshot = CodingAnalysisSnapshot(
+        materialization_schema_version="immutable_manifest_v2",
+        snapshot_ref="snapshot-core-review-binding-0001",
+        workspace_ref="workspace-core-review-binding-0001",
+        base_commit="a" * 40,
+        tree_digest="b" * 64,
+        workspace_diff_digest="c" * 64,
+        created_at=now,
+        expires_at=now + timedelta(minutes=30),
+    )
+    review_input = CodingReviewInput(
+        workspace_ref=snapshot.workspace_ref,
+        base_commit=snapshot.base_commit,
+        patch_digest="d" * 64,
+        workspace_diff_digest=snapshot.workspace_diff_digest,
+        snapshot_materialization_schema_version=snapshot.materialization_schema_version,
+        snapshot_created_at=snapshot.created_at,
+        snapshot_expires_at=snapshot.expires_at,
+        generation=1,
+        snapshot_ref=snapshot.snapshot_ref,
+        tree_digest=snapshot.tree_digest,
+        validation_evidence_digest="e" * 64,
+        review_tasks=coding_review.REVIEW_TASK_IDS,
+    )
+    state = {
+        "messages": [],
+        "coding_repo_id": "core-probe",
+        "workspace_ref": snapshot.workspace_ref,
+        "base_commit": snapshot.base_commit,
+        "analysis_snapshot": snapshot,
+        "review_input": review_input,
+        "review_task": coding_review.build_review_tasks()[0],
+        "provider_search_profile": "none",
+    }
+
+    class BindingMismatchAgent:
+        async def ainvoke(self, _state, *, config, context):
+            del config, context
+            content = "binding-sentinel\n"
+            return {
+                "structured_response": {
+                    "status": "completed",
+                    "findings": [],
+                    "error_code": None,
+                },
+                "messages": (
+                    ToolMessage(
+                        content="",
+                        name="coding_repo_read",
+                        tool_call_id="binding-probe",
+                        artifact={
+                            "snapshot_ref": snapshot.snapshot_ref,
+                            "tree_digest": "f" * 64,
+                            "content_digest": hashlib.sha256(
+                                content.encode("utf-8")
+                            ).hexdigest(),
+                            "result": {
+                                "path": "src/probe.py",
+                                "content": content,
+                                "start_line": 1,
+                                "end_line": 1,
+                                "total_lines": 1,
+                                "next_line": None,
+                            },
+                        },
+                    ),
+                ),
+            }
+
+    class UnavailableAgent:
+        async def ainvoke(self, _state, *, config, context):
+            del config, context
+            raise RuntimeError("review-unavailable-sentinel")
+
+    with pytest.raises(CodingWorkspaceError) as raised:
+        asyncio.run(
+            coding_review.review_workspace(
+                state,
+                None,
+                review_agent=BindingMismatchAgent(),
+            )
+        )
+    unavailable = asyncio.run(
+        coding_review.review_workspace(
+            state,
+            None,
+            review_agent=UnavailableAgent(),
+        )
+    )["review_results"][0]
+
+    assert raised.value.code == "coding_review_binding_mismatch"
+    assert unavailable.status == "unavailable"
+    assert unavailable.error_code == "coding_review_task_failed"
 
 
 @pytest.mark.core_invariant("RUN-001")

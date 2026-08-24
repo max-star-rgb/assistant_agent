@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime
 from pathlib import Path
 from types import MappingProxyType
@@ -36,6 +38,10 @@ CODING_ANALYSIS_TASK_SPECS = MappingProxyType(
         ),
     }
 )
+CodingAnalysisSnapshotSchemaVersion = Literal[
+    "legacy_v1",
+    "immutable_manifest_v2",
+]
 
 
 class CodingWorkspace(BaseModel):
@@ -65,6 +71,7 @@ class CodingWorkspaceMetadata(BaseModel):
 class CodingAnalysisSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    materialization_schema_version: CodingAnalysisSnapshotSchemaVersion = "legacy_v1"
     snapshot_ref: str = Field(min_length=16, max_length=128)
     workspace_ref: str = Field(min_length=16, max_length=128)
     base_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
@@ -216,6 +223,326 @@ class CodingAnalysisResult(BaseModel):
             if self.findings:
                 raise ValueError("unsuccessful analysis result cannot carry findings")
         return self
+
+
+CODING_REVIEW_TASK_SPECS = MappingProxyType(
+    {
+        "correctness_regression": "Review the proposed change for correctness, data flow, boundary handling, and regressions.",
+        "security_governance": "Review the proposed change for security, permissions, trust boundaries, and governance.",
+        "tests_validation": "Review tests, validation evidence, and residual regression risk.",
+    }
+)
+LEGACY_CODING_REVIEW_TASK_SPECS = MappingProxyType(
+    {
+        "correctness": "Review the proposed change for correctness, data flow, and boundary handling.",
+        "security": "Review the proposed change for security, permission, and governance regressions.",
+        "regression": "Review the proposed change for compatibility, tests, and regression risk.",
+    }
+)
+MAX_REVIEW_FINDINGS_PER_TASK = 8
+MAX_REVIEW_EVIDENCE_PER_FINDING = 2
+
+
+class CodingReviewTask(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    task_id: str = Field(min_length=1, max_length=80, pattern=r"^[a-z][a-z0-9_]*$")
+    dimension: str = Field(min_length=1, max_length=80, pattern=r"^[a-z][a-z0-9_]*$")
+    objective: str = Field(min_length=1, max_length=1_000)
+
+    @model_validator(mode="after")
+    def _matches_canonical_task(self) -> "CodingReviewTask":
+        task_specs = {**LEGACY_CODING_REVIEW_TASK_SPECS, **CODING_REVIEW_TASK_SPECS}
+        if self.task_id not in task_specs:
+            raise ValueError("review task is unknown")
+        if self.dimension != self.task_id:
+            raise ValueError("review task dimension must match task id")
+        if self.objective != task_specs[self.task_id]:
+            raise ValueError("review task objective must match the canonical task")
+        return self
+
+
+class CodingReviewEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    path: str = Field(min_length=1, max_length=240)
+    line: int = Field(ge=1, le=10_000_000)
+    excerpt: str = Field(min_length=1, max_length=800)
+    content_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    evidence_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("path")
+    @classmethod
+    def _safe_path(cls, value: str) -> str:
+        _validate_relative_policy_path(value, label="review evidence path")
+        return value
+
+    @model_validator(mode="after")
+    def _digest_matches_evidence(self) -> "CodingReviewEvidence":
+        payload = self.model_dump(mode="json", exclude={"evidence_digest"})
+        expected_digests = {_canonical_digest(payload)}
+        if self.content_digest is None:
+            payload.pop("content_digest")
+            expected_digests.add(_canonical_digest(payload))
+        if self.evidence_digest not in expected_digests:
+            raise ValueError("review evidence digest is invalid")
+        return self
+
+
+class CodingReviewFinding(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    finding_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    task_id: str = Field(min_length=1, max_length=80, pattern=r"^[a-z][a-z0-9_]*$")
+    severity: Literal["critical", "high", "medium", "moderate", "low", "info"]
+    category: str = Field(
+        min_length=1,
+        max_length=80,
+        pattern=r"^[a-z][a-z0-9_.-]*$",
+    )
+    title: str | None = Field(default=None, min_length=1, max_length=240)
+    explanation: str | None = Field(default=None, min_length=1, max_length=1_200)
+    remediation: str | None = Field(default=None, min_length=1, max_length=1_200)
+    summary: str | None = Field(default=None, min_length=1, max_length=1_200)
+    evidence: tuple[CodingReviewEvidence, ...] = Field(
+        min_length=1,
+        max_length=MAX_REVIEW_EVIDENCE_PER_FINDING,
+    )
+    semantic_key: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def _tuple_evidence(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @model_validator(mode="after")
+    def _digests_match_finding(self) -> "CodingReviewFinding":
+        current_fields = (self.title, self.explanation, self.remediation)
+        if any(item is not None for item in current_fields):
+            if any(item is None for item in current_fields) or self.summary is not None:
+                raise ValueError("current review findings require title, explanation, and remediation only")
+            if self.severity not in {"critical", "high", "medium", "low"}:
+                raise ValueError("current review finding severity is invalid")
+            if any(item.content_digest is None for item in self.evidence):
+                raise ValueError("current review evidence requires a content digest")
+            semantic_payload = {
+                "severity": self.severity,
+                "category": self.category,
+                "title": self.title,
+                "explanation": self.explanation,
+                "remediation": self.remediation,
+            }
+        else:
+            if self.summary is None:
+                raise ValueError("legacy review findings require a summary")
+            semantic_payload = {
+                "severity": self.severity,
+                "category": self.category,
+                "summary": self.summary,
+            }
+        if self.semantic_key != _canonical_digest(semantic_payload):
+            raise ValueError("review finding semantic key is invalid")
+        evidence_payload = [
+            item.model_dump(mode="json", exclude={"evidence_digest"})
+            for item in self.evidence
+        ]
+        if self.title is None:
+            for item in evidence_payload:
+                if item.get("content_digest") is None:
+                    item.pop("content_digest")
+        expected_finding_id = _canonical_digest(
+            {"task_id": self.task_id, **semantic_payload, "evidence": evidence_payload}
+        )
+        if self.finding_id != expected_finding_id:
+            raise ValueError("review finding digest is invalid")
+        return self
+
+
+class CodingReviewerResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    task_id: str = Field(min_length=1, max_length=80, pattern=r"^[a-z][a-z0-9_]*$")
+    workspace_ref: str = Field(min_length=16, max_length=128)
+    base_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    patch_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    workspace_diff_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    snapshot_materialization_schema_version: CodingAnalysisSnapshotSchemaVersion = (
+        "legacy_v1"
+    )
+    snapshot_created_at: datetime
+    snapshot_expires_at: datetime
+    generation: int | None = Field(default=None, ge=1)
+    snapshot_ref: str | None = Field(default=None, min_length=16, max_length=256)
+    tree_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    validation_evidence_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    review_tasks: tuple[str, ...] = ()
+    status: Literal["completed", "unavailable", "succeeded", "failed", "stale"]
+    findings: tuple[CodingReviewFinding, ...] = Field(max_length=MAX_REVIEW_FINDINGS_PER_TASK)
+    output_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    error_code: str | None = Field(
+        default=None,
+        max_length=128,
+        pattern=r"^coding_review_[a-z0-9_]+$",
+    )
+
+    @field_validator("findings", "review_tasks", mode="before")
+    @classmethod
+    def _tuple_findings(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @model_validator(mode="after")
+    def _status_and_digest_match_payload(self) -> "CodingReviewerResult":
+        _validate_review_snapshot_timestamps(
+            self.snapshot_created_at,
+            self.snapshot_expires_at,
+        )
+        current = self.validation_evidence_digest is not None or bool(self.review_tasks)
+        if current:
+            if None in (self.generation, self.snapshot_ref, self.tree_digest):
+                raise ValueError("current review result is missing snapshot binding")
+            if self.review_tasks != tuple(CODING_REVIEW_TASK_SPECS):
+                raise ValueError("current review result task inventory is invalid")
+            if self.status not in {"completed", "unavailable"}:
+                raise ValueError("current review result status is invalid")
+        if self.status in {"completed", "succeeded"} and self.error_code is not None:
+            raise ValueError("completed review result cannot carry an error")
+        if self.status not in {"completed", "succeeded"}:
+            if self.error_code is None:
+                raise ValueError("unsuccessful review result requires an error code")
+            if self.findings:
+                raise ValueError("unsuccessful review result cannot carry findings")
+        payload = self.model_dump(mode="json", exclude={"output_digest"})
+        expected_digests = {_canonical_digest(payload)}
+        if not current:
+            for field in (
+                "generation",
+                "snapshot_ref",
+                "tree_digest",
+                "validation_evidence_digest",
+                "review_tasks",
+            ):
+                payload.pop(field)
+            expected_digests.add(_canonical_digest(payload))
+        if self.snapshot_materialization_schema_version == "legacy_v1":
+            payload.pop("snapshot_materialization_schema_version")
+            expected_digests.add(_canonical_digest(payload))
+        if self.output_digest not in expected_digests:
+            raise ValueError("review result digest is invalid")
+        return self
+
+
+class CodingReviewInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    workspace_ref: str = Field(min_length=16, max_length=128)
+    base_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    patch_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    workspace_diff_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    snapshot_materialization_schema_version: CodingAnalysisSnapshotSchemaVersion = (
+        "legacy_v1"
+    )
+    snapshot_created_at: datetime
+    snapshot_expires_at: datetime
+    generation: int | None = Field(default=None, ge=1)
+    snapshot_ref: str | None = Field(default=None, min_length=16, max_length=256)
+    tree_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    validation_evidence_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    review_tasks: tuple[str, ...] = ()
+
+    @field_validator("review_tasks", mode="before")
+    @classmethod
+    def _tuple_review_tasks(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @model_validator(mode="after")
+    def _valid_snapshot_timestamps(self) -> "CodingReviewInput":
+        _validate_review_snapshot_timestamps(
+            self.snapshot_created_at,
+            self.snapshot_expires_at,
+        )
+        if self.validation_evidence_digest is not None:
+            if None in (self.generation, self.snapshot_ref, self.tree_digest):
+                raise ValueError("current review input is missing snapshot binding")
+            if self.review_tasks != tuple(CODING_REVIEW_TASK_SPECS):
+                raise ValueError("current review input task inventory is invalid")
+        return self
+
+
+class CodingReviewReport(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    status: Literal["clean", "findings", "unavailable"]
+    workspace_ref: str = Field(min_length=16, max_length=128)
+    base_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    patch_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    workspace_diff_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    snapshot_materialization_schema_version: CodingAnalysisSnapshotSchemaVersion = (
+        "legacy_v1"
+    )
+    snapshot_created_at: datetime
+    snapshot_expires_at: datetime
+    generation: int | None = Field(default=None, ge=1)
+    snapshot_ref: str | None = Field(default=None, min_length=16, max_length=256)
+    tree_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    validation_evidence_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    review_tasks: tuple[str, ...] = ()
+    results: tuple[CodingReviewerResult, ...] = Field(min_length=3, max_length=3)
+    findings: tuple[CodingReviewFinding, ...] = Field(
+        max_length=MAX_REVIEW_FINDINGS_PER_TASK * 3,
+    )
+    report_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("results", "findings", "review_tasks", mode="before")
+    @classmethod
+    def _tuple_values(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @model_validator(mode="after")
+    def _valid_snapshot_timestamps(self) -> "CodingReviewReport":
+        _validate_review_snapshot_timestamps(
+            self.snapshot_created_at,
+            self.snapshot_expires_at,
+        )
+        if self.validation_evidence_digest is not None:
+            if None in (self.generation, self.snapshot_ref, self.tree_digest):
+                raise ValueError("current review report is missing snapshot binding")
+            if self.review_tasks != tuple(CODING_REVIEW_TASK_SPECS):
+                raise ValueError("current review report task inventory is invalid")
+        return self
+
+
+def _validate_review_snapshot_timestamps(
+    created_at: datetime,
+    expires_at: datetime,
+) -> None:
+    if created_at.utcoffset() is None or expires_at.utcoffset() is None:
+        raise ValueError("review snapshot timestamps must be timezone-aware")
+    if expires_at <= created_at:
+        raise ValueError("review snapshot expiry must follow creation")
+
+
+def _validate_relative_policy_path(value: str, *, label: str) -> None:
+    parts = value.split("/")
+    if (
+        value.startswith("/")
+        or any(part in {"", ".", "..", ".git"} for part in parts)
+        or any(item in value for item in ("\\", "\x00", "\n", "\r"))
+    ):
+        raise ValueError(f"{label} is invalid")
+
+
+def _canonical_digest(value: object) -> str:
+    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
 class CodingPatchProposal(BaseModel):
@@ -719,6 +1046,10 @@ class CodingVerificationResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     status: Literal["passed", "failed", "format_approval_required"]
+    validated_snapshot: CodingAnalysisSnapshot | None = None
+    validation_binding_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
     evidence: tuple[CodingCommandEvidence, ...] = ()
     formatter_validation: CodingPatchValidation | None = None
     error_code: str | None = None
@@ -809,6 +1140,15 @@ class CodingCommitResult(BaseModel):
     source_tree: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     changed_paths: tuple[str, ...] = Field(min_length=1)
     verification_evidence_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    validation_binding_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    review_report_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    reviewed_tree_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
 
     @field_validator("changed_paths", mode="before")
     @classmethod
