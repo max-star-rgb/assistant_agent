@@ -232,6 +232,8 @@ def prepare_review_tasks(state: Mapping[str, object]) -> dict[str, object]:
         review_input.workspace_ref != snapshot.workspace_ref
         or review_input.base_commit != snapshot.base_commit
         or review_input.workspace_diff_digest != snapshot.workspace_diff_digest
+        or review_input.snapshot_materialization_schema_version
+        != snapshot.materialization_schema_version
         or review_input.snapshot_created_at != snapshot.created_at
         or review_input.snapshot_expires_at != snapshot.expires_at
         or state.get("workspace_ref") != review_input.workspace_ref
@@ -297,6 +299,8 @@ async def review_workspace(
         snapshot.workspace_ref != review_input.workspace_ref
         or snapshot.base_commit != review_input.base_commit
         or snapshot.workspace_diff_digest != review_input.workspace_diff_digest
+        or snapshot.materialization_schema_version
+        != review_input.snapshot_materialization_schema_version
         or snapshot.created_at != review_input.snapshot_created_at
         or snapshot.expires_at != review_input.snapshot_expires_at
     ):
@@ -481,6 +485,9 @@ def _normalize_review_result(
         "base_commit": review_input.base_commit,
         "patch_digest": review_input.patch_digest,
         "workspace_diff_digest": review_input.workspace_diff_digest,
+        "snapshot_materialization_schema_version": (
+            review_input.snapshot_materialization_schema_version
+        ),
         "snapshot_created_at": review_input.snapshot_created_at,
         "snapshot_expires_at": review_input.snapshot_expires_at,
         "status": raw.status,
@@ -499,6 +506,8 @@ def _normalize_review_result(
             for item in payload["findings"]
         ],
     }
+    if review_input.snapshot_materialization_schema_version == "legacy_v1":
+        digest_payload.pop("snapshot_materialization_schema_version")
     if (
         len(
             _canonical_json(
@@ -631,13 +640,16 @@ def canonicalize_review_report(
         base_commit=review_input.base_commit,
         patch_digest=review_input.patch_digest,
         workspace_diff_digest=review_input.workspace_diff_digest,
+        snapshot_materialization_schema_version=(
+            review_input.snapshot_materialization_schema_version
+        ),
         snapshot_created_at=review_input.snapshot_created_at,
         snapshot_expires_at=review_input.snapshot_expires_at,
         results=ordered_results,
         findings=findings,
         report_digest="0" * 64,
     )
-    payload = unsigned.model_dump(mode="json", exclude={"report_digest"})
+    payload = _review_report_digest_payload(unsigned)
     signed_payload = {**payload, "report_digest": "0" * 64}
     if len(_canonical_json(signed_payload)) > MAX_REVIEW_REPORT_JSON_CHARS:
         raise ValueError("coding_review_report_limit_exceeded")
@@ -650,12 +662,18 @@ def _validate_result(result: CodingReviewerResult, review_input: CodingReviewInp
         or result.base_commit != review_input.base_commit
         or result.patch_digest != review_input.patch_digest
         or result.workspace_diff_digest != review_input.workspace_diff_digest
+        or result.snapshot_materialization_schema_version
+        != review_input.snapshot_materialization_schema_version
         or result.snapshot_created_at != review_input.snapshot_created_at
         or result.snapshot_expires_at != review_input.snapshot_expires_at
     ):
         raise ValueError("coding_review_binding_mismatch")
     payload = result.model_dump(mode="json", exclude={"output_digest"})
-    if result.output_digest != _canonical_digest(payload):
+    expected_digests = {_canonical_digest(payload)}
+    if result.snapshot_materialization_schema_version == "legacy_v1":
+        payload.pop("snapshot_materialization_schema_version")
+        expected_digests.add(_canonical_digest(payload))
+    if result.output_digest not in expected_digests:
         raise ValueError("coding_review_contract_invalid")
     signed_payload = result.model_dump(mode="json")
     if len(_canonical_json(signed_payload)) > MAX_REVIEW_RESULT_JSON_CHARS:
@@ -681,6 +699,15 @@ def _canonical_findings(
             seen.add(deduplication_key)
             selected.append(finding)
     return tuple(sorted(selected, key=_finding_sort_key))
+
+
+def _review_report_digest_payload(report: CodingReviewReport) -> dict[str, object]:
+    payload = report.model_dump(mode="json", exclude={"report_digest"})
+    if report.snapshot_materialization_schema_version == "legacy_v1":
+        payload.pop("snapshot_materialization_schema_version")
+        for result in payload["results"]:
+            result.pop("snapshot_materialization_schema_version", None)
+    return payload
 
 
 def _finding_sort_key(finding: CodingReviewFinding) -> tuple[int, str, str, int, str]:

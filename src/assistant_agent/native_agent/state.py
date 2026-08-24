@@ -275,6 +275,9 @@ class CodingState(AgentState):
     review_required: NotRequired[bool]
     review_generation: NotRequired[int | None]
     review_snapshot: NotRequired[CodingAnalysisSnapshot | None]
+    review_snapshot_schema_version: NotRequired[
+        Literal["legacy_v1", "immutable_manifest_v2"] | None
+    ]
     review_snapshot_release_status: NotRequired[
         Literal["active", "released"] | None
     ]

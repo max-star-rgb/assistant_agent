@@ -1368,12 +1368,18 @@ def build_coding_graph(
             base_commit=workspace.base_commit,
             patch_digest=applied.patch_digest,
             workspace_diff_digest=snapshot.workspace_diff_digest,
+            snapshot_materialization_schema_version=(
+                snapshot.materialization_schema_version
+            ),
             snapshot_created_at=snapshot.created_at,
             snapshot_expires_at=snapshot.expires_at,
         )
         return {
             "review_generation": int(state.get("coding_cycle_generation") or 0),
             "review_snapshot": snapshot,
+            "review_snapshot_schema_version": (
+                snapshot.materialization_schema_version
+            ),
             "review_snapshot_release_status": "active",
             "review_input": review_input,
             "review_tasks": (),
@@ -1471,7 +1477,14 @@ def build_coding_graph(
                 identity=authenticated_user_identity(runtime),
                 thread_id=_thread_id(config),
             )
-            if not _review_snapshot_content_matches(snapshot, fresh_snapshot):
+            if not _review_snapshot_content_matches(
+                snapshot,
+                fresh_snapshot,
+                expected_schema_version=_expected_review_snapshot_schema_version(
+                    state,
+                    completed=True,
+                ),
+            ):
                 try:
                     workspace_service.release_analysis_snapshot(
                         fresh_snapshot,
@@ -1915,6 +1928,7 @@ def begin_coding_cycle_node(state: CodingState) -> dict[str, object]:
         "review_required": False,
         "review_generation": None,
         "review_snapshot": None,
+        "review_snapshot_schema_version": None,
         "review_snapshot_release_status": None,
         "review_input": None,
         "review_tasks": (),
@@ -2084,6 +2098,7 @@ def _reset_review_state() -> dict[str, object]:
         "review_required": False,
         "review_generation": None,
         "review_snapshot": None,
+        "review_snapshot_schema_version": None,
         "review_snapshot_release_status": None,
         "review_input": None,
         "review_tasks": (),
@@ -2120,6 +2135,18 @@ def _review_binding_context(
     if not isinstance(validation_digest, str):
         raise ValueError("coding_review_binding_mismatch")
     review_input_json = review_input.model_dump(mode="json")
+    expected_schema_version = _expected_review_snapshot_schema_version(
+        state,
+        completed=True,
+    )
+    if (
+        snapshot.materialization_schema_version != expected_schema_version
+        or review_input.snapshot_materialization_schema_version
+        != expected_schema_version
+        or canonical_report.snapshot_materialization_schema_version
+        != expected_schema_version
+    ):
+        raise ValueError("coding_review_binding_mismatch")
     return {
         "review_generation": int(state.get("review_generation")),
         "workspace_ref": review_input.workspace_ref,
@@ -2127,6 +2154,7 @@ def _review_binding_context(
         "snapshot_ref": snapshot.snapshot_ref,
         "tree_digest": snapshot.tree_digest,
         "workspace_diff_digest": snapshot.workspace_diff_digest,
+        "snapshot_materialization_schema_version": expected_schema_version,
         "snapshot_created_at": review_input_json["snapshot_created_at"],
         "snapshot_expires_at": review_input_json["snapshot_expires_at"],
         "patch_digest": review_input.patch_digest,
@@ -2138,6 +2166,8 @@ def _review_binding_context(
 def _review_snapshot_content_matches(
     expected: CodingAnalysisSnapshot,
     current: CodingAnalysisSnapshot,
+    *,
+    expected_schema_version: Literal["legacy_v1", "immutable_manifest_v2"],
 ) -> bool:
     """Compare immutable snapshot identity without binding to resource TTL."""
 
@@ -2150,14 +2180,33 @@ def _review_snapshot_content_matches(
             "workspace_diff_digest",
         )
     )
-    if not content_matches:
+    if (
+        not content_matches
+        or expected.materialization_schema_version != expected_schema_version
+    ):
         return False
-    if expected.snapshot_ref == current.snapshot_ref:
+    if (
+        expected_schema_version == current.materialization_schema_version
+        and expected.snapshot_ref == current.snapshot_ref
+    ):
         return True
     return (
-        expected.materialization_schema_version == "legacy_v1"
+        expected_schema_version == "legacy_v1"
         and current.materialization_schema_version == "immutable_manifest_v2"
     )
+
+
+def _expected_review_snapshot_schema_version(
+    state: CodingState,
+    *,
+    completed: bool,
+) -> Literal["legacy_v1", "immutable_manifest_v2"]:
+    value = state.get("review_snapshot_schema_version")
+    if value in {"legacy_v1", "immutable_manifest_v2"}:
+        return value
+    if value is None and completed:
+        return "legacy_v1"
+    raise ValueError("coding_review_binding_mismatch")
 
 
 def _validate_review_decision(
@@ -2188,6 +2237,7 @@ def _validate_review_checkpoint(
             for field in (
                 "review_generation",
                 "review_snapshot",
+                "review_snapshot_schema_version",
                 "review_input",
                 "review_report",
                 "review_validation_digest",
@@ -2204,6 +2254,7 @@ def _validate_review_checkpoint(
                 state.get(field) is None
                 for field in (
                     "review_generation",
+                    "review_snapshot_schema_version",
                     "review_input",
                     "review_report",
                     "review_validation_digest",
@@ -2222,6 +2273,11 @@ def _validate_review_checkpoint(
     validation_digest = state.get("review_validation_digest")
     release_status = state.get("review_snapshot_release_status")
     applied = state.get("applied_result")
+    report_value = state.get("review_report")
+    expected_schema_version = _expected_review_snapshot_schema_version(
+        state,
+        completed=report_value is not None,
+    )
     if (
         generation != state.get("coding_cycle_generation")
         or release_status not in {"active", "released"}
@@ -2233,16 +2289,19 @@ def _validate_review_checkpoint(
         or review_input.base_commit != workspace.base_commit
         or review_input.patch_digest != applied.patch_digest
         or review_input.workspace_diff_digest != snapshot.workspace_diff_digest
+        or snapshot.materialization_schema_version != expected_schema_version
+        or review_input.snapshot_materialization_schema_version
+        != expected_schema_version
         or review_input.snapshot_created_at != snapshot.created_at
         or review_input.snapshot_expires_at != snapshot.expires_at
         or snapshot.workspace_ref != workspace.workspace_ref
         or snapshot.base_commit != workspace.base_commit
     ):
         raise ValueError("coding_review_binding_mismatch")
-    report_value = state.get("review_report")
     if report_value is None:
         if (
             release_status != "active"
+            or expected_schema_version != "immutable_manifest_v2"
             or state.get("review_decision_context") is not None
             or state.get("review_decision") is not None
         ):
@@ -2267,6 +2326,8 @@ def _validate_review_checkpoint(
     )
     if (
         report != canonical
+        or report.snapshot_materialization_schema_version
+        != expected_schema_version
         or tasks != build_review_tasks()
         or results != report.results
         or state.get("review_status") != report.status

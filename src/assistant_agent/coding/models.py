@@ -38,6 +38,10 @@ CODING_ANALYSIS_TASK_SPECS = MappingProxyType(
         ),
     }
 )
+CodingAnalysisSnapshotSchemaVersion = Literal[
+    "legacy_v1",
+    "immutable_manifest_v2",
+]
 
 
 class CodingWorkspace(BaseModel):
@@ -67,10 +71,7 @@ class CodingWorkspaceMetadata(BaseModel):
 class CodingAnalysisSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    materialization_schema_version: Literal[
-        "legacy_v1",
-        "immutable_manifest_v2",
-    ] = "legacy_v1"
+    materialization_schema_version: CodingAnalysisSnapshotSchemaVersion = "legacy_v1"
     snapshot_ref: str = Field(min_length=16, max_length=128)
     workspace_ref: str = Field(min_length=16, max_length=128)
     base_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
@@ -327,6 +328,9 @@ class CodingReviewerResult(BaseModel):
     base_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     patch_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     workspace_diff_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    snapshot_materialization_schema_version: CodingAnalysisSnapshotSchemaVersion = (
+        "legacy_v1"
+    )
     snapshot_created_at: datetime
     snapshot_expires_at: datetime
     status: Literal["succeeded", "failed", "stale"]
@@ -357,7 +361,11 @@ class CodingReviewerResult(BaseModel):
             if self.findings:
                 raise ValueError("unsuccessful review result cannot carry findings")
         payload = self.model_dump(mode="json", exclude={"output_digest"})
-        if self.output_digest != _canonical_digest(payload):
+        expected_digests = {_canonical_digest(payload)}
+        if self.snapshot_materialization_schema_version == "legacy_v1":
+            payload.pop("snapshot_materialization_schema_version")
+            expected_digests.add(_canonical_digest(payload))
+        if self.output_digest not in expected_digests:
             raise ValueError("review result digest is invalid")
         return self
 
@@ -369,6 +377,9 @@ class CodingReviewInput(BaseModel):
     base_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     patch_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     workspace_diff_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    snapshot_materialization_schema_version: CodingAnalysisSnapshotSchemaVersion = (
+        "legacy_v1"
+    )
     snapshot_created_at: datetime
     snapshot_expires_at: datetime
 
@@ -389,6 +400,9 @@ class CodingReviewReport(BaseModel):
     base_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     patch_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     workspace_diff_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    snapshot_materialization_schema_version: CodingAnalysisSnapshotSchemaVersion = (
+        "legacy_v1"
+    )
     snapshot_created_at: datetime
     snapshot_expires_at: datetime
     results: tuple[CodingReviewerResult, ...] = Field(min_length=3, max_length=3)
