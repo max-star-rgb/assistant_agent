@@ -1368,6 +1368,8 @@ def build_coding_graph(
             base_commit=workspace.base_commit,
             patch_digest=applied.patch_digest,
             workspace_diff_digest=snapshot.workspace_diff_digest,
+            snapshot_created_at=snapshot.created_at,
+            snapshot_expires_at=snapshot.expires_at,
         )
         return {
             "review_generation": int(state.get("coding_cycle_generation") or 0),
@@ -2117,6 +2119,7 @@ def _review_binding_context(
     validation_digest = state.get("review_validation_digest")
     if not isinstance(validation_digest, str):
         raise ValueError("coding_review_binding_mismatch")
+    review_input_json = review_input.model_dump(mode="json")
     return {
         "review_generation": int(state.get("review_generation")),
         "workspace_ref": review_input.workspace_ref,
@@ -2124,6 +2127,8 @@ def _review_binding_context(
         "snapshot_ref": snapshot.snapshot_ref,
         "tree_digest": snapshot.tree_digest,
         "workspace_diff_digest": snapshot.workspace_diff_digest,
+        "snapshot_created_at": review_input_json["snapshot_created_at"],
+        "snapshot_expires_at": review_input_json["snapshot_expires_at"],
         "patch_digest": review_input.patch_digest,
         "validation_digest": validation_digest,
         "report_digest": canonical_report.report_digest,
@@ -2221,6 +2226,8 @@ def _validate_review_checkpoint(
         or review_input.base_commit != workspace.base_commit
         or review_input.patch_digest != applied.patch_digest
         or review_input.workspace_diff_digest != snapshot.workspace_diff_digest
+        or review_input.snapshot_created_at != snapshot.created_at
+        or review_input.snapshot_expires_at != snapshot.expires_at
         or snapshot.workspace_ref != workspace.workspace_ref
         or snapshot.base_commit != workspace.base_commit
     ):
@@ -2259,6 +2266,20 @@ def _validate_review_checkpoint(
         or state.get("review_decision_context") != _review_binding_context(state)
     ):
         raise ValueError("coding_review_binding_mismatch")
+    try:
+        service.validate_analysis_snapshot(
+            snapshot,
+            identity=identity,
+            thread_id=thread_id,
+            workspace=workspace,
+            require_active=False,
+        )
+    except CodingWorkspaceError as exc:
+        if exc.code not in {
+            "coding_analysis_snapshot_missing",
+            "coding_analysis_snapshot_expired",
+        }:
+            raise
 
 
 def _canonical_digest(value: object) -> str:

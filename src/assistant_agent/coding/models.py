@@ -323,6 +323,8 @@ class CodingReviewerResult(BaseModel):
     base_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     patch_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     workspace_diff_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    snapshot_created_at: datetime
+    snapshot_expires_at: datetime
     status: Literal["succeeded", "failed", "stale"]
     findings: tuple[CodingReviewFinding, ...] = Field(max_length=MAX_REVIEW_FINDINGS_PER_TASK)
     output_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -339,6 +341,10 @@ class CodingReviewerResult(BaseModel):
 
     @model_validator(mode="after")
     def _status_and_digest_match_payload(self) -> "CodingReviewerResult":
+        _validate_review_snapshot_timestamps(
+            self.snapshot_created_at,
+            self.snapshot_expires_at,
+        )
         if self.status == "succeeded" and self.error_code is not None:
             raise ValueError("successful review result cannot carry an error")
         if self.status != "succeeded":
@@ -359,6 +365,16 @@ class CodingReviewInput(BaseModel):
     base_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     patch_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     workspace_diff_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    snapshot_created_at: datetime
+    snapshot_expires_at: datetime
+
+    @model_validator(mode="after")
+    def _valid_snapshot_timestamps(self) -> "CodingReviewInput":
+        _validate_review_snapshot_timestamps(
+            self.snapshot_created_at,
+            self.snapshot_expires_at,
+        )
+        return self
 
 
 class CodingReviewReport(BaseModel):
@@ -369,6 +385,8 @@ class CodingReviewReport(BaseModel):
     base_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     patch_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     workspace_diff_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    snapshot_created_at: datetime
+    snapshot_expires_at: datetime
     results: tuple[CodingReviewerResult, ...] = Field(min_length=3, max_length=3)
     findings: tuple[CodingReviewFinding, ...] = Field(
         max_length=MAX_REVIEW_FINDINGS_PER_TASK * 3,
@@ -379,6 +397,24 @@ class CodingReviewReport(BaseModel):
     @classmethod
     def _tuple_values(cls, value: object) -> object:
         return tuple(value) if isinstance(value, list) else value
+
+    @model_validator(mode="after")
+    def _valid_snapshot_timestamps(self) -> "CodingReviewReport":
+        _validate_review_snapshot_timestamps(
+            self.snapshot_created_at,
+            self.snapshot_expires_at,
+        )
+        return self
+
+
+def _validate_review_snapshot_timestamps(
+    created_at: datetime,
+    expires_at: datetime,
+) -> None:
+    if created_at.utcoffset() is None or expires_at.utcoffset() is None:
+        raise ValueError("review snapshot timestamps must be timezone-aware")
+    if expires_at <= created_at:
+        raise ValueError("review snapshot expiry must follow creation")
 
 
 def _validate_relative_policy_path(value: str, *, label: str) -> None:

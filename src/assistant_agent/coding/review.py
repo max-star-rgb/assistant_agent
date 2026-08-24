@@ -232,6 +232,8 @@ def prepare_review_tasks(state: Mapping[str, object]) -> dict[str, object]:
         review_input.workspace_ref != snapshot.workspace_ref
         or review_input.base_commit != snapshot.base_commit
         or review_input.workspace_diff_digest != snapshot.workspace_diff_digest
+        or review_input.snapshot_created_at != snapshot.created_at
+        or review_input.snapshot_expires_at != snapshot.expires_at
         or state.get("workspace_ref") != review_input.workspace_ref
         or state.get("base_commit") != review_input.base_commit
     ):
@@ -295,6 +297,8 @@ async def review_workspace(
         snapshot.workspace_ref != review_input.workspace_ref
         or snapshot.base_commit != review_input.base_commit
         or snapshot.workspace_diff_digest != review_input.workspace_diff_digest
+        or snapshot.created_at != review_input.snapshot_created_at
+        or snapshot.expires_at != review_input.snapshot_expires_at
     ):
         return {"review_results": [_review_failure_result(task, review_input)]}
     try:
@@ -477,14 +481,19 @@ def _normalize_review_result(
         "base_commit": review_input.base_commit,
         "patch_digest": review_input.patch_digest,
         "workspace_diff_digest": review_input.workspace_diff_digest,
+        "snapshot_created_at": review_input.snapshot_created_at,
+        "snapshot_expires_at": review_input.snapshot_expires_at,
         "status": raw.status,
         "findings": tuple(sorted(findings, key=lambda item: item.finding_id)),
         "error_code": raw.error_code,
     }
     if raw.status != "succeeded":
         payload["findings"] = ()
+    review_input_json = review_input.model_dump(mode="json")
     digest_payload = {
         **payload,
+        "snapshot_created_at": review_input_json["snapshot_created_at"],
+        "snapshot_expires_at": review_input_json["snapshot_expires_at"],
         "findings": [
             item.model_dump(mode="json")
             for item in payload["findings"]
@@ -622,6 +631,8 @@ def canonicalize_review_report(
         base_commit=review_input.base_commit,
         patch_digest=review_input.patch_digest,
         workspace_diff_digest=review_input.workspace_diff_digest,
+        snapshot_created_at=review_input.snapshot_created_at,
+        snapshot_expires_at=review_input.snapshot_expires_at,
         results=ordered_results,
         findings=findings,
         report_digest="0" * 64,
@@ -639,6 +650,8 @@ def _validate_result(result: CodingReviewerResult, review_input: CodingReviewInp
         or result.base_commit != review_input.base_commit
         or result.patch_digest != review_input.patch_digest
         or result.workspace_diff_digest != review_input.workspace_diff_digest
+        or result.snapshot_created_at != review_input.snapshot_created_at
+        or result.snapshot_expires_at != review_input.snapshot_expires_at
     ):
         raise ValueError("coding_review_binding_mismatch")
     payload = result.model_dump(mode="json", exclude={"output_digest"})

@@ -538,6 +538,18 @@ class CodingWorkspaceService:
 
         snapshot_root = self._analysis_snapshot_root(snapshot)
         with self._lock(snapshot.workspace_ref):
+            try:
+                snapshot_details = snapshot_root.lstat()
+            except FileNotFoundError as exc:
+                raise CodingWorkspaceError(
+                    "coding_analysis_snapshot_missing"
+                ) from exc
+            except OSError as exc:
+                raise CodingWorkspaceError(
+                    "coding_analysis_snapshot_mismatch"
+                ) from exc
+            if not stat.S_ISDIR(snapshot_details.st_mode):
+                raise CodingWorkspaceError("coding_analysis_snapshot_mismatch")
             metadata = self._load_analysis_snapshot_metadata(
                 snapshot_root / _ANALYSIS_SNAPSHOT_METADATA_FILE
             )
