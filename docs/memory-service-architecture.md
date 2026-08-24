@@ -22,10 +22,6 @@ assistant-native-v2: capture_trusted_runtime_facts -> memory_recall -> fast/plan
 assistant-memory-v1: memory_extract -> END
 ```
 
-以上业务架构图只展示项目显式声明的业务节点。`StateGraph.add_node(..., error_handler=...)` 自动物化的
-`__error_handler__*` 是 LangGraph 原生运行时细节，继续参与 compiled graph、trace、retry 后恢复与 checkpoint
-语义，但不作为独立业务能力画入架构图。
-
 每个 chat run 都重新 recall 一次，因此能读取 Store 中最新长期记忆；planning worker 只读取当前 run 冻结的
 `memory_context`，不持有 backend，也不重复 recall。独立 Memory Graph 使用 message-only state，
 不继承父图的 execution、Memory 快照或 fast agent Skill channel。recall 使用

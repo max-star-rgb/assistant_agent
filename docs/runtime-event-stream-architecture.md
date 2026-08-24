@@ -29,10 +29,6 @@ AssistantRootGraph
   -> END
 ```
 
-以上业务架构图只展示项目显式声明的业务节点。`StateGraph.add_node(..., error_handler=...)` 自动物化的
-`__error_handler__*` 属于 LangGraph 原生运行时细节，继续存在于 compiled graph、trace 与 checkpoint 恢复语义中，
-但不作为独立业务节点画入架构图；项目不得为了隐藏这些节点而把原生 error handler 改写成节点内部 `try/except`。
-
 `execution_mode` 是结构化输入字段，只允许 `fast|planning|coding`；省略时按公开 input schema 默认使用 `fast`，以兼容
 Studio 的标准 messages-only run。同一 `assistant-native-v2` graph 还可由 Agent Server 中固定的
 `assistant-native-v2-planning` assistant 资源提供 `assistant_execution_mode=planning` context preset；
