@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, Literal, NotRequired, Required
 
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import ModelCallLimitMiddleware, ToolCallLimitMiddleware
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
@@ -30,7 +31,9 @@ from assistant_agent.coding.models import (
 from assistant_agent.coding.tools import build_coding_analysis_tools
 from assistant_agent.coding.workspace import CodingWorkspaceService
 from assistant_agent.native_agent.context import AssistantRunContext
+from assistant_agent.native_agent.coding_phase import CodingAnalysisPhaseMiddleware
 from assistant_agent.native_agent.providers import coding_analysis_model_view
+from assistant_agent.native_agent.providers import coding_analysis_model_settings
 
 REVIEW_TASK_IDS = tuple(CODING_REVIEW_TASK_SPECS)
 MAX_REVIEW_RESULT_JSON_CHARS = 16_000
@@ -123,6 +126,16 @@ class CodingReviewGraphState(AgentState):
     ]
     review_report: NotRequired[CodingReviewReport]
     review_status: NotRequired[Literal["clean", "findings", "unavailable"]]
+
+
+@dataclass(frozen=True)
+class _ReviewReadObservation:
+    """Trusted projection of one snapshot-bound coding_repo_read Tool artifact."""
+
+    path: str
+    start_line: int
+    lines: tuple[str, ...]
+    content_digest: str
 
 
 def build_coding_review_tools(service: CodingWorkspaceService) -> list[BaseTool]:
@@ -242,11 +255,20 @@ async def review_workspace(
                 context=runtime.context if runtime is not None else None,
             )
             raw_result = response.get("structured_response")
+        observations = _review_read_observations(
+            response if review_agent is not None else state,
+            snapshot,
+        )
         if isinstance(raw_result, BaseModel):
             raw_result = raw_result.model_dump(mode="json")
         if not isinstance(raw_result, Mapping):
             raise ValueError("coding_review_contract_invalid")
-        normalized = _normalize_review_result(task, review_input, raw_result)
+        normalized = _normalize_review_result(
+            task,
+            review_input,
+            raw_result,
+            observations=observations,
+        )
     except Exception:
         normalized = _review_failure_result(task, review_input)
     return {"review_results": [normalized]}
@@ -293,6 +315,9 @@ def create_coding_review_graph(
             state_schema=CodingReviewWorkerState,
             context_schema=AssistantRunContext,
             middleware=[
+                CodingAnalysisPhaseMiddleware(
+                    coding_analysis_model_settings(review_model)
+                ),
                 ModelCallLimitMiddleware(run_limit=1, exit_behavior="error"),
                 ToolCallLimitMiddleware(run_limit=8, exit_behavior="error"),
             ],
@@ -318,7 +343,7 @@ def create_coding_review_graph(
         review_workspace_node,
         input_schema=CodingReviewWorkerState,
     )
-    builder.add_node("join_review", join_review)
+    builder.add_node("join_review", join_review, defer=True)
     builder.add_edge(START, "prepare_review_tasks")
     builder.add_conditional_edges(
         "prepare_review_tasks",
@@ -353,6 +378,8 @@ def _normalize_review_result(
     task: CodingReviewTask,
     review_input: CodingReviewInput,
     raw_result: Mapping[str, object],
+    *,
+    observations: Sequence[_ReviewReadObservation] | None = None,
 ) -> CodingReviewerResult:
     raw = CodingReviewResponse.model_validate(raw_result)
     findings: list[CodingReviewFinding] = []
@@ -377,6 +404,8 @@ def _normalize_review_result(
             item.model_dump(mode="json", exclude={"evidence_digest"})
             for item in evidence
         ]
+        if observations is not None:
+            _validate_finding_evidence(evidence, observations)
         findings.append(
             CodingReviewFinding(
                 finding_id=_canonical_digest(
@@ -407,10 +436,93 @@ def _normalize_review_result(
             for item in payload["findings"]
         ],
     }
+    if (
+        len(
+            _canonical_json(
+                {**digest_payload, "output_digest": "0" * 64}
+            )
+        )
+        > MAX_REVIEW_RESULT_JSON_CHARS
+    ):
+        raise ValueError("coding_review_result_limit_exceeded")
     return CodingReviewerResult(
         **payload,
         output_digest=_canonical_digest(digest_payload),
     )
+
+
+def _review_read_observations(
+    response: Mapping[str, object],
+    snapshot: CodingAnalysisSnapshot,
+) -> tuple[_ReviewReadObservation, ...]:
+    messages = response.get("messages", ())
+    if not isinstance(messages, Sequence) or isinstance(messages, (str, bytes)):
+        raise ValueError("coding_review_observation_invalid")
+    observations: list[_ReviewReadObservation] = []
+    for message in messages:
+        if not isinstance(message, ToolMessage) or message.name != "coding_repo_read":
+            continue
+        artifact = message.artifact
+        if not isinstance(artifact, Mapping):
+            raise ValueError("coding_review_observation_invalid")
+        payload = artifact.get("data", artifact)
+        if not isinstance(payload, Mapping):
+            raise ValueError("coding_review_observation_invalid")
+        if (
+            payload.get("snapshot_ref") != snapshot.snapshot_ref
+            or payload.get("tree_digest") != snapshot.tree_digest
+        ):
+            raise ValueError("coding_review_observation_mismatch")
+        result = payload.get("result")
+        if not isinstance(result, Mapping):
+            raise ValueError("coding_review_observation_invalid")
+        path = result.get("path")
+        content = result.get("content")
+        start_line = result.get("start_line")
+        end_line = result.get("end_line")
+        if (
+            not isinstance(path, str)
+            or not isinstance(content, str)
+            or not isinstance(start_line, int)
+            or isinstance(start_line, bool)
+            or not isinstance(end_line, int)
+            or isinstance(end_line, bool)
+            or end_line < start_line - 1
+        ):
+            raise ValueError("coding_review_observation_invalid")
+        lines = tuple(content.splitlines())
+        if end_line != start_line + len(lines) - 1:
+            raise ValueError("coding_review_observation_invalid")
+        observations.append(
+            _ReviewReadObservation(
+                path=path,
+                start_line=start_line,
+                lines=lines,
+                content_digest=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            )
+        )
+    return tuple(observations)
+
+
+def _validate_finding_evidence(
+    evidence: Sequence[CodingReviewEvidence],
+    observations: Sequence[_ReviewReadObservation],
+) -> None:
+    for item in evidence:
+        matches = [
+            observation
+            for observation in observations
+            if observation.path == item.path
+            and observation.start_line <= item.line
+            < observation.start_line + len(observation.lines)
+            and observation.content_digest
+        ]
+        if not any(
+            item.excerpt
+            in observation.lines[item.line - observation.start_line]
+            for observation in matches
+        ):
+            raise ValueError("coding_review_evidence_unobserved")
 
 
 def _review_failure_result(
