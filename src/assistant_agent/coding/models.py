@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime
 from pathlib import Path
 from types import MappingProxyType
@@ -216,6 +218,185 @@ class CodingAnalysisResult(BaseModel):
             if self.findings:
                 raise ValueError("unsuccessful analysis result cannot carry findings")
         return self
+
+
+CODING_REVIEW_TASK_SPECS = MappingProxyType(
+    {
+        "correctness": "Review the proposed change for correctness, data flow, and boundary handling.",
+        "security": "Review the proposed change for security, permission, and governance regressions.",
+        "regression": "Review the proposed change for compatibility, tests, and regression risk.",
+    }
+)
+MAX_REVIEW_FINDINGS_PER_TASK = 8
+MAX_REVIEW_EVIDENCE_PER_FINDING = 2
+
+
+class CodingReviewTask(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    task_id: str = Field(min_length=1, max_length=80, pattern=r"^[a-z][a-z0-9_]*$")
+    dimension: str = Field(min_length=1, max_length=80, pattern=r"^[a-z][a-z0-9_]*$")
+    objective: str = Field(min_length=1, max_length=1_000)
+
+    @model_validator(mode="after")
+    def _matches_canonical_task(self) -> "CodingReviewTask":
+        if self.task_id not in CODING_REVIEW_TASK_SPECS:
+            raise ValueError("review task is unknown")
+        if self.dimension != self.task_id:
+            raise ValueError("review task dimension must match task id")
+        if self.objective != CODING_REVIEW_TASK_SPECS[self.task_id]:
+            raise ValueError("review task objective must match the canonical task")
+        return self
+
+
+class CodingReviewEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    path: str = Field(min_length=1, max_length=240)
+    line: int = Field(ge=1, le=10_000_000)
+    excerpt: str = Field(min_length=1, max_length=800)
+    evidence_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("path")
+    @classmethod
+    def _safe_path(cls, value: str) -> str:
+        _validate_relative_policy_path(value, label="review evidence path")
+        return value
+
+    @model_validator(mode="after")
+    def _digest_matches_evidence(self) -> "CodingReviewEvidence":
+        payload = self.model_dump(mode="json", exclude={"evidence_digest"})
+        if self.evidence_digest != _canonical_digest(payload):
+            raise ValueError("review evidence digest is invalid")
+        return self
+
+
+class CodingReviewFinding(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    finding_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    task_id: str = Field(min_length=1, max_length=80, pattern=r"^[a-z][a-z0-9_]*$")
+    severity: Literal["critical", "high", "moderate", "low", "info"]
+    category: str = Field(
+        min_length=1,
+        max_length=80,
+        pattern=r"^[a-z][a-z0-9_.-]*$",
+    )
+    summary: str = Field(min_length=1, max_length=1_200)
+    evidence: tuple[CodingReviewEvidence, ...] = Field(
+        min_length=1,
+        max_length=MAX_REVIEW_EVIDENCE_PER_FINDING,
+    )
+    semantic_key: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def _tuple_evidence(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @model_validator(mode="after")
+    def _digests_match_finding(self) -> "CodingReviewFinding":
+        semantic_payload = {
+            "severity": self.severity,
+            "category": self.category,
+            "summary": self.summary,
+        }
+        if self.semantic_key != _canonical_digest(semantic_payload):
+            raise ValueError("review finding semantic key is invalid")
+        evidence_payload = [
+            item.model_dump(mode="json", exclude={"evidence_digest"})
+            for item in self.evidence
+        ]
+        expected_finding_id = _canonical_digest(
+            {"task_id": self.task_id, **semantic_payload, "evidence": evidence_payload}
+        )
+        if self.finding_id != expected_finding_id:
+            raise ValueError("review finding digest is invalid")
+        return self
+
+
+class CodingReviewerResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    task_id: str = Field(min_length=1, max_length=80, pattern=r"^[a-z][a-z0-9_]*$")
+    workspace_ref: str = Field(min_length=16, max_length=128)
+    base_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    patch_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    workspace_diff_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    status: Literal["succeeded", "failed", "stale"]
+    findings: tuple[CodingReviewFinding, ...] = Field(max_length=MAX_REVIEW_FINDINGS_PER_TASK)
+    output_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    error_code: str | None = Field(
+        default=None,
+        max_length=128,
+        pattern=r"^coding_review_[a-z0-9_]+$",
+    )
+
+    @field_validator("findings", mode="before")
+    @classmethod
+    def _tuple_findings(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @model_validator(mode="after")
+    def _status_and_digest_match_payload(self) -> "CodingReviewerResult":
+        if self.status == "succeeded" and self.error_code is not None:
+            raise ValueError("successful review result cannot carry an error")
+        if self.status != "succeeded":
+            if self.error_code is None:
+                raise ValueError("unsuccessful review result requires an error code")
+            if self.findings:
+                raise ValueError("unsuccessful review result cannot carry findings")
+        payload = self.model_dump(mode="json", exclude={"output_digest"})
+        if self.output_digest != _canonical_digest(payload):
+            raise ValueError("review result digest is invalid")
+        return self
+
+
+class CodingReviewInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    workspace_ref: str = Field(min_length=16, max_length=128)
+    base_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    patch_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    workspace_diff_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class CodingReviewReport(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    status: Literal["clean", "findings", "unavailable"]
+    workspace_ref: str = Field(min_length=16, max_length=128)
+    base_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    patch_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    workspace_diff_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    results: tuple[CodingReviewerResult, ...] = Field(min_length=3, max_length=3)
+    findings: tuple[CodingReviewFinding, ...] = Field(
+        max_length=MAX_REVIEW_FINDINGS_PER_TASK * 3,
+    )
+    report_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("results", "findings", mode="before")
+    @classmethod
+    def _tuple_values(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+
+def _validate_relative_policy_path(value: str, *, label: str) -> None:
+    parts = value.split("/")
+    if (
+        value.startswith("/")
+        or any(part in {"", ".", "..", ".git"} for part in parts)
+        or any(item in value for item in ("\\", "\x00", "\n", "\r"))
+    ):
+        raise ValueError(f"{label} is invalid")
+
+
+def _canonical_digest(value: object) -> str:
+    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
 class CodingPatchProposal(BaseModel):
