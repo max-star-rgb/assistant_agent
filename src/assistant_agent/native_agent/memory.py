@@ -279,7 +279,7 @@ class HybridMemoryBackend:
         text_result, visual_result = await asyncio.gather(text_task, visual_task)
         return _bounded_texts(
             (
-                *(f"[文本长期记忆] {value}" for value in text_result),
+                *text_result,
                 *(f"[视觉记忆] {value}" for value in visual_result),
             )
         )
