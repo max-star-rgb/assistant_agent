@@ -5,11 +5,13 @@ import operator
 from collections.abc import Sequence
 from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain.agents import create_agent
+from langchain.agents.structured_output import ToolStrategy
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, tool
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode, ToolRuntime
-from langgraph.types import Command
+from langgraph.types import Command, Overwrite, Send
 
 
 class PlanningTodo(TypedDict):
@@ -27,6 +29,14 @@ class WorkerResult(TypedDict):
 class WorkerWrite(TypedDict):
     task_call_id: str
     result: WorkerResult
+
+
+class WorkerInput(TypedDict):
+    todo_id: str
+    content: str
+    task_call_id: str
+    loaded_skills: tuple[str, ...]
+    trusted_context: dict[str, str]
 
 
 def merge_worker_results(
@@ -157,10 +167,106 @@ def _last_ai_message(state: ExperimentPlanningState) -> AIMessage:
     return message
 
 
-def build_experiment_graph(supervisor_model: Any):
+def dispatch_tasks(state: ExperimentPlanningState) -> list[Send]:
+    message = _last_ai_message(state)
+    pending = {
+        item["todo_id"]: item
+        for item in state["todos"]
+        if item["status"] == "pending"
+    }
+    sends: list[Send] = []
+    for call in message.tool_calls:
+        todo_id = str(call["args"]["todo_id"])
+        if todo_id not in pending:
+            raise ValueError(f"task references non-pending todo {todo_id}")
+        sends.append(
+            Send(
+                "worker",
+                WorkerInput(
+                    todo_id=todo_id,
+                    content=pending[todo_id]["content"],
+                    task_call_id=call["id"],
+                    loaded_skills=tuple(state.get("loaded_skills", ())),
+                    trusted_context=dict(state.get("trusted_context", {})),
+                ),
+            )
+        )
+    return sends
+
+
+def _validated_worker_result(value: object) -> WorkerResult:
+    if not isinstance(value, dict):
+        raise TypeError("worker structured response must be an object")
+    todo_id = value.get("todo_id")
+    status = value.get("status")
+    summary = value.get("summary")
+    if not isinstance(todo_id, str) or not todo_id:
+        raise ValueError("worker result requires todo_id")
+    if status not in {"succeeded", "blocked"}:
+        raise ValueError("worker result has invalid status")
+    if not isinstance(summary, str) or not summary:
+        raise ValueError("worker result requires summary")
+    return WorkerResult(todo_id=todo_id, status=status, summary=summary)
+
+
+def join_workers(state: ExperimentPlanningState) -> dict[str, object]:
+    writes = sorted(
+        state["worker_writes"],
+        key=lambda item: item["result"]["todo_id"],
+    )
+    results = {item["result"]["todo_id"]: item["result"] for item in writes}
+    completed = {
+        todo_id
+        for todo_id, result in results.items()
+        if result["status"] == "succeeded"
+    }
+    todos: list[PlanningTodo] = [
+        PlanningTodo(
+            todo_id=item["todo_id"],
+            content=item["content"],
+            status=(
+                "completed" if item["todo_id"] in completed else item["status"]
+            ),
+        )
+        for item in state["todos"]
+    ]
+    messages = [
+        ToolMessage(
+            content=json.dumps(item["result"], sort_keys=True),
+            name="task",
+            tool_call_id=item["task_call_id"],
+        )
+        for item in writes
+    ]
+    return {
+        "todos": todos,
+        "worker_results": results,
+        "worker_writes": Overwrite([]),
+        "messages": messages,
+        "join_count": state.get("join_count", 0) + 1,
+    }
+
+
+def build_experiment_graph(
+    supervisor_model: Any,
+    worker_model: Any | None = None,
+    *,
+    read_probe_tool: BaseTool | None = None,
+    checkpointer: Any | None = None,
+):
     write_todos = create_write_todos_tool()
     task = create_task_tool()
     bound_supervisor = supervisor_model.bind_tools([write_todos, task])
+    worker_agent = (
+        create_agent(
+            model=worker_model,
+            tools=[read_probe_tool] if read_probe_tool is not None else [],
+            response_format=ToolStrategy(WorkerResult),
+            name="planning_worker_experiment",
+        )
+        if worker_model is not None
+        else None
+    )
 
     def supervisor_node(state: ExperimentPlanningState) -> dict[str, Sequence[AIMessage]]:
         response = bound_supervisor.invoke(state["messages"])
@@ -168,19 +274,54 @@ def build_experiment_graph(supervisor_model: Any):
             raise TypeError("supervisor model must return AIMessage")
         return {"messages": [response]}
 
-    def route_after_supervisor(
-        state: ExperimentPlanningState,
-    ) -> Literal["controls", "tasks", "final"]:
-        return classify_supervisor_action(_last_ai_message(state))
+    def route_after_supervisor(state: ExperimentPlanningState):
+        action = classify_supervisor_action(_last_ai_message(state))
+        if action == "controls":
+            return "controls"
+        if action == "final":
+            return END
+        return dispatch_tasks(state)
+
+    async def worker_wrapper(worker_input: WorkerInput) -> dict[str, object]:
+        if worker_agent is None:
+            raise RuntimeError("worker agent is not configured")
+        private_payload = {
+            "todo_id": worker_input["todo_id"],
+            "content": worker_input["content"],
+            "loaded_skills": list(worker_input["loaded_skills"]),
+            "trusted_context": worker_input["trusted_context"],
+        }
+        result = await worker_agent.ainvoke(
+            {
+                "messages": [
+                    HumanMessage(
+                        content=json.dumps(private_payload, sort_keys=True)
+                    )
+                ]
+            }
+        )
+        worker_result = _validated_worker_result(result.get("structured_response"))
+        if worker_result["todo_id"] != worker_input["todo_id"]:
+            raise ValueError("worker result todo_id mismatch")
+        return {
+            "worker_writes": [
+                WorkerWrite(
+                    task_call_id=worker_input["task_call_id"],
+                    result=worker_result,
+                )
+            ]
+        }
 
     builder = StateGraph(ExperimentPlanningState)
     builder.add_node("supervisor", supervisor_node)
     builder.add_node("controls", ToolNode([write_todos]))
+    if worker_agent is not None:
+        builder.add_node("worker", worker_wrapper)
+        builder.add_node("join", join_workers)
     builder.add_edge(START, "supervisor")
-    builder.add_conditional_edges(
-        "supervisor",
-        route_after_supervisor,
-        {"controls": "controls", "final": END},
-    )
+    builder.add_conditional_edges("supervisor", route_after_supervisor)
     builder.add_edge("controls", "supervisor")
-    return builder.compile()
+    if worker_agent is not None:
+        builder.add_edge("worker", "join")
+        builder.add_edge("join", "supervisor")
+    return builder.compile(checkpointer=checkpointer)
