@@ -2516,7 +2516,6 @@ def _reset_review_repair_cycle_state(
         "approval_status": None,
         "approval_origin": None,
         "applied_result": None,
-        "approved_changed_paths": Overwrite([]),
         "dependency_plan": None,
         "dependency_approval_status": None,
         "credential_request": None,
