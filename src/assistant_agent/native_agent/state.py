@@ -220,6 +220,7 @@ class CodingState(AgentState):
     ]
     review_repair_context: NotRequired[CodingReviewRepairContext | None]
     review_repair_context_consumed: NotRequired[bool]
+    review_repair_projection: NotRequired[dict[str, JsonValue] | None]
     review_repair_history: NotRequired[list[CodingReviewRepairAttempt]]
     integration_required: NotRequired[bool]
     commit_result: NotRequired[CodingCommitResult | None]

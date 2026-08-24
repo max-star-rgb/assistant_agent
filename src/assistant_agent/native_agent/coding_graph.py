@@ -21,7 +21,7 @@ from langgraph.errors import NodeError
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 from langgraph.types import Command, Overwrite, RetryPolicy, Send, interrupt
-from pydantic import BaseModel
+from pydantic import BaseModel, JsonValue
 
 from assistant_agent.coding.analysis import (
     ANALYSIS_TASK_IDS,
@@ -378,10 +378,10 @@ def build_coding_graph(
         call_state = dict(state)
         call_messages = list(state.get("messages", ()))
         analysis_context_added = False
-        review_repair_context_added = False
+        review_repair_projection_added = False
         if (
             state.get("review_repair_status") == "active"
-            and not state.get("review_repair_context_consumed", False)
+            and state.get("review_repair_projection") is not None
         ):
             try:
                 review_repair_context = CodingReviewRepairContext.model_validate(
@@ -399,6 +399,9 @@ def build_coding_graph(
                         review_repair_history[-1],
                         review_repair_context,
                     )
+                    or not state.get("review_repair_context_consumed", False)
+                    or state.get("review_repair_projection")
+                    != _review_repair_projection(review_repair_context)
                 ):
                     raise ValueError("coding_review_repair_binding_mismatch")
             except (TypeError, ValueError):
@@ -408,10 +411,24 @@ def build_coding_graph(
                         "coding_review_repair_binding_mismatch",
                     )
                 }
+            projection = state["review_repair_projection"]
             call_messages.append(
-                HumanMessage(content=_render_review_repair_context(review_repair_context))
+                HumanMessage(
+                    content=str(projection["content"]),
+                    id=str(projection["message_id"]),
+                )
             )
-            review_repair_context_added = True
+            review_repair_projection_added = True
+        elif (
+            state.get("review_repair_status") == "active"
+            and not state.get("review_repair_context_consumed", False)
+        ):
+            return {
+                "coding_result": _failed(
+                    state,
+                    "coding_review_repair_binding_mismatch",
+                )
+            }
         elif state.get("repair_status") == "active":
             repair_model_calls = int(state.get("repair_model_calls", 0))
             if repair_model_calls < 1 or repair_model_calls > MAX_REPAIR_ROUNDS:
@@ -482,8 +499,8 @@ def build_coding_graph(
         }
         if analysis_context_added:
             update["analysis_context_consumed"] = True
-        if review_repair_context_added:
-            update["review_repair_context_consumed"] = True
+        if review_repair_projection_added:
+            update["review_repair_projection"] = None
         return update
 
     def validate_proposal_node(
@@ -664,7 +681,7 @@ def build_coding_graph(
         state: CodingState,
         runtime: Runtime[AssistantRunContext],
         config: RunnableConfig,
-    ) -> Command[Literal["inspect_and_draft", "summarize"]]:
+    ) -> Command[Literal["consume_review_repair_context", "summarize"]]:
         """Persist one review-repair attempt before any model invocation."""
 
         if state.get("coding_result") is not None:
@@ -717,6 +734,57 @@ def build_coding_graph(
             update={
                 "review_repair_count": count + 1,
                 "review_repair_status": "active",
+            },
+            goto="consume_review_repair_context",
+        )
+
+    def consume_review_repair_context_node(
+        state: CodingState,
+        runtime: Runtime[AssistantRunContext],
+        config: RunnableConfig,
+    ) -> Command[Literal["inspect_and_draft", "summarize"]]:
+        """Freeze one replay-stable projection before the inspect agent runs."""
+
+        if state.get("coding_result") is not None:
+            return Command(goto="summarize")
+        try:
+            _resolve_workspace(state, runtime, config, workspace_service)
+            count = state.get("review_repair_count", 0)
+            context = CodingReviewRepairContext.model_validate(
+                state.get("review_repair_context")
+            )
+            history = validate_review_repair_history(
+                state.get("review_repair_history", ())
+            )
+            if (
+                state.get("review_repair_status") != "active"
+                or type(count) is not int
+                or count != context.attempt
+                or len(history) != count
+                or not _review_repair_attempt_matches_context(history[-1], context)
+            ):
+                raise ValueError("coding_review_repair_binding_mismatch")
+            projection = _review_repair_projection(context)
+            current_projection = state.get("review_repair_projection")
+            consumed = state.get("review_repair_context_consumed", False)
+            if consumed and current_projection != projection:
+                raise ValueError("coding_review_repair_binding_mismatch")
+            if not consumed and current_projection is not None:
+                raise ValueError("coding_review_repair_binding_mismatch")
+        except (CodingWorkspaceError, TypeError, ValueError):
+            return Command(
+                update={
+                    "coding_result": _failed(
+                        state,
+                        "coding_review_repair_binding_mismatch",
+                    )
+                },
+                goto="summarize",
+            )
+        return Command(
+            update={
+                "review_repair_context_consumed": True,
+                "review_repair_projection": projection,
             },
             goto="inspect_and_draft",
         )
@@ -1727,6 +1795,7 @@ def build_coding_graph(
                     "review_repair_status": "pending",
                     "review_repair_context": review_repair_context,
                     "review_repair_context_consumed": False,
+                    "review_repair_projection": None,
                     "review_repair_history": list(review_repair_history),
                     "draft_artifact": None,
                     "proposal": None,
@@ -2084,6 +2153,10 @@ def build_coding_graph(
         "consume_review_repair_budget",
         consume_review_repair_budget_node,
     )
+    builder.add_node(
+        "consume_review_repair_context",
+        consume_review_repair_context_node,
+    )
     builder.add_node("create_commit", create_commit_node)
     builder.add_node("prepare_merge", prepare_merge_node)
     builder.add_node("merge_approval", merge_approval_node)
@@ -2219,6 +2292,7 @@ def begin_coding_cycle_node(state: CodingState) -> dict[str, object]:
         "review_repair_status": None,
         "review_repair_context": None,
         "review_repair_context_consumed": False,
+        "review_repair_projection": None,
         "review_repair_history": [],
         "integration_required": False,
         "commit_result": None,
@@ -2667,6 +2741,18 @@ def _render_review_repair_context(context: CodingReviewRepairContext) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
+
+
+def _review_repair_projection(
+    context: CodingReviewRepairContext,
+) -> dict[str, JsonValue]:
+    return {
+        "message_id": (
+            f"coding-review-repair-{context.attempt}-"
+            f"{context.report_digest[:16]}-{context.response_digest}"
+        ),
+        "content": _render_review_repair_context(context),
+    }
 
 
 def _validate_review_checkpoint(
