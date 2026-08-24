@@ -388,7 +388,11 @@ class RemoteVideoArchiveUploader:
         await self.preserve(segment, user_id=user_id, session_id=session_id)
         published: PublishedMedia | None = None
         try:
-            published = self.registry.publish(segment.path, file_id=segment.file_id)
+            published = await asyncio.to_thread(
+                self.registry.publish,
+                segment.path,
+                file_id=segment.file_id,
+            )
             await self._save_async(
                 segment,
                 user_id=user_id,
@@ -429,7 +433,7 @@ class RemoteVideoArchiveUploader:
                     task_id=result.task_id,
                 )
                 if status.status == "completed":
-                    segment.path.unlink(missing_ok=True)
+                    await asyncio.to_thread(segment.path.unlink, missing_ok=True)
                     if self.manifest is not None:
                         await asyncio.to_thread(
                             self.manifest.remove,
@@ -467,7 +471,7 @@ class RemoteVideoArchiveUploader:
             return "failed"
         finally:
             if published is not None:
-                self.registry.revoke(published.token)
+                await asyncio.to_thread(self.registry.revoke, published.token)
 
     async def preserve(
         self,
