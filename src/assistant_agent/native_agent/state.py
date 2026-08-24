@@ -28,6 +28,8 @@ from assistant_agent.coding.models import (
     CodingPatchValidation,
     CodingReviewInput,
     CodingReviewReport,
+    CodingReviewRepairAttempt,
+    CodingReviewRepairContext,
     CodingReviewerResult,
     CodingReviewTask,
     CodingRepairApprovalContext,
@@ -212,6 +214,13 @@ class CodingState(AgentState):
     review_validation_digest: NotRequired[str | None]
     review_decision_context: NotRequired[dict[str, JsonValue] | None]
     review_decision: NotRequired[Literal["approved", "rejected"] | None]
+    review_repair_count: NotRequired[int]
+    review_repair_status: NotRequired[
+        Literal["pending", "active", "exhausted"] | None
+    ]
+    review_repair_context: NotRequired[CodingReviewRepairContext | None]
+    review_repair_context_consumed: NotRequired[bool]
+    review_repair_history: NotRequired[list[CodingReviewRepairAttempt]]
     integration_required: NotRequired[bool]
     commit_result: NotRequired[CodingCommitResult | None]
     merge_preview: NotRequired[CodingMergePreview | None]

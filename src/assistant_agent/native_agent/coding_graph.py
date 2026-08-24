@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from langchain.agents import create_agent
@@ -40,6 +41,8 @@ from assistant_agent.coding.models import (
     CodingPatchValidation,
     CodingReviewInput,
     CodingReviewReport,
+    CodingReviewRepairAttempt,
+    CodingReviewRepairContext,
     CodingReviewerResult,
     CodingReviewTask,
     CodingRepairAttempt,
@@ -59,6 +62,12 @@ from assistant_agent.coding.review import (
     build_legacy_review_tasks,
     canonicalize_review_report,
     create_coding_review_graph,
+)
+from assistant_agent.coding.review_repair import (
+    MAX_CODING_REVIEW_REPAIR_ATTEMPTS,
+    build_review_repair_context,
+    normalize_review_response,
+    validate_review_repair_history,
 )
 from assistant_agent.coding.dependencies import (
     build_dependency_plan,
@@ -369,7 +378,41 @@ def build_coding_graph(
         call_state = dict(state)
         call_messages = list(state.get("messages", ()))
         analysis_context_added = False
-        if state.get("repair_status") == "active":
+        review_repair_context_added = False
+        if (
+            state.get("review_repair_status") == "active"
+            and not state.get("review_repair_context_consumed", False)
+        ):
+            try:
+                review_repair_context = CodingReviewRepairContext.model_validate(
+                    state.get("review_repair_context")
+                )
+                review_repair_history = validate_review_repair_history(
+                    state.get("review_repair_history", ())
+                )
+                review_repair_count = state.get("review_repair_count", 0)
+                if (
+                    type(review_repair_count) is not int
+                    or review_repair_count != review_repair_context.attempt
+                    or len(review_repair_history) != review_repair_count
+                    or not _review_repair_attempt_matches_context(
+                        review_repair_history[-1],
+                        review_repair_context,
+                    )
+                ):
+                    raise ValueError("coding_review_repair_binding_mismatch")
+            except (TypeError, ValueError):
+                return {
+                    "coding_result": _failed(
+                        state,
+                        "coding_review_repair_binding_mismatch",
+                    )
+                }
+            call_messages.append(
+                HumanMessage(content=_render_review_repair_context(review_repair_context))
+            )
+            review_repair_context_added = True
+        elif state.get("repair_status") == "active":
             repair_model_calls = int(state.get("repair_model_calls", 0))
             if repair_model_calls < 1 or repair_model_calls > MAX_REPAIR_ROUNDS:
                 return {
@@ -439,6 +482,8 @@ def build_coding_graph(
         }
         if analysis_context_added:
             update["analysis_context_consumed"] = True
+        if review_repair_context_added:
+            update["review_repair_context_consumed"] = True
         return update
 
     def validate_proposal_node(
@@ -614,6 +659,67 @@ def build_coding_graph(
                 ),
             }
         return {"repair_model_calls": repair_model_calls + 1}
+
+    def consume_review_repair_budget_node(
+        state: CodingState,
+        runtime: Runtime[AssistantRunContext],
+        config: RunnableConfig,
+    ) -> Command[Literal["inspect_and_draft", "summarize"]]:
+        """Persist one review-repair attempt before any model invocation."""
+
+        if state.get("coding_result") is not None:
+            return Command(goto="summarize")
+        try:
+            _resolve_workspace(state, runtime, config, workspace_service)
+            count = state.get("review_repair_count", 0)
+            if type(count) is not int or not 0 <= count <= MAX_CODING_REVIEW_REPAIR_ATTEMPTS:
+                raise ValueError("coding_review_repair_count_invalid")
+            history = validate_review_repair_history(
+                state.get("review_repair_history", ())
+            )
+            if state.get("review_repair_status") != "pending":
+                raise ValueError("coding_review_repair_binding_mismatch")
+            if count >= MAX_CODING_REVIEW_REPAIR_ATTEMPTS:
+                if len(history) != count:
+                    raise ValueError("coding_review_repair_history_count_mismatch")
+                return Command(
+                    update={
+                        "review_repair_status": "exhausted",
+                        "review_repair_context": None,
+                        "review_repair_context_consumed": False,
+                        "coding_result": _failed(
+                            state,
+                            "coding_review_repair_exhausted",
+                        ),
+                    },
+                    goto="summarize",
+                )
+            context = CodingReviewRepairContext.model_validate(
+                state.get("review_repair_context")
+            )
+            if (
+                context.attempt != count + 1
+                or len(history) != count + 1
+                or not _review_repair_attempt_matches_context(history[-1], context)
+            ):
+                raise ValueError("coding_review_repair_binding_mismatch")
+        except (CodingWorkspaceError, TypeError, ValueError):
+            return Command(
+                update={
+                    "coding_result": _failed(
+                        state,
+                        "coding_review_repair_binding_mismatch",
+                    )
+                },
+                goto="summarize",
+            )
+        return Command(
+            update={
+                "review_repair_count": count + 1,
+                "review_repair_status": "active",
+            },
+            goto="inspect_and_draft",
+        )
 
     def approval_node(
         state: CodingState,
@@ -1468,7 +1574,15 @@ def build_coding_graph(
         state: CodingState,
         runtime: Runtime[AssistantRunContext],
         config: RunnableConfig,
-    ) -> Command[Literal["create_commit", "summarize"]]:
+    ) -> Command[
+        Literal[
+            "consume_review_repair_budget",
+            "create_commit",
+            "summarize",
+        ]
+    ]:
+        review_repair_context: CodingReviewRepairContext | None = None
+        review_repair_history: tuple[CodingReviewRepairAttempt, ...] = ()
         try:
             workspace = _resolve_workspace(state, runtime, config, workspace_service)
             if state.get("review_decision") is not None:
@@ -1520,9 +1634,10 @@ def build_coding_graph(
                 allow_legacy_schema_omission=allow_legacy_schema_omission,
             ):
                 raise ValueError("coding_review_binding_mismatch")
-            decision = _validate_review_decision(
+            decision, response = _validate_review_decision(
                 raw,
                 decision_context,
+                review_status=state.get("review_status"),
                 allow_legacy_schema_omission=allow_legacy_schema_omission,
             )
             snapshot = CodingAnalysisSnapshot.model_validate(state.get("review_snapshot"))
@@ -1549,13 +1664,49 @@ def build_coding_graph(
                 except CodingWorkspaceError:
                     pass
                 raise ValueError("coding_review_binding_mismatch")
-            if decision == "reject" or not state.get("integration_required"):
+            if decision == "respond":
+                count = state.get("review_repair_count", 0)
+                if (
+                    type(count) is not int
+                    or not 0 <= count <= MAX_CODING_REVIEW_REPAIR_ATTEMPTS
+                ):
+                    raise ValueError("coding_review_repair_count_invalid")
+                review_repair_history = validate_review_repair_history(
+                    state.get("review_repair_history", ())
+                )
+                if len(review_repair_history) != count:
+                    raise ValueError("coding_review_repair_history_count_mismatch")
+                if count < MAX_CODING_REVIEW_REPAIR_ATTEMPTS:
+                    review_repair_context = build_review_repair_context(
+                        state.get("review_report"),
+                        review_repair_count=count,
+                        response=response,
+                        history=review_repair_history,
+                    )
+                    review_repair_history = (
+                        *review_repair_history,
+                        _pending_review_repair_attempt(review_repair_context),
+                    )
+            if (
+                decision in {"reject", "respond"}
+                or not state.get("integration_required")
+            ):
                 workspace_service.release_analysis_snapshot(
                     fresh_snapshot,
                     identity=authenticated_user_identity(runtime),
                     thread_id=_thread_id(config),
                     workspace=workspace,
                 )
+                if (
+                    decision == "respond"
+                    and snapshot.snapshot_ref != fresh_snapshot.snapshot_ref
+                ):
+                    workspace_service.release_analysis_snapshot(
+                        snapshot,
+                        identity=authenticated_user_identity(runtime),
+                        thread_id=_thread_id(config),
+                        workspace=workspace,
+                    )
         except (CodingWorkspaceError, ValueError, TypeError):
             return Command(
                 update={
@@ -1565,6 +1716,36 @@ def build_coding_graph(
                     )
                 },
                 goto="summarize",
+            )
+        if decision == "respond":
+            return Command(
+                update={
+                    **_reset_review_state(),
+                    "review_repair_count": int(
+                        state.get("review_repair_count", 0)
+                    ),
+                    "review_repair_status": "pending",
+                    "review_repair_context": review_repair_context,
+                    "review_repair_context_consumed": False,
+                    "review_repair_history": list(review_repair_history),
+                    "draft_artifact": None,
+                    "proposal": None,
+                    "validation": None,
+                    "approval_status": None,
+                    "approval_origin": None,
+                    "applied_result": None,
+                    "dependency_plan": None,
+                    "dependency_approval_status": None,
+                    "credential_request": None,
+                    "credential_approval_status": None,
+                    "artifact_ingress_plan": None,
+                    "artifact_approval_status": None,
+                    "integration_required": False,
+                    "commit_result": None,
+                    "merge_preview": None,
+                    "merge_result": None,
+                },
+                goto="consume_review_repair_budget",
             )
         if decision == "reject":
             return Command(
@@ -1899,6 +2080,10 @@ def build_coding_graph(
     builder.add_node("prepare_review_snapshot", prepare_review_snapshot_node)
     builder.add_node("run_code_review", run_code_review_node)
     builder.add_node("coding_review_decision", coding_review_decision_node)
+    builder.add_node(
+        "consume_review_repair_budget",
+        consume_review_repair_budget_node,
+    )
     builder.add_node("create_commit", create_commit_node)
     builder.add_node("prepare_merge", prepare_merge_node)
     builder.add_node("merge_approval", merge_approval_node)
@@ -2030,6 +2215,11 @@ def begin_coding_cycle_node(state: CodingState) -> dict[str, object]:
         "review_validation_digest": None,
         "review_decision_context": None,
         "review_decision": None,
+        "review_repair_count": 0,
+        "review_repair_status": None,
+        "review_repair_context": None,
+        "review_repair_context_consumed": False,
+        "review_repair_history": [],
         "integration_required": False,
         "commit_result": None,
         "merge_preview": None,
@@ -2405,20 +2595,78 @@ def _validate_review_decision(
     raw: object,
     decision_context: Mapping[str, object],
     *,
+    review_status: object,
     allow_legacy_schema_omission: bool = False,
-) -> Literal["approve", "reject"]:
+) -> tuple[Literal["approve", "reject", "respond"], str | None]:
     if not isinstance(raw, Mapping):
         raise ValueError("coding_review_binding_mismatch")
-    if raw.get("decision") not in {"approve", "reject"}:
+    decision = raw.get("decision")
+    if decision not in {"approve", "reject", "respond"}:
         raise ValueError("coding_review_binding_mismatch")
-    raw_context = {key: value for key, value in raw.items() if key != "decision"}
+    response: str | None = None
+    excluded = {"decision"}
+    if decision == "respond":
+        if review_status != "findings":
+            raise ValueError("coding_review_binding_mismatch")
+        response = normalize_review_response(raw.get("response"))
+        excluded.add("response")
+    raw_context = {key: value for key, value in raw.items() if key not in excluded}
     if not _review_decision_context_matches(
         raw_context,
         decision_context,
         allow_legacy_schema_omission=allow_legacy_schema_omission,
     ):
         raise ValueError("coding_review_binding_mismatch")
-    return raw["decision"]
+    return decision, response
+
+
+def _pending_review_repair_attempt(
+    context: CodingReviewRepairContext,
+) -> CodingReviewRepairAttempt:
+    return CodingReviewRepairAttempt(
+        attempt=context.attempt,
+        report_digest=context.report_digest,
+        validation_evidence_digest=context.validation_evidence_digest,
+        workspace_diff_digest=context.workspace_diff_digest,
+        response_digest=context.response_digest,
+        finding_ids=tuple(
+            finding.finding_id for finding in context.findings_summary
+        ),
+        created_at=datetime.now(UTC),
+        outcome="pending",
+    )
+
+
+def _review_repair_attempt_matches_context(
+    attempt: CodingReviewRepairAttempt,
+    context: CodingReviewRepairContext,
+) -> bool:
+    return (
+        attempt.attempt == context.attempt
+        and attempt.report_digest == context.report_digest
+        and attempt.validation_evidence_digest
+        == context.validation_evidence_digest
+        and attempt.workspace_diff_digest == context.workspace_diff_digest
+        and attempt.response_digest == context.response_digest
+        and attempt.finding_ids
+        == tuple(finding.finding_id for finding in context.findings_summary)
+        and attempt.outcome == "pending"
+    )
+
+
+def _render_review_repair_context(context: CodingReviewRepairContext) -> str:
+    return json.dumps(
+        {
+            "coding_review_repair": context.model_dump(mode="json"),
+            "instruction": (
+                "Address only the frozen review findings. Confirm current workspace "
+                "content with read tools before proposing one incremental patch."
+            ),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _validate_review_checkpoint(
