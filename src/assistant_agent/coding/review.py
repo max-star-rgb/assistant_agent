@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
+from langgraph.errors import GraphBubbleUp, NodeCancelledError
 from langgraph.runtime import Runtime
 from langgraph.types import Send
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -138,6 +140,56 @@ class _ReviewReadObservation:
     content_digest: str
 
 
+def _review_propagation_failure(error: BaseException) -> BaseException | None:
+    """Return native control or permission failures hidden by wrappers."""
+
+    pending = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop(0)
+        marker = id(current)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        if isinstance(
+            current,
+            (
+                asyncio.CancelledError,
+                GraphBubbleUp,
+                NodeCancelledError,
+                PermissionError,
+            ),
+        ):
+            return current
+        reason = getattr(current, "reason", None)
+        if isinstance(reason, BaseException):
+            pending.append(reason)
+        if isinstance(current.__cause__, BaseException):
+            pending.append(current.__cause__)
+        if isinstance(current.__context__, BaseException):
+            pending.append(current.__context__)
+    return None
+
+
+def _validated_review_inventory(value: object) -> tuple[CodingReviewerResult, ...]:
+    """Validate raw checkpoint inventory before any task-ID replacement merge."""
+
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise ValueError("coding_review_contract_invalid")
+    try:
+        results = tuple(CodingReviewerResult.model_validate(item) for item in value)
+    except (TypeError, ValueError):
+        raise ValueError("coding_review_contract_invalid") from None
+    seen: set[str] = set()
+    for result in results:
+        if result.task_id not in REVIEW_TASK_IDS:
+            raise ValueError("coding_review_unknown_task")
+        if result.task_id in seen:
+            raise ValueError("coding_review_duplicate_task")
+        seen.add(result.task_id)
+    return results
+
+
 def build_coding_review_tools(service: CodingWorkspaceService) -> list[BaseTool]:
     """Build the final-review-specific, snapshot-bound read-only tool profile."""
 
@@ -203,8 +255,8 @@ def route_review_workers(state: Mapping[str, object]) -> list[Send] | str:
     if tasks != build_review_tasks():
         raise ValueError("coding_review_contract_invalid")
     completed = {
-        CodingReviewerResult.model_validate(result).task_id
-        for result in state.get("review_results", ())
+        result.task_id
+        for result in _validated_review_inventory(state.get("review_results", ()))
     }
     pending = tuple(task for task in tasks if task.task_id not in completed)
     if not pending:
@@ -269,7 +321,12 @@ async def review_workspace(
             raw_result,
             observations=observations,
         )
-    except Exception:
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        propagation_failure = _review_propagation_failure(exc)
+        if propagation_failure is not None:
+            raise propagation_failure
         normalized = _review_failure_result(task, review_input)
     return {"review_results": [normalized]}
 
@@ -280,10 +337,7 @@ def join_review(state: Mapping[str, object]) -> dict[str, object]:
     review_input = CodingReviewInput.model_validate(state.get("review_input"))
     results = merge_review_results(
         (),
-        tuple(
-            CodingReviewerResult.model_validate(result)
-            for result in state.get("review_results", ())
-        ),
+        _validated_review_inventory(state.get("review_results", ())),
     )
     if {result.task_id for result in results} != set(REVIEW_TASK_IDS):
         return {"review_results": results}

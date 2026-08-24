@@ -1469,7 +1469,7 @@ def build_coding_graph(
                 identity=authenticated_user_identity(runtime),
                 thread_id=_thread_id(config),
             )
-            if fresh_snapshot != snapshot:
+            if not _review_snapshot_content_matches(snapshot, fresh_snapshot):
                 try:
                     workspace_service.release_analysis_snapshot(
                         fresh_snapshot,
@@ -1481,7 +1481,7 @@ def build_coding_graph(
                     pass
                 raise ValueError("coding_review_binding_mismatch")
             workspace_service.release_analysis_snapshot(
-                snapshot,
+                fresh_snapshot,
                 identity=authenticated_user_identity(runtime),
                 thread_id=_thread_id(config),
                 workspace=workspace,
@@ -2130,6 +2130,24 @@ def _review_binding_context(
     }
 
 
+def _review_snapshot_content_matches(
+    expected: CodingAnalysisSnapshot,
+    current: CodingAnalysisSnapshot,
+) -> bool:
+    """Compare immutable snapshot identity without binding to resource TTL."""
+
+    return all(
+        getattr(expected, field) == getattr(current, field)
+        for field in (
+            "snapshot_ref",
+            "workspace_ref",
+            "base_commit",
+            "tree_digest",
+            "workspace_diff_digest",
+        )
+    )
+
+
 def _validate_review_decision(
     raw: object,
     decision_context: Mapping[str, object],
@@ -2207,24 +2225,36 @@ def _validate_review_checkpoint(
         or snapshot.base_commit != workspace.base_commit
     ):
         raise ValueError("coding_review_binding_mismatch")
-    service.validate_analysis_snapshot(
-        snapshot,
-        identity=identity,
-        thread_id=thread_id,
-        workspace=workspace,
-        require_active=release_status == "active",
-    )
     report_value = state.get("review_report")
     if report_value is None:
-        if state.get("review_decision_context") is not None or state.get(
-            "review_decision"
-        ) is not None:
+        if (
+            release_status != "active"
+            or state.get("review_decision_context") is not None
+            or state.get("review_decision") is not None
+        ):
             raise ValueError("coding_review_binding_mismatch")
+        service.validate_analysis_snapshot(
+            snapshot,
+            identity=identity,
+            thread_id=thread_id,
+            workspace=workspace,
+            require_active=True,
+        )
         return
     report = CodingReviewReport.model_validate(report_value)
     canonical = canonicalize_review_report(review_input, report.results)
+    tasks = tuple(
+        CodingReviewTask.model_validate(item)
+        for item in state.get("review_tasks", ())
+    )
+    results = tuple(
+        CodingReviewerResult.model_validate(item)
+        for item in state.get("review_results", ())
+    )
     if (
         report != canonical
+        or tasks != build_review_tasks()
+        or results != report.results
         or state.get("review_status") != report.status
         or state.get("review_decision_context") != _review_binding_context(state)
     ):
