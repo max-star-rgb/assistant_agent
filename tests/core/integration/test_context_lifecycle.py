@@ -6,7 +6,6 @@ from typing import Any
 from langchain.agents.middleware import (
     HumanInTheLoopMiddleware,
     SummarizationMiddleware,
-    ToolCallLimitMiddleware,
     ToolRetryMiddleware,
 )
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -39,8 +38,10 @@ from assistant_agent.native_agent.planning_budget import (
 from assistant_agent.native_agent.planning_graph import build_planning_graph
 from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.native_agent.state import PlanningState
+from assistant_agent.native_agent.tool_call_limits import (
+    PerToolCallLimitMiddleware,
+)
 from assistant_agent.skills.loading import SkillCatalog
-from assistant_agent.tools.ids import LIVE_VIEW_INSPECT_TOOL_NAME
 
 
 class _HitlPlanningModel(MockAssistantChatModel):
@@ -289,10 +290,10 @@ def test_create_agent_owns_phase_budget_summary_retry_and_hitl_middleware(
         name="read_probe",
         metadata={"effect": "read"},
     )
-    live_view_tool = StructuredTool.from_function(
+    limited_tool = StructuredTool.from_function(
         write_probe,
-        name=LIVE_VIEW_INSPECT_TOOL_NAME,
-        metadata={"effect": "read"},
+        name="limited_probe",
+        metadata={"effect": "read", "run_call_limit": 1},
     )
     captured_middleware: list[object] = []
     real_create_agent = fast_agent_module.create_agent
@@ -304,19 +305,18 @@ def test_create_agent_owns_phase_budget_summary_retry_and_hitl_middleware(
     monkeypatch.setattr(fast_agent_module, "create_agent", recording_create_agent)
     graph = build_fast_agent(
         MockAssistantChatModel(),
-        [write_tool, read_tool, live_view_tool],
+        [write_tool, read_tool, limited_tool],
     )
     nodes = set(graph.get_graph().nodes)
     tool_limiters = [
         item
         for item in captured_middleware
-        if isinstance(item, ToolCallLimitMiddleware)
+        if isinstance(item, PerToolCallLimitMiddleware)
     ]
 
     assert any("PhaseBudgetMiddleware" in node for node in nodes)
     assert any(isinstance(item, PhaseBudgetMiddleware) for item in captured_middleware)
-    assert all(item.tool_name is not None for item in tool_limiters)
-    assert [item.tool_name for item in tool_limiters] == [LIVE_VIEW_INSPECT_TOOL_NAME]
+    assert [item.run_limits for item in tool_limiters] == [{"limited_probe": 1}]
     assert any("SummarizationMiddleware" in node for node in nodes)
     assert any(isinstance(item, SummarizationMiddleware) for item in captured_middleware)
     assert any("HumanInTheLoopMiddleware" in node for node in nodes)

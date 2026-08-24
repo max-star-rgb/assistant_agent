@@ -10,7 +10,6 @@ from langchain.agents.middleware import (
     HumanInTheLoopMiddleware,
     ModelRequest,
     SummarizationMiddleware,
-    ToolCallLimitMiddleware,
     ToolRetryMiddleware,
     dynamic_prompt,
 )
@@ -55,6 +54,9 @@ from assistant_agent.native_agent.planning_budget import (
 from assistant_agent.native_agent.tool_exposure import (
     ProgressiveToolExposureMiddleware,
     discoverable_skill_descriptors,
+)
+from assistant_agent.native_agent.tool_call_limits import (
+    PerToolCallLimitMiddleware,
 )
 from assistant_agent.skills.loading import (
     SkillCatalog,
@@ -139,14 +141,9 @@ def build_fast_agent(
         if read_tool_names
         else None
     )
-    if any(tool.name == LIVE_VIEW_INSPECT_TOOL_NAME for tool in tools):
-        middleware.append(
-            ToolCallLimitMiddleware(
-                tool_name=LIVE_VIEW_INSPECT_TOOL_NAME,
-                run_limit=1,
-                exit_behavior="continue",
-            )
-        )
+    per_tool_call_limiter = PerToolCallLimitMiddleware.from_tools(tools)
+    if per_tool_call_limiter is not None:
+        middleware.append(per_tool_call_limiter)
     summarization_options = {
         "model": model,
         "trigger": (

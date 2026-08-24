@@ -96,8 +96,12 @@ WebSocket 已成功完成 `callType=VIDEO` 的 control 握手，且本轮冻结�
 业务 Tool call 计数。Tool 预算超限时，它不调用实际 Tool，而是为每个被阻止的 tool call 生成标准
 `ToolMessage(status="error")` 并有界结束该 phase；未超限调用仍原样进入同一个标准 `ToolNode`，继续使用官方
 `ToolRuntime` 注入、`ToolRetryMiddleware` 与 state-aware `HumanInTheLoopMiddleware`。因此预算层不是第二个
-executor，也不接管 Tool schema、身份、授权、retry、HITL 或副作用幂等。live-view 的
-`ToolCallLimitMiddleware(tool_name="live_view_inspect")` 只保护该昂贵实时观察 Tool，不是全 inventory limiter。
+executor，也不接管 Tool schema、身份、授权、retry、HITL 或副作用幂等。需要独立 run 上限的 Tool 在受信静态
+metadata 中声明正整数 `run_call_limit`；composition 从全部 Tool 机械构造唯一
+`PerToolCallLimitMiddleware.after_model` 节点，由一个 Tool-name→limit 映射分别计数并为超限调用生成标准 error
+`ToolMessage`，不执行被阻止的 Tool，未配置 Tool 原样放行。该策略不读取用户文本、模型参数或运行时 artifact，
+也不是全 inventory limiter。当前 `live_view_inspect` 声明 `run_call_limit=1`，避免同一个 run 重复执行昂贵实时观察；
+后续其他 Tool 可通过相同 metadata 进入同一通用节点，fast agent 装配不识别具体 Tool 名。
 
 production composition 从一个受信 base 值构造唯一 `PlanningBudgetPolicy`，phase middleware 与 planning graph
 共享该实例。planning graph 的 global model/tool/node-attempt/replan cap 通过 typed usage、wave reservation 与

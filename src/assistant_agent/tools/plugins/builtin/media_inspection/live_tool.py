@@ -147,6 +147,7 @@ def create_live_view_inspect_tool(
         live_view_inspect,
         "read",
         availability=ToolAvailability.VISUAL_KEYFRAME_AVAILABLE.value,
+        run_call_limit=1,
         bounded_expected_errors=True,
     )
 

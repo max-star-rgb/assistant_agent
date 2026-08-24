@@ -48,7 +48,8 @@ Memory 每一行以引用文本呈现，并明确为可能过时或错误的背�
 composition 把同一 `PlanningBudgetPolicy` 同时交给该 middleware 和 planning graph，后者再结算有界的全图
 model/tool/node attempt/replan budget。phase middleware 只在调用前形成标准预算终态，不把 policy、余额或计数
 加入公开 Graph input。只读 Tool retry、长对话 summarization 与 planning 模式非 read Tool HITL 继续使用官方
-middleware；live-view 的单次调用限制仍是独立的 Tool 专项 limiter，不是全 Tool global limiter。fast 模式自动放行，planning 的 planner 与 worker 阶段均在非 read Tool 执行前
+middleware；需要独立 run 上限的 Tool 由同一个 metadata-driven per-Tool limiter 分别计数，不是全 Tool global
+limiter；当前 live-view 声明每个 run 最多一次，fast agent 不识别具体 Tool 名。fast 模式自动放行，planning 的 planner 与 worker 阶段均在非 read Tool 执行前
 interrupt，并从原生 checkpoint approve/resume，不重放已完成的 Planner Tool 或 worker。summarization 默认采用输入窗口 75% 触发、保留 15% 的
 token 阈值，两者可由现有环境变量覆盖。DeepSeek V4 Flash 使用其官方 tokenizer 与
 `encoding_dsv4.py` 对标准 messages 做调用前计数；结构化 user content 只在文本 encoder 的计数副本中
