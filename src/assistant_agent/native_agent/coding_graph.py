@@ -67,6 +67,8 @@ from assistant_agent.coding.review_repair import (
     MAX_CODING_REVIEW_REPAIR_ATTEMPTS,
     build_review_repair_context,
     normalize_review_response,
+    review_repair_history_digest,
+    validate_review_repair_checkpoint,
     validate_review_repair_history,
 )
 from assistant_agent.coding.dependencies import (
@@ -687,6 +689,7 @@ def build_coding_graph(
         if state.get("coding_result") is not None:
             return Command(goto="summarize")
         try:
+            _validate_review_repair_checkpoint_state(state)
             _resolve_workspace(state, runtime, config, workspace_service)
             count = state.get("review_repair_count", 0)
             if type(count) is not int or not 0 <= count <= MAX_CODING_REVIEW_REPAIR_ATTEMPTS:
@@ -748,6 +751,7 @@ def build_coding_graph(
         if state.get("coding_result") is not None:
             return Command(goto="summarize")
         try:
+            _validate_review_repair_checkpoint_state(state)
             _resolve_workspace(state, runtime, config, workspace_service)
             count = state.get("review_repair_count", 0)
             context = CodingReviewRepairContext.model_validate(
@@ -1018,12 +1022,13 @@ def build_coding_graph(
         if validation is None or state.get("approval_status") != "approved":
             return {"coding_result": _failed(state, "approval_required")}
         try:
+            _validate_review_repair_checkpoint_state(state)
             workspace = _resolve_workspace(state, runtime, config, workspace_service)
             if workspace.workspace_ref != state.get("workspace_ref"):
                 raise CodingWorkspaceError("workspace_identity_mismatch")
             applied = workspace_service.apply_validated_patch(workspace, validation)
             approved_changed_paths: object = list(applied.changed_paths)
-            if state.get("review_repair_status") == "active":
+            if int(state.get("review_repair_count", 0)) > 0:
                 allowed_paths = {
                     *state.get("approved_changed_paths", ()),
                     *validation.proposal.changed_paths,
@@ -1664,6 +1669,7 @@ def build_coding_graph(
         fresh_snapshot: CodingAnalysisSnapshot | None = None
         release_status: Literal["released", "cleanup_pending"] | None = None
         try:
+            _validate_review_repair_checkpoint_state(state)
             workspace = _resolve_workspace(state, runtime, config, workspace_service)
             if state.get("review_decision") is not None:
                 raise ValueError("coding_review_decision_stale")
@@ -1701,6 +1707,7 @@ def build_coding_graph(
             }
         )
         try:
+            _validate_review_repair_checkpoint_state(state)
             workspace = _resolve_workspace(state, runtime, config, workspace_service)
             decision_context = _review_binding_context(state)
             allow_legacy_schema_omission = (
@@ -2362,6 +2369,7 @@ def _resolve_workspace(state, runtime, config, service):
         workspace=workspace,
         service=service,
     )
+    _validate_review_repair_checkpoint_state(state)
     return workspace
 
 
@@ -2371,6 +2379,12 @@ def _has_checkpointed_cycle_state(state: CodingState) -> bool:
         or state.get("analysis_results")
         or state.get("analysis_snapshot_release_status") is not None
         or state.get("analysis_context_consumed", False)
+        or state.get("review_repair_count", 0) != 0
+        or state.get("review_repair_status") is not None
+        or state.get("review_repair_context") is not None
+        or state.get("review_repair_context_consumed", False)
+        or state.get("review_repair_projection") is not None
+        or state.get("review_repair_history")
     ):
         return True
     return any(
@@ -2646,6 +2660,12 @@ def _review_binding_context(
         state,
         completed=True,
     )
+    review_repair_count = state.get("review_repair_count", 0)
+    if type(review_repair_count) is not int:
+        raise ValueError("coding_review_repair_binding_mismatch")
+    repair_history_digest = review_repair_history_digest(
+        state.get("review_repair_history", ())
+    )
     if (
         snapshot.materialization_schema_version != expected_schema_version
         or review_input.snapshot_materialization_schema_version
@@ -2681,6 +2701,8 @@ def _review_binding_context(
         "patch_digest": review_input.patch_digest,
         "validation_digest": validation_digest,
         "report_digest": canonical_report.report_digest,
+        "review_repair_count": review_repair_count,
+        "review_repair_history_digest": repair_history_digest,
     }
 
 
@@ -2833,6 +2855,88 @@ def _review_repair_projection(
         ),
         "content": _render_review_repair_context(context),
     }
+
+
+def _validate_review_repair_checkpoint_state(state: CodingState) -> None:
+    """Reject impossible repair and approval channel combinations."""
+
+    try:
+        _, status, _, _ = validate_review_repair_checkpoint(
+            review_repair_count=state.get("review_repair_count", 0),
+            review_repair_status=state.get("review_repair_status"),
+            review_repair_context=state.get("review_repair_context"),
+            review_repair_context_consumed=state.get(
+                "review_repair_context_consumed",
+                False,
+            ),
+            review_repair_projection=state.get("review_repair_projection"),
+            history=state.get("review_repair_history", ()),
+        )
+    except (TypeError, ValueError) as exc:
+        raise CodingWorkspaceError(
+            "coding_review_repair_binding_mismatch"
+        ) from exc
+
+    patch_approval_active = state.get("approval_status") == "pending"
+    review_approval_active = bool(
+        state.get("review_required")
+        and state.get("review_report") is not None
+        and state.get("review_decision") is None
+    )
+    merge_approval_active = bool(
+        state.get("merge_preview") is not None
+        and state.get("merge_result") is None
+    )
+    if sum(
+        (patch_approval_active, review_approval_active, merge_approval_active)
+    ) > 1:
+        code = (
+            "coding_review_repair_binding_mismatch"
+            if status is not None
+            else "coding_review_binding_mismatch"
+        )
+        raise CodingWorkspaceError(code)
+
+    projection_pending = (
+        status == "active"
+        and (
+            not state.get("review_repair_context_consumed", False)
+            or state.get("review_repair_projection") is not None
+        )
+    )
+    if status in {"pending", "exhausted"} or projection_pending:
+        forbidden_present = any(
+            state.get(field) is not None
+            for field in (
+                "draft_artifact",
+                "proposal",
+                "validation",
+                "approval_status",
+                "approval_origin",
+                "applied_result",
+                "dependency_plan",
+                "dependency_approval_status",
+                "credential_request",
+                "credential_approval_status",
+                "artifact_ingress_plan",
+                "artifact_approval_status",
+                "validation_snapshot",
+                "validation_binding_digest",
+                "review_decision_context",
+                "commit_result",
+                "merge_preview",
+                "merge_result",
+                "repair_approval_context",
+            )
+        )
+        if (
+            forbidden_present
+            or state.get("review_required")
+            or state.get("integration_required")
+        ):
+            raise CodingWorkspaceError(
+                "coding_review_repair_binding_mismatch"
+            )
 
 
 def _validate_review_checkpoint(
@@ -3122,17 +3226,17 @@ def _failed(
     repair_status: Literal["passed", "exhausted", "no_progress"] | None = None,
 ) -> CodingTerminalResult:
     validation = state.get("validation")
-    proposal = validation.proposal if validation is not None else None
+    proposal = getattr(validation, "proposal", None)
     preview = state.get("merge_preview")
     committed = state.get("commit_result")
     return CodingTerminalResult(
         status="failed",
         workspace_ref=state.get("workspace_ref"),
         base_commit=state.get("base_commit"),
-        patch_digest=(proposal.patch_digest if proposal is not None else None),
+        patch_digest=getattr(proposal, "patch_digest", None),
         changed_paths=(
             _approved_changed_paths(state)
-            or (proposal.changed_paths if proposal is not None else ())
+            or tuple(getattr(proposal, "changed_paths", ()))
         ),
         error_code=code,
         verification_status=(
@@ -3146,16 +3250,16 @@ def _failed(
         ),
         repair_history=_repair_history(state),
         source_commit=(
-            preview.source_commit
+            getattr(preview, "source_commit", None)
             if preview is not None
-            else committed.source_commit if committed is not None else None
+            else getattr(committed, "source_commit", None)
         ),
         expected_target_head=(
-            preview.expected_target_head if preview is not None else None
+            getattr(preview, "expected_target_head", None)
         ),
-        result_commit=(preview.result_commit if preview is not None else None),
+        result_commit=getattr(preview, "result_commit", None),
         merge_preview_digest=(
-            preview.merge_preview_digest if preview is not None else None
+            getattr(preview, "merge_preview_digest", None)
         ),
     )
 

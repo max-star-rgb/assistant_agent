@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from assistant_agent.coding.models import (
     MAX_CODING_REVIEW_REPAIR_ATTEMPTS,
@@ -68,13 +68,6 @@ def build_review_repair_context(
         canonical_report, "validation_evidence_digest"
     )
     workspace_diff_digest = _required_digest(canonical_report, "workspace_diff_digest")
-    for item in normalized_history:
-        if (
-            item.report_digest != report_digest
-            or item.validation_evidence_digest != validation_evidence_digest
-            or item.workspace_diff_digest != workspace_diff_digest
-        ):
-            raise ValueError("coding_review_repair_history_binding_mismatch")
     normalized_response = normalize_review_response(response)
     return CodingReviewRepairContext(
         attempt=review_repair_count + 1,
@@ -103,6 +96,128 @@ def validate_review_repair_history(
             raise ValueError("coding_review_repair_history_non_contiguous")
         seen.add(item.attempt)
     return normalized
+
+
+def review_repair_history_digest(
+    history: Sequence[CodingReviewRepairAttempt],
+) -> str:
+    """Return a canonical token binding a decision to its exact audit history."""
+
+    normalized = validate_review_repair_history(history)
+    payload = [item.model_dump(mode="json") for item in normalized]
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def validate_review_repair_checkpoint(
+    *,
+    review_repair_count: object,
+    review_repair_status: object,
+    review_repair_context: object,
+    review_repair_context_consumed: object,
+    review_repair_projection: object,
+    history: Sequence[CodingReviewRepairAttempt],
+) -> tuple[
+    int,
+    str | None,
+    CodingReviewRepairContext | None,
+    tuple[CodingReviewRepairAttempt, ...],
+]:
+    """Validate the complete bounded repair checkpoint as one state machine."""
+
+    if (
+        type(review_repair_count) is not int
+        or not 0 <= review_repair_count <= MAX_CODING_REVIEW_REPAIR_ATTEMPTS
+    ):
+        raise ValueError("coding_review_repair_count_invalid")
+    if type(review_repair_context_consumed) is not bool:
+        raise ValueError("coding_review_repair_binding_mismatch")
+    normalized_history = validate_review_repair_history(history)
+    status = review_repair_status
+
+    if status is None:
+        if (
+            review_repair_count != 0
+            or normalized_history
+            or review_repair_context is not None
+            or review_repair_context_consumed
+            or review_repair_projection is not None
+        ):
+            raise ValueError("coding_review_repair_binding_mismatch")
+        return 0, None, None, normalized_history
+
+    if status == "pending":
+        if review_repair_context_consumed or review_repair_projection is not None:
+            raise ValueError("coding_review_repair_binding_mismatch")
+        if review_repair_count == MAX_CODING_REVIEW_REPAIR_ATTEMPTS:
+            if (
+                review_repair_context is not None
+                or len(normalized_history) != review_repair_count
+            ):
+                raise ValueError("coding_review_repair_binding_mismatch")
+            return review_repair_count, status, None, normalized_history
+        context = CodingReviewRepairContext.model_validate(review_repair_context)
+        if (
+            context.attempt != review_repair_count + 1
+            or len(normalized_history) != review_repair_count + 1
+            or not _attempt_matches_context(normalized_history[-1], context)
+        ):
+            raise ValueError("coding_review_repair_binding_mismatch")
+        return review_repair_count, status, context, normalized_history
+
+    if status == "active":
+        context = CodingReviewRepairContext.model_validate(review_repair_context)
+        if (
+            review_repair_count < 1
+            or context.attempt != review_repair_count
+            or len(normalized_history) != review_repair_count
+            or not _attempt_matches_context(normalized_history[-1], context)
+            or (
+                not review_repair_context_consumed
+                and review_repair_projection is not None
+            )
+            or (
+                review_repair_projection is not None
+                and not isinstance(review_repair_projection, Mapping)
+            )
+        ):
+            raise ValueError("coding_review_repair_binding_mismatch")
+        return review_repair_count, status, context, normalized_history
+
+    if status == "exhausted":
+        if (
+            review_repair_count != MAX_CODING_REVIEW_REPAIR_ATTEMPTS
+            or len(normalized_history) != review_repair_count
+            or review_repair_context is not None
+            or review_repair_context_consumed
+            or review_repair_projection is not None
+        ):
+            raise ValueError("coding_review_repair_binding_mismatch")
+        return review_repair_count, status, None, normalized_history
+
+    raise ValueError("coding_review_repair_binding_mismatch")
+
+
+def _attempt_matches_context(
+    attempt: CodingReviewRepairAttempt,
+    context: CodingReviewRepairContext,
+) -> bool:
+    return (
+        attempt.attempt == context.attempt
+        and attempt.report_digest == context.report_digest
+        and attempt.validation_evidence_digest
+        == context.validation_evidence_digest
+        and attempt.workspace_diff_digest == context.workspace_diff_digest
+        and attempt.response_digest == context.response_digest
+        and attempt.finding_ids
+        == tuple(finding.finding_id for finding in context.findings_summary)
+        and attempt.outcome == "pending"
+    )
 
 
 def _required_digest(report: object, field: str) -> str:
@@ -151,5 +266,7 @@ __all__ = [
     "CodingReviewRepairContext",
     "build_review_repair_context",
     "normalize_review_response",
+    "review_repair_history_digest",
+    "validate_review_repair_checkpoint",
     "validate_review_repair_history",
 ]
