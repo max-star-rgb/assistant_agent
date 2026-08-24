@@ -1322,6 +1322,8 @@ def build_coding_graph(
         if runtime.context.coding_review_enabled:
             update["review_required"] = True
             return update
+        if repository.integration_enabled:
+            return update
         update["coding_result"] = CodingTerminalResult(
             status="applied",
             workspace_ref=applied.workspace_ref,
