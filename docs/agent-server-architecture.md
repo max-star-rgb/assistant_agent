@@ -269,7 +269,10 @@ signal 唤醒唯一 queue scheduler；scheduler 先扫描再等待，避免 lost
 单实例锁，并在启动前要求请求端口可用，禁止框架自动漂移到随机端口；默认日志按请求端口写入
 系统临时目录下的 `assistant_agent/logs/agent_server-<port>.log`，避免日志写入触发源码 watcher 后形成
 自反馈 reload；dev 显式日志路径同样不得位于仓库监听树内。postgres 日志仍写入
-`.data/logs/agent_server-<port>.log`。这些约束不创建项目自有 Runtime，也不把两个端口解释为两个 worker。
+`.data/logs/agent_server-<port>.log`。dev 启动时 wrapper 会从受版本控制的 `langgraph.json` 生成一次性配置，
+只把 `env` 字段替换为 `--env-file` 指定的绝对路径；`--no-env-file` 则替换为空对象并只继承进程环境，避免
+LangGraph CLI 再从仓库 `.env` 覆盖显式 mock 配置。一次性配置位于系统临时目录，进程退出后删除。
+这些约束不创建项目自有 Runtime，也不把两个端口解释为两个 worker。
 
 postgres backend 的 API 仅映射到 `127.0.0.1:${ASSISTANT_AGENT_SERVER_PORT}:8000`，默认宿主端口为 8088；
 PostgreSQL 与 Redis 不映射宿主端口，也不复用旧 Langfuse 服务。PostgreSQL 数据保存在独立 named volume

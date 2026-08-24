@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import nullcontext
+import json
+from pathlib import Path
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -354,6 +356,9 @@ def test_dev_server_keeps_capacity_for_chat_while_memory_extracts(
 
     def capture_command(command, **_kwargs):
         captured["command"] = list(command)
+        config_index = captured["command"].index("--config")
+        config_path = Path(captured["command"][config_index + 1])
+        captured["config"] = json.loads(config_path.read_text(encoding="utf-8"))
         return 0
 
     monkeypatch.setattr(run_server, "run_command_with_log", capture_command)
@@ -363,3 +368,4 @@ def test_dev_server_keeps_capacity_for_chat_while_memory_extracts(
     command = captured["command"]
     option_index = command.index("--n-jobs-per-worker")
     assert int(command[option_index + 1]) >= 2
+    assert captured["config"]["env"] == {}

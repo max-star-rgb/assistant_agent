@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import json
 import os
 import socket
 import subprocess
@@ -22,6 +23,7 @@ POSTGRES_COMPOSE_FILE = REPO_ROOT / "deploy" / "agent_server" / "compose.yaml"
 POSTGRES_IMAGE = "assistant-agent/langgraph-api:local"
 DOCKER_PROXY_VARIABLES = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
 DEV_SERVER_LOCK = REPO_ROOT / ".data" / "run" / "agent_server-dev.lock"
+LANGGRAPH_CONFIG = REPO_ROOT / "langgraph.json"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -165,8 +167,6 @@ def _copy_output(source: TextIO | None, log_file: TextIO) -> None:
 def build_server_env(
     base_env: dict[str, str],
     *,
-    env_file: str,
-    use_env_file: bool,
     server_port: int,
 ) -> dict[str, str]:
     """Build a CLI-safe environment without relying on IDE source-root injection."""
@@ -179,10 +179,29 @@ def build_server_env(
     env["PYTHONPATH"] = os.pathsep.join(
         [source_root, *[path for path in existing_paths if path != source_root]]
     )
-    if use_env_file:
-        env["LANGGRAPH_ENV"] = str((REPO_ROOT / env_file).resolve())
     env["ASSISTANT_AGENT_SERVER_PORT"] = str(server_port)
     return env
+
+
+@contextmanager
+def materialize_dev_config(
+    *,
+    env_file: str,
+    use_env_file: bool,
+) -> Iterator[Path]:
+    """Create a dev config whose env source matches the wrapper CLI flags."""
+
+    config = json.loads(LANGGRAPH_CONFIG.read_text(encoding="utf-8"))
+    config["env"] = (
+        str((REPO_ROOT / env_file).resolve()) if use_env_file else {}
+    )
+    with tempfile.TemporaryDirectory(prefix="assistant-agent-langgraph-") as tmp_dir:
+        config_path = Path(tmp_dir) / "langgraph.json"
+        config_path.write_text(
+            json.dumps(config, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        yield config_path
 
 
 def _postgres_image_exists() -> bool:
@@ -257,8 +276,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     env = build_server_env(
         os.environ.copy(),
-        env_file=args.env_file,
-        use_env_file=not args.no_env_file,
         server_port=args.port,
     )
     log_path = resolve_log_path(
@@ -270,27 +287,33 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_postgres_backend(args, env=env, log_path=log_path)
 
     require_dev_log_outside_repo(log_path)
-    command = [
-        str(LANGGRAPH),
-        "dev",
-        "--host",
-        args.host,
-        "--port",
-        str(args.port),
-        "--no-browser",
-        "--n-jobs-per-worker",
-        str(args.n_jobs_per_worker),
-    ]
-    if args.no_reload:
-        command.append("--no-reload")
-    with hold_dev_server_lock():
-        require_available_port(args.host, args.port)
-        return run_command_with_log(
-            command,
-            cwd=REPO_ROOT,
-            env=env,
-            log_path=log_path,
-        )
+    with materialize_dev_config(
+        env_file=args.env_file,
+        use_env_file=not args.no_env_file,
+    ) as config_path:
+        command = [
+            str(LANGGRAPH),
+            "dev",
+            "--config",
+            str(config_path),
+            "--host",
+            args.host,
+            "--port",
+            str(args.port),
+            "--no-browser",
+            "--n-jobs-per-worker",
+            str(args.n_jobs_per_worker),
+        ]
+        if args.no_reload:
+            command.append("--no-reload")
+        with hold_dev_server_lock():
+            require_available_port(args.host, args.port)
+            return run_command_with_log(
+                command,
+                cwd=REPO_ROOT,
+                env=env,
+                log_path=log_path,
+            )
 
 
 if __name__ == "__main__":

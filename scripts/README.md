@@ -16,6 +16,8 @@ eval、Agent Server 主链路覆盖的 probe 不应继续沉积到本目录。
   端口被占用时直接失败，不允许 `langgraph dev` 自动改用随机端口。PyCharm 共享配置 **Agent Server (Real)**
   固定使用 `8089` 并启用原生 hot reload；Codex 默认作为客户端连接该实例。只有 PyCharm Server 已停止时，
   dev backend 才能临时在 `8090` 启动隔离诊断服务，并在诊断完成后停止。
+  wrapper 会生成一次性 LangGraph config，使 `--env-file` 真正替换 `langgraph.json` 的 env 来源；
+  `--no-env-file` 使用空 env 配置并只继承当前进程环境，可安全启动显式 mock 服务。
   `--backend postgres` 使用 `deploy/agent_server/compose.yaml` 启动专用 PostgreSQL、Redis 和本地构建的
   Agent Server 镜像，API 只绑定回环地址，PostgreSQL named volume 跨容器重启保留 Store/checkpoint。
   首次启动或代码变化后运行：
