@@ -637,18 +637,19 @@ class CodingWorkspaceService:
         cursor: int,
         limit: int,
     ) -> CodingListResult:
-        return self.list_files(
-            self.resolve_analysis_snapshot(
-                snapshot,
-                identity=identity,
-                thread_id=thread_id,
-                workspace=workspace,
-            ),
-            path=path,
-            depth=depth,
-            cursor=cursor,
-            limit=limit,
-        )
+        with self._analysis_snapshot_read_workspace(
+            snapshot,
+            identity=identity,
+            thread_id=thread_id,
+            workspace=workspace,
+        ) as snapshot_workspace:
+            return self.list_files(
+                snapshot_workspace,
+                path=path,
+                depth=depth,
+                cursor=cursor,
+                limit=limit,
+            )
 
     def search_analysis_snapshot(
         self,
@@ -663,19 +664,20 @@ class CodingWorkspaceService:
         cursor: int,
         limit: int,
     ) -> CodingSearchResult:
-        return self.search(
-            self.resolve_analysis_snapshot(
-                snapshot,
-                identity=identity,
-                thread_id=thread_id,
-                workspace=workspace,
-            ),
-            query=query,
-            paths=paths,
-            globs=globs,
-            cursor=cursor,
-            limit=limit,
-        )
+        with self._analysis_snapshot_read_workspace(
+            snapshot,
+            identity=identity,
+            thread_id=thread_id,
+            workspace=workspace,
+        ) as snapshot_workspace:
+            return self.search(
+                snapshot_workspace,
+                query=query,
+                paths=paths,
+                globs=globs,
+                cursor=cursor,
+                limit=limit,
+            )
 
     def read_analysis_snapshot(
         self,
@@ -688,18 +690,19 @@ class CodingWorkspaceService:
         thread_id: str,
         workspace: CodingWorkspace,
     ) -> CodingReadResult:
-        return self._read_file(
-            self.resolve_analysis_snapshot(
-                snapshot,
-                identity=identity,
-                thread_id=thread_id,
-                workspace=workspace,
-            ),
-            path,
-            start_line=start_line,
-            end_line=end_line,
-            preserve_raw_newlines=True,
-        )
+        with self._analysis_snapshot_read_workspace(
+            snapshot,
+            identity=identity,
+            thread_id=thread_id,
+            workspace=workspace,
+        ) as snapshot_workspace:
+            return self._read_file(
+                snapshot_workspace,
+                path,
+                start_line=start_line,
+                end_line=end_line,
+                preserve_raw_newlines=True,
+            )
 
     def status_analysis_snapshot(
         self,
@@ -709,13 +712,13 @@ class CodingWorkspaceService:
         thread_id: str,
         workspace: CodingWorkspace,
     ) -> CodingStatusResult:
-        self.resolve_analysis_snapshot(
+        with self._analysis_snapshot_read_workspace(
             snapshot,
             identity=identity,
             thread_id=thread_id,
             workspace=workspace,
-        )
-        return self._analysis_snapshot_metadata(snapshot).status
+        ):
+            return self._analysis_snapshot_metadata(snapshot).status
 
     def diff_analysis_snapshot(
         self,
@@ -725,13 +728,88 @@ class CodingWorkspaceService:
         thread_id: str,
         workspace: CodingWorkspace,
     ) -> CodingDiffResult:
-        self.resolve_analysis_snapshot(
+        with self._analysis_snapshot_read_workspace(
+            snapshot,
+            identity=identity,
+            thread_id=thread_id,
+            workspace=workspace,
+        ):
+            return self._analysis_snapshot_metadata(snapshot).diff
+
+    @contextmanager
+    def _analysis_snapshot_read_workspace(
+        self,
+        snapshot: CodingAnalysisSnapshot,
+        *,
+        identity: str,
+        thread_id: str,
+        workspace: CodingWorkspace,
+    ) -> Iterator[CodingWorkspace]:
+        resolved = self.resolve_analysis_snapshot(
             snapshot,
             identity=identity,
             thread_id=thread_id,
             workspace=workspace,
         )
-        return self._analysis_snapshot_metadata(snapshot).diff
+        tree_root = (
+            self._analysis_snapshot_root(snapshot)
+            / _ANALYSIS_SNAPSHOT_TREE_DIR
+        )
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        tree_descriptor = -1
+        try:
+            tree_descriptor = os.open(tree_root, flags)
+            opened_tree = os.fstat(tree_descriptor)
+        except OSError as exc:
+            if tree_descriptor >= 0:
+                os.close(tree_descriptor)
+            raise CodingWorkspaceError(
+                "coding_analysis_snapshot_mismatch"
+            ) from exc
+
+        def confirm_open_tree_is_current() -> None:
+            try:
+                current_tree = tree_root.lstat()
+            except OSError as exc:
+                raise CodingWorkspaceError(
+                    "coding_analysis_snapshot_mismatch"
+                ) from exc
+            if (
+                not stat.S_ISDIR(opened_tree.st_mode)
+                or not stat.S_ISDIR(current_tree.st_mode)
+                or opened_tree.st_dev != current_tree.st_dev
+                or opened_tree.st_ino != current_tree.st_ino
+            ):
+                raise CodingWorkspaceError(
+                    "coding_analysis_snapshot_mismatch"
+                )
+
+        try:
+            self.validate_analysis_snapshot(
+                snapshot,
+                identity=identity,
+                thread_id=thread_id,
+                workspace=workspace,
+                require_active=True,
+            )
+            confirm_open_tree_is_current()
+            yield resolved.model_copy(
+                update={"root": Path(f"/proc/self/fd/{tree_descriptor}")}
+            )
+            self.validate_analysis_snapshot(
+                snapshot,
+                identity=identity,
+                thread_id=thread_id,
+                workspace=workspace,
+                require_active=True,
+            )
+            confirm_open_tree_is_current()
+        finally:
+            os.close(tree_descriptor)
 
     def list_files(
         self,
@@ -1321,6 +1399,8 @@ class CodingWorkspaceService:
                 "workspace_digest": metadata.workspace_digest,
                 "repo_id": metadata.repo_id,
                 "tree_object": metadata.tree_object,
+                "status": metadata.status.model_dump(mode="json"),
+                "diff": metadata.diff.model_dump(mode="json"),
                 "manifest_digest": manifest_digest,
             },
             sort_keys=True,
