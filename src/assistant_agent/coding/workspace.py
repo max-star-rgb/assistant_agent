@@ -102,9 +102,10 @@ class _AnalysisSnapshotManifestEntry(BaseModel):
 class _AnalysisSnapshotMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    schema_version: Literal["coding_analysis_snapshot_v1"] = (
-        "coding_analysis_snapshot_v1"
-    )
+    schema_version: Literal[
+        "coding_analysis_snapshot_v1",
+        "coding_analysis_snapshot_v2",
+    ] = "coding_analysis_snapshot_v2"
     snapshot: CodingAnalysisSnapshot
     identity_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     thread_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -374,6 +375,7 @@ class CodingWorkspaceService:
                     workspace_ref=workspace.workspace_ref,
                     tree_object=tree_object,
                     workspace_diff_digest=workspace_diff_digest,
+                    materialization_schema_version="immutable_manifest_v2",
                 )
                 now = self._clock()
                 expires_at = min(
@@ -383,6 +385,7 @@ class CodingWorkspaceService:
                 if expires_at <= now:
                     raise CodingWorkspaceError("coding_analysis_snapshot_expired")
                 snapshot = CodingAnalysisSnapshot(
+                    materialization_schema_version="immutable_manifest_v2",
                     snapshot_ref=snapshot_ref,
                     workspace_ref=workspace.workspace_ref,
                     base_commit=workspace.base_commit,
@@ -1151,6 +1154,8 @@ class CodingWorkspaceService:
                     break
 
         matches: list[CodingSearchMatch] = []
+        matched_count = 0
+        has_more = False
         for relative, entry in sorted(candidates.items()):
             if globs and not any(
                 fnmatchcase(relative, pattern) for pattern in globs
@@ -1163,6 +1168,12 @@ class CodingWorkspaceService:
                 continue
             for line_number, line in enumerate(lines, start=1):
                 if query in line:
+                    if matched_count < cursor:
+                        matched_count += 1
+                        continue
+                    if len(matches) >= limit:
+                        has_more = True
+                        break
                     matches.append(
                         CodingSearchMatch(
                             path=relative,
@@ -1170,12 +1181,11 @@ class CodingWorkspaceService:
                             line=line[:2_000],
                         )
                     )
-        page = tuple(matches[cursor : cursor + limit])
-        next_cursor = (
-            cursor + len(page)
-            if cursor + len(page) < len(matches)
-            else None
-        )
+                    matched_count += 1
+            if has_more:
+                break
+        page = tuple(matches)
+        next_cursor = cursor + len(page) if has_more else None
         return CodingSearchResult(matches=page, next_cursor=next_cursor)
 
     def list_files(
@@ -1616,17 +1626,26 @@ class CodingWorkspaceService:
         workspace_ref: str,
         tree_object: str,
         workspace_diff_digest: str,
+        materialization_schema_version: Literal[
+            "legacy_v1",
+            "immutable_manifest_v2",
+        ],
     ) -> str:
-        payload = "\0".join(
+        values = [
             (
-                "coding-analysis-snapshot-v1",
-                identity_digest,
-                thread_digest,
-                workspace_ref,
-                tree_object,
-                workspace_diff_digest,
-            )
-        ).encode("utf-8")
+                "coding-analysis-snapshot-v1"
+                if materialization_schema_version == "legacy_v1"
+                else "coding-analysis-snapshot-v2"
+            ),
+            identity_digest,
+            thread_digest,
+            workspace_ref,
+            tree_object,
+            workspace_diff_digest,
+        ]
+        if materialization_schema_version != "legacy_v1":
+            values.append(materialization_schema_version)
+        payload = "\0".join(values).encode("utf-8")
         return hmac.new(self._secret(), payload, hashlib.sha256).hexdigest()
 
     def _analysis_snapshot_root(self, snapshot: CodingAnalysisSnapshot) -> Path:
@@ -1711,9 +1730,22 @@ class CodingWorkspaceService:
             workspace_ref=snapshot.workspace_ref,
             tree_object=metadata.tree_object,
             workspace_diff_digest=snapshot.workspace_diff_digest,
+            materialization_schema_version=(
+                snapshot.materialization_schema_version
+            ),
+        )
+        expected_metadata_schema = (
+            "coding_analysis_snapshot_v1"
+            if snapshot.materialization_schema_version == "legacy_v1"
+            else "coding_analysis_snapshot_v2"
         )
         if (
             metadata.snapshot != snapshot
+            or metadata.schema_version != expected_metadata_schema
+            or (
+                metadata.schema_version == "coding_analysis_snapshot_v2"
+                and "materialization_manifest" not in metadata.model_fields_set
+            )
             or not hmac.compare_digest(
                 metadata.workspace_digest,
                 _digest(snapshot.workspace_ref),
@@ -1736,6 +1768,14 @@ class CodingWorkspaceService:
         metadata: _AnalysisSnapshotMetadata,
         snapshot_root: Path,
     ) -> None:
+        if (
+            metadata.schema_version == "coding_analysis_snapshot_v1"
+            and metadata.snapshot.materialization_schema_version == "legacy_v1"
+            and "materialization_manifest" not in metadata.model_fields_set
+        ):
+            raise CodingWorkspaceError(
+                "coding_analysis_snapshot_legacy_manifest_missing"
+            )
         actual = self._analysis_snapshot_materialization_digest(
             snapshot,
             metadata,
@@ -1771,10 +1811,17 @@ class CodingWorkspaceService:
         metadata: _AnalysisSnapshotMetadata,
         manifest_digest: str,
     ) -> str:
+        snapshot_payload = snapshot.model_dump(mode="json")
+        if snapshot.materialization_schema_version == "legacy_v1":
+            snapshot_payload.pop("materialization_schema_version", None)
         payload = json.dumps(
             {
-                "schema": "coding-analysis-materialization-v1",
-                "snapshot": snapshot.model_dump(mode="json"),
+                "schema": (
+                    "coding-analysis-materialization-v1"
+                    if snapshot.materialization_schema_version == "legacy_v1"
+                    else "coding-analysis-materialization-v2"
+                ),
+                "snapshot": snapshot_payload,
                 "identity_digest": metadata.identity_digest,
                 "thread_digest": metadata.thread_digest,
                 "workspace_digest": metadata.workspace_digest,

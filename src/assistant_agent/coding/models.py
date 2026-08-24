@@ -67,6 +67,10 @@ class CodingWorkspaceMetadata(BaseModel):
 class CodingAnalysisSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    materialization_schema_version: Literal[
+        "legacy_v1",
+        "immutable_manifest_v2",
+    ] = "legacy_v1"
     snapshot_ref: str = Field(min_length=16, max_length=128)
     workspace_ref: str = Field(min_length=16, max_length=128)
     base_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")

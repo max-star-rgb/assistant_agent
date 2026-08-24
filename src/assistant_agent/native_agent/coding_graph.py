@@ -2141,15 +2141,22 @@ def _review_snapshot_content_matches(
 ) -> bool:
     """Compare immutable snapshot identity without binding to resource TTL."""
 
-    return all(
+    content_matches = all(
         getattr(expected, field) == getattr(current, field)
         for field in (
-            "snapshot_ref",
             "workspace_ref",
             "base_commit",
             "tree_digest",
             "workspace_diff_digest",
         )
+    )
+    if not content_matches:
+        return False
+    if expected.snapshot_ref == current.snapshot_ref:
+        return True
+    return (
+        expected.materialization_schema_version == "legacy_v1"
+        and current.materialization_schema_version == "immutable_manifest_v2"
     )
 
 
@@ -2278,6 +2285,7 @@ def _validate_review_checkpoint(
         if exc.code not in {
             "coding_analysis_snapshot_missing",
             "coding_analysis_snapshot_expired",
+            "coding_analysis_snapshot_legacy_manifest_missing",
         }:
             raise
 
