@@ -1651,6 +1651,8 @@ def build_coding_graph(
     ]:
         review_repair_context: CodingReviewRepairContext | None = None
         review_repair_history: tuple[CodingReviewRepairAttempt, ...] = ()
+        fresh_snapshot: CodingAnalysisSnapshot | None = None
+        release_status: Literal["released", "cleanup_pending"] | None = None
         try:
             workspace = _resolve_workspace(state, runtime, config, workspace_service)
             if state.get("review_decision") is not None:
@@ -1722,15 +1724,13 @@ def build_coding_graph(
                     completed=True,
                 ),
             ):
-                try:
-                    workspace_service.release_analysis_snapshot(
-                        fresh_snapshot,
-                        identity=authenticated_user_identity(runtime),
-                        thread_id=_thread_id(config),
-                        workspace=workspace,
-                    )
-                except CodingWorkspaceError:
-                    pass
+                release_status = _release_snapshot_leases(
+                    workspace_service,
+                    (fresh_snapshot,),
+                    identity=authenticated_user_identity(runtime),
+                    thread_id=_thread_id(config),
+                    workspace=workspace,
+                )
                 raise ValueError("coding_review_binding_mismatch")
             if decision == "respond":
                 count = state.get("review_repair_count", 0)
@@ -1759,36 +1759,47 @@ def build_coding_graph(
                 decision in {"reject", "respond"}
                 or not state.get("integration_required")
             ):
-                workspace_service.release_analysis_snapshot(
-                    fresh_snapshot,
+                snapshots_to_release: tuple[object, ...] = (fresh_snapshot,)
+                if decision == "respond":
+                    snapshots_to_release = (
+                        fresh_snapshot,
+                        state.get("validation_snapshot"),
+                        state.get("review_snapshot"),
+                    )
+                release_status = _release_snapshot_leases(
+                    workspace_service,
+                    snapshots_to_release,
                     identity=authenticated_user_identity(runtime),
                     thread_id=_thread_id(config),
                     workspace=workspace,
                 )
-                if (
-                    decision == "respond"
-                    and snapshot.snapshot_ref != fresh_snapshot.snapshot_ref
-                ):
-                    workspace_service.release_analysis_snapshot(
-                        snapshot,
-                        identity=authenticated_user_identity(runtime),
-                        thread_id=_thread_id(config),
-                        workspace=workspace,
-                    )
         except (CodingWorkspaceError, ValueError, TypeError):
+            if fresh_snapshot is not None and release_status is None:
+                release_status = _release_snapshot_leases(
+                    workspace_service,
+                    (fresh_snapshot,),
+                    identity=authenticated_user_identity(runtime),
+                    thread_id=_thread_id(config),
+                    workspace=workspace,
+                )
+            error_update: dict[str, object] = {
+                "coding_result": _failed(
+                    state,
+                    "coding_review_binding_mismatch",
+                )
+            }
+            if release_status == "cleanup_pending":
+                error_update["review_snapshot_release_status"] = release_status
             return Command(
-                update={
-                    "coding_result": _failed(
-                        state,
-                        "coding_review_binding_mismatch",
-                    )
-                },
+                update=error_update,
                 goto="summarize",
             )
         if decision == "respond":
             return Command(
                 update={
-                    **_reset_review_state(),
+                    **_reset_review_repair_cycle_state(
+                        snapshot_release_status=release_status or "cleanup_pending"
+                    ),
                     "review_repair_count": int(
                         state.get("review_repair_count", 0)
                     ),
@@ -1797,22 +1808,6 @@ def build_coding_graph(
                     "review_repair_context_consumed": False,
                     "review_repair_projection": None,
                     "review_repair_history": list(review_repair_history),
-                    "draft_artifact": None,
-                    "proposal": None,
-                    "validation": None,
-                    "approval_status": None,
-                    "approval_origin": None,
-                    "applied_result": None,
-                    "dependency_plan": None,
-                    "dependency_approval_status": None,
-                    "credential_request": None,
-                    "credential_approval_status": None,
-                    "artifact_ingress_plan": None,
-                    "artifact_approval_status": None,
-                    "integration_required": False,
-                    "commit_result": None,
-                    "merge_preview": None,
-                    "merge_result": None,
                 },
                 goto="consume_review_repair_budget",
             )
@@ -1820,7 +1815,7 @@ def build_coding_graph(
             return Command(
                 update={
                     "review_decision": "rejected",
-                    "review_snapshot_release_status": "released",
+                    "review_snapshot_release_status": release_status or "active",
                     "coding_result": CodingTerminalResult(
                         status="rejected",
                         workspace_ref=state.get("workspace_ref"),
@@ -1840,7 +1835,9 @@ def build_coding_graph(
         approval_update: dict[str, object] = {
             "review_decision": "approved",
             "review_snapshot_release_status": (
-                "active" if state.get("integration_required") else "released"
+                "active"
+                if state.get("integration_required")
+                else release_status or "active"
             ),
         }
         if state.get("integration_required"):
@@ -2020,18 +2017,24 @@ def build_coding_graph(
         runtime: Runtime[AssistantRunContext],
         config: RunnableConfig,
     ) -> dict[str, object]:
-        _release_terminal_coding_snapshots(
+        terminal_release_status = _release_terminal_coding_snapshots(
             state,
             runtime,
             config,
             workspace_service,
+        )
+        cleanup_pending = (
+            state.get("review_snapshot_release_status") == "cleanup_pending"
+            or terminal_release_status == "cleanup_pending"
         )
         result = state.get("coding_result") or _failed(state, "patch_invalid")
         return {
             "coding_result": result,
             "validation_snapshot": None,
             "review_snapshot": None,
-            "review_snapshot_release_status": None,
+            "review_snapshot_release_status": (
+                "cleanup_pending" if cleanup_pending else None
+            ),
             "review_input": None,
             "review_tasks": (),
             "review_results": Overwrite([]),
@@ -2454,12 +2457,17 @@ def _release_terminal_coding_snapshots(
     runtime: Runtime[AssistantRunContext],
     config: RunnableConfig,
     service: CodingWorkspaceService,
-) -> None:
+) -> Literal["released", "cleanup_pending"] | None:
+    raw_snapshots = tuple(
+        state.get(key) for key in ("validation_snapshot", "review_snapshot")
+    )
+    if not any(snapshot is not None for snapshot in raw_snapshots):
+        return None
     identity = authenticated_user_identity(runtime)
     thread_id = _thread_id(config)
     workspace_ref = str(state.get("workspace_ref", "")).strip()
     if not identity or not thread_id or not workspace_ref:
-        return
+        return "cleanup_pending"
     try:
         workspace = service.get(
             workspace_ref,
@@ -2467,28 +2475,14 @@ def _release_terminal_coding_snapshots(
             thread_id=thread_id,
         )
     except CodingWorkspaceError:
-        return
-    released_refs: set[str] = set()
-    for key in ("validation_snapshot", "review_snapshot"):
-        raw_snapshot = state.get(key)
-        if raw_snapshot is None:
-            continue
-        try:
-            snapshot = CodingAnalysisSnapshot.model_validate(raw_snapshot)
-        except (TypeError, ValueError):
-            continue
-        if snapshot.snapshot_ref in released_refs:
-            continue
-        released_refs.add(snapshot.snapshot_ref)
-        try:
-            service.release_analysis_snapshot(
-                snapshot,
-                identity=identity,
-                thread_id=thread_id,
-                workspace=workspace,
-            )
-        except CodingWorkspaceError:
-            pass
+        return "cleanup_pending"
+    return _release_snapshot_leases(
+        service,
+        raw_snapshots,
+        identity=identity,
+        thread_id=thread_id,
+        workspace=workspace,
+    )
 
 
 def _reset_review_state() -> dict[str, object]:
@@ -2507,6 +2501,83 @@ def _reset_review_state() -> dict[str, object]:
         "review_decision_context": None,
         "review_decision": None,
     }
+
+
+def _reset_review_repair_cycle_state(
+    *,
+    snapshot_release_status: Literal["released", "cleanup_pending"],
+) -> dict[str, object]:
+    """Invalidate every authorization derived from the reviewed patch."""
+
+    return {
+        "draft_artifact": None,
+        "proposal": None,
+        "validation": None,
+        "approval_status": None,
+        "approval_origin": None,
+        "applied_result": None,
+        "approved_changed_paths": Overwrite([]),
+        "dependency_plan": None,
+        "dependency_approval_status": None,
+        "credential_request": None,
+        "credential_approval_status": None,
+        "artifact_ingress_plan": None,
+        "artifact_approval_status": None,
+        "format_round": 0,
+        "verification_evidence": Overwrite([]),
+        "validation_snapshot": None,
+        "validation_binding_digest": None,
+        "last_verification_status": None,
+        **_reset_review_state(),
+        "review_snapshot_release_status": snapshot_release_status,
+        "integration_required": False,
+        "commit_result": None,
+        "merge_preview": None,
+        "merge_result": None,
+        "repair_round": 0,
+        "repair_status": None,
+        "repair_failure_evidence": None,
+        "repair_history": Overwrite([]),
+        "repair_model_calls": 0,
+        "repair_proposal_digests": Overwrite([]),
+        "repair_approval_context": None,
+        "coding_result": None,
+    }
+
+
+def _release_snapshot_leases(
+    service: CodingWorkspaceService,
+    snapshots: tuple[object, ...],
+    *,
+    identity: str,
+    thread_id: str,
+    workspace: object,
+) -> Literal["released", "cleanup_pending"]:
+    """Release each snapshot ref once without replacing the caller's outcome."""
+
+    cleanup_pending = False
+    released_refs: set[str] = set()
+    for raw_snapshot in snapshots:
+        if raw_snapshot is None:
+            continue
+        try:
+            snapshot = CodingAnalysisSnapshot.model_validate(raw_snapshot)
+        except (TypeError, ValueError):
+            cleanup_pending = True
+            continue
+        if snapshot.snapshot_ref in released_refs:
+            continue
+        released_refs.add(snapshot.snapshot_ref)
+        try:
+            service.release_analysis_snapshot(
+                snapshot,
+                identity=identity,
+                thread_id=thread_id,
+                workspace=workspace,
+            )
+        except CodingWorkspaceError:
+            cleanup_pending = True
+    return "cleanup_pending" if cleanup_pending else "released"
 
 
 MAX_REVIEW_HITL_FINDINGS = 12

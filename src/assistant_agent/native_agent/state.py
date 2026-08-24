@@ -202,7 +202,7 @@ class CodingState(AgentState):
         Literal["legacy_v1", "immutable_manifest_v2"] | None
     ]
     review_snapshot_release_status: NotRequired[
-        Literal["active", "released"] | None
+        Literal["active", "released", "cleanup_pending"] | None
     ]
     review_input: NotRequired[CodingReviewInput | None]
     review_tasks: NotRequired[tuple[CodingReviewTask, ...]]
