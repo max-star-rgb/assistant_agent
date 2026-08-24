@@ -561,9 +561,11 @@ class CodingReviewRepairContext(BaseModel):
         max_length=MAX_CODING_REVIEW_REPAIR_FINDINGS
     )
 
-    @field_validator("response")
+    @field_validator("response", mode="before")
     @classmethod
     def _normalize_response(cls, value: str) -> str:
+        if not isinstance(value, str):
+            raise TypeError("review repair response must be a string")
         normalized = unicodedata.normalize("NFC", value.strip())
         if not normalized:
             raise ValueError("review repair response must not be empty")

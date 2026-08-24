@@ -6,7 +6,6 @@ import hashlib
 import json
 import unicodedata
 from collections.abc import Sequence
-from typing import Any
 
 from assistant_agent.coding.models import (
     MAX_CODING_REVIEW_REPAIR_ATTEMPTS,
@@ -16,6 +15,7 @@ from assistant_agent.coding.models import (
     CodingReviewRepairAttempt,
     CodingReviewRepairContext,
     CodingReviewRepairFindingSummary,
+    CodingReviewReport,
 )
 
 
@@ -35,7 +35,7 @@ def normalize_review_response(value: object) -> str:
 
 
 def build_review_repair_context(
-    report: Any,
+    report: CodingReviewReport,
     *,
     review_repair_count: int,
     response: object,
@@ -43,6 +43,12 @@ def build_review_repair_context(
 ) -> CodingReviewRepairContext:
     """Bind one proposed repair to the final review report and budget state."""
 
+    if not isinstance(report, CodingReviewReport):
+        raise TypeError("coding_review_repair_report_invalid")
+    try:
+        canonical_report = CodingReviewReport.model_validate(report.model_dump())
+    except Exception as exc:
+        raise ValueError("coding_review_repair_report_invalid") from exc
     if type(review_repair_count) is not int or not 0 <= review_repair_count <= MAX_CODING_REVIEW_REPAIR_ATTEMPTS:
         raise ValueError("coding_review_repair_count_invalid")
     if review_repair_count >= MAX_CODING_REVIEW_REPAIR_ATTEMPTS:
@@ -50,11 +56,13 @@ def build_review_repair_context(
     normalized_history = validate_review_repair_history(history)
     if len(normalized_history) != review_repair_count:
         raise ValueError("coding_review_repair_history_count_mismatch")
-    if getattr(report, "status", None) != "findings":
+    if canonical_report.status != "findings":
         raise ValueError("coding_review_repair_requires_findings")
-    report_digest = _required_digest(report, "report_digest")
-    validation_evidence_digest = _required_digest(report, "validation_evidence_digest")
-    workspace_diff_digest = _required_digest(report, "workspace_diff_digest")
+    report_digest = _required_digest(canonical_report, "report_digest")
+    validation_evidence_digest = _required_digest(
+        canonical_report, "validation_evidence_digest"
+    )
+    workspace_diff_digest = _required_digest(canonical_report, "workspace_diff_digest")
     for item in normalized_history:
         if (
             item.report_digest != report_digest
@@ -70,7 +78,7 @@ def build_review_repair_context(
         workspace_diff_digest=workspace_diff_digest,
         response=normalized_response,
         response_digest=_response_digest(normalized_response),
-        findings_summary=_findings_summary(getattr(report, "findings", ())),
+        findings_summary=_findings_summary(canonical_report.findings),
     )
 
 
