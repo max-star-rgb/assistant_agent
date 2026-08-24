@@ -1445,7 +1445,16 @@ def build_coding_graph(
             if state.get("review_decision") is not None:
                 raise ValueError("coding_review_decision_stale")
             decision_context = _review_binding_context(state)
-            if state.get("review_decision_context") != decision_context:
+            allow_legacy_schema_omission = (
+                state.get("review_report") is not None
+                and decision_context["snapshot_materialization_schema_version"]
+                == "legacy_v1"
+            )
+            if not _review_decision_context_matches(
+                state.get("review_decision_context"),
+                decision_context,
+                allow_legacy_schema_omission=allow_legacy_schema_omission,
+            ):
                 raise ValueError("coding_review_binding_mismatch")
         except (CodingWorkspaceError, ValueError, TypeError):
             return Command(
@@ -1468,9 +1477,22 @@ def build_coding_graph(
         try:
             workspace = _resolve_workspace(state, runtime, config, workspace_service)
             decision_context = _review_binding_context(state)
-            if state.get("review_decision_context") != decision_context:
+            allow_legacy_schema_omission = (
+                state.get("review_report") is not None
+                and decision_context["snapshot_materialization_schema_version"]
+                == "legacy_v1"
+            )
+            if not _review_decision_context_matches(
+                state.get("review_decision_context"),
+                decision_context,
+                allow_legacy_schema_omission=allow_legacy_schema_omission,
+            ):
                 raise ValueError("coding_review_binding_mismatch")
-            decision = _validate_review_decision(raw, decision_context)
+            decision = _validate_review_decision(
+                raw,
+                decision_context,
+                allow_legacy_schema_omission=allow_legacy_schema_omission,
+            )
             snapshot = CodingAnalysisSnapshot.model_validate(state.get("review_snapshot"))
             fresh_snapshot = workspace_service.create_analysis_snapshot(
                 workspace,
@@ -2209,16 +2231,37 @@ def _expected_review_snapshot_schema_version(
     raise ValueError("coding_review_binding_mismatch")
 
 
+def _review_decision_context_matches(
+    actual: object,
+    expected: Mapping[str, object],
+    *,
+    allow_legacy_schema_omission: bool,
+) -> bool:
+    if actual == expected:
+        return True
+    if not allow_legacy_schema_omission or not isinstance(actual, Mapping):
+        return False
+    legacy_expected = dict(expected)
+    legacy_expected.pop("snapshot_materialization_schema_version")
+    return dict(actual) == legacy_expected
+
+
 def _validate_review_decision(
     raw: object,
     decision_context: Mapping[str, object],
+    *,
+    allow_legacy_schema_omission: bool = False,
 ) -> Literal["approve", "reject"]:
     if not isinstance(raw, Mapping):
         raise ValueError("coding_review_binding_mismatch")
-    expected_keys = {"decision", *decision_context}
-    if set(raw) != expected_keys or raw.get("decision") not in {"approve", "reject"}:
+    if raw.get("decision") not in {"approve", "reject"}:
         raise ValueError("coding_review_binding_mismatch")
-    if any(raw.get(key) != value for key, value in decision_context.items()):
+    raw_context = {key: value for key, value in raw.items() if key != "decision"}
+    if not _review_decision_context_matches(
+        raw_context,
+        decision_context,
+        allow_legacy_schema_omission=allow_legacy_schema_omission,
+    ):
         raise ValueError("coding_review_binding_mismatch")
     return raw["decision"]
 
@@ -2331,7 +2374,13 @@ def _validate_review_checkpoint(
         or tasks != build_review_tasks()
         or results != report.results
         or state.get("review_status") != report.status
-        or state.get("review_decision_context") != _review_binding_context(state)
+        or not _review_decision_context_matches(
+            state.get("review_decision_context"),
+            _review_binding_context(state),
+            allow_legacy_schema_omission=(
+                expected_schema_version == "legacy_v1"
+            ),
+        )
     ):
         raise ValueError("coding_review_binding_mismatch")
     try:
