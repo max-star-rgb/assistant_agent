@@ -17,6 +17,7 @@ from assistant_agent.coding.models import (
     CodingReviewRepairFindingSummary,
     CodingReviewReport,
 )
+from assistant_agent.coding.review import _canonical_digest, _review_report_digest_payload
 
 
 def normalize_review_response(value: object) -> str:
@@ -49,6 +50,10 @@ def build_review_repair_context(
         canonical_report = CodingReviewReport.model_validate(report.model_dump())
     except Exception as exc:
         raise ValueError("coding_review_repair_report_invalid") from exc
+    if canonical_report.report_digest != _canonical_digest(
+        _review_report_digest_payload(canonical_report)
+    ):
+        raise ValueError("coding_review_repair_report_digest_invalid")
     if type(review_repair_count) is not int or not 0 <= review_repair_count <= MAX_CODING_REVIEW_REPAIR_ATTEMPTS:
         raise ValueError("coding_review_repair_count_invalid")
     if review_repair_count >= MAX_CODING_REVIEW_REPAIR_ATTEMPTS:
