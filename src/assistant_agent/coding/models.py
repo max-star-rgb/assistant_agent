@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
+import unicodedata
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import MappingProxyType
 from typing import Literal
@@ -515,6 +516,118 @@ class CodingReviewReport(BaseModel):
             if self.review_tasks != tuple(CODING_REVIEW_TASK_SPECS):
                 raise ValueError("current review report task inventory is invalid")
         return self
+
+
+MAX_CODING_REVIEW_REPAIR_ATTEMPTS = 2
+MAX_CODING_REVIEW_REPAIR_FINDINGS = 12
+MAX_CODING_REVIEW_REPAIR_RESPONSE_CHARS = 4_000
+MAX_CODING_REVIEW_REPAIR_RESPONSE_UTF8_BYTES = 8_000
+
+
+class CodingReviewRepairFindingSummary(BaseModel):
+    """Bounded, display-only projection of one frozen review finding."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    finding_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    task_id: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
+    severity: str = Field(min_length=1, max_length=16)
+    category: str = Field(min_length=1, max_length=64)
+    title: str = Field(min_length=1, max_length=300)
+    path: str = Field(default="", max_length=512)
+    line: int = Field(ge=1)
+    remediation: str = Field(min_length=1, max_length=600)
+
+    @field_validator("path")
+    @classmethod
+    def _safe_optional_path(cls, value: str) -> str:
+        if value:
+            _validate_relative_policy_path(value, label="review repair finding path")
+        return value
+
+
+class CodingReviewRepairContext(BaseModel):
+    """Digest-bound, immutable input for one review repair proposal."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    attempt: int = Field(ge=1, le=MAX_CODING_REVIEW_REPAIR_ATTEMPTS)
+    report_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    validation_evidence_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    workspace_diff_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    response: str = Field(min_length=1, max_length=MAX_CODING_REVIEW_REPAIR_RESPONSE_CHARS)
+    response_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    findings_summary: tuple[CodingReviewRepairFindingSummary, ...] = Field(
+        max_length=MAX_CODING_REVIEW_REPAIR_FINDINGS
+    )
+
+    @field_validator("response")
+    @classmethod
+    def _normalize_response(cls, value: str) -> str:
+        normalized = unicodedata.normalize("NFC", value.strip())
+        if not normalized:
+            raise ValueError("review repair response must not be empty")
+        if len(normalized.encode("utf-8")) > MAX_CODING_REVIEW_REPAIR_RESPONSE_UTF8_BYTES:
+            raise ValueError("review repair response UTF-8 byte limit exceeded")
+        return normalized
+
+    @field_validator("findings_summary", mode="before")
+    @classmethod
+    def _tuple_summary(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @model_validator(mode="after")
+    def _response_digest_matches(self) -> "CodingReviewRepairContext":
+        expected = hashlib.sha256(
+            json.dumps(
+                self.response,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        if self.response_digest != expected:
+            raise ValueError("review repair response digest is invalid")
+        return self
+
+
+class CodingReviewRepairAttempt(BaseModel):
+    """Immutable audit record for one review repair attempt."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    attempt: int = Field(ge=1, le=MAX_CODING_REVIEW_REPAIR_ATTEMPTS)
+    report_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    validation_evidence_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    workspace_diff_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    response_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    finding_ids: tuple[str, ...] = Field(max_length=MAX_CODING_REVIEW_REPAIR_FINDINGS)
+    created_at: datetime
+    outcome: Literal["pending", "proposed", "exhausted", "terminal"]
+
+    @field_validator("finding_ids", mode="before")
+    @classmethod
+    def _tuple_finding_ids(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @field_validator("finding_ids")
+    @classmethod
+    def _valid_finding_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("review repair finding ids must be unique")
+        if any(not _is_lower_hex_digest(item) for item in value):
+            raise ValueError("review repair finding id is invalid")
+        return value
+
+    @field_validator("created_at")
+    @classmethod
+    def _aware_utc_timestamp(cls, value: datetime) -> datetime:
+        if value.utcoffset() != timedelta(0):
+            raise ValueError("review repair created_at must be aware UTC")
+        return value
+
+
+def _is_lower_hex_digest(value: str) -> bool:
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
 def _validate_review_snapshot_timestamps(
@@ -1322,6 +1435,9 @@ __all__ = [
     "CodingRepairApprovalDecision",
     "CodingRepairAttempt",
     "CodingRepairFailureEvidence",
+    "CodingReviewRepairAttempt",
+    "CodingReviewRepairContext",
+    "CodingReviewRepairFindingSummary",
     "CodingDiffResult",
     "CodingListEntry",
     "CodingListResult",
