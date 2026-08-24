@@ -39,7 +39,9 @@ final coding review 复用同一个 process-owned snapshot service、lease、TTL
 可在原物理 snapshot 缺失/自然过期后由 Graph 重新创建 fresh snapshot 做内容身份比较。该兼容不允许 pending v1、
 completed v2 schema downgrade 或 metadata/manifest mismatch；真正历史 completed v1 只按 checkpoint 中的 legacy
 schema/digest binding fresh-rebind。周期 owner 与 `aclose` 仍只删除受管 `analysis-snapshots` 子树，不触碰 workspace
-repo、Git admin metadata，不运行 reviewer、自动修复、commit 或 merge。
+repo、Git admin metadata，不运行 reviewer、自动修复、commit 或 merge。validation 未成功交接、workspace comparison
+变化、review-off terminal 和 commit comparison 退出都由当前 Graph/service owner 确定性、幂等 release snapshot；review
+approve 且 integration 开启时 lease 必须保持 active 到 commit checkpoint，不能依赖 TTL 或扩大 periodic owner 收口。
 
 所有 workspace、snapshot 与 integration Git 子进程都设置 `GIT_NO_LAZY_FETCH=1`、关闭 credential prompt 和 system/
 global config；partial/promisor repository 缺少本地对象时稳定 fail closed，不允许 Git 隐式 lazy fetch。analysis diff
@@ -196,7 +198,7 @@ Memory Graph 的严格输入只有标准
 messages；它由 Assistant Graph 通过 Agent Server SDK 调度，不向普通用户入口暴露 run type。
 认证用户唯一来自 Agent Server 原生
 `Runtime.server_info.user.identity`；`AssistantRunContext` 不复制用户或租户身份，只保存有默认值的
-入口 profile、媒体能力、default-off coding review capability，以及媒体入口在 chat 开始时签发的 opaque 视觉
+入口 profile、媒体能力，以及媒体入口在 chat 开始时签发的 opaque 视觉
 capability token。每次 run 的公开
 `execution_mode` 不放入 context；只有上述服务端持久 assistant 资源可通过窄
 `assistant_execution_mode=planning` preset 覆盖 messages-only 默认值。窗口内容不进入标准 messages/context，
@@ -398,3 +400,4 @@ workspace 到期仍由后续 `resolve()` 进入既有同步 cleanup 路径处理
 - `prepare_review_snapshot` 不重新抓取 live workspace，而是复用 validation 产出的 snapshot。review input/result/report 必须回显 generation、snapshot ref、tree digest、workspace diff digest、validation evidence digest 和固定 task inventory。
 - current v2 checkpoint 的 snapshot/path/digest/permission/identity/expiry/manifest 错误全部 fail closed 为 `coding_review_binding_mismatch`，不得投影为可批准的 unavailable。仅 completed `legacy_v1` 保留旧物理 snapshot 已回收时的兼容恢复；pending downgrade 继续 fail closed。
 - 审批后的 commit 接收同一 validation snapshot 与 canonical review report digest；临时 Git index 生成的 tree object 经 `sha256(tree_oid)` 必须等于 reviewed `tree_digest`，否则拒绝提交。commit trailer 和 `CodingCommitResult` 同时记录 validation/report/tree binding。
+- validation failure/workspace-change 不交接 snapshot lease；terminal summarize 幂等释放 validation/review snapshot；commit comparison 无论成功或失败都释放 expected/current snapshot。review approve 且 integration 开启时，父 checkpoint 在 commit 消费前继续持有 active lease；这些 release 不新增 periodic reaper，也不触碰 worktree 或 Git admin lifecycle。

@@ -74,7 +74,7 @@ mutation lane。
 final coding review 由 `CodingRepositoryConfig.code_review_enabled` 显式启用并默认关闭；关闭时，validation 成功后
 保持既有 applied terminal 或 integration 分支，不创建 review snapshot、不运行 reviewer，也不新增 approval。
 启用时，最终一轮 validation 全部通过后依次进入 `prepare_review_snapshot -> run_code_review ->
-coding_review_decision`：父图冻结当前 workspace 的只读 final snapshot，review 子图用原生 `Send` 并行派发三个
+coding_review_decision`：父图复用 validation 执行前冻结且成功后重新核验的只读 final snapshot，review 子图用原生 `Send` 并行派发三个
 固定 reviewer，再确定性 join 为有界 canonical report。reviewer 只使用 snapshot-bound list/search/read/status/diff
 Tool，固定 `provider_search_profile=none`，不拥有 proposal、apply、command、dependency、credential、artifact、
 commit、merge、network 或其他 mutation 能力。普通 reviewer/capability 失败形成 `unavailable` report；它不自动
@@ -90,7 +90,9 @@ resume 可在原 snapshot 已自然过期或物理资源已清理后，针对当
 `legacy_v1 -> immutable_manifest_v2` fresh rebind；pending v1、v2 downgrade、任一 version mismatch 或当前 v2
 manifest/schema mismatch 都 fail closed。review reject 形成 rejected terminal；approve 在 integration 关闭时形成 applied
 terminal，在 integration 显式开启时才顺序进入既有 controlled commit/merge lane。review snapshot 只受既有 snapshot
-owner、lease、TTL 与 snapshot-only reaper 管理，不建立第二套 workspace cleanup 或自动修复流程。
+owner、lease、TTL 与 snapshot-only reaper 管理；validation failure/workspace-change、review-off terminal 与 commit comparison
+退出时确定性、幂等 release，不再需要的 lease 不留到 TTL，仍由下一 checkpoint 的 review/commit 消费者持有时不得提前
+release；不建立第二套 workspace cleanup 或自动修复流程。
 
 `run_validation` 遇到一个确定性 `test|lint|build` 命令的普通非零退出，且错误码为
 `verification_command_failed` 时，才由本地策略选中 eligible failure，沿原生
@@ -308,6 +310,7 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
 
 - LOOP-001 的生产拓扑是 `apply_patch -> run_validation -> prepare_review_snapshot -> run_code_review -> coding_review_decision -> create_commit`；review 关闭时才允许 `run_validation -> create_commit`，两条路径都必须携带 validation snapshot binding，mutation lane 始终唯一且顺序执行。
 - 新运行的固定 review task 仅为 `correctness_regression`、`security_governance`、`tests_validation`。worker 结构化状态仅为 `completed` / `unavailable`；finding 严格包含 `title`、`explanation`、`remediation`，severity 仅为 `critical` / `high` / `medium` / `low`，evidence digest 绑定受信 read observation 的 `content_digest`。
-- 真实 reviewer 最多 8 次只读 Tool call，并允许第 9 次 model call 产出最终结构化结果；result JSON 上限 16,000 字符，canonical report 上限 48,000 字符，均按最终 signed serialization 检查。
+- 真实 reviewer 最多 8 次只读 Tool call，并允许第 9 次 model call / ToolStrategy ToolCall 产出最终结构化结果；未知 Tool 同样消耗总 ToolCall 预算，不能绕过上限。result JSON 上限 16,000 字符，canonical report 上限 48,000 字符，均按最终 signed serialization 检查。
 - `coding_review_decision` interrupt 除 canonical binding context 外携带最多 12 条有界 findings summary（finding id、severity、category、title、首个 path/line）；summary 只用于展示，不是 resume binding 字段。
-- `unavailable` 仍需独立 HITL 决策且不会自动 repair；安全与 snapshot binding 错误在到达该状态前 fail closed。
+- `unavailable` 仍需独立 HITL 决策且不会自动 repair；current-v2 Tool observation 的 snapshot/tree/content/path binding、安全与 snapshot contract 错误在到达该状态前 fail closed。
+- terminal summarize 幂等释放 validation/review snapshot，controlled commit 在 comparison success/failure 都释放 expected/current snapshot；review approve 且 integration 开启时 lease 保持 active 到 commit checkpoint，不能在 decision 后提前释放。

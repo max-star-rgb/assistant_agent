@@ -174,7 +174,7 @@ final coding review 使用独立的静态只读 profile，并精确复用上述�
 只能读取父 checkpoint 冻结的 final snapshot，固定 `provider_search_profile=none`。review profile 不包含
 `coding_propose_patch`、shell、validation command、dependency/artifact/credential、commit/merge 或任何 mutation
 Tool；review decision 是父 Graph 自有 interrupt，也不是 Tool。普通 reviewer/capability failure 只能形成 signed
-failed result 并由 canonical report 派生 `unavailable`，不会触发 Tool 写入、自动 patch、自动 repair 或自动 approval。
+`unavailable` result 并由 canonical report 派生 `unavailable`，不会触发 Tool 写入、自动 patch、自动 repair 或自动 approval。
 pending review 的 Tool read 要求 active v2 immutable manifest；legacy、schema/digest mismatch、identity/permission 和
 snapshot contract 错误 fail closed，不能由 read retry 转换为可继续的模型观察。completed report resume 是否允许
 fresh snapshot rebind 由 runtime checkpoint contract 决定，不扩大 Tool 的 snapshot validation 或生命周期 ownership。
@@ -240,6 +240,7 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
 
 ### Stage 5C immutable review Tool profile（2026-08-24）
 
-- Final-review profile 固定且只读：`coding_repo_list`、`coding_repo_search`、`coding_repo_read`、`coding_repo_status`、`coding_repo_diff`。五条生产路径全部调用 `CodingWorkspaceService.*_analysis_snapshot`，由 immutable manifest、identity/thread/workspace binding、inode/mode/size/content digest 与 snapshot 前后校验保护；不得把 `resolve_analysis_snapshot()` 返回的裸 `Path` 交给旧 live `list_files` / `search`。
-- reviewer Tool 错误若 cause chain 含 `CodingWorkspaceError`、`PermissionError`、LangGraph control-flow 或 cancellation，必须原样传播到父图 fail closed；只有非安全的 provider/structured-output 不可用才规范化为 `unavailable`。
+- Final-review profile 固定且只读：`coding_repo_list`、`coding_repo_search`、`coding_repo_read`、`coding_repo_status`、`coding_repo_diff`。五条生产路径全部调用 `CodingWorkspaceService.*_analysis_snapshot`，由 immutable manifest、identity/thread/workspace binding、inode/mode/size/content digest 与 snapshot 前后校验保护；`coding_repo_read` 的受信 artifact 额外携带实际 content bytes digest；不得把 `resolve_analysis_snapshot()` 返回的裸 `Path` 交给旧 live `list_files` / `search`。
+- reviewer Tool 错误若 cause chain 含 `CodingWorkspaceError`、`PermissionError`、LangGraph control-flow 或 cancellation，必须原样传播到父图 fail closed；current-v2 read observation 的 snapshot/tree/content/path binding mismatch 同样转换为 `coding_review_binding_mismatch`，只有非安全的 provider/structured-output 不可用才规范化为 `unavailable`。
 - reviewer evidence 的 `content_digest` 来自受信 `coding_repo_read` artifact 覆盖的实际内容字节，`evidence_digest` 再绑定 path、line、excerpt 与该 content digest；模型自述文本不能自行成为证据 identity。
+- reviewer 总 model round 上限为 9，总 ToolCall 上限同为 9：最多 8 次 read Tool 后，第 9 次只供 ToolStrategy 结构化结果；未知 Tool 仍进入总 ToolCall/model round 预算，不能借名称过滤获得额外轮次。
