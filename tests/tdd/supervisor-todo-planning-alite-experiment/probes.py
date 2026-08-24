@@ -290,6 +290,57 @@ class ScenarioWorkerModel(MockAssistantChatModel):
         )
 
 
+class OperationalFailureWorkerModel(MockAssistantChatModel):
+    expected_todos: set[str]
+    fail_once_for: str
+    _active: int = PrivateAttr(default=0)
+    _all_first_attempts_started: asyncio.Event = PrivateAttr(
+        default_factory=asyncio.Event
+    )
+    _calls_by_todo: Counter[str] = PrivateAttr(default_factory=Counter)
+    _first_attempt_todos: set[str] = PrivateAttr(default_factory=set)
+
+    @property
+    def calls_by_todo(self) -> Counter[str]:
+        return self._calls_by_todo
+
+    def _response_message(
+        self,
+        messages: list[AnyMessage],
+        **_kwargs: Any,
+    ) -> AIMessage:
+        return _worker_result_call(str(_private_payload(messages)["todo_id"]))
+
+    async def _agenerate(
+        self,
+        messages: list[AnyMessage],
+        stop: list[str] | None = None,
+        run_manager: Any | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        del stop, run_manager, kwargs
+        todo_id = str(_private_payload(messages)["todo_id"])
+        self._calls_by_todo[todo_id] += 1
+        attempt = self._calls_by_todo[todo_id]
+        if attempt == 1:
+            self._first_attempt_todos.add(todo_id)
+            self._active += 1
+            if self._first_attempt_todos == self.expected_todos:
+                self._all_first_attempts_started.set()
+            try:
+                await asyncio.wait_for(
+                    self._all_first_attempts_started.wait(),
+                    timeout=2,
+                )
+            finally:
+                self._active -= 1
+        if todo_id == self.fail_once_for and attempt == 1:
+            raise TimeoutError(f"{todo_id}-operational-sentinel")
+        return ChatResult(
+            generations=[ChatGeneration(message=_worker_result_call(todo_id))]
+        )
+
+
 def create_read_probe_tool(recorder: list[str]) -> BaseTool:
     @tool("read_probe")
     def read_probe(todo_id: str) -> str:
