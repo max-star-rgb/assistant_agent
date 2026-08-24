@@ -79,6 +79,59 @@ class ScriptedSupervisor:
             ]
         )
 
+    @classmethod
+    def blocked_then_retry(cls, todo_id: str) -> "ScriptedSupervisor":
+        initial = cls.parallel_wave(("A", "B", "C"))
+        return cls(
+            [
+                *initial._responses[:-1],
+                _tool_calls(
+                    ("task", {"todo_id": todo_id}, f"retry-task-{todo_id}")
+                ),
+                AIMessage(content="final-sentinel"),
+            ]
+        )
+
+    @classmethod
+    def blocked_c_then_replace_with_d(cls) -> "ScriptedSupervisor":
+        initial = cls.parallel_wave(("A", "B", "C"))
+        return cls(
+            [
+                *initial._responses[:-1],
+                _tool_calls(
+                    (
+                        "write_todos",
+                        {
+                            "todos": [
+                                {
+                                    "todo_id": "A",
+                                    "content": "todo-A",
+                                    "status": "completed",
+                                },
+                                {
+                                    "todo_id": "B",
+                                    "content": "todo-B",
+                                    "status": "completed",
+                                },
+                                {
+                                    "todo_id": "D",
+                                    "content": "todo-D",
+                                    "status": "pending",
+                                },
+                            ]
+                        },
+                        "write-replan",
+                    )
+                ),
+                _tool_calls(("task", {"todo_id": "D"}, "task-D")),
+                AIMessage(content="final-sentinel"),
+            ]
+        )
+
+    @classmethod
+    def blocked_c_then_finish(cls) -> "ScriptedSupervisor":
+        return cls.parallel_wave(("A", "B", "C"))
+
 
 def _tool_calls(
     *calls: tuple[str, dict[str, object], str],
@@ -203,6 +256,37 @@ class ToolCallingWorkerModel(MockAssistantChatModel):
         return _worker_result_call(
             self.todo_id,
             summary="read-probe-result-sentinel",
+        )
+
+
+class ScenarioWorkerModel(MockAssistantChatModel):
+    outcomes: dict[str, list[str]]
+    _calls_by_todo: Counter[str] = PrivateAttr(default_factory=Counter)
+
+    @property
+    def calls_by_todo(self) -> Counter[str]:
+        return self._calls_by_todo
+
+    def _response_message(
+        self,
+        messages: list[AnyMessage],
+        **_kwargs: Any,
+    ) -> AIMessage:
+        todo_id = str(_private_payload(messages)["todo_id"])
+        position = self._calls_by_todo[todo_id]
+        configured = self.outcomes.get(todo_id, [])
+        if position >= len(configured):
+            raise AssertionError(f"worker outcome exhausted for {todo_id}")
+        status = configured[position]
+        self._calls_by_todo[todo_id] += 1
+        return _worker_result_call(
+            todo_id,
+            status=status,
+            summary=(
+                f"{todo_id}-success-sentinel"
+                if status == "succeeded"
+                else f"{todo_id}-blocked-sentinel"
+            ),
         )
 
 
