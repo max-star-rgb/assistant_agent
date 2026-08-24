@@ -171,10 +171,11 @@ async def refresh_memory_extraction_node(
 
 def memory_extraction_refresh_degraded(
     _state: AssistantRootState,
-    _error: NodeError,
+    error: NodeError,
 ) -> Command[str]:
     """Keep post-answer Memory orchestration failure from invalidating an answer."""
 
+    del error
     return Command(goto=END)
 
 
