@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import operator
-from typing import Annotated, Literal, NotRequired, TypedDict
+from collections.abc import Sequence
+from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import BaseTool, tool
-from langgraph.graph import MessagesState
-from langgraph.prebuilt import ToolRuntime
+from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.prebuilt import ToolNode, ToolRuntime
 from langgraph.types import Command
 
 
@@ -114,3 +115,72 @@ def create_write_todos_tool() -> BaseTool:
         )
 
     return write_todos
+
+
+def create_task_tool() -> BaseTool:
+    @tool("task")
+    def task(todo_id: str) -> str:
+        """Delegate exactly one existing pending Todo to a Worker."""
+
+        del todo_id
+        raise AssertionError("task is a graph routing protocol, not an executable tool")
+
+    return task
+
+
+def classify_supervisor_action(
+    message: AIMessage,
+) -> Literal["controls", "tasks", "final"]:
+    calls = list(message.tool_calls)
+    if not calls:
+        return "final"
+    names = [call["name"] for call in calls]
+    if len(calls) == 1 and names == ["write_todos"]:
+        return "controls"
+    if all(name == "task" for name in names):
+        todo_ids: list[str] = []
+        for call in calls:
+            todo_id = call["args"].get("todo_id")
+            if not isinstance(todo_id, str) or not todo_id:
+                raise ValueError("invalid supervisor action: empty task todo_id")
+            todo_ids.append(todo_id)
+        if len(todo_ids) != len(set(todo_ids)):
+            raise ValueError("invalid supervisor action: duplicate task todo_id")
+        return "tasks"
+    raise ValueError("invalid supervisor action: mixed or unknown tool calls")
+
+
+def _last_ai_message(state: ExperimentPlanningState) -> AIMessage:
+    message = state["messages"][-1]
+    if not isinstance(message, AIMessage):
+        raise ValueError("supervisor action requires a terminal AIMessage")
+    return message
+
+
+def build_experiment_graph(supervisor_model: Any):
+    write_todos = create_write_todos_tool()
+    task = create_task_tool()
+    bound_supervisor = supervisor_model.bind_tools([write_todos, task])
+
+    def supervisor_node(state: ExperimentPlanningState) -> dict[str, Sequence[AIMessage]]:
+        response = bound_supervisor.invoke(state["messages"])
+        if not isinstance(response, AIMessage):
+            raise TypeError("supervisor model must return AIMessage")
+        return {"messages": [response]}
+
+    def route_after_supervisor(
+        state: ExperimentPlanningState,
+    ) -> Literal["controls", "tasks", "final"]:
+        return classify_supervisor_action(_last_ai_message(state))
+
+    builder = StateGraph(ExperimentPlanningState)
+    builder.add_node("supervisor", supervisor_node)
+    builder.add_node("controls", ToolNode([write_todos]))
+    builder.add_edge(START, "supervisor")
+    builder.add_conditional_edges(
+        "supervisor",
+        route_after_supervisor,
+        {"controls": "controls", "final": END},
+    )
+    builder.add_edge("controls", "supervisor")
+    return builder.compile()

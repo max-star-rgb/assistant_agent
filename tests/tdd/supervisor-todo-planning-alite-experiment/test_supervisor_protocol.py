@@ -8,10 +8,13 @@ from langgraph.prebuilt import ToolNode
 from experiment_graph import (
     ExperimentPlanningState,
     WorkerResult,
+    build_experiment_graph,
+    classify_supervisor_action,
     create_write_todos_tool,
     merge_worker_results,
     replace_todos,
 )
+from probes import ScriptedSupervisor
 
 
 def _initial_state(*, messages: list[object] | None = None) -> dict[str, object]:
@@ -23,6 +26,16 @@ def _initial_state(*, messages: list[object] | None = None) -> dict[str, object]
         "loaded_skills": [],
         "join_count": 0,
     }
+
+
+def _calls(*calls: tuple[str, dict[str, object], str]) -> AIMessage:
+    return AIMessage(
+        content="",
+        tool_calls=[
+            {"name": name, "args": args, "id": call_id, "type": "tool_call"}
+            for name, args, call_id in calls
+        ],
+    )
 
 
 def test_completed_todo_and_result_are_monotonic() -> None:
@@ -131,3 +144,77 @@ def test_write_todos_runs_through_standard_tool_node() -> None:
     assert isinstance(message, ToolMessage)
     assert message.name == "write_todos"
     assert message.tool_call_id == call_id
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        (AIMessage(content="done"), "final"),
+        (_calls(("write_todos", {"todos": []}, "write-1")), "controls"),
+        (_calls(("task", {"todo_id": "A"}, "task-a")), "tasks"),
+        (
+            _calls(
+                ("task", {"todo_id": "A"}, "task-a"),
+                ("task", {"todo_id": "B"}, "task-b"),
+            ),
+            "tasks",
+        ),
+    ],
+)
+def test_supervisor_action_classification(
+    message: AIMessage,
+    expected: str,
+) -> None:
+    assert classify_supervisor_action(message) == expected
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        _calls(
+            ("write_todos", {"todos": []}, "write-1"),
+            ("task", {"todo_id": "A"}, "task-a"),
+        ),
+        _calls(("write_todos", {"todos": []}, "write-1"), ("write_todos", {"todos": []}, "write-2")),
+        _calls(("unknown", {}, "unknown-1")),
+        _calls(
+            ("task", {"todo_id": "A"}, "task-a-1"),
+            ("task", {"todo_id": "A"}, "task-a-2"),
+        ),
+    ],
+)
+def test_supervisor_action_rejects_ambiguous_calls(message: AIMessage) -> None:
+    with pytest.raises(ValueError, match="supervisor action"):
+        classify_supervisor_action(message)
+
+
+def test_supervisor_controls_then_finishes_without_create_agent() -> None:
+    supervisor = ScriptedSupervisor(
+        [
+            _calls(
+                (
+                    "write_todos",
+                    {
+                        "todos": [
+                            {
+                                "todo_id": "A",
+                                "content": "alpha",
+                                "status": "pending",
+                            }
+                        ]
+                    },
+                    "write-1",
+                )
+            ),
+            AIMessage(content="final-sentinel"),
+        ]
+    )
+
+    result = build_experiment_graph(supervisor).invoke(_initial_state())
+
+    assert [item["todo_id"] for item in result["todos"]] == ["A"]
+    assert isinstance(result["messages"][-1], AIMessage)
+    assert result["messages"][-1].tool_calls == []
+    assert supervisor.bound_tool_names == {"task", "write_todos"}
+    assert supervisor.calls == 2
+    assert supervisor.create_agent_calls == 0
