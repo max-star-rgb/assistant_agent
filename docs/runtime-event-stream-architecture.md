@@ -271,3 +271,10 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
 - `coding_review_decision` interrupt 除 canonical binding context 外携带最多 12 条有界 findings summary（finding id、severity、category、title、首个 path/line）；summary 只用于展示，不是 resume binding 字段。
 - `unavailable` 仍需独立 HITL 决策且不会自动 repair；current-v2 Tool observation 的 snapshot/tree/content/path binding、安全与 snapshot contract 错误在到达该状态前 fail closed。
 - terminal summarize 幂等释放 validation/review snapshot，controlled commit 在 comparison success/failure 都释放 expected/current snapshot；review approve 且 integration 开启时 lease 保持 active 到 commit checkpoint，不能在 decision 后提前释放。
+
+### Stage 5D review repair 运行时契约（2026-08-24）
+
+- `coding_review_decision` 的 `respond` 只接受当前完整 `findings` report 与非空、有界文本；`clean` / `unavailable` 仍只能 approve/reject。decision 继续绑定 workspace/generation/base commit、validation evidence、diff/tree、review report 与 snapshot schema，旧 interrupt、重复消费或任一 binding 漂移都 fail closed。
+- 合法 respond 先原子冻结最多 12 条 findings 的有界 repair context，并使旧 patch、validation、review 与 integration authorization 失效；随后必须依次经过独立 checkpoint 节点 `consume_review_repair_budget`、`consume_review_repair_context`，才可把该 context 一次性投影给既有 `inspect_and_draft`。review repair 固定最多两轮且与 validation repair budget 独立；第三次 respond 不调用模型、不产生 patch，进入 exhausted terminal。
+- 新 proposal 不能复用旧授权，必须重新执行 proposal validation、patch approval、apply、deterministic validation、final snapshot、只读 review 与 review decision。累计 approved path inventory 在 mutation 前与受信 live workspace 精确复核，mutation 后只允许在旧 inventory 与当前批准 proposal paths 的并集中安全收敛；reviewer 仍只持有 snapshot-bound read Tools，不获得 patch、validation、commit、merge 或 approval authority。
+- respond 后不再需要的 validation/review snapshot lease 必须确定性、幂等释放；释放失败只记录 `cleanup_pending` 供既有 owner reaper 收敛，不掩盖原 decision/resume 错误。START、resume 和 non-terminal checkpoint 在任何 workspace/apply side effect 前校验 repair count/history lineage、一次性 context、互斥 authorization channel、path inventory 与 workspace/digest/schema/identity/permission binding；stale、orphaned 或恶意组合均 fail closed。
