@@ -45,16 +45,7 @@ def build_review_repair_context(
 ) -> CodingReviewRepairContext:
     """Bind one proposed repair to the final review report and budget state."""
 
-    if not isinstance(report, CodingReviewReport):
-        raise TypeError("coding_review_repair_report_invalid")
-    try:
-        canonical_report = CodingReviewReport.model_validate(report.model_dump())
-    except Exception as exc:
-        raise ValueError("coding_review_repair_report_invalid") from exc
-    if canonical_report.report_digest != _canonical_digest(
-        _review_report_digest_payload(canonical_report)
-    ):
-        raise ValueError("coding_review_repair_report_digest_invalid")
+    canonical_report = canonicalize_review_repair_report(report)
     if type(review_repair_count) is not int or not 0 <= review_repair_count <= MAX_CODING_REVIEW_REPAIR_ATTEMPTS:
         raise ValueError("coding_review_repair_count_invalid")
     if review_repair_count >= MAX_CODING_REVIEW_REPAIR_ATTEMPTS:
@@ -70,19 +61,111 @@ def build_review_repair_context(
     )
     workspace_diff_digest = _required_digest(canonical_report, "workspace_diff_digest")
     normalized_response = normalize_review_response(response)
-    return CodingReviewRepairContext(
+    generation = canonical_report.generation
+    if type(generation) is not int or generation < 1:
+        raise ValueError("coding_review_repair_binding_mismatch")
+    snapshot_ref = canonical_report.snapshot_ref
+    if not isinstance(snapshot_ref, str):
+        raise ValueError("coding_review_repair_binding_mismatch")
+    tree_digest = _required_digest(canonical_report, "tree_digest")
+    patch_digest = _required_digest(canonical_report, "patch_digest")
+    findings_summary = _findings_summary(canonical_report.findings)
+    findings_projection_digest = _model_canonical_digest(
+        [item.model_dump(mode="json") for item in findings_summary]
+    )
+    payload = dict(
         previous_history_digest=_review_repair_history_digest_unchecked(
             normalized_history
         ),
         created_at=datetime.now(timezone.utc),
         attempt=review_repair_count + 1,
+        workspace_ref=canonical_report.workspace_ref,
+        base_commit=canonical_report.base_commit,
+        generation=generation,
+        snapshot_ref=snapshot_ref,
+        snapshot_materialization_schema_version=(
+            canonical_report.snapshot_materialization_schema_version
+        ),
+        snapshot_created_at=canonical_report.snapshot_created_at,
+        snapshot_expires_at=canonical_report.snapshot_expires_at,
+        tree_digest=tree_digest,
+        patch_digest=patch_digest,
         report_digest=report_digest,
         validation_evidence_digest=validation_evidence_digest,
         workspace_diff_digest=workspace_diff_digest,
         response=normalized_response,
-        response_digest=_response_digest(normalized_response),
-        findings_summary=_findings_summary(canonical_report.findings),
+        response_digest=review_response_digest(normalized_response),
+        findings_summary=findings_summary,
+        findings_projection_digest=findings_projection_digest,
     )
+    provisional = CodingReviewRepairContext.model_construct(
+        **payload,
+        context_digest="0" * 64,
+    )
+    return CodingReviewRepairContext(
+        **payload,
+        context_digest=_model_canonical_digest(
+            provisional.model_dump(mode="json", exclude={"context_digest"})
+        ),
+    )
+
+
+def canonicalize_review_repair_report(report: object) -> CodingReviewReport:
+    """Strictly revalidate and authenticate one canonical review report."""
+
+    if not isinstance(report, CodingReviewReport):
+        raise TypeError("coding_review_repair_report_invalid")
+    try:
+        canonical_report = CodingReviewReport.model_validate(
+            report.model_dump(mode="python", round_trip=True)
+        )
+    except Exception as exc:
+        raise ValueError("coding_review_repair_report_invalid") from exc
+    if canonical_report.report_digest != _canonical_digest(
+        _review_report_digest_payload(canonical_report)
+    ):
+        raise ValueError("coding_review_repair_report_digest_invalid")
+    return canonical_report
+
+
+def validate_review_repair_source(
+    context: object,
+    report: object,
+    *,
+    workspace_ref: object,
+    base_commit: object,
+    generation: object,
+) -> CodingReviewRepairContext:
+    """Bind a repair context to its complete canonical decision source."""
+
+    normalized_context = _canonicalize_review_repair_context(context)
+    canonical_report = canonicalize_review_repair_report(report)
+    if canonical_report.status != "findings" or (
+        normalized_context.workspace_ref != workspace_ref
+        or normalized_context.base_commit != base_commit
+        or normalized_context.generation != generation
+        or normalized_context.workspace_ref != canonical_report.workspace_ref
+        or normalized_context.base_commit != canonical_report.base_commit
+        or normalized_context.generation != canonical_report.generation
+        or normalized_context.snapshot_ref != canonical_report.snapshot_ref
+        or normalized_context.snapshot_materialization_schema_version
+        != canonical_report.snapshot_materialization_schema_version
+        or normalized_context.snapshot_created_at
+        != canonical_report.snapshot_created_at
+        or normalized_context.snapshot_expires_at
+        != canonical_report.snapshot_expires_at
+        or normalized_context.tree_digest != canonical_report.tree_digest
+        or normalized_context.patch_digest != canonical_report.patch_digest
+        or normalized_context.workspace_diff_digest
+        != canonical_report.workspace_diff_digest
+        or normalized_context.validation_evidence_digest
+        != canonical_report.validation_evidence_digest
+        or normalized_context.report_digest != canonical_report.report_digest
+        or normalized_context.findings_summary
+        != _findings_summary(canonical_report.findings)
+    ):
+        raise ValueError("coding_review_repair_binding_mismatch")
+    return normalized_context
 
 
 def validate_review_repair_history(
@@ -90,7 +173,7 @@ def validate_review_repair_history(
 ) -> tuple[CodingReviewRepairAttempt, ...]:
     """Require an ordered current audit history with at most two attempts."""
 
-    normalized = tuple(CodingReviewRepairAttempt.model_validate(item) for item in history)
+    normalized = tuple(_canonicalize_review_repair_attempt(item) for item in history)
     if len(normalized) > MAX_CODING_REVIEW_REPAIR_ATTEMPTS:
         raise ValueError("coding_review_repair_history_limit_exceeded")
     seen: set[int] = set()
@@ -173,25 +256,28 @@ def validate_review_repair_checkpoint(
             if (
                 review_repair_context is not None
                 or len(normalized_history) != review_repair_count
+                or normalized_history[-1].outcome not in {"pending", "proposed"}
             ):
                 raise ValueError("coding_review_repair_binding_mismatch")
             return review_repair_count, status, None, normalized_history
-        context = CodingReviewRepairContext.model_validate(review_repair_context)
+        context = _canonicalize_review_repair_context(review_repair_context)
         if (
             context.attempt != review_repair_count + 1
             or len(normalized_history) != review_repair_count + 1
             or not _attempt_matches_context(normalized_history[-1], context)
+            or normalized_history[-1].outcome != "pending"
         ):
             raise ValueError("coding_review_repair_binding_mismatch")
         return review_repair_count, status, context, normalized_history
 
     if status == "active":
-        context = CodingReviewRepairContext.model_validate(review_repair_context)
+        context = _canonicalize_review_repair_context(review_repair_context)
         if (
             review_repair_count < 1
             or context.attempt != review_repair_count
             or len(normalized_history) != review_repair_count
             or not _attempt_matches_context(normalized_history[-1], context)
+            or normalized_history[-1].outcome not in {"pending", "proposed"}
             or (
                 not review_repair_context_consumed
                 and review_repair_projection is not None
@@ -233,8 +319,33 @@ def _attempt_matches_context(
         and attempt.response_digest == context.response_digest
         and attempt.finding_ids
         == tuple(finding.finding_id for finding in context.findings_summary)
-        and attempt.outcome == "pending"
+        and attempt.context_digest == context.context_digest
     )
+
+
+def _canonicalize_review_repair_context(
+    value: object,
+) -> CodingReviewRepairContext:
+    payload = (
+        value.model_dump(mode="python", round_trip=True)
+        if isinstance(value, CodingReviewRepairContext)
+        else value
+    )
+    try:
+        return CodingReviewRepairContext.model_validate(payload)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("coding_review_repair_binding_mismatch") from exc
+
+
+def _canonicalize_review_repair_attempt(
+    value: object,
+) -> CodingReviewRepairAttempt:
+    payload = (
+        value.model_dump(mode="python", round_trip=True)
+        if isinstance(value, CodingReviewRepairAttempt)
+        else value
+    )
+    return CodingReviewRepairAttempt.model_validate(payload)
 
 
 def _required_digest(report: object, field: str) -> str:
@@ -272,8 +383,13 @@ def _findings_summary(findings: object) -> tuple[CodingReviewRepairFindingSummar
     return tuple(summary)
 
 
-def _response_digest(response: str) -> str:
+def review_response_digest(response: str) -> str:
     canonical = json.dumps(response, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _model_canonical_digest(value: object) -> str:
+    canonical = json.dumps(value, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -282,8 +398,11 @@ __all__ = [
     "CodingReviewRepairAttempt",
     "CodingReviewRepairContext",
     "build_review_repair_context",
+    "canonicalize_review_repair_report",
     "normalize_review_response",
+    "review_response_digest",
     "review_repair_history_digest",
     "validate_review_repair_checkpoint",
     "validate_review_repair_history",
+    "validate_review_repair_source",
 ]

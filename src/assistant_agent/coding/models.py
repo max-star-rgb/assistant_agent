@@ -554,6 +554,15 @@ class CodingReviewRepairContext(BaseModel):
     previous_history_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     created_at: datetime
     attempt: int = Field(ge=1, le=MAX_CODING_REVIEW_REPAIR_ATTEMPTS)
+    workspace_ref: str = Field(min_length=16, max_length=128)
+    base_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    generation: int = Field(ge=1)
+    snapshot_ref: str = Field(min_length=16, max_length=256)
+    snapshot_materialization_schema_version: CodingAnalysisSnapshotSchemaVersion
+    snapshot_created_at: datetime
+    snapshot_expires_at: datetime
+    tree_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    patch_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     report_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     validation_evidence_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     workspace_diff_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -562,6 +571,8 @@ class CodingReviewRepairContext(BaseModel):
     findings_summary: tuple[CodingReviewRepairFindingSummary, ...] = Field(
         max_length=MAX_CODING_REVIEW_REPAIR_FINDINGS
     )
+    findings_projection_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    context_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @field_validator("response", mode="before")
     @classmethod
@@ -581,16 +592,32 @@ class CodingReviewRepairContext(BaseModel):
         return tuple(value) if isinstance(value, list) else value
 
     @model_validator(mode="after")
-    def _response_digest_matches(self) -> "CodingReviewRepairContext":
-        expected = hashlib.sha256(
+    def _canonical_bindings_match(self) -> "CodingReviewRepairContext":
+        if self.created_at.utcoffset() != timedelta(0):
+            raise ValueError("review repair created_at must be aware UTC")
+        _validate_review_snapshot_timestamps(
+            self.snapshot_created_at,
+            self.snapshot_expires_at,
+        )
+        expected_response = hashlib.sha256(
             json.dumps(
                 self.response,
                 ensure_ascii=False,
                 separators=(",", ":"),
             ).encode("utf-8")
         ).hexdigest()
-        if self.response_digest != expected:
+        if self.response_digest != expected_response:
             raise ValueError("review repair response digest is invalid")
+        expected_projection = _canonical_digest(
+            [item.model_dump(mode="json") for item in self.findings_summary]
+        )
+        if self.findings_projection_digest != expected_projection:
+            raise ValueError("review repair findings projection digest is invalid")
+        expected_context = _canonical_digest(
+            self.model_dump(mode="json", exclude={"context_digest"})
+        )
+        if self.context_digest != expected_context:
+            raise ValueError("review repair context digest is invalid")
         return self
 
 
@@ -606,6 +633,7 @@ class CodingReviewRepairAttempt(BaseModel):
     workspace_diff_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     response_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     finding_ids: tuple[str, ...] = Field(max_length=MAX_CODING_REVIEW_REPAIR_FINDINGS)
+    context_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     created_at: datetime
     outcome: Literal["pending", "proposed", "exhausted", "terminal"]
 

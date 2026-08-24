@@ -222,6 +222,14 @@ class CodingState(AgentState):
     review_repair_context_consumed: NotRequired[bool]
     review_repair_projection: NotRequired[dict[str, JsonValue] | None]
     review_repair_history: NotRequired[list[CodingReviewRepairAttempt]]
+    review_repair_audit_report: NotRequired[CodingReviewReport | None]
+    review_repair_audit_evidence: NotRequired[tuple[CodingCommandEvidence, ...]]
+    review_repair_decision_summary: NotRequired[dict[str, JsonValue] | None]
+    review_repair_terminal_report: NotRequired[CodingReviewReport | None]
+    review_repair_terminal_evidence: NotRequired[tuple[CodingCommandEvidence, ...]]
+    review_repair_terminal_decision_summary: NotRequired[
+        dict[str, JsonValue] | None
+    ]
     integration_required: NotRequired[bool]
     commit_result: NotRequired[CodingCommitResult | None]
     merge_preview: NotRequired[CodingMergePreview | None]
