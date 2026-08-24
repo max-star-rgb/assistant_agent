@@ -179,12 +179,15 @@ def build_coding_analysis_tools(service: CodingWorkspaceService) -> list[BaseToo
             "coding_repo_list",
             runtime,
             service,
-            lambda snapshot, workspace, scope, live_workspace: service.list_files(
-                workspace,
+            lambda snapshot, _workspace, scope, live_workspace: service.list_analysis_snapshot(
+                snapshot,
                 path=path,
                 depth=depth,
                 cursor=cursor,
                 limit=100,
+                identity=scope.identity,
+                thread_id=scope.thread_id,
+                workspace=live_workspace,
             ),
         )
 
@@ -202,13 +205,16 @@ def build_coding_analysis_tools(service: CodingWorkspaceService) -> list[BaseToo
             "coding_repo_search",
             runtime,
             service,
-            lambda snapshot, workspace, scope, live_workspace: service.search(
-                workspace,
+            lambda snapshot, _workspace, scope, live_workspace: service.search_analysis_snapshot(
+                snapshot,
                 query=query,
                 paths=paths,
                 globs=globs,
                 cursor=cursor,
                 limit=100,
+                identity=scope.identity,
+                thread_id=scope.thread_id,
+                workspace=live_workspace,
             ),
         )
 

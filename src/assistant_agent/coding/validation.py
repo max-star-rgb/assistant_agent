@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import resource
 import shutil
@@ -55,6 +56,91 @@ class CodingValidationService:
         self._root = workspace_service.config.workspace_root / "validation"
 
     def run(
+        self,
+        workspace: CodingWorkspace,
+        repository: CodingRepositoryConfig,
+        *,
+        format_round: int,
+        dependency_plan: CodingDependencyPlan | None = None,
+        credential_request: CodingCredentialRequest | None = None,
+        artifact_ingress_plan: CodingArtifactIngressPlan | None = None,
+        identity: str | None = None,
+        thread_id: str | None = None,
+        generation: int | None = None,
+    ) -> CodingVerificationResult:
+        if not identity or not thread_id:
+            return self._run_unbound(
+                workspace,
+                repository,
+                format_round=format_round,
+                dependency_plan=dependency_plan,
+                credential_request=credential_request,
+                artifact_ingress_plan=artifact_ingress_plan,
+            )
+        try:
+            snapshot = self.workspace_service.create_analysis_snapshot(
+                workspace,
+                identity=identity,
+                thread_id=thread_id,
+            )
+            immutable_workspace = self.workspace_service.resolve_analysis_snapshot(
+                snapshot,
+                identity=identity,
+                thread_id=thread_id,
+                workspace=workspace,
+            )
+            result = self._run_unbound(
+                immutable_workspace,
+                repository,
+                format_round=format_round,
+                dependency_plan=dependency_plan,
+                credential_request=credential_request,
+                artifact_ingress_plan=artifact_ingress_plan,
+            )
+            if result.status != "passed":
+                return result
+            current = self.workspace_service.create_analysis_snapshot(
+                workspace,
+                identity=identity,
+                thread_id=thread_id,
+            )
+            if (
+                current.snapshot_ref != snapshot.snapshot_ref
+                or current.tree_digest != snapshot.tree_digest
+                or current.workspace_diff_digest != snapshot.workspace_diff_digest
+            ):
+                return result.model_copy(
+                    update={
+                        "status": "failed",
+                        "error_code": "validation_workspace_changed",
+                    }
+                )
+            binding_payload = {
+                "workspace_ref": workspace.workspace_ref,
+                "generation": generation,
+                "base_commit": workspace.base_commit,
+                "snapshot_ref": snapshot.snapshot_ref,
+                "tree_digest": snapshot.tree_digest,
+                "workspace_diff_digest": snapshot.workspace_diff_digest,
+                "evidence": [item.model_dump(mode="json") for item in result.evidence],
+            }
+            binding_digest = hashlib.sha256(
+                json.dumps(
+                    binding_payload,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            return result.model_copy(
+                update={
+                    "validated_snapshot": snapshot,
+                    "validation_binding_digest": binding_digest,
+                }
+            )
+        except CodingWorkspaceError as exc:
+            return CodingVerificationResult(status="failed", error_code=exc.code)
+
+    def _run_unbound(
         self,
         workspace: CodingWorkspace,
         repository: CodingRepositoryConfig,

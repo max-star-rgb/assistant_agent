@@ -71,7 +71,7 @@ repair 回边从
 merge approval resume 也不重新进入分析；所有写入、命令、凭据、artifact 与 Git integration 继续位于唯一顺序
 mutation lane。
 
-final coding review 由 `AssistantRunContext.coding_review_enabled` 显式启用并默认关闭；关闭时，validation 成功后
+final coding review 由 `CodingRepositoryConfig.code_review_enabled` 显式启用并默认关闭；关闭时，validation 成功后
 保持既有 applied terminal 或 integration 分支，不创建 review snapshot、不运行 reviewer，也不新增 approval。
 启用时，最终一轮 validation 全部通过后依次进入 `prepare_review_snapshot -> run_code_review ->
 coding_review_decision`：父图冻结当前 workspace 的只读 final snapshot，review 子图用原生 `Send` 并行派发三个
@@ -303,3 +303,11 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
   tests/core/integration/test_runtime_lifecycle.py \
   tests/tdd/native-high-agency-planner
 ```
+
+### Stage 5C final review 运行时契约（2026-08-24）
+
+- LOOP-001 的生产拓扑是 `apply_patch -> run_validation -> prepare_review_snapshot -> run_code_review -> coding_review_decision -> create_commit`；review 关闭时才允许 `run_validation -> create_commit`，两条路径都必须携带 validation snapshot binding，mutation lane 始终唯一且顺序执行。
+- 新运行的固定 review task 仅为 `correctness_regression`、`security_governance`、`tests_validation`。worker 结构化状态仅为 `completed` / `unavailable`；finding 严格包含 `title`、`explanation`、`remediation`，severity 仅为 `critical` / `high` / `medium` / `low`，evidence digest 绑定受信 read observation 的 `content_digest`。
+- 真实 reviewer 最多 8 次只读 Tool call，并允许第 9 次 model call 产出最终结构化结果；result JSON 上限 16,000 字符，canonical report 上限 48,000 字符，均按最终 signed serialization 检查。
+- `coding_review_decision` interrupt 除 canonical binding context 外携带最多 12 条有界 findings summary（finding id、severity、category、title、首个 path/line）；summary 只用于展示，不是 resume binding 字段。
+- `unavailable` 仍需独立 HITL 决策且不会自动 repair；安全与 snapshot binding 错误在到达该状态前 fail closed。

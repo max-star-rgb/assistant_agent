@@ -63,8 +63,8 @@ integration 默认关闭，且只在最终一轮完整 validation gates 通过�
 关闭时终态保留 worktree 到 TTL，不 commit、merge、push 或写回 source repository。
 final review checkpoint 还保存 expected snapshot schema version、opaque final snapshot、input、固定 task inventory、
 signed bounded results、canonical report/status、validation digest、decision binding 与 audit decision，不保存 reviewer
-transcript、Provider client、文件句柄或宿主 snapshot path。`coding_review_enabled` 是服务端 run context 的显式
-default-off capability；启用后即使 integration 关闭也必须经过独立 review decision，`unavailable` 只描述 advisory
+transcript、Provider client、文件句柄或宿主 snapshot path。`CodingRepositoryConfig.code_review_enabled` 是受信
+repository-static 的 default-off capability；启用后即使 integration 关闭也必须经过独立 review decision，`unavailable` 只描述 advisory
 review 质量，不产生自动批准或自动修复。
 
 repository 可独立显式启用本地 Docker sandbox。Agent Server process owner 只构造一份
@@ -390,3 +390,11 @@ eventual cleanup。workspace root 消失时同步清空进程内 deny/cooldown s
 `git worktree remove` 或任何 Git common-dir/admin registry 清理，也不得 tombstone 或递归删除 management root；
 workspace 到期仍由后续 `resolve()` 进入既有同步 cleanup 路径处理。该边界避免 advisory snapshot TTL cleanup
 引入第二套 workspace/admin 事务。
+
+### Stage 5C final review 字节绑定（2026-08-24）
+
+- Final review 的启用开关是受信、repository-static 的 `CodingRepositoryConfig.code_review_enabled`，默认关闭；`AssistantRunContext` 不暴露用户可控开关。integration 仍由独立、默认关闭的 `integration_enabled` 控制。
+- `run_validation` 在执行命令前创建 immutable-manifest v2 snapshot，命令只针对该 snapshot materialization；验证后必须重新得到同一 `snapshot_ref`、`tree_digest` 与 `workspace_diff_digest`，并生成包含 cycle generation、snapshot identity 和全部 command evidence 的 `validation_binding_digest`。
+- `prepare_review_snapshot` 不重新抓取 live workspace，而是复用 validation 产出的 snapshot。review input/result/report 必须回显 generation、snapshot ref、tree digest、workspace diff digest、validation evidence digest 和固定 task inventory。
+- current v2 checkpoint 的 snapshot/path/digest/permission/identity/expiry/manifest 错误全部 fail closed 为 `coding_review_binding_mismatch`，不得投影为可批准的 unavailable。仅 completed `legacy_v1` 保留旧物理 snapshot 已回收时的兼容恢复；pending downgrade 继续 fail closed。
+- 审批后的 commit 接收同一 validation snapshot 与 canonical review report digest；临时 Git index 生成的 tree object 经 `sha256(tree_oid)` 必须等于 reviewed `tree_digest`，否则拒绝提交。commit trailer 和 `CodingCommitResult` 同时记录 validation/report/tree binding。

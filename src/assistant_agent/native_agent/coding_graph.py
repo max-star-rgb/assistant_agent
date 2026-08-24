@@ -56,6 +56,7 @@ from assistant_agent.coding.repair import (
 )
 from assistant_agent.coding.review import (
     build_review_tasks,
+    build_legacy_review_tasks,
     canonicalize_review_report,
     create_coding_review_graph,
 )
@@ -1186,7 +1187,10 @@ def build_coding_graph(
             if repository is None:
                 raise CodingWorkspaceError("workspace_not_allowed")
             validation_options: dict[str, object] = {
-                "format_round": int(state.get("format_round", 0))
+                "format_round": int(state.get("format_round", 0)),
+                "identity": authenticated_user_identity(runtime),
+                "thread_id": _thread_id(config),
+                "generation": int(state.get("coding_cycle_generation") or 1),
             }
             if state.get("dependency_plan") is not None:
                 validation_options["dependency_plan"] = state["dependency_plan"]
@@ -1205,6 +1209,8 @@ def build_coding_graph(
             return {"coding_result": _failed(state, exc.code)}
         update: dict[str, object] = {
             "verification_evidence": list(result.evidence),
+            "validation_snapshot": result.validated_snapshot,
+            "validation_binding_digest": result.validation_binding_digest,
             **_reset_review_state(),
         }
         if result.status in {"passed", "failed"}:
@@ -1319,7 +1325,7 @@ def build_coding_graph(
             update["repair_status"] = terminal_repair_status
             update["repair_failure_evidence"] = None
         update["integration_required"] = repository.integration_enabled
-        if runtime.context.coding_review_enabled:
+        if repository.code_review_enabled:
             update["review_required"] = True
             return update
         if repository.integration_enabled:
@@ -1354,11 +1360,19 @@ def build_coding_graph(
             }
         try:
             workspace = _resolve_workspace(state, runtime, config, workspace_service)
-            snapshot = workspace_service.create_analysis_snapshot(
-                workspace,
+            snapshot = CodingAnalysisSnapshot.model_validate(
+                state.get("validation_snapshot")
+            )
+            workspace_service.validate_analysis_snapshot(
+                snapshot,
                 identity=authenticated_user_identity(runtime),
                 thread_id=_thread_id(config),
+                workspace=workspace,
+                require_active=True,
             )
+            validation_digest = state.get("validation_binding_digest")
+            if not isinstance(validation_digest, str):
+                raise ValueError("coding_review_binding_mismatch")
         except (CodingWorkspaceError, ValueError):
             return {
                 "coding_result": _failed(state, "coding_review_binding_mismatch")
@@ -1373,6 +1387,11 @@ def build_coding_graph(
             ),
             snapshot_created_at=snapshot.created_at,
             snapshot_expires_at=snapshot.expires_at,
+            generation=int(state.get("coding_cycle_generation") or 1),
+            snapshot_ref=snapshot.snapshot_ref,
+            tree_digest=snapshot.tree_digest,
+            validation_evidence_digest=validation_digest,
+            review_tasks=tuple(task.task_id for task in build_review_tasks()),
         )
         return {
             "review_generation": int(state.get("coding_cycle_generation") or 0),
@@ -1386,7 +1405,7 @@ def build_coding_graph(
             "review_results": Overwrite([]),
             "review_report": None,
             "review_status": None,
-            "review_validation_digest": _validation_evidence_digest(state),
+            "review_validation_digest": validation_digest,
             "review_decision_context": None,
             "review_decision": None,
         }
@@ -1472,6 +1491,9 @@ def build_coding_graph(
                 **decision_context,
                 "review_status": state.get("review_status"),
                 "finding_count": len(state.get("review_report").findings),
+                "findings_summary": _review_findings_summary(
+                    state.get("review_report").findings
+                ),
             }
         )
         try:
@@ -1588,6 +1610,28 @@ def build_coding_graph(
                 repository,
                 changed_paths=tuple(state.get("approved_changed_paths", ())),
                 verification_evidence=tuple(state.get("verification_evidence", ())),
+                expected_snapshot=CodingAnalysisSnapshot.model_validate(
+                    state.get("validation_snapshot")
+                ),
+                expected_workspace_diff_digest=CodingReviewReport.model_validate(
+                    state.get("review_report")
+                ).workspace_diff_digest
+                if state.get("review_required")
+                else CodingAnalysisSnapshot.model_validate(
+                    state.get("validation_snapshot")
+                ).workspace_diff_digest,
+                expected_validation_binding_digest=state.get(
+                    "validation_binding_digest"
+                ),
+                expected_review_report_digest=(
+                    CodingReviewReport.model_validate(
+                        state.get("review_report")
+                    ).report_digest
+                    if state.get("review_required")
+                    else None
+                ),
+                identity=authenticated_user_identity(runtime),
+                thread_id=_thread_id(config),
             )
         except CodingWorkspaceError as exc:
             return {"coding_result": _failed(state, exc.code)}
@@ -1946,6 +1990,8 @@ def begin_coding_cycle_node(state: CodingState) -> dict[str, object]:
         "artifact_approval_status": None,
         "format_round": 0,
         "verification_evidence": Overwrite([]),
+        "validation_snapshot": None,
+        "validation_binding_digest": None,
         "last_verification_status": None,
         "review_required": False,
         "review_generation": None,
@@ -2133,7 +2179,13 @@ def _reset_review_state() -> dict[str, object]:
     }
 
 
+MAX_REVIEW_HITL_FINDINGS = 12
+
+
 def _validation_evidence_digest(state: CodingState) -> str:
+    binding_digest = state.get("validation_binding_digest")
+    if isinstance(binding_digest, str):
+        return binding_digest
     evidence = [
         item.model_dump(mode="json")
         if isinstance(item, BaseModel)
@@ -2141,6 +2193,29 @@ def _validation_evidence_digest(state: CodingState) -> str:
         for item in state.get("verification_evidence", ())
     ]
     return _canonical_digest(evidence)
+
+
+def _review_findings_summary(findings: object) -> tuple[dict[str, object], ...]:
+    if not isinstance(findings, (tuple, list)):
+        return ()
+    summary: list[dict[str, object]] = []
+    for finding in findings[:MAX_REVIEW_HITL_FINDINGS]:
+        evidence = tuple(getattr(finding, "evidence", ()))
+        first = evidence[0] if evidence else None
+        title = getattr(finding, "title", None) or getattr(
+            finding, "summary", "review finding"
+        )
+        summary.append(
+            {
+                "finding_id": str(getattr(finding, "finding_id", ""))[:64],
+                "severity": str(getattr(finding, "severity", ""))[:16],
+                "category": str(getattr(finding, "category", ""))[:80],
+                "title": str(title)[:240],
+                "path": str(getattr(first, "path", ""))[:240],
+                "line": int(getattr(first, "line", 0)),
+            }
+        )
+    return tuple(summary)
 
 
 def _review_binding_context(
@@ -2167,6 +2242,20 @@ def _review_binding_context(
         != expected_schema_version
         or canonical_report.snapshot_materialization_schema_version
         != expected_schema_version
+        or (
+            review_input.validation_evidence_digest is not None
+            and (
+                review_input.generation != int(state.get("review_generation"))
+                or review_input.snapshot_ref != snapshot.snapshot_ref
+                or review_input.tree_digest != snapshot.tree_digest
+                or review_input.validation_evidence_digest != validation_digest
+                or canonical_report.generation != review_input.generation
+                or canonical_report.snapshot_ref != review_input.snapshot_ref
+                or canonical_report.tree_digest != review_input.tree_digest
+                or canonical_report.validation_evidence_digest != validation_digest
+                or canonical_report.review_tasks != review_input.review_tasks
+            )
+        )
     ):
         raise ValueError("coding_review_binding_mismatch")
     return {
@@ -2339,6 +2428,17 @@ def _validate_review_checkpoint(
         or review_input.snapshot_expires_at != snapshot.expires_at
         or snapshot.workspace_ref != workspace.workspace_ref
         or snapshot.base_commit != workspace.base_commit
+        or (
+            review_input.validation_evidence_digest is not None
+            and (
+                review_input.validation_evidence_digest != validation_digest
+                or review_input.generation != generation
+                or review_input.snapshot_ref != snapshot.snapshot_ref
+                or review_input.tree_digest != snapshot.tree_digest
+                or review_input.review_tasks
+                != tuple(task.task_id for task in build_review_tasks())
+            )
+        )
     ):
         raise ValueError("coding_review_binding_mismatch")
     if report_value is None:
@@ -2371,7 +2471,13 @@ def _validate_review_checkpoint(
         report != canonical
         or report.snapshot_materialization_schema_version
         != expected_schema_version
-        or tasks != build_review_tasks()
+        or (
+            tasks != build_review_tasks()
+            and not (
+                review_input.validation_evidence_digest is None
+                and tasks == build_legacy_review_tasks()
+            )
+        )
         or results != report.results
         or state.get("review_status") != report.status
         or not _review_decision_context_matches(
@@ -2392,7 +2498,7 @@ def _validate_review_checkpoint(
             require_active=False,
         )
     except CodingWorkspaceError as exc:
-        if exc.code not in {
+        if expected_schema_version != "legacy_v1" or exc.code not in {
             "coding_analysis_snapshot_missing",
             "coding_analysis_snapshot_expired",
             "coding_analysis_snapshot_legacy_manifest_missing",

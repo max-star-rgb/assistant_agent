@@ -12,6 +12,7 @@ from pathlib import Path
 
 from assistant_agent.coding.config import CodingRepositoryConfig
 from assistant_agent.coding.models import (
+    CodingAnalysisSnapshot,
     CodingCommandEvidence,
     CodingCommitResult,
     CodingMergePreview,
@@ -39,6 +40,12 @@ class CodingIntegrationService:
         *,
         changed_paths: tuple[str, ...],
         verification_evidence: tuple[CodingCommandEvidence, ...],
+        expected_snapshot: CodingAnalysisSnapshot | None = None,
+        expected_workspace_diff_digest: str | None = None,
+        expected_validation_binding_digest: str | None = None,
+        expected_review_report_digest: str | None = None,
+        identity: str | None = None,
+        thread_id: str | None = None,
     ) -> CodingCommitResult:
         if not repository.integration_enabled:
             raise CodingWorkspaceError("integration_not_enabled")
@@ -50,6 +57,15 @@ class CodingIntegrationService:
         if not approved_paths:
             raise CodingWorkspaceError("commit_empty")
         evidence_digest = _evidence_digest(verification_evidence)
+        if expected_snapshot is not None:
+            if (
+                not identity
+                or not thread_id
+                or expected_validation_binding_digest is None
+                or expected_workspace_diff_digest
+                != expected_snapshot.workspace_diff_digest
+            ):
+                raise CodingWorkspaceError("commit_snapshot_binding_invalid")
         with self._repo_lock(repository.repo_id):
             head = self.workspace_service.git_head(workspace.root)
             if head != workspace.base_commit:
@@ -59,12 +75,38 @@ class CodingIntegrationService:
                     approved_paths,
                     evidence_digest,
                     head,
+                    expected_snapshot=expected_snapshot,
+                    validation_binding_digest=expected_validation_binding_digest,
+                    review_report_digest=expected_review_report_digest,
                 )
+            if expected_snapshot is not None:
+                current_snapshot = self.workspace_service.create_analysis_snapshot(
+                    workspace,
+                    identity=identity or "",
+                    thread_id=thread_id or "",
+                )
+                if (
+                    current_snapshot.snapshot_ref != expected_snapshot.snapshot_ref
+                    or current_snapshot.tree_digest != expected_snapshot.tree_digest
+                    or current_snapshot.workspace_diff_digest
+                    != expected_snapshot.workspace_diff_digest
+                ):
+                    raise CodingWorkspaceError("commit_snapshot_changed")
             actual_paths = _status_paths(workspace.root)
             if actual_paths != set(approved_paths):
                 raise CodingWorkspaceError("commit_path_mismatch")
             tree = self._build_tree(workspace, approved_paths)
-            message = _commit_message(workspace.workspace_ref, evidence_digest)
+            if expected_snapshot is not None and hashlib.sha256(
+                tree.encode("utf-8")
+            ).hexdigest() != expected_snapshot.tree_digest:
+                raise CodingWorkspaceError("commit_tree_binding_mismatch")
+            message = _commit_message(
+                workspace.workspace_ref,
+                evidence_digest,
+                validation_binding_digest=expected_validation_binding_digest,
+                review_report_digest=expected_review_report_digest,
+                tree_digest=(expected_snapshot.tree_digest if expected_snapshot else None),
+            )
             source_commit = _run_git(
                 workspace.root,
                 "commit-tree",
@@ -108,6 +150,9 @@ class CodingIntegrationService:
                 source_tree=tree,
                 changed_paths=approved_paths,
                 verification_evidence_digest=evidence_digest,
+                validation_binding_digest=expected_validation_binding_digest,
+                review_report_digest=expected_review_report_digest,
+                reviewed_tree_digest=(expected_snapshot.tree_digest if expected_snapshot else None),
             )
 
     def prepare_merge(
@@ -366,6 +411,10 @@ class CodingIntegrationService:
         approved_paths: tuple[str, ...],
         evidence_digest: str,
         head: str,
+        *,
+        expected_snapshot: CodingAnalysisSnapshot | None,
+        validation_binding_digest: str | None,
+        review_report_digest: str | None,
     ) -> CodingCommitResult:
         if _status_paths(workspace.root):
             raise CodingWorkspaceError("base_commit_changed")
@@ -416,7 +465,19 @@ class CodingIntegrationService:
             parent != workspace.base_commit
             or changed != approved_paths
             or author != [repository.commit_author_name, repository.commit_author_email]
-            or message != _commit_message(workspace.workspace_ref, evidence_digest).strip()
+            or message
+            != _commit_message(
+                workspace.workspace_ref,
+                evidence_digest,
+                validation_binding_digest=validation_binding_digest,
+                review_report_digest=review_report_digest,
+                tree_digest=(expected_snapshot.tree_digest if expected_snapshot else None),
+            ).strip()
+            or (
+                expected_snapshot is not None
+                and hashlib.sha256(tree.encode("utf-8")).hexdigest()
+                != expected_snapshot.tree_digest
+            )
         ):
             raise CodingWorkspaceError("base_commit_changed")
         return CodingCommitResult(
@@ -427,6 +488,9 @@ class CodingIntegrationService:
             source_tree=tree,
             changed_paths=approved_paths,
             verification_evidence_digest=evidence_digest,
+            validation_binding_digest=validation_binding_digest,
+            review_report_digest=review_report_digest,
+            reviewed_tree_digest=(expected_snapshot.tree_digest if expected_snapshot else None),
         )
 
     def _repo_lock(self, repo_id: str) -> threading.RLock:
@@ -461,12 +525,26 @@ def _evidence_digest(evidence: tuple[CodingCommandEvidence, ...]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _commit_message(workspace_ref: str, evidence_digest: str) -> str:
-    return (
+def _commit_message(
+    workspace_ref: str,
+    evidence_digest: str,
+    *,
+    validation_binding_digest: str | None = None,
+    review_report_digest: str | None = None,
+    tree_digest: str | None = None,
+) -> str:
+    message = (
         "assistant-agent: apply approved coding changes\n\n"
         f"Coding-Workspace: {workspace_ref}\n"
         f"Verification-Evidence-Digest: {evidence_digest}\n"
     )
+    if validation_binding_digest is not None:
+        message += f"Validation-Binding-Digest: {validation_binding_digest}\n"
+    if review_report_digest is not None:
+        message += f"Review-Report-Digest: {review_report_digest}\n"
+    if tree_digest is not None:
+        message += f"Reviewed-Tree-Digest: {tree_digest}\n"
+    return message
 
 
 def _merge_message(workspace_ref: str) -> str:

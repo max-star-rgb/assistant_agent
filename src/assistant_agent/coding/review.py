@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from assistant_agent.coding.models import (
     CODING_REVIEW_TASK_SPECS,
+    LEGACY_CODING_REVIEW_TASK_SPECS,
     CodingAnalysisSnapshot,
     CodingReviewEvidence,
     CodingReviewFinding,
@@ -31,16 +32,24 @@ from assistant_agent.coding.models import (
     CodingReviewerResult,
 )
 from assistant_agent.coding.tools import build_coding_analysis_tools
-from assistant_agent.coding.workspace import CodingWorkspaceService
+from assistant_agent.coding.workspace import CodingWorkspaceError, CodingWorkspaceService
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.coding_phase import CodingAnalysisPhaseMiddleware
 from assistant_agent.native_agent.providers import coding_analysis_model_view
 from assistant_agent.native_agent.providers import coding_analysis_model_settings
 
 REVIEW_TASK_IDS = tuple(CODING_REVIEW_TASK_SPECS)
+LEGACY_REVIEW_TASK_IDS = tuple(LEGACY_CODING_REVIEW_TASK_SPECS)
 MAX_REVIEW_RESULT_JSON_CHARS = 16_000
 MAX_REVIEW_REPORT_JSON_CHARS = 48_000
-_SEVERITY_ORDER = {"critical": 0, "high": 1, "moderate": 2, "low": 3, "info": 4}
+_SEVERITY_ORDER = {
+    "critical": 0,
+    "high": 1,
+    "medium": 2,
+    "moderate": 2,
+    "low": 3,
+    "info": 4,
+}
 REVIEW_READ_TOOL_NAMES = (
     "coding_repo_diff",
     "coding_repo_list",
@@ -72,9 +81,11 @@ class _ReviewFindingResponse(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    severity: Literal["critical", "high", "moderate", "low", "info"]
+    severity: Literal["critical", "high", "medium", "low"]
     category: str = Field(min_length=1, max_length=80, pattern=r"^[a-z][a-z0-9_.-]*$")
-    summary: str = Field(min_length=1, max_length=1_200)
+    title: str = Field(min_length=1, max_length=240)
+    explanation: str = Field(min_length=1, max_length=1_200)
+    remediation: str = Field(min_length=1, max_length=1_200)
     evidence: tuple[_ReviewEvidenceResponse, ...] = Field(min_length=1, max_length=2)
 
     @field_validator("evidence", mode="before")
@@ -88,13 +99,40 @@ class CodingReviewResponse(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    status: Literal["succeeded", "failed", "stale"]
+    status: Literal["completed", "unavailable"]
     findings: tuple[_ReviewFindingResponse, ...] = Field(max_length=8)
     error_code: str | None = Field(
         default=None,
         max_length=128,
         pattern=r"^coding_review_[a-z0-9_]+$",
     )
+
+    @field_validator("findings", mode="before")
+    @classmethod
+    def _tuple_findings(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+
+class _LegacyReviewFindingResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    severity: Literal["critical", "high", "moderate", "low", "info"]
+    category: str = Field(min_length=1, max_length=80, pattern=r"^[a-z][a-z0-9_.-]*$")
+    summary: str = Field(min_length=1, max_length=1_200)
+    evidence: tuple[_ReviewEvidenceResponse, ...] = Field(min_length=1, max_length=2)
+
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def _tuple_evidence(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+
+class _LegacyCodingReviewResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    status: Literal["succeeded", "failed", "stale"]
+    findings: tuple[_LegacyReviewFindingResponse, ...] = Field(max_length=8)
+    error_code: str | None = Field(default=None, max_length=128)
 
     @field_validator("findings", mode="before")
     @classmethod
@@ -158,6 +196,7 @@ def _review_propagation_failure(error: BaseException) -> BaseException | None:
                 GraphBubbleUp,
                 NodeCancelledError,
                 PermissionError,
+                CodingWorkspaceError,
             ),
         ):
             return current
@@ -182,7 +221,7 @@ def _validated_review_inventory(value: object) -> tuple[CodingReviewerResult, ..
         raise ValueError("coding_review_contract_invalid") from None
     seen: set[str] = set()
     for result in results:
-        if result.task_id not in REVIEW_TASK_IDS:
+        if result.task_id not in {*REVIEW_TASK_IDS, *LEGACY_REVIEW_TASK_IDS}:
             raise ValueError("coding_review_unknown_task")
         if result.task_id in seen:
             raise ValueError("coding_review_duplicate_task")
@@ -208,6 +247,15 @@ def build_review_tasks() -> tuple[CodingReviewTask, ...]:
     )
 
 
+def build_legacy_review_tasks() -> tuple[CodingReviewTask, ...]:
+    """Parse only already-persisted review checkpoints from the legacy inventory."""
+
+    return tuple(
+        CodingReviewTask(task_id=task_id, dimension=task_id, objective=objective)
+        for task_id, objective in LEGACY_CODING_REVIEW_TASK_SPECS.items()
+    )
+
+
 def merge_review_results(
     current: Sequence[CodingReviewerResult] | None,
     update: Sequence[CodingReviewerResult] | None,
@@ -218,7 +266,12 @@ def merge_review_results(
         return []
     by_task_id = {result.task_id: result for result in current or ()}
     by_task_id.update({result.task_id: result for result in update or ()})
-    return [by_task_id[task_id] for task_id in REVIEW_TASK_IDS if task_id in by_task_id]
+    task_ids = (
+        LEGACY_REVIEW_TASK_IDS
+        if by_task_id and set(by_task_id).issubset(LEGACY_REVIEW_TASK_IDS)
+        else REVIEW_TASK_IDS
+    )
+    return [by_task_id[task_id] for task_id in task_ids if task_id in by_task_id]
 
 
 def prepare_review_tasks(state: Mapping[str, object]) -> dict[str, object]:
@@ -236,6 +289,14 @@ def prepare_review_tasks(state: Mapping[str, object]) -> dict[str, object]:
         != snapshot.materialization_schema_version
         or review_input.snapshot_created_at != snapshot.created_at
         or review_input.snapshot_expires_at != snapshot.expires_at
+        or (
+            review_input.validation_evidence_digest is not None
+            and (
+                review_input.snapshot_ref != snapshot.snapshot_ref
+                or review_input.tree_digest != snapshot.tree_digest
+                or review_input.review_tasks != REVIEW_TASK_IDS
+            )
+        )
         or state.get("workspace_ref") != review_input.workspace_ref
         or state.get("base_commit") != review_input.base_commit
     ):
@@ -256,7 +317,7 @@ def route_review_workers(state: Mapping[str, object]) -> list[Send] | str:
     snapshot = CodingAnalysisSnapshot.model_validate(state.get("review_snapshot"))
     review_input = CodingReviewInput.model_validate(state.get("review_input"))
     tasks = tuple(CodingReviewTask.model_validate(task) for task in state.get("review_tasks", ()))
-    if tasks != build_review_tasks():
+    if tasks not in (build_review_tasks(), build_legacy_review_tasks()):
         raise ValueError("coding_review_contract_invalid")
     completed = {
         result.task_id
@@ -303,8 +364,16 @@ async def review_workspace(
         != review_input.snapshot_materialization_schema_version
         or snapshot.created_at != review_input.snapshot_created_at
         or snapshot.expires_at != review_input.snapshot_expires_at
+        or (
+            review_input.validation_evidence_digest is not None
+            and (
+                snapshot.snapshot_ref != review_input.snapshot_ref
+                or snapshot.tree_digest != review_input.tree_digest
+                or review_input.review_tasks != REVIEW_TASK_IDS
+            )
+        )
     ):
-        return {"review_results": [_review_failure_result(task, review_input)]}
+        raise PermissionError("coding_review_binding_mismatch")
     try:
         if review_agent is None:
             raw_result = state.get("structured_response")
@@ -347,7 +416,14 @@ def join_review(state: Mapping[str, object]) -> dict[str, object]:
         (),
         _validated_review_inventory(state.get("review_results", ())),
     )
-    if {result.task_id for result in results} != set(REVIEW_TASK_IDS):
+    result_ids = {result.task_id for result in results}
+    expected_ids = (
+        set(LEGACY_REVIEW_TASK_IDS)
+        if review_input.validation_evidence_digest is None
+        and result_ids == set(LEGACY_REVIEW_TASK_IDS)
+        else set(REVIEW_TASK_IDS)
+    )
+    if result_ids != expected_ids:
         return {"review_results": results}
     report = canonicalize_review_report(review_input, results)
     return {
@@ -380,7 +456,7 @@ def create_coding_review_graph(
                 CodingAnalysisPhaseMiddleware(
                     coding_analysis_model_settings(review_model)
                 ),
-                ModelCallLimitMiddleware(run_limit=1, exit_behavior="error"),
+                ModelCallLimitMiddleware(run_limit=9, exit_behavior="error"),
                 ToolCallLimitMiddleware(run_limit=8, exit_behavior="error"),
             ],
             name="AssistantCodingReviewAgent",
@@ -431,6 +507,9 @@ def _review_worker_messages(
         "base_commit": review_input.base_commit,
         "patch_digest": review_input.patch_digest,
         "workspace_diff_digest": review_input.workspace_diff_digest,
+        "generation": review_input.generation,
+        "validation_evidence_digest": review_input.validation_evidence_digest,
+        "review_tasks": review_input.review_tasks,
         "instruction": "Review only the immutable final snapshot. Return structured findings.",
     }
     return [HumanMessage(content=_canonical_json(context))]
@@ -443,7 +522,130 @@ def _normalize_review_result(
     *,
     observations: Sequence[_ReviewReadObservation] | None = None,
 ) -> CodingReviewerResult:
+    if review_input.validation_evidence_digest is None:
+        return _normalize_legacy_review_result(
+            task,
+            review_input,
+            raw_result,
+            observations=observations,
+        )
     raw = CodingReviewResponse.model_validate(raw_result)
+    findings: list[CodingReviewFinding] = []
+    for raw_finding in raw.findings:
+        evidence_items: list[CodingReviewEvidence] = []
+        for item in raw_finding.evidence:
+            content_digest = _observed_content_digest(item, observations)
+            evidence_payload = {
+                "path": item.path,
+                "line": item.line,
+                "excerpt": item.excerpt,
+                "content_digest": content_digest,
+            }
+            evidence_items.append(
+                CodingReviewEvidence(
+                    **evidence_payload,
+                    evidence_digest=_canonical_digest(evidence_payload),
+                )
+            )
+        evidence = tuple(evidence_items)
+        semantic_payload = {
+            "severity": raw_finding.severity,
+            "category": raw_finding.category,
+            "title": raw_finding.title,
+            "explanation": raw_finding.explanation,
+            "remediation": raw_finding.remediation,
+        }
+        evidence_payload = [
+            item.model_dump(mode="json", exclude={"evidence_digest"})
+            for item in evidence
+        ]
+        if observations is not None:
+            _validate_finding_evidence(evidence, observations)
+        findings.append(
+            CodingReviewFinding(
+                finding_id=_canonical_digest(
+                    {"task_id": task.task_id, **semantic_payload, "evidence": evidence_payload}
+                ),
+                task_id=task.task_id,
+                **semantic_payload,
+                evidence=evidence,
+                semantic_key=_canonical_digest(semantic_payload),
+            )
+        )
+    payload: dict[str, object] = {
+        "task_id": task.task_id,
+        "workspace_ref": review_input.workspace_ref,
+        "base_commit": review_input.base_commit,
+        "patch_digest": review_input.patch_digest,
+        "workspace_diff_digest": review_input.workspace_diff_digest,
+        "snapshot_materialization_schema_version": (
+            review_input.snapshot_materialization_schema_version
+        ),
+        "snapshot_created_at": review_input.snapshot_created_at,
+        "snapshot_expires_at": review_input.snapshot_expires_at,
+        "generation": review_input.generation,
+        "snapshot_ref": review_input.snapshot_ref,
+        "tree_digest": review_input.tree_digest,
+        "validation_evidence_digest": review_input.validation_evidence_digest,
+        "review_tasks": review_input.review_tasks,
+        "status": raw.status,
+        "findings": tuple(sorted(findings, key=lambda item: item.finding_id)),
+        "error_code": raw.error_code,
+    }
+    if raw.status != "completed":
+        payload["findings"] = ()
+    review_input_json = review_input.model_dump(mode="json")
+    digest_payload = {
+        **payload,
+        "snapshot_created_at": review_input_json["snapshot_created_at"],
+        "snapshot_expires_at": review_input_json["snapshot_expires_at"],
+        "findings": [
+            item.model_dump(mode="json")
+            for item in payload["findings"]
+        ],
+    }
+    if review_input.validation_evidence_digest is None:
+        for field in (
+            "generation",
+            "snapshot_ref",
+            "tree_digest",
+            "validation_evidence_digest",
+            "review_tasks",
+        ):
+            digest_payload.pop(field)
+    if review_input.snapshot_materialization_schema_version == "legacy_v1":
+        digest_payload.pop("snapshot_materialization_schema_version")
+    if (
+        len(
+            _canonical_json(
+                {**digest_payload, "output_digest": "0" * 64}
+            )
+        )
+        > MAX_REVIEW_RESULT_JSON_CHARS
+    ):
+        raise ValueError("coding_review_result_limit_exceeded")
+    normalized = CodingReviewerResult(
+        **payload,
+        output_digest=_canonical_digest(digest_payload),
+    )
+    if len(_canonical_json(normalized.model_dump(mode="json"))) > MAX_REVIEW_RESULT_JSON_CHARS:
+        raise ValueError("coding_review_result_limit_exceeded")
+    return normalized
+
+
+def _normalize_legacy_review_result(
+    task: CodingReviewTask,
+    review_input: CodingReviewInput,
+    raw_result: Mapping[str, object],
+    *,
+    observations: Sequence[_ReviewReadObservation] | None,
+) -> CodingReviewerResult:
+    legacy_payload = json.loads(json.dumps(raw_result))
+    for finding in legacy_payload.get("findings", ()):
+        for evidence in finding.get("evidence", ()):
+            if evidence.get("content_digest") is None:
+                evidence.pop("content_digest", None)
+    raw = _LegacyCodingReviewResponse.model_validate(legacy_payload)
     findings: list[CodingReviewFinding] = []
     for raw_finding in raw.findings:
         evidence = tuple(
@@ -457,17 +659,20 @@ def _normalize_review_result(
             )
             for item in raw_finding.evidence
         )
+        if observations is not None:
+            _validate_finding_evidence(evidence, observations)
         semantic_payload = {
             "severity": raw_finding.severity,
             "category": raw_finding.category,
             "summary": raw_finding.summary,
         }
         evidence_payload = [
-            item.model_dump(mode="json", exclude={"evidence_digest"})
+            item.model_dump(
+                mode="json",
+                exclude={"evidence_digest", "content_digest"},
+            )
             for item in evidence
         ]
-        if observations is not None:
-            _validate_finding_evidence(evidence, observations)
         findings.append(
             CodingReviewFinding(
                 finding_id=_canonical_digest(
@@ -501,26 +706,19 @@ def _normalize_review_result(
         **payload,
         "snapshot_created_at": review_input_json["snapshot_created_at"],
         "snapshot_expires_at": review_input_json["snapshot_expires_at"],
-        "findings": [
-            item.model_dump(mode="json")
-            for item in payload["findings"]
-        ],
+        "findings": [item.model_dump(mode="json") for item in payload["findings"]],
     }
     if review_input.snapshot_materialization_schema_version == "legacy_v1":
         digest_payload.pop("snapshot_materialization_schema_version")
-    if (
-        len(
-            _canonical_json(
-                {**digest_payload, "output_digest": "0" * 64}
-            )
-        )
-        > MAX_REVIEW_RESULT_JSON_CHARS
-    ):
+    if len(_canonical_json({**digest_payload, "output_digest": "0" * 64})) > MAX_REVIEW_RESULT_JSON_CHARS:
         raise ValueError("coding_review_result_limit_exceeded")
-    return CodingReviewerResult(
+    normalized = CodingReviewerResult(
         **payload,
         output_digest=_canonical_digest(digest_payload),
     )
+    if len(_canonical_json(normalized.model_dump(mode="json"))) > MAX_REVIEW_RESULT_JSON_CHARS:
+        raise ValueError("coding_review_result_limit_exceeded")
+    return normalized
 
 
 def _review_read_observations(
@@ -592,9 +790,31 @@ def _validate_finding_evidence(
         if not any(
             item.excerpt
             in observation.lines[item.line - observation.start_line]
+            and (
+                item.content_digest is None
+                or item.content_digest == observation.content_digest
+            )
             for observation in matches
         ):
             raise ValueError("coding_review_evidence_unobserved")
+
+
+def _observed_content_digest(
+    item: _ReviewEvidenceResponse,
+    observations: Sequence[_ReviewReadObservation] | None,
+) -> str:
+    if observations is None:
+        return hashlib.sha256(item.excerpt.encode("utf-8")).hexdigest()
+    for observation in observations:
+        if (
+            observation.path == item.path
+            and observation.start_line <= item.line
+            < observation.start_line + len(observation.lines)
+            and item.excerpt
+            in observation.lines[item.line - observation.start_line]
+        ):
+            return observation.content_digest
+    raise ValueError("coding_review_evidence_unobserved")
 
 
 def _review_failure_result(
@@ -605,7 +825,11 @@ def _review_failure_result(
         task,
         review_input,
         {
-            "status": "failed",
+            "status": (
+                "failed"
+                if review_input.validation_evidence_digest is None
+                else "unavailable"
+            ),
             "findings": (),
             "error_code": "coding_review_task_failed",
         },
@@ -619,19 +843,26 @@ def canonicalize_review_report(
     """Validate the fixed reviewer inventory and return its canonical report."""
 
     by_task_id: dict[str, CodingReviewerResult] = {}
+    result_task_ids = {result.task_id for result in results}
+    expected_task_ids = (
+        LEGACY_REVIEW_TASK_IDS
+        if review_input.validation_evidence_digest is None
+        and result_task_ids == set(LEGACY_REVIEW_TASK_IDS)
+        else REVIEW_TASK_IDS
+    )
     for result in results:
-        if result.task_id not in REVIEW_TASK_IDS:
+        if result.task_id not in expected_task_ids:
             raise ValueError("coding_review_unknown_task")
         if result.task_id in by_task_id:
             raise ValueError("coding_review_duplicate_task")
         _validate_result(result, review_input)
         by_task_id[result.task_id] = result
 
-    missing = [task_id for task_id in REVIEW_TASK_IDS if task_id not in by_task_id]
+    missing = [task_id for task_id in expected_task_ids if task_id not in by_task_id]
     if missing:
         raise ValueError("coding_review_missing_task")
 
-    ordered_results = tuple(by_task_id[task_id] for task_id in REVIEW_TASK_IDS)
+    ordered_results = tuple(by_task_id[task_id] for task_id in expected_task_ids)
     findings = _canonical_findings(ordered_results)
     status = _report_status(ordered_results, findings)
     unsigned = CodingReviewReport(
@@ -645,6 +876,11 @@ def canonicalize_review_report(
         ),
         snapshot_created_at=review_input.snapshot_created_at,
         snapshot_expires_at=review_input.snapshot_expires_at,
+        generation=review_input.generation,
+        snapshot_ref=review_input.snapshot_ref,
+        tree_digest=review_input.tree_digest,
+        validation_evidence_digest=review_input.validation_evidence_digest,
+        review_tasks=review_input.review_tasks,
         results=ordered_results,
         findings=findings,
         report_digest="0" * 64,
@@ -653,7 +889,10 @@ def canonicalize_review_report(
     signed_payload = {**payload, "report_digest": "0" * 64}
     if len(_canonical_json(signed_payload)) > MAX_REVIEW_REPORT_JSON_CHARS:
         raise ValueError("coding_review_report_limit_exceeded")
-    return unsigned.model_copy(update={"report_digest": _canonical_digest(payload)})
+    report = unsigned.model_copy(update={"report_digest": _canonical_digest(payload)})
+    if len(_canonical_json(report.model_dump(mode="json"))) > MAX_REVIEW_REPORT_JSON_CHARS:
+        raise ValueError("coding_review_report_limit_exceeded")
+    return report
 
 
 def _validate_result(result: CodingReviewerResult, review_input: CodingReviewInput) -> None:
@@ -666,10 +905,25 @@ def _validate_result(result: CodingReviewerResult, review_input: CodingReviewInp
         != review_input.snapshot_materialization_schema_version
         or result.snapshot_created_at != review_input.snapshot_created_at
         or result.snapshot_expires_at != review_input.snapshot_expires_at
+        or result.generation != review_input.generation
+        or result.snapshot_ref != review_input.snapshot_ref
+        or result.tree_digest != review_input.tree_digest
+        or result.validation_evidence_digest != review_input.validation_evidence_digest
+        or result.review_tasks != review_input.review_tasks
     ):
         raise ValueError("coding_review_binding_mismatch")
     payload = result.model_dump(mode="json", exclude={"output_digest"})
     expected_digests = {_canonical_digest(payload)}
+    if result.validation_evidence_digest is None:
+        for field in (
+            "generation",
+            "snapshot_ref",
+            "tree_digest",
+            "validation_evidence_digest",
+            "review_tasks",
+        ):
+            payload.pop(field)
+        expected_digests.add(_canonical_digest(payload))
     if result.snapshot_materialization_schema_version == "legacy_v1":
         payload.pop("snapshot_materialization_schema_version")
         expected_digests.add(_canonical_digest(payload))
@@ -703,6 +957,24 @@ def _canonical_findings(
 
 def _review_report_digest_payload(report: CodingReviewReport) -> dict[str, object]:
     payload = report.model_dump(mode="json", exclude={"report_digest"})
+    if report.validation_evidence_digest is None:
+        for field in (
+            "generation",
+            "snapshot_ref",
+            "tree_digest",
+            "validation_evidence_digest",
+            "review_tasks",
+        ):
+            payload.pop(field)
+        for result in payload["results"]:
+            for field in (
+                "generation",
+                "snapshot_ref",
+                "tree_digest",
+                "validation_evidence_digest",
+                "review_tasks",
+            ):
+                result.pop(field, None)
     if report.snapshot_materialization_schema_version == "legacy_v1":
         payload.pop("snapshot_materialization_schema_version")
         for result in payload["results"]:
@@ -728,7 +1000,7 @@ def _report_status(
     results: Sequence[CodingReviewerResult],
     findings: Sequence[CodingReviewFinding],
 ) -> str:
-    if any(result.status != "succeeded" for result in results):
+    if any(result.status not in {"completed", "succeeded"} for result in results):
         return "unavailable"
     return "findings" if findings else "clean"
 
@@ -748,6 +1020,7 @@ __all__ = [
     "REVIEW_READ_TOOL_NAMES",
     "REVIEW_TASK_IDS",
     "build_coding_review_tools",
+    "build_legacy_review_tasks",
     "build_review_tasks",
     "canonicalize_review_report",
     "create_coding_review_graph",

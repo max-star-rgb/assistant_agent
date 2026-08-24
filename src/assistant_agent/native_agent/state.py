@@ -271,6 +271,8 @@ class CodingState(AgentState):
     verification_evidence: NotRequired[
         Annotated[list[CodingCommandEvidence], operator.add]
     ]
+    validation_snapshot: NotRequired[CodingAnalysisSnapshot | None]
+    validation_binding_digest: NotRequired[str | None]
     last_verification_status: NotRequired[Literal["passed", "failed"] | None]
     review_required: NotRequired[bool]
     review_generation: NotRequired[int | None]

@@ -22,7 +22,6 @@ class AssistantRunContext(BaseModel):
     realtime_media_mode: Literal["none", "video"] = "none"
     visual_capability_token: str | None = Field(default=None, min_length=1, max_length=64)
     assistant_execution_mode: Literal["planning"] | None = None
-    coding_review_enabled: bool = False
 
     @field_validator("media_capabilities", mode="before")
     @classmethod

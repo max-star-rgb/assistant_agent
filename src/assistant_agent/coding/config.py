@@ -346,6 +346,7 @@ class CodingRepositoryConfig(BaseModel):
     path: Path
     target_branch: str = Field(min_length=1, max_length=160)
     parallel_analysis_enabled: bool = False
+    code_review_enabled: bool = False
     commands: dict[str, CodingCommandConfig] = Field(default_factory=dict)
     verification_sequence: tuple[str, ...] = ()
     integration_enabled: bool = False

@@ -332,6 +332,14 @@ def test_parent_graph_has_fast_planning_and_coding_native_branches(monkeypatch) 
             ).parallel_analysis_enabled
             is False
         )
+        assert (
+            CodingRepositoryConfig(
+                repo_id="core-review-probe",
+                path=owner.coding_workspace_service.config.workspace_root.parent,
+                target_branch="main",
+            ).code_review_enabled
+            is False
+        )
         planning_nodes = {
             name
             for name in graph.nodes["planning_graph"].data.get_graph().nodes
@@ -699,7 +707,6 @@ def test_public_input_separates_mode_from_non_identity_runtime_context() -> None
         "media_capabilities",
         "realtime_media_mode",
         "visual_capability_token",
-        "coding_review_enabled",
     }
     assert context.assistant_execution_mode is None
     with pytest.raises(ValidationError):
