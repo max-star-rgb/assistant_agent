@@ -2,18 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
-from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
-from langchain_core.tools import StructuredTool, tool
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.tools import tool
 from langgraph.store.memory import InMemoryStore
 from langgraph_sdk.auth.types import StudioUser
-from pydantic import PrivateAttr, ValidationError
+from pydantic import ValidationError
 
 from assistant_agent.agent_server import services
 from assistant_agent.agent_server.services import AgentServerExecutionOwner
@@ -22,11 +19,8 @@ from assistant_agent.coding.config import CodingRepositoryConfig
 from assistant_agent.coding.models import CodingAnalysisSnapshot, CodingReviewInput
 from assistant_agent.coding.workspace import CodingWorkspaceError
 from assistant_agent.native_agent.context import AssistantRunContext
-from assistant_agent.native_agent.fast_agent import build_fast_agent
-from assistant_agent.native_agent.planning_graph import build_planning_graph
 from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.native_agent.state import AssistantRootInput
-from assistant_agent.skills.loading import SkillCatalog
 
 
 def _server_config() -> dict[str, object]:
@@ -43,128 +37,6 @@ async def _open_owner() -> AgentServerExecutionOwner:
     return await AgentServerExecutionOwner.compose(store=InMemoryStore())
 
 
-def _tool_names(raw_tools: object) -> set[str]:
-    if not isinstance(raw_tools, list):
-        return set()
-    return {
-        function["name"]
-        for item in raw_tools
-        if isinstance(item, dict)
-        and isinstance((function := item.get("function")), dict)
-        and isinstance(function.get("name"), str)
-    }
-
-
-def _private_todo(messages: list[AnyMessage]) -> str:
-    human = next(item for item in messages if isinstance(item, HumanMessage))
-    payload = json.loads(str(human.content))
-    return str(payload["todo_id"])
-
-
-def _planning_control_tools() -> list[StructuredTool]:
-    def load_skill(skill_id: str) -> str:
-        """Load one generic probe Skill."""
-        return skill_id
-
-    def load_skill_reference(skill_id: str, reference_id: str) -> str:
-        """Load one generic probe Skill reference."""
-        return f"{skill_id}:{reference_id}"
-
-    return [
-        StructuredTool.from_function(load_skill, name="load_skill", metadata={"effect": "read"}),
-        StructuredTool.from_function(
-            load_skill_reference,
-            name="load_skill_reference",
-            metadata={"effect": "read"},
-        ),
-    ]
-
-
-class _PlanningLoopProbeModel(MockAssistantChatModel):
-    _supervisor_calls: int = PrivateAttr(default=0)
-    _active_workers: int = PrivateAttr(default=0)
-    _all_workers_started: asyncio.Event = PrivateAttr(default_factory=asyncio.Event)
-    _worker_calls: Counter[str] = PrivateAttr(default_factory=Counter)
-    _max_workers: int = PrivateAttr(default=0)
-
-    @property
-    def worker_calls(self) -> Counter[str]:
-        return self._worker_calls
-
-    @property
-    def max_workers(self) -> int:
-        return self._max_workers
-
-    def _response_message(self, messages: list[AnyMessage], **kwargs: Any) -> AIMessage:
-        if "WorkerResult" in _tool_names(kwargs.get("tools")):
-            todo_id = _private_todo(messages)
-            return AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "WorkerResult",
-                        "args": {
-                            "todo_id": todo_id,
-                            "status": "succeeded",
-                            "summary": f"{todo_id}-result-sentinel",
-                        },
-                        "id": f"worker-result-{todo_id}",
-                        "type": "tool_call",
-                    }
-                ],
-            )
-        self._supervisor_calls += 1
-        if self._supervisor_calls == 1:
-            return AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "write_todos",
-                        "args": {
-                            "todos": [
-                                {"todo_id": "A", "content": "todo-A", "status": "pending"},
-                                {"todo_id": "B", "content": "todo-B", "status": "pending"},
-                            ]
-                        },
-                        "id": "write-todos",
-                        "type": "tool_call",
-                    }
-                ],
-            )
-        if self._supervisor_calls == 2:
-            return AIMessage(
-                content="",
-                tool_calls=[
-                    {"name": "task", "args": {"todo_id": "A"}, "id": "task-A", "type": "tool_call"},
-                    {"name": "task", "args": {"todo_id": "B"}, "id": "task-B", "type": "tool_call"},
-                ],
-            )
-        return AIMessage(content="planning-final-sentinel")
-
-    async def _agenerate(
-        self,
-        messages: list[AnyMessage],
-        stop: list[str] | None = None,
-        run_manager: Any | None = None,
-        **kwargs: Any,
-    ) -> ChatResult:
-        if "WorkerResult" not in _tool_names(kwargs.get("tools")):
-            return self._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
-        todo_id = _private_todo(messages)
-        self._worker_calls[todo_id] += 1
-        self._active_workers += 1
-        self._max_workers = max(self._max_workers, self._active_workers)
-        if self._active_workers == 2:
-            self._all_workers_started.set()
-        try:
-            await asyncio.wait_for(self._all_workers_started.wait(), timeout=2)
-            return ChatResult(
-                generations=[ChatGeneration(message=self._response_message(messages, **kwargs))]
-            )
-        finally:
-            self._active_workers -= 1
-
-
 @pytest.mark.core_invariant("BOOT-001")
 def test_mock_composition_opens_without_real_provider(monkeypatch) -> None:
     monkeypatch.setenv("MULTIMODAL_AGENT_PROVIDER_MODE", "mock")
@@ -178,7 +50,7 @@ def test_mock_composition_opens_without_real_provider(monkeypatch) -> None:
 
 
 @pytest.mark.core_invariant("LOOP-001")
-def test_parent_graph_has_native_fast_alite_planning_and_coding_branches(monkeypatch) -> None:
+def test_parent_graph_has_native_fast_planning_and_coding_branches(monkeypatch) -> None:
     monkeypatch.setenv("MULTIMODAL_AGENT_PROVIDER_MODE", "mock")
     owner = asyncio.run(_open_owner())
     try:
@@ -187,24 +59,16 @@ def test_parent_graph_has_native_fast_alite_planning_and_coding_branches(monkeyp
         assert owner.graph.name == "AssistantRootGraph"
         assert nodes == {
             "__start__", "capture_trusted_runtime_facts", "memory_recall",
-            "execution_router", "fast_agent", "planning_graph", "coding_graph",
+            "execution_router", "fast_agent", "planning_agent", "coding_graph",
             "refresh_memory_extraction", "__end__",
         }
         assert graph.nodes["fast_agent"].data.name == "AssistantFastAgent"
-        planning = graph.nodes["planning_graph"].data.get_graph()
-        assert set(planning.nodes) == {
-            "__start__", "supervisor", "controls", "worker", "join", "__end__"
-        }
-        planning_edges = {(edge.source, edge.target) for edge in planning.edges}
-        assert {
-            ("__start__", "supervisor"),
-            ("supervisor", "controls"),
-            ("supervisor", "worker"),
-            ("supervisor", "__end__"),
-            ("controls", "supervisor"),
-            ("worker", "join"),
-            ("join", "supervisor"),
-        } <= planning_edges
+        assert graph.nodes["planning_agent"].data.name == "AssistantPlanningAgent"
+        planning = graph.nodes["planning_agent"].data.get_graph()
+        assert {"model", "tools"} <= set(planning.nodes)
+        assert not {"supervisor", "controls", "worker", "join"} & set(
+            planning.nodes
+        )
         assert graph.nodes["coding_graph"].data.name == "AssistantCodingGraph"
         assert (
             CodingRepositoryConfig(
@@ -302,10 +166,11 @@ def test_production_composition_reuses_one_fast_agent_with_native_call_limits(mo
     monkeypatch.setenv("MULTIMODAL_AGENT_PROVIDER_MODE", "mock")
     monkeypatch.setenv("MAX_TOOL_ITERATIONS", "3")
     limits: list[tuple[int | None, int | None]] = []
+    planning_limits: list[tuple[int | None, int | None]] = []
     fast_agents: list[object] = []
     planning_fast_agents: list[object] = []
     real_fast = services.build_fast_agent
-    real_planning = services.build_planning_graph
+    real_planning = services.build_planning_agent
 
     def recording_fast(*args: Any, **kwargs: Any):
         limits.append((kwargs.get("model_call_limit"), kwargs.get("tool_call_limit")))
@@ -315,13 +180,17 @@ def test_production_composition_reuses_one_fast_agent_with_native_call_limits(mo
 
     def recording_planning(*args: Any, **kwargs: Any):
         planning_fast_agents.append(args[1])
+        planning_limits.append(
+            (kwargs.get("model_call_limit"), kwargs.get("tool_call_limit"))
+        )
         return real_planning(*args, **kwargs)
 
     monkeypatch.setattr(services, "build_fast_agent", recording_fast)
-    monkeypatch.setattr(services, "build_planning_graph", recording_planning)
+    monkeypatch.setattr(services, "build_planning_agent", recording_planning)
     owner = asyncio.run(_open_owner())
     try:
         assert limits == [(3, 3)]
+        assert planning_limits == [(3, 3)]
         assert planning_fast_agents == fast_agents
     finally:
         asyncio.run(owner.aclose())
@@ -558,40 +427,6 @@ def test_both_modes_finish_with_standard_ai_messages(monkeypatch) -> None:
         assert all("final_response" not in result for result in results)
     finally:
         asyncio.run(owner.aclose())
-
-
-@pytest.mark.core_invariant("LOOP-001")
-def test_alite_supervisor_fans_out_scoped_workers_and_joins_standard_messages() -> None:
-    model = _PlanningLoopProbeModel()
-    tools = _planning_control_tools()
-    catalog = SkillCatalog()
-    fast = build_fast_agent(model, tools, skill_catalog=catalog)
-    graph = build_planning_graph(model, fast, tools=tools, skill_catalog=catalog)
-
-    result = asyncio.run(
-        graph.ainvoke(
-            {
-                "messages": [HumanMessage(content="request-sentinel")],
-                "memory_context": (),
-                "memory_status": "empty",
-                "todos": [],
-                "worker_results": {},
-                "worker_writes": [],
-            },
-            context=AssistantRunContext(),
-        )
-    )
-
-    assert model.max_workers == 2
-    assert model.worker_calls == Counter({"A": 1, "B": 1})
-    assert {item["todo_id"] for item in result["todos"] if item["status"] == "completed"} == {"A", "B"}
-    assert set(result["worker_results"]) == {"A", "B"}
-    assert {
-        item.tool_call_id
-        for item in result["messages"]
-        if isinstance(item, ToolMessage) and item.name == "task"
-    } == {"task-A", "task-B"}
-    assert isinstance(result["messages"][-1], AIMessage)
 
 
 @pytest.mark.core_invariant("RUN-001")

@@ -72,13 +72,13 @@ exclusive_allowlist = []
 id = "runtime-event-stream"
 authority = "docs/runtime-event-stream-architecture.md"
 read_when = [
-  "AssistantRootGraph、fast create_agent、planning StateGraph 或原生 state channel",
+  "AssistantRootGraph、fast/planning create_agent、Deep Agents task 或原生 state channel",
   "LangGraph stream、interrupt/resume、checkpoint 或 terminal messages",
 ]
 source_globs = [
   "src/assistant_agent/native_agent/root_graph.py",
   "src/assistant_agent/native_agent/fast_agent.py",
-  "src/assistant_agent/native_agent/planning_graph.py",
+  "src/assistant_agent/native_agent/planning_agent.py",
   "src/assistant_agent/native_agent/state.py",
   "src/assistant_agent/native_agent/models.py",
   "src/assistant_agent/native_agent/coding_graph.py",
@@ -89,7 +89,7 @@ source_globs = [
 thin_references = ["README.md", "docs/agent-server-architecture.md"]
 verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/integration/test_runtime_lifecycle.py",
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/supervisor-todo-planning-alite-production",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/native-deepagents-planning",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
@@ -174,6 +174,7 @@ read_when = [
 ]
 source_globs = [
   "src/assistant_agent/native_agent/fast_agent.py",
+  "src/assistant_agent/native_agent/planning_agent.py",
   "src/assistant_agent/native_agent/state.py",
   "src/assistant_agent/context/**",
   "src/assistant_agent/runtime/system_prompt_policy.py",

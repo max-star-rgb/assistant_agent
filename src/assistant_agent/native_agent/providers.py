@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from typing import Any
 
@@ -12,6 +11,7 @@ from langchain_core.messages import (
     AIMessageChunk,
     AnyMessage,
     HumanMessage,
+    ToolMessage,
 )
 from langchain_core.outputs import (
     ChatGeneration,
@@ -23,11 +23,6 @@ from langchain_core.tools import BaseTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from assistant_agent.config import ProviderConfig
-from assistant_agent.native_agent.context import (
-    PLANNING_WORKING_MEMORY_MARKER_KEY,
-    PLANNING_WORKING_MEMORY_MARKER_VALUE,
-    PLANNING_WORKING_MEMORY_MESSAGE_NAME,
-)
 from assistant_agent.providers.provider_http import without_unsupported_socks_proxy_env
 
 
@@ -113,9 +108,9 @@ class MockAssistantChatModel(BaseChatModel):
         return self.bind(tools=normalized, tool_choice=tool_choice, **kwargs)
 
     def _response_message(self, messages: list[AnyMessage], **kwargs: Any) -> AIMessage:
-        supervisor = _mock_planning_supervisor_response(messages, kwargs.get("tools"))
-        if supervisor is not None:
-            return supervisor
+        planning = _mock_planning_agent_response(messages, kwargs.get("tools"))
+        if planning is not None:
+            return planning
         structured = _mock_structured_tool_call(kwargs.get("tools"), messages)
         if structured is not None and kwargs.get("tool_choice") == "any":
             name, arguments = structured
@@ -287,105 +282,41 @@ def _mock_structured_tool_call(
                 "findings": [],
                 "covered_paths": [],
             }
-        if name == "WorkerResult":
-            todo_id = "answer"
-            try:
-                payload = json.loads(_last_human_text(list(messages)))
-                if isinstance(payload, Mapping) and isinstance(payload.get("todo_id"), str):
-                    todo_id = payload["todo_id"]
-            except (TypeError, ValueError):
-                pass
-            return name, {
-                "todo_id": todo_id,
-                "status": "succeeded",
-                "summary": "mock worker completion",
-            }
     return None
 
 
-def _mock_planning_supervisor_response(
+def _mock_planning_agent_response(
     messages: Sequence[AnyMessage],
     tools: Any,
 ) -> AIMessage | None:
     names = _mock_tool_names(tools)
-    if not {"write_todos", "task"} <= names or "WorkerResult" in names:
+    if not {"write_todos", "task"} <= names:
         return None
-    state: dict[str, Any] = {"todos": [], "worker_results": {}}
-    for message in reversed(messages[:-1]):
-        if (
-            not isinstance(message, HumanMessage)
-            or not isinstance(message.content, str)
-            or message.name != PLANNING_WORKING_MEMORY_MESSAGE_NAME
-            or message.additional_kwargs.get(PLANNING_WORKING_MEMORY_MARKER_KEY)
-            != PLANNING_WORKING_MEMORY_MARKER_VALUE
-        ):
-            continue
-        try:
-            candidate = json.loads(message.content)
-        except (TypeError, ValueError):
-            continue
-        if (
-            isinstance(candidate, dict)
-            and "todos" in candidate
-            and "worker_results" in candidate
-        ):
-            state = candidate
-            break
-    todos = state.get("todos") if isinstance(state.get("todos"), list) else []
-    results = (
-        state.get("worker_results")
-        if isinstance(state.get("worker_results"), Mapping)
-        else {}
+    task_result = next(
+        (
+            message
+            for message in reversed(messages)
+            if isinstance(message, ToolMessage)
+            and message.tool_call_id.startswith("mock-task-")
+        ),
+        None,
     )
-    if not todos:
-        content = _last_human_text(list(messages)).strip() or "mock planning task"
-        return AIMessage(
-            content="",
-            tool_calls=[
-                {
-                    "name": "write_todos",
-                    "args": {
-                        "todos": [
-                            {
-                                "todo_id": "answer",
-                                "content": content[:4_000],
-                                "status": "pending",
-                            }
-                        ]
-                    },
-                    "id": "mock-write-todos",
-                    "type": "tool_call",
-                }
-            ],
-        )
-    pending_ids = [
-        item.get("todo_id")
-        for item in todos
-        if isinstance(item, Mapping)
-        and item.get("status") == "pending"
-        and isinstance(item.get("todo_id"), str)
-        and item.get("todo_id") not in results
-    ]
-    if pending_ids:
-        return AIMessage(
-            content="",
-            tool_calls=[
-                {
-                    "name": "task",
-                    "args": {"todo_id": todo_id},
-                    "id": f"mock-task-{todo_id}",
-                    "type": "tool_call",
-                }
-                for todo_id in pending_ids
-            ],
-        )
-    summaries = [
-        str(result.get("summary"))
-        for result in results.values()
-        if isinstance(result, Mapping) and result.get("summary")
-    ]
+    if task_result is not None:
+        return AIMessage(content=f"已完成 planning mock：{task_result.text}")
+    content = _last_human_text(list(messages)).strip() or "mock planning task"
     return AIMessage(
-        content=f"已完成 planning mock：{'；'.join(summaries) or '无可执行结果'}"
+        content="",
+        tool_calls=[
+            {
+                "name": "task",
+                "args": {
+                    "description": content[:20_000],
+                    "subagent_type": "general-purpose",
+                },
+                "id": "mock-task-general-purpose",
+                "type": "tool_call",
+            }
+        ],
     )
 
 

@@ -29,9 +29,9 @@ dynamic prompt 的 L0 index 只用于发现可加载 Skill。成功执行 `load_
 state-update 契约返回包含标准 `ToolMessage` 的 `Command(update=...)`，把受信 `skill_id` 写入当前 fast agent
 子图的 `active_skill_ids`；每次后续 model call 都以该 ID 从 composition 注入的受信 catalog 重新取得并把完整
 Skill 正文追加到 system prompt。`load_skill` 的模型观察与 artifact 只返回指导、Skill/reference 标识和加载状态，
-不返回 Tool capability。独立 exposure middleware 只在共享 fast/Worker `create_agent` 的原生 model-call hook 中
-根据 manifest 的 `governed_tools` 与当前 `active_skill_ids` 派生业务 Tool schema；planning Worker 另由窄
-middleware 隐藏 Skill control Tool，Supervisor 自己只绑定 control 与 task schema。专项 reference 再由
+不返回 Tool capability。独立 exposure middleware 只在 `AssistantFastAgent` 的原生 model-call hook 中
+根据 manifest 的 `governed_tools` 与当前 `active_skill_ids` 派生业务 Tool schema；planning coordinator 不注册
+Skill control 或业务 Tool，只通过 Deep Agents 的 `task` 调用同一个 fast Agent。专项 reference 再由
 `load_skill_reference` 按当前 state/checkpoint namespace 中的窄 grant 读取。checkpoint 只保存受信 Skill ID 和
 注册的 reference ID，不复制
 Skill 正文、Tool schema 或任意 Tool 名；这些状态不进入父图、后续 chat run 或 Memory Graph。
@@ -48,13 +48,13 @@ Memory 每一行以引用文本呈现，并明确为可能过时或错误的背�
 模型可见临时消息使用“用户默认地点”中文字段，并明确该地点不是已观测用户物理位置。用户在当前请求中明确指定的任务地点可以
 覆盖本次任务参数，但不能改写可信事实的来源。最后一条用户消息始终是本轮真实请求。
 
-共享 fast/Worker `create_agent` 使用官方 `ModelCallLimitMiddleware` 与 `ToolCallLimitMiddleware` 提供每次 invocation
-的 model/tool call 安全上限，不把 usage 或 reservation 写入 planning 父 state。只读 Tool retry、长对话
+fast `create_agent` 使用官方 `ModelCallLimitMiddleware` 与 `ToolCallLimitMiddleware` 提供每次 invocation
+的 model/tool call 安全上限。只读 Tool retry、长对话
 summarization 与 planning 模式非 read Tool HITL 继续使用官方
 middleware；需要独立 run 上限的 Tool 由同一个 metadata-driven per-Tool limiter 分别计数，不是全 Tool global
 limiter；当前 live-view 声明每个 run 最多一次，fast agent 不识别具体 Tool 名。fast 模式自动放行，planning
-Worker 的非 read 业务 Tool 在执行前 interrupt，并从原生 checkpoint approve/resume，不重放已完成分支。
-Supervisor 的三个 control Tool 都是 read。summarization 默认采用输入窗口 75% 触发、保留 15% 的
+task 内的 fast 子 Agent 对非 read 业务 Tool 在执行前 interrupt，并从原生 checkpoint approve/resume。
+planning coordinator 自身也使用官方 model/tool call limit 与 summarization。summarization 默认采用输入窗口 75% 触发、保留 15% 的
 token 阈值，两者可由现有环境变量覆盖。DeepSeek V4 Flash 使用其官方 tokenizer 与
 `encoding_dsv4.py` 对标准 messages 做调用前计数；结构化 user content 只在文本 encoder 的计数副本中
 提取 text block，原始多模态 message 与媒体引用保持不变。摘要读取被淘汰的完整消息前缀，不再应用默认
@@ -64,31 +64,23 @@ token 阈值，两者可由现有环境变量覆盖。DeepSeek V4 Flash 使用�
 `ToolMessage`，不维护项目
 自建 conversation、完整问答边界或 summary state。
 
-planning Supervisor 是普通 LLM node，不使用 `create_agent`。每次调用由独立 prompt 构造函数重新生成
-`SystemMessage`；其正文直接来自锁定依赖 `langchain==1.3.15` 的
-模块级常量 `langchain.agents.middleware.todo.WRITE_TODOS_SYSTEM_PROMPT`，生产代码直接导入该常量而不在仓库复制
-prompt 正文；来源固定到
-[`langchain==1.3.15/todo.py`](https://github.com/langchain-ai/langchain/blob/langchain%3D%3D1.3.15/libs/langchain_v1/langchain/agents/middleware/todo.py#L119-L136)。
-该上游原文要求模型自行标记 completed，与 A-lite“只有 join 能完成 Todo”的状态契约存在已知语义冲突；本次按用户明确选择
-保留原文、不添加项目修订，确定性状态校验仍拒绝 Supervisor 直接完成 Todo。
+planning coordinator 本身也是 `create_agent`。锁定依赖 `langchain==1.3.15` 的官方
+`TodoListMiddleware` 在每次 model call 动态追加其上游 `WRITE_TODOS_SYSTEM_PROMPT`，并提供原生
+`write_todos` Tool；生产代码不复制 prompt 正文，也不再叠加项目 A-lite completed 规则。Todo 采用上游
+`content/status=pending|in_progress|completed` schema，由模型通过官方 Tool 实时维护。
 
-Supervisor 每次调用先读取经官方 token-aware trimming 的父自然对话，再在最新真实用户请求前临时插入四类上下文，
-顺序固定为：planning working memory、MemoryContext、TrustedRuntimeFacts、最新真实 `HumanMessage`。planning working
-memory 本身也是独立 `HumanMessage`，只包含 Todo、当前 Worker result、从受信 catalog 机械重读的 active Skill 正文与
-已成功授权并重读的 reference 正文，以及可发现 L0 Skill catalog 的 `skill_id/description`。planning working-memory
-消息带有固定 `name` 和 `additional_kwargs` 来源标识，使离线 mock 及其他受信消费者不会把用户提交的同形 JSON 当作
-内部 working memory；Memory 与 TrustedRuntimeFacts 各自使用 fast/Worker 相同的安全文案和独立
-`HumanMessage`。这些临时消息均不写入父 `messages`、checkpoint messages 或摘要，最后一条消息始终是本轮真实用户请求。
-planning control/task transcript 仍由 checkpoint 保存，但不重复投影给 Supervisor；无 ToolCall 时直接形成标准终态
-`AIMessage`。Todo 是 working memory，不是依赖或授权协议。
+Deep Agents 0.7.8 `SubAgentMiddleware` 提供原生 `task(description, subagent_type)` Tool；唯一
+`general-purpose` 类型直接引用已编译的 `AssistantFastAgent`。Supervisor 的标准 messages、Todo ToolCall、task
+ToolCall 与返回的 ToolMessage 全部保留在官方 conversation/checkpoint 中，不再经过项目 projection、working-memory
+JSON 或 marker。父级 MemoryContext 与 TrustedRuntimeFacts 仍由相同 middleware 在最新真实用户请求前临时插入两条
+独立 `HumanMessage`，不进入 system prompt、state messages 或摘要。
 
-每个 planning Worker 通过 `agent_phase="worker"` 复用同一个 `AssistantFastAgent`，但只获得当前 Todo、已加载的
-必要 Skill/reference、父图冻结的 Memory 与 TrustedRuntimeFacts，以及一条新建的私有 `HumanMessage`。完整父
-conversation、其他 Todo 和 Worker 内部业务 Tool transcript 不进入该私有消息。Worker 只返回严格
-`WorkerResult(todo_id,status,summary)`；join 只把受控结果作为原 `task` call 对应的父级 `ToolMessage` 写回。
-只有 join 能根据 `succeeded` result 把 Todo 标成 completed；`write_todos` 只能维护 pending，改写 pending 内容时
-同步清除同 ID 的旧 blocked result。`succeeded` result 与 completed Todo 单调保护，`blocked` 保持 pending 并由 Supervisor 决定 retry/replan/finish；
-operational exception 不转换为业务结果，由 LangGraph pending writes/resume 恢复。
+task 调用时，Deep Agents 把模型生成的完整 description 作为子 Agent 唯一的 `HumanMessage`，并传递冻结的
+Memory/TrustedRuntimeFacts、execution mode 与 Skill state；父 conversation、Todo 和 structured response 被上游
+排除。子 Agent 每次 model call 再用同一 Memory/Trusted middleware 把冻结上下文放在 task description 前，随后由
+fast dynamic prompt、Skill exposure、summarization 与业务 Tool transcript 完成独立执行。完成后只有 structured
+response 或最后一条非空 AI 文本作为父 task `ToolMessage` content 返回；内部 transcript 不回灌父消息。多个 task
+并行返回时，planning state reducer只接受一致的冻结上下文，并合并 Skill/reference state。
 
 Provider 联网来源属于产生该回复的 `AIMessage.response_metadata`，不会作为新上下文消息重新注入后续模型调用。
 终态入口只读取最新最终 AIMessage 的来源；中间 tool-call 或历史 AIMessage 的来源不聚合到当前答案。
@@ -106,5 +98,5 @@ context runtime。后续外围迁移应复用标准 messages/middleware。
 ```bash
 MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
   tests/core/integration/test_context_lifecycle.py \
-  tests/tdd/native-agent-parent-graph/test_fast_agent.py
+  tests/tdd/native-deepagents-planning
 ```

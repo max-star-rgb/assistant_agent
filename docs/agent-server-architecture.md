@@ -151,9 +151,10 @@ assistant-native-v3 -> assistant_agent.agent_server.graph:native_assistant_graph
 assistant-memory-v1 -> assistant_agent.agent_server.graph:native_memory_graph
 ```
 
-`assistant-native-v1` 与 `assistant-native-v2` 都不作为指向当前图的 alias 注册：A-lite planning checkpoint
-schema 与恢复路由已经不兼容，v3 不能解释或 replay v1/v2 planning checkpoint。这是一次显式 graph ID 升级，
-不是 checkpoint 自动 migration。部署 v3 前，operator 必须按 graph ID 枚举 v2 的 pending/interrupt runs，
+`assistant-native-v1` 与 `assistant-native-v2` 都不作为指向当前图的 alias 注册：当前图不能解释或 replay
+v1/v2 planning checkpoint。这是一次显式 graph ID 升级，不是 checkpoint 自动 migration。新原生 Deep Agents
+planning state 也不迁移同一 v3 graph ID 下已删除的 A-lite planning state；切换后既有 planning thread 只作历史
+inspection，Studio 与客户端必须新建 thread。部署 v3 前，operator 必须按 graph ID 枚举 v2 的 pending/interrupt runs，
 并逐个 drain 或 cancel；v1/v2 历史 checkpoint 只读，不得从 v3 resume/replay。项目控制的可运行 thread 在创建时
 同时写入 SDK 原生 `graph_id` 和稳定 metadata `assistant_graph_id`。Agent Server auth 按 create 的 graph identity
 把 Studio/项目 chat thread 规范为 v3，同时允许独立 Memory graph 使用自己的 identity；chat run create 与显式
@@ -236,8 +237,9 @@ Provider、MCP discovery 与静态 graph composition 在媒体 WebSocket 握手�
 关闭；媒体 WebSocket 只关闭自己创建的 `VisualPerceptionSession`。
 
 composition 在构造 Tool inventory 前只加载一次 repo Skill catalog，并把同一实例显式注入 inventory 的
-Skill loading plugin、fast agent 和 planning Supervisor/Worker；composition 构造标准模型、该 Tool inventory、Memory
-backend 与两张静态原生 Graph，不构造平行 Graph Runtime、产品状态投影器或 Workflow host。
+Skill loading plugin 与 fast agent；planning coordinator 通过 Deep Agents `CompiledSubAgent` 直接引用该 fast agent，
+不再次读取 catalog。composition 构造标准模型、该 Tool inventory、Memory backend 与两张静态原生 Graph，不构造
+平行 Graph Runtime、产品状态投影器或 Workflow host。
 
 ## 本地部署与持久化
 

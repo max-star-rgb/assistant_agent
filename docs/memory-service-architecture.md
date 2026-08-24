@@ -22,8 +22,8 @@ assistant-native-v3: capture_trusted_runtime_facts -> memory_recall -> fast/plan
 assistant-memory-v1: memory_extract -> END
 ```
 
-每个 chat run 都重新 recall 一次，因此能读取 Store 中最新长期记忆；planning worker 只读取当前 run 冻结的
-`memory_context`，不持有 backend，也不重复 recall。独立 Memory Graph 使用 message-only state，
+每个 chat run 都重新 recall 一次，因此能读取 Store 中最新长期记忆；planning coordinator 及 task 内的 fast 子 Agent
+只读取当前 run 冻结的 `memory_context`，不持有 backend，也不重复 recall。独立 Memory Graph 使用 message-only state，
 不继承父图的 execution、Memory 快照或 fast agent Skill channel。recall 使用
 LangGraph `RetryPolicy(max_attempts=3)`；最终失败由 LangGraph 原生 node error handler 返回
 `Command(update={memory_context: (), memory_status: degraded}, goto=execution_router)`，父图随后继续回答。

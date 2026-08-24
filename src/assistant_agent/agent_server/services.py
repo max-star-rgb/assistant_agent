@@ -34,7 +34,7 @@ from assistant_agent.native_agent.fast_agent import build_fast_agent
 from assistant_agent.native_agent.coding_graph import build_coding_graph
 from assistant_agent.native_agent.memory import MemoryBackend, create_memory_backend
 from assistant_agent.native_agent.memory_graph import build_memory_extraction_graph
-from assistant_agent.native_agent.planning_graph import build_planning_graph
+from assistant_agent.native_agent.planning_agent import build_planning_agent
 from assistant_agent.native_agent.providers import create_chat_model
 from assistant_agent.native_agent.root_graph import build_assistant_root_graph
 from assistant_agent.native_agent.tools import (
@@ -109,11 +109,19 @@ class AgentServerExecutionOwner:
             live_view_resolver=tool_resources.live_view_resolver,
             skill_catalog=skill_catalog,
         )
-        planning_graph = build_planning_graph(
+        planning_agent = build_planning_agent(
             model,
             fast_agent,
-            tools=tools,
-            skill_catalog=skill_catalog,
+            model_call_limit=config.max_tool_iterations,
+            tool_call_limit=config.max_tool_iterations,
+            context_window_tokens=config.context_input_token_limit,
+            compaction_trigger_ratio=config.context_compaction_trigger_ratio,
+            compaction_target_ratio=config.context_compaction_target_ratio,
+            token_counter=(
+                context_token_counter.count_messages
+                if context_token_counter is not None
+                else None
+            ),
         )
         coding_config = CodingConfig.from_env()
         coding_workspace_service = CodingWorkspaceService(coding_config)
@@ -167,7 +175,7 @@ class AgentServerExecutionOwner:
         graph = build_assistant_root_graph(
             memory_backend=memory_backend,
             fast_agent=fast_agent,
-            planning_graph=planning_graph,
+            planning_agent=planning_agent,
             coding_graph=coding_graph,
             extraction_delay_seconds=config.memory_extraction_delay_seconds,
         )

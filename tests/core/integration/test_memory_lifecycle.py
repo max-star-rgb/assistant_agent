@@ -17,13 +17,13 @@ from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent import memory_graph as memory_graph_module
 from assistant_agent.native_agent import root_graph as root_graph_module
 from assistant_agent.native_agent.fast_agent import build_fast_agent
-from assistant_agent.native_agent.planning_graph import build_planning_graph
+from assistant_agent.native_agent.planning_agent import build_planning_agent
 from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.native_agent.root_graph import build_assistant_root_graph
 from assistant_agent.native_agent.state import (
     CodingState,
     FastAgentState,
-    PlanningState,
+    PlanningAgentState,
 )
 from assistant_agent.skills.loading import SkillCatalog
 from assistant_agent.tools.native_boundary import configure_builtin_tool
@@ -98,39 +98,22 @@ def _branch(schema, name):
 
 
 class _MemoryStatusPlanningModel(MockAssistantChatModel):
-    _supervisor_calls: int = PrivateAttr(default=0)
+    _planning_calls: int = PrivateAttr(default=0)
 
     def _response_message(self, messages, **kwargs):
         tool_names = _model_tool_names(kwargs.get("tools"))
-        if "WorkerResult" not in tool_names:
-            self._supervisor_calls += 1
-            if self._supervisor_calls == 1:
-                return AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": "write_todos",
-                            "args": {
-                                "todos": [
-                                    {
-                                        "todo_id": "memory",
-                                        "content": "echo-memory-status",
-                                        "status": "pending",
-                                    }
-                                ]
-                            },
-                            "id": "memory-write-todos",
-                            "type": "tool_call",
-                        }
-                    ],
-                )
-            if self._supervisor_calls == 2:
+        if {"task", "write_todos"} <= tool_names:
+            self._planning_calls += 1
+            if self._planning_calls == 1:
                 return AIMessage(
                     content="",
                     tool_calls=[
                         {
                             "name": "task",
-                            "args": {"todo_id": "memory"},
+                            "args": {
+                                "description": "echo-memory-status",
+                                "subagent_type": "general-purpose",
+                            },
                             "id": "memory-task",
                             "type": "tool_call",
                         }
@@ -139,21 +122,7 @@ class _MemoryStatusPlanningModel(MockAssistantChatModel):
             return AIMessage(content="memory-final-sentinel")
         for message in reversed(messages):
             if isinstance(message, ToolMessage) and message.name == "memory_status_probe":
-                return AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": "WorkerResult",
-                            "args": {
-                                "todo_id": "memory",
-                                "status": "succeeded",
-                                "summary": str(message.content),
-                            },
-                            "id": "memory-status-worker-result",
-                            "type": "tool_call",
-                        }
-                    ],
-                )
+                return AIMessage(content=str(message.content))
         return AIMessage(
             content="",
             tool_calls=[
@@ -165,23 +134,6 @@ class _MemoryStatusPlanningModel(MockAssistantChatModel):
                 }
             ],
         )
-
-
-def _planning_control_tools():
-    @tool("load_skill")
-    def load_skill(skill_id: str) -> str:
-        """Load one generic probe Skill."""
-        return skill_id
-
-    @tool("load_skill_reference")
-    def load_skill_reference(skill_id: str, reference_id: str) -> str:
-        """Load one generic probe Skill reference."""
-        return f"{skill_id}:{reference_id}"
-
-    return [
-        configure_builtin_tool(load_skill, "read"),
-        configure_builtin_tool(load_skill_reference, "read"),
-    ]
 
 
 def _memory_status_tool():
@@ -220,7 +172,7 @@ def test_chat_runs_recall_once_and_schedule_extraction_for_each_mode(
         graph = build_assistant_root_graph(
             memory_backend=backend,
             fast_agent=_branch(FastAgentState, "AssistantFastAgent"),
-            planning_graph=_branch(PlanningState, "AssistantPlanningGraph"),
+            planning_agent=_branch(PlanningAgentState, "AssistantPlanningAgent"),
             coding_graph=_branch(CodingState, "AssistantCodingGraph"),
         )
         result = await graph.ainvoke(
@@ -274,21 +226,15 @@ def test_chat_runs_recall_once_and_schedule_extraction_for_each_mode(
 
 
 @pytest.mark.core_invariant("MEMORY-001")
-def test_planning_worker_preserves_parent_memory_status() -> None:
+def test_planning_task_preserves_parent_memory_status() -> None:
     model = _MemoryStatusPlanningModel()
     memory_status_tool = _memory_status_tool()
-    tools = [*_planning_control_tools(), memory_status_tool]
     fast_agent = build_fast_agent(
         model,
-        tools,
+        [memory_status_tool],
         skill_catalog=SkillCatalog(),
     )
-    graph = build_planning_graph(
-        model,
-        fast_agent,
-        tools=tools,
-        skill_catalog=SkillCatalog(),
-    )
+    graph = build_planning_agent(model, fast_agent)
 
     result = asyncio.run(
         graph.ainvoke(
@@ -296,12 +242,18 @@ def test_planning_worker_preserves_parent_memory_status() -> None:
                 "messages": [HumanMessage(content="request-sentinel")],
                 "memory_context": (),
                 "memory_status": "degraded",
+                "execution_mode": "planning",
             },
             context=AssistantRunContext(),
         )
     )
 
-    assert result["worker_results"]["memory"]["summary"] == "degraded"
+    assert any(
+        isinstance(message, ToolMessage)
+        and message.tool_call_id == "memory-task"
+        and message.content == "degraded"
+        for message in result["messages"]
+    )
 
 
 @pytest.mark.core_invariant("MEMORY-001")

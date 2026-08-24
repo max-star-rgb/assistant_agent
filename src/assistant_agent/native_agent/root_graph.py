@@ -34,7 +34,7 @@ def build_assistant_root_graph(
     *,
     memory_backend: MemoryBackend,
     fast_agent: Any,
-    planning_graph: Any,
+    planning_agent: Any,
     coding_graph: Any,
     extraction_delay_seconds: int = DEFAULT_EXTRACTION_DELAY_SECONDS,
 ):
@@ -62,7 +62,7 @@ def build_assistant_root_graph(
     )
     builder.add_node("execution_router", execution_router_node)
     builder.add_node("fast_agent", fast_agent)
-    builder.add_node("planning_graph", planning_graph)
+    builder.add_node("planning_agent", planning_agent)
     builder.add_node("coding_graph", coding_graph)
     builder.add_node(
         "refresh_memory_extraction",
@@ -87,12 +87,12 @@ def build_assistant_root_graph(
         route_execution_mode,
         {
             "fast": "fast_agent",
-            "planning": "planning_graph",
+            "planning": "planning_agent",
             "coding": "coding_graph",
         },
     )
     builder.add_edge("fast_agent", "refresh_memory_extraction")
-    builder.add_edge("planning_graph", "refresh_memory_extraction")
+    builder.add_edge("planning_agent", "refresh_memory_extraction")
     builder.add_edge("coding_graph", "refresh_memory_extraction")
     builder.add_edge("refresh_memory_extraction", END)
     return builder.compile(name="AssistantRootGraph")

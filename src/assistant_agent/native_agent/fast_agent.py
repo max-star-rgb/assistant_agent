@@ -15,7 +15,6 @@ from langchain.agents.middleware import (
     ToolRetryMiddleware,
     dynamic_prompt,
 )
-from langchain.agents.structured_output import ToolStrategy
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     ModelResponse,
@@ -37,7 +36,6 @@ from assistant_agent.media.visual_perception.history_probe import (
     VisualObservationHistoryProbe,
 )
 from assistant_agent.native_agent.state import FastAgentState
-from assistant_agent.native_agent.models import WorkerResultSchema
 from assistant_agent.native_agent.runtime_facts import (
     TrustedRuntimeFacts,
     trusted_runtime_facts_message,
@@ -46,7 +44,6 @@ from assistant_agent.tools.ids import LIVE_VIEW_INSPECT_TOOL_NAME
 from assistant_agent.native_agent.conditional_tool_exposure import (
     ConditionalToolExposureMiddleware,
 )
-from assistant_agent.native_agent.planning_worker import PlanningWorkerMiddleware
 from assistant_agent.native_agent.tool_exposure import (
     ProgressiveToolExposureMiddleware,
     discoverable_skill_descriptors,
@@ -113,7 +110,6 @@ def build_fast_agent(
     middleware = [
         assistant_prompt,
         ProgressiveToolExposureMiddleware(resolved_skill_catalog),
-        PlanningWorkerMiddleware(),
         ConditionalToolExposureMiddleware(
             visual_history_probe,
             live_view_resolver,
@@ -165,7 +161,6 @@ def build_fast_agent(
         state_schema=state_schema,
         context_schema=AssistantRunContext,
         middleware=middleware,
-        response_format=ToolStrategy(WorkerResultSchema),
         name="AssistantFastAgent",
     )
 
@@ -391,7 +386,7 @@ def _request_with_trusted_runtime_facts(request: ModelRequest) -> ModelRequest:
         raw_facts
         if isinstance(raw_facts, TrustedRuntimeFacts)
         else TrustedRuntimeFacts.model_validate(raw_facts)
-        if raw_facts is not None
+        if raw_facts
         else None
     )
     message = trusted_runtime_facts_message(facts)

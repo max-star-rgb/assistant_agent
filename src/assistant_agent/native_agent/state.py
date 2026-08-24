@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import operator
 from collections.abc import Mapping, Sequence
-from typing import Annotated, Literal, NotRequired, Required, TypedDict
+from typing import Annotated, Literal, NotRequired, Required
 
 from langchain.agents import AgentState
 from langchain_core.messages import AnyMessage
@@ -36,16 +36,10 @@ from assistant_agent.coding.models import (
     CodingTerminalResult,
 )
 
-from assistant_agent.native_agent.models import (
-    PlanningTodo,
-    ProviderSearchProfile,
-    WorkerResult,
-    WorkerWrite,
-)
+from assistant_agent.native_agent.models import ProviderSearchProfile
 
 ExecutionMode = Literal["fast", "planning", "coding"]
 MemoryStatus = Literal["ready", "empty", "degraded"]
-AgentPhase = Literal["fast", "worker"]
 AnalysisSnapshotReleaseStatus = Literal["active", "released", "cleanup_pending"]
 
 
@@ -91,8 +85,27 @@ class FastAgentState(AgentState):
     memory_status: NotRequired[MemoryStatus]
     execution_mode: NotRequired[ExecutionMode]
     trusted_runtime_facts: NotRequired[dict[str, object]]
-    agent_phase: NotRequired[AgentPhase]
     provider_search_profile: NotRequired[ProviderSearchProfile]
+    active_skill_ids: NotRequired[Annotated[list[str], _merge_unique_strings]]
+    skill_reference_grants: NotRequired[
+        Annotated[dict[str, list[str]], _merge_reference_grants]
+    ]
+
+
+class PlanningAgentState(AgentState):
+    """State shared by parallel upstream `task` Tool invocations."""
+
+    memory_context: NotRequired[
+        Annotated[tuple[str, ...], _merge_identical_value]
+    ]
+    memory_status: NotRequired[Annotated[MemoryStatus, _merge_identical_value]]
+    execution_mode: NotRequired[Annotated[ExecutionMode, _merge_identical_value]]
+    trusted_runtime_facts: NotRequired[
+        Annotated[dict[str, object], _merge_identical_value]
+    ]
+    provider_search_profile: NotRequired[
+        Annotated[ProviderSearchProfile, _merge_identical_value]
+    ]
     active_skill_ids: NotRequired[Annotated[list[str], _merge_unique_strings]]
     skill_reference_grants: NotRequired[
         Annotated[dict[str, list[str]], _merge_reference_grants]
@@ -105,19 +118,6 @@ class MemoryExtractionState(MessagesState):
     pass
 
 
-class WorkerState(TypedDict):
-    """Narrow input/output state for one planning worker branch."""
-
-    memory_context: Required[tuple[str, ...]]
-    memory_status: Required[MemoryStatus]
-    trusted_runtime_facts: NotRequired[dict[str, object]]
-    active_skill_ids: Required[list[str]]
-    skill_reference_grants: Required[dict[str, list[str]]]
-    todo_id: Required[str]
-    content: Required[str]
-    task_call_id: Required[str]
-
-
 class CodingAnalysisWorkerState(AgentState):
     """Narrow input state for one snapshot-bound coding analysis branch."""
 
@@ -127,23 +127,6 @@ class CodingAnalysisWorkerState(AgentState):
     analysis_snapshot: Required[CodingAnalysisSnapshot]
     analysis_task: Required[CodingAnalysisTask]
     provider_search_profile: Required[Literal["none"]]
-
-
-class PlanningState(AgentState):
-    """Planning-only channels kept out of the fast branch."""
-
-    memory_context: NotRequired[tuple[str, ...]]
-    memory_status: NotRequired[MemoryStatus]
-    trusted_runtime_facts: NotRequired[dict[str, object]]
-    todos: NotRequired[list[dict[str, object]]]
-    worker_results: NotRequired[
-        Annotated[dict[str, dict[str, object]], merge_worker_results]
-    ]
-    worker_writes: NotRequired[Annotated[list[dict[str, object]], operator.add]]
-    active_skill_ids: NotRequired[Annotated[list[str], _merge_unique_strings]]
-    skill_reference_grants: NotRequired[
-        Annotated[dict[str, list[str]], _merge_reference_grants]
-    ]
 
 
 class CodingState(AgentState):
@@ -235,6 +218,14 @@ def _merge_unique_strings(
     return list(dict.fromkeys([*(current or ()), *(update or ())]))
 
 
+def _merge_identical_value(current, update):
+    if current in (None, (), {}, ""):
+        return update
+    if update in (None, (), {}, "") or update == current:
+        return current
+    raise ValueError("parallel task results contain conflicting frozen state")
+
+
 def _merge_reference_grants(
     current: Mapping[str, Sequence[str]] | None,
     update: Mapping[str, Sequence[str]] | None,
@@ -250,41 +241,7 @@ def _merge_reference_grants(
     return merged
 
 
-def merge_worker_results(
-    left: Mapping[str, WorkerResult | Mapping[str, object]] | None,
-    right: Mapping[str, WorkerResult | Mapping[str, object]] | None,
-) -> dict[str, dict[str, object]]:
-    """Keep the latest normal result while making success monotonic."""
-
-    merged = _validated_worker_results(left)
-    for todo_id, result in _validated_worker_results(right).items():
-        previous = merged.get(todo_id)
-        if previous is not None and previous.status == "succeeded":
-            if previous != result:
-                raise ValueError(f"conflicting worker result {todo_id}")
-            continue
-        merged[todo_id] = result
-    return {
-        todo_id: result.model_dump(mode="json")
-        for todo_id, result in merged.items()
-    }
-
-
-def _validated_worker_results(
-    values: Mapping[str, WorkerResult | Mapping[str, object]] | None,
-) -> dict[str, WorkerResult]:
-    validated: dict[str, WorkerResult] = {}
-    for key, value in (values or {}).items():
-        payload = value.model_dump() if isinstance(value, WorkerResult) else value
-        result = WorkerResult.model_validate(payload)
-        if key != result.todo_id:
-            raise ValueError("worker result key does not match todo_id")
-        validated[key] = result
-    return validated
-
-
 __all__ = [
-    "AgentPhase",
     "AnalysisSnapshotReleaseStatus",
     "AssistantRootInput",
     "AssistantRootState",
@@ -295,7 +252,5 @@ __all__ = [
     "MemoryExtractionInput",
     "MemoryExtractionState",
     "MemoryStatus",
-    "merge_worker_results",
-    "PlanningState",
-    "WorkerState",
+    "PlanningAgentState",
 ]

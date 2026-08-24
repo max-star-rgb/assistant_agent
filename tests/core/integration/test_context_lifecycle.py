@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import json
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 from langchain.agents.middleware import (
@@ -12,7 +13,7 @@ from langchain.agents.middleware import (
     ToolCallLimitMiddleware,
     ToolRetryMiddleware,
 )
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -21,9 +22,12 @@ from pydantic import PrivateAttr
 
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.fast_agent import build_fast_agent
-from assistant_agent.native_agent.planning_graph import build_planning_graph
+from assistant_agent.native_agent.planning_agent import build_planning_agent
 from assistant_agent.native_agent.providers import MockAssistantChatModel
-from assistant_agent.native_agent.state import PlanningState
+from assistant_agent.native_agent.runtime_facts import (
+    capture_trusted_runtime_facts_node,
+)
+from assistant_agent.native_agent.state import PlanningAgentState
 from assistant_agent.native_agent.tool_call_limits import PerToolCallLimitMiddleware
 from assistant_agent.skills.loading import SkillCatalog
 
@@ -40,30 +44,6 @@ def _tool_names(raw_tools: object) -> set[str]:
     }
 
 
-def _private_todo_id(messages: list[AnyMessage]) -> str:
-    human = next(item for item in messages if isinstance(item, HumanMessage))
-    return str(json.loads(str(human.content))["todo_id"])
-
-
-def _planning_control_tools() -> list[StructuredTool]:
-    def load_skill(skill_id: str) -> str:
-        """Load one generic probe Skill."""
-        return skill_id
-
-    def load_skill_reference(skill_id: str, reference_id: str) -> str:
-        """Load one generic probe Skill reference."""
-        return f"{skill_id}:{reference_id}"
-
-    return [
-        StructuredTool.from_function(load_skill, name="load_skill", metadata={"effect": "read"}),
-        StructuredTool.from_function(
-            load_skill_reference,
-            name="load_skill_reference",
-            metadata={"effect": "read"},
-        ),
-    ]
-
-
 class _CaptureMessagesModel(MockAssistantChatModel):
     observed_messages: list[tuple[Any, ...]] = []
 
@@ -72,83 +52,61 @@ class _CaptureMessagesModel(MockAssistantChatModel):
         return super()._response_message(messages, **kwargs)
 
 
+class _CapturePlanningMessagesModel(MockAssistantChatModel):
+    observed_calls: list[tuple[set[str], tuple[Any, ...]]] = []
+
+    def _response_message(self, messages, **kwargs):
+        self.observed_calls.append(
+            (_tool_names(kwargs.get("tools")), tuple(messages))
+        )
+        return super()._response_message(messages, **kwargs)
+
+
 class _PlanningWriteModel(MockAssistantChatModel):
-    _supervisor_calls: int = PrivateAttr(default=0)
-    _worker_runs: int = PrivateAttr(default=0)
+    _planning_calls: int = PrivateAttr(default=0)
+    _subagent_runs: int = PrivateAttr(default=0)
 
     @property
-    def worker_runs(self) -> int:
-        return self._worker_runs
+    def subagent_runs(self) -> int:
+        return self._subagent_runs
 
     def _response_message(self, messages, **kwargs):
         visible = _tool_names(kwargs.get("tools"))
-        if "WorkerResult" in visible:
-            self._worker_runs += 1
-            todo_id = _private_todo_id(messages)
-            if not any(
-                isinstance(item, ToolMessage) and item.name == "write_probe"
-                for item in messages
-            ):
+        if {"task", "write_todos"} <= visible:
+            self._planning_calls += 1
+            if self._planning_calls == 1:
                 return AIMessage(
                     content="",
                     tool_calls=[
                         {
-                            "name": "write_probe",
-                            "args": {"value": "worker-write-sentinel"},
-                            "id": "worker-write-call",
+                            "name": "task",
+                            "args": {
+                                "description": "write one sentinel",
+                                "subagent_type": "general-purpose",
+                            },
+                            "id": "task-write-sentinel",
                             "type": "tool_call",
                         }
                     ],
                 )
+            return AIMessage(content="final-answer-sentinel")
+        self._subagent_runs += 1
+        if not any(
+            isinstance(item, ToolMessage) and item.name == "write_probe"
+            for item in messages
+        ):
             return AIMessage(
                 content="",
                 tool_calls=[
                     {
-                        "name": "WorkerResult",
-                        "args": {
-                            "todo_id": todo_id,
-                            "status": "succeeded",
-                            "summary": "worker-write-complete",
-                        },
-                        "id": "worker-result-call",
+                        "name": "write_probe",
+                        "args": {"value": "worker-write-sentinel"},
+                        "id": "worker-write-call",
                         "type": "tool_call",
                     }
                 ],
             )
-        self._supervisor_calls += 1
-        if self._supervisor_calls == 1:
-            return AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "write_todos",
-                        "args": {
-                            "todos": [
-                                {
-                                    "todo_id": "A",
-                                    "content": "write one sentinel",
-                                    "status": "pending",
-                                }
-                            ]
-                        },
-                        "id": "write-todos-call",
-                        "type": "tool_call",
-                    }
-                ],
-            )
-        if self._supervisor_calls == 2:
-            return AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "task",
-                        "args": {"todo_id": "A"},
-                        "id": "task-A",
-                        "type": "tool_call",
-                    }
-                ],
-            )
-        return AIMessage(content="final-answer-sentinel")
+        return AIMessage(content="worker-write-complete")
 
 
 class _FastWriteModel(MockAssistantChatModel):
@@ -192,6 +150,56 @@ def test_frozen_memory_is_transient_context_before_the_current_request() -> None
     assert "memory-sentinel" in str(model_humans[-2].content)
     assert model_humans[-1].content == "request-sentinel"
     assert [item.content for item in state_humans] == ["request-sentinel"]
+
+
+@pytest.mark.core_invariant("CTX-001")
+def test_planning_and_task_receive_transient_frozen_context() -> None:
+    model = _CapturePlanningMessagesModel()
+    model.observed_calls = []
+    fast = build_fast_agent(model, [], skill_catalog=SkillCatalog())
+    graph = build_planning_agent(model, fast)
+    facts = capture_trusted_runtime_facts_node(
+        {},
+        clock=lambda: datetime(
+            2026,
+            8,
+            24,
+            12,
+            0,
+            tzinfo=ZoneInfo("Asia/Shanghai"),
+        ),
+    )["trusted_runtime_facts"]
+
+    result = graph.invoke(
+        {
+            "messages": [HumanMessage(content="request-sentinel")],
+            "memory_context": ("memory-sentinel",),
+            "memory_status": "ready",
+            "trusted_runtime_facts": facts,
+            "execution_mode": "planning",
+        },
+        context=AssistantRunContext(),
+    )
+
+    parent_calls = [
+        messages
+        for tools, messages in model.observed_calls
+        if {"task", "write_todos"} <= tools
+    ]
+    child_call = next(
+        messages
+        for tools, messages in model.observed_calls
+        if not {"task", "write_todos"} <= tools
+    )
+    for messages in (parent_calls[0], child_call):
+        humans = [item for item in messages if isinstance(item, HumanMessage)]
+        assert len(humans) == 3
+        assert "memory-sentinel" in str(humans[-3].content)
+        assert "2026-08-24" in str(humans[-2].content)
+        assert humans[-1].content == "request-sentinel"
+    assert [
+        item.content for item in result["messages"] if isinstance(item, HumanMessage)
+    ] == ["request-sentinel"]
 
 
 @pytest.mark.core_invariant("CTX-001")
@@ -243,7 +251,7 @@ def test_create_agent_owns_native_limits_summary_retry_hitl_and_per_tool_limit(
 
 
 @pytest.mark.core_invariant("CTX-001")
-def test_planning_worker_write_interrupts_and_resume_does_not_replay() -> None:
+def test_planning_task_write_interrupts_and_resume_does_not_replay() -> None:
     executed: list[str] = []
 
     def write_probe(value: str) -> str:
@@ -254,18 +262,16 @@ def test_planning_worker_write_interrupts_and_resume_does_not_replay() -> None:
     write_tool = StructuredTool.from_function(
         write_probe, name="write_probe", metadata={"effect": "write"}
     )
-    controls = _planning_control_tools()
-    tools = [*controls, write_tool]
     model = _PlanningWriteModel()
     catalog = SkillCatalog()
-    fast = build_fast_agent(model, tools, skill_catalog=catalog)
-    planning = build_planning_graph(model, fast, tools=tools, skill_catalog=catalog)
-    builder = StateGraph(PlanningState, context_schema=AssistantRunContext)
+    fast = build_fast_agent(model, [write_tool], skill_catalog=catalog)
+    planning = build_planning_agent(model, fast)
+    builder = StateGraph(PlanningAgentState, context_schema=AssistantRunContext)
     builder.add_node("planning", planning)
     builder.add_edge(START, "planning")
     builder.add_edge("planning", END)
     graph = builder.compile(checkpointer=InMemorySaver())
-    config = {"configurable": {"thread_id": "alite-hitl-thread"}}
+    config = {"configurable": {"thread_id": "native-task-hitl-thread"}}
 
     async def run_and_resume():
         interrupted = await graph.ainvoke(
@@ -273,14 +279,12 @@ def test_planning_worker_write_interrupts_and_resume_does_not_replay() -> None:
                 "messages": [HumanMessage(content="request-sentinel")],
                 "memory_context": (),
                 "memory_status": "empty",
-                "todos": [],
-                "worker_results": {},
-                "worker_writes": [],
+                "execution_mode": "planning",
             },
             config=config,
             context=AssistantRunContext(),
         )
-        runs_before_resume = model.worker_runs
+        runs_before_resume = model.subagent_runs
         resumed = await graph.ainvoke(
             Command(resume={"decisions": [{"type": "approve"}]}),
             config=config,
@@ -292,8 +296,13 @@ def test_planning_worker_write_interrupts_and_resume_does_not_replay() -> None:
     assert interrupted["__interrupt__"][0].value["action_requests"][0]["name"] == "write_probe"
     assert executed == ["worker-write-sentinel"]
     assert runs_before_resume == 1
-    assert model.worker_runs == 2
-    assert resumed["worker_results"]["A"]["summary"] == "worker-write-complete"
+    assert model.subagent_runs == 2
+    assert any(
+        isinstance(item, ToolMessage)
+        and item.tool_call_id == "task-write-sentinel"
+        and item.content == "worker-write-complete"
+        for item in resumed["messages"]
+    )
     assert not any(
         isinstance(item, ToolMessage) and item.name == "write_probe"
         for item in resumed["messages"]
