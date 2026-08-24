@@ -3,11 +3,18 @@ from __future__ import annotations
 import asyncio
 import json
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import Any
 
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    AnyMessage,
+    HumanMessage,
+    ToolMessage,
+)
+from langchain_core.messages.tool import tool_call_chunk
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_core.tools import BaseTool, tool
 from pydantic import PrivateAttr
 
@@ -256,6 +263,30 @@ class ToolCallingWorkerModel(MockAssistantChatModel):
         return _worker_result_call(
             self.todo_id,
             summary="read-probe-result-sentinel",
+        )
+
+    def _stream(
+        self,
+        messages: list[AnyMessage],
+        stop: list[str] | None = None,
+        run_manager: Any | None = None,
+        **kwargs: Any,
+    ) -> Iterator[ChatGenerationChunk]:
+        del stop, run_manager
+        response = self._response_message(messages, **kwargs)
+        yield ChatGenerationChunk(
+            message=AIMessageChunk(
+                content=response.content,
+                tool_call_chunks=[
+                    tool_call_chunk(
+                        name=call["name"],
+                        args=json.dumps(call["args"], sort_keys=True),
+                        id=call["id"],
+                        index=index,
+                    )
+                    for index, call in enumerate(response.tool_calls)
+                ],
+            )
         )
 
 
