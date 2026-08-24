@@ -387,6 +387,7 @@ async def review_workspace(
         observations = _review_read_observations(
             response if review_agent is not None else state,
             snapshot,
+            review_input,
         )
         if isinstance(raw_result, BaseModel):
             raw_result = raw_result.model_dump(mode="json")
@@ -456,8 +457,14 @@ def create_coding_review_graph(
                 CodingAnalysisPhaseMiddleware(
                     coding_analysis_model_settings(review_model)
                 ),
-                ModelCallLimitMiddleware(run_limit=9, exit_behavior="error"),
-                ToolCallLimitMiddleware(run_limit=8, exit_behavior="error"),
+                ModelCallLimitMiddleware(
+                    run_limit=9,
+                    exit_behavior="error",
+                ),
+                ToolCallLimitMiddleware(
+                    run_limit=9,
+                    exit_behavior="error",
+                ),
             ],
             name="AssistantCodingReviewAgent",
         )
@@ -724,6 +731,7 @@ def _normalize_legacy_review_result(
 def _review_read_observations(
     response: Mapping[str, object],
     snapshot: CodingAnalysisSnapshot,
+    review_input: CodingReviewInput,
 ) -> tuple[_ReviewReadObservation, ...]:
     messages = response.get("messages", ())
     if not isinstance(messages, Sequence) or isinstance(messages, (str, bytes)):
@@ -734,18 +742,30 @@ def _review_read_observations(
             continue
         artifact = message.artifact
         if not isinstance(artifact, Mapping):
-            raise ValueError("coding_review_observation_invalid")
+            _raise_review_observation_error(
+                review_input,
+                "coding_review_observation_invalid",
+            )
         payload = artifact.get("data", artifact)
         if not isinstance(payload, Mapping):
-            raise ValueError("coding_review_observation_invalid")
+            _raise_review_observation_error(
+                review_input,
+                "coding_review_observation_invalid",
+            )
         if (
             payload.get("snapshot_ref") != snapshot.snapshot_ref
             or payload.get("tree_digest") != snapshot.tree_digest
         ):
-            raise ValueError("coding_review_observation_mismatch")
+            _raise_review_observation_error(
+                review_input,
+                "coding_review_observation_mismatch",
+            )
         result = payload.get("result")
         if not isinstance(result, Mapping):
-            raise ValueError("coding_review_observation_invalid")
+            _raise_review_observation_error(
+                review_input,
+                "coding_review_observation_invalid",
+            )
         path = result.get("path")
         content = result.get("content")
         start_line = result.get("start_line")
@@ -759,19 +779,59 @@ def _review_read_observations(
             or isinstance(end_line, bool)
             or end_line < start_line - 1
         ):
-            raise ValueError("coding_review_observation_invalid")
+            _raise_review_observation_error(
+                review_input,
+                "coding_review_observation_invalid",
+            )
+        if review_input.validation_evidence_digest is not None and not _safe_observation_path(
+            path
+        ):
+            _raise_review_observation_error(
+                review_input,
+                "coding_review_observation_mismatch",
+            )
         lines = tuple(content.splitlines())
         if end_line != start_line + len(lines) - 1:
-            raise ValueError("coding_review_observation_invalid")
+            _raise_review_observation_error(
+                review_input,
+                "coding_review_observation_invalid",
+            )
+        content_digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        if (
+            review_input.validation_evidence_digest is not None
+            and payload.get("content_digest") != content_digest
+        ):
+            _raise_review_observation_error(
+                review_input,
+                "coding_review_observation_mismatch",
+            )
         observations.append(
             _ReviewReadObservation(
                 path=path,
                 start_line=start_line,
                 lines=lines,
-                content_digest=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                content_digest=content_digest,
             )
         )
     return tuple(observations)
+
+
+def _raise_review_observation_error(
+    review_input: CodingReviewInput,
+    legacy_error_code: str,
+) -> None:
+    if review_input.validation_evidence_digest is not None:
+        raise CodingWorkspaceError("coding_review_binding_mismatch")
+    raise ValueError(legacy_error_code)
+
+
+def _safe_observation_path(path: str) -> bool:
+    parts = path.split("/")
+    return not (
+        path.startswith("/")
+        or any(part in {"", ".", "..", ".git"} for part in parts)
+        or any(character in path for character in ("\\", "\x00", "\n", "\r"))
+    )
 
 
 def _validate_finding_evidence(

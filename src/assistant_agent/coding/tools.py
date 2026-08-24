@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Annotated, Any
 
@@ -9,8 +10,12 @@ from langchain_core.tools import BaseTool, ToolException, tool
 from langgraph.prebuilt import ToolRuntime
 from pydantic import Field
 
-from assistant_agent.coding.models import CodingAnalysisSnapshot, CodingToolScope
-from assistant_agent.coding.workspace import CodingWorkspaceService
+from assistant_agent.coding.models import (
+    CodingAnalysisSnapshot,
+    CodingReviewInput,
+    CodingToolScope,
+)
+from assistant_agent.coding.workspace import CodingWorkspaceError, CodingWorkspaceService
 from assistant_agent.native_agent.context import (
     AssistantRunContext,
     authenticated_user_identity,
@@ -372,6 +377,24 @@ def _invoke_analysis(
             "tree_digest": snapshot.tree_digest,
             "result": result_data,
         }
+        raw_review_input = runtime.state.get("review_input")
+        if tool_name == "coding_repo_read" and raw_review_input is not None:
+            try:
+                review_input = CodingReviewInput.model_validate(raw_review_input)
+            except (TypeError, ValueError) as exc:
+                raise CodingWorkspaceError(
+                    "coding_review_binding_mismatch"
+                ) from exc
+            content = result_data.get("content")
+            if (
+                review_input.validation_evidence_digest is not None
+                and not isinstance(content, str)
+            ):
+                raise CodingWorkspaceError("coding_analysis_snapshot_mismatch")
+            if review_input.validation_evidence_digest is not None:
+                data["content_digest"] = hashlib.sha256(
+                    content.encode("utf-8")
+                ).hexdigest()
         return ToolResult(
             tool_name=tool_name,
             success=True,

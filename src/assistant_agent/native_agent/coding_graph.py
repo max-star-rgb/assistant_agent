@@ -1539,12 +1539,13 @@ def build_coding_graph(
                 except CodingWorkspaceError:
                     pass
                 raise ValueError("coding_review_binding_mismatch")
-            workspace_service.release_analysis_snapshot(
-                fresh_snapshot,
-                identity=authenticated_user_identity(runtime),
-                thread_id=_thread_id(config),
-                workspace=workspace,
-            )
+            if decision == "reject" or not state.get("integration_required"):
+                workspace_service.release_analysis_snapshot(
+                    fresh_snapshot,
+                    identity=authenticated_user_identity(runtime),
+                    thread_id=_thread_id(config),
+                    workspace=workspace,
+                )
         except (CodingWorkspaceError, ValueError, TypeError):
             return Command(
                 update={
@@ -1578,7 +1579,9 @@ def build_coding_graph(
             )
         approval_update: dict[str, object] = {
             "review_decision": "approved",
-            "review_snapshot_release_status": "released",
+            "review_snapshot_release_status": (
+                "active" if state.get("integration_required") else "released"
+            ),
         }
         if state.get("integration_required"):
             return Command(update=approval_update, goto="create_commit")
@@ -1752,10 +1755,21 @@ def build_coding_graph(
             ),
         }
 
-    def summarize_node(state: CodingState) -> dict[str, object]:
+    def summarize_node(
+        state: CodingState,
+        runtime: Runtime[AssistantRunContext],
+        config: RunnableConfig,
+    ) -> dict[str, object]:
+        _release_terminal_coding_snapshots(
+            state,
+            runtime,
+            config,
+            workspace_service,
+        )
         result = state.get("coding_result") or _failed(state, "patch_invalid")
         return {
             "coding_result": result,
+            "validation_snapshot": None,
             "review_snapshot": None,
             "review_snapshot_release_status": None,
             "review_input": None,
@@ -2159,6 +2173,48 @@ def _validate_analysis_checkpoint(
 
 def _thread_id(config: RunnableConfig) -> str:
     return str(config.get("configurable", {}).get("thread_id", "")).strip()
+
+
+def _release_terminal_coding_snapshots(
+    state: CodingState,
+    runtime: Runtime[AssistantRunContext],
+    config: RunnableConfig,
+    service: CodingWorkspaceService,
+) -> None:
+    identity = authenticated_user_identity(runtime)
+    thread_id = _thread_id(config)
+    workspace_ref = str(state.get("workspace_ref", "")).strip()
+    if not identity or not thread_id or not workspace_ref:
+        return
+    try:
+        workspace = service.get(
+            workspace_ref,
+            identity=identity,
+            thread_id=thread_id,
+        )
+    except CodingWorkspaceError:
+        return
+    released_refs: set[str] = set()
+    for key in ("validation_snapshot", "review_snapshot"):
+        raw_snapshot = state.get(key)
+        if raw_snapshot is None:
+            continue
+        try:
+            snapshot = CodingAnalysisSnapshot.model_validate(raw_snapshot)
+        except (TypeError, ValueError):
+            continue
+        if snapshot.snapshot_ref in released_refs:
+            continue
+        released_refs.add(snapshot.snapshot_ref)
+        try:
+            service.release_analysis_snapshot(
+                snapshot,
+                identity=identity,
+                thread_id=thread_id,
+                workspace=workspace,
+            )
+        except CodingWorkspaceError:
+            pass
 
 
 def _reset_review_state() -> dict[str, object]:

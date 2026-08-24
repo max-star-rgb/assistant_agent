@@ -8,6 +8,8 @@ import os
 import subprocess
 import tempfile
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from assistant_agent.coding.config import CodingRepositoryConfig
@@ -66,7 +68,16 @@ class CodingIntegrationService:
                 != expected_snapshot.workspace_diff_digest
             ):
                 raise CodingWorkspaceError("commit_snapshot_binding_invalid")
-        with self._repo_lock(repository.repo_id):
+        snapshots_to_release = (
+            [expected_snapshot] if expected_snapshot is not None else []
+        )
+        with _release_analysis_snapshot_leases(
+            self.workspace_service,
+            snapshots_to_release,
+            workspace=workspace,
+            identity=identity,
+            thread_id=thread_id,
+        ), self._repo_lock(repository.repo_id):
             head = self.workspace_service.git_head(workspace.root)
             if head != workspace.base_commit:
                 return self._existing_commit(
@@ -85,6 +96,7 @@ class CodingIntegrationService:
                     identity=identity or "",
                     thread_id=thread_id or "",
                 )
+                snapshots_to_release.append(current_snapshot)
                 if (
                     current_snapshot.snapshot_ref != expected_snapshot.snapshot_ref
                     or current_snapshot.tree_digest != expected_snapshot.tree_digest
@@ -661,6 +673,35 @@ def _git_completed(
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise CodingWorkspaceError("workspace_git_failed") from exc
+
+
+@contextmanager
+def _release_analysis_snapshot_leases(
+    workspace_service: CodingWorkspaceService,
+    snapshots: list[CodingAnalysisSnapshot],
+    *,
+    workspace: CodingWorkspace,
+    identity: str | None,
+    thread_id: str | None,
+) -> Iterator[None]:
+    try:
+        yield
+    finally:
+        if identity and thread_id:
+            released_refs: set[str] = set()
+            for snapshot in snapshots:
+                if snapshot.snapshot_ref in released_refs:
+                    continue
+                released_refs.add(snapshot.snapshot_ref)
+                try:
+                    workspace_service.release_analysis_snapshot(
+                        snapshot,
+                        identity=identity,
+                        thread_id=thread_id,
+                        workspace=workspace,
+                    )
+                except CodingWorkspaceError:
+                    pass
 
 
 __all__ = ["CodingIntegrationService"]

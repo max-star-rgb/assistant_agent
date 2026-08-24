@@ -77,6 +77,9 @@ class CodingValidationService:
                 credential_request=credential_request,
                 artifact_ingress_plan=artifact_ingress_plan,
             )
+        snapshot = None
+        current = None
+        snapshot_handed_off = False
         try:
             snapshot = self.workspace_service.create_analysis_snapshot(
                 workspace,
@@ -131,6 +134,7 @@ class CodingValidationService:
                     separators=(",", ":"),
                 ).encode("utf-8")
             ).hexdigest()
+            snapshot_handed_off = True
             return result.model_copy(
                 update={
                     "validated_snapshot": snapshot,
@@ -139,6 +143,25 @@ class CodingValidationService:
             )
         except CodingWorkspaceError as exc:
             return CodingVerificationResult(status="failed", error_code=exc.code)
+        finally:
+            if not snapshot_handed_off:
+                released_refs: set[str] = set()
+                for candidate in (snapshot, current):
+                    if (
+                        candidate is None
+                        or candidate.snapshot_ref in released_refs
+                    ):
+                        continue
+                    released_refs.add(candidate.snapshot_ref)
+                    try:
+                        self.workspace_service.release_analysis_snapshot(
+                            candidate,
+                            identity=identity,
+                            thread_id=thread_id,
+                            workspace=workspace,
+                        )
+                    except CodingWorkspaceError:
+                        pass
 
     def _run_unbound(
         self,
