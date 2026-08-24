@@ -1022,11 +1022,21 @@ def build_coding_graph(
             if workspace.workspace_ref != state.get("workspace_ref"):
                 raise CodingWorkspaceError("workspace_identity_mismatch")
             applied = workspace_service.apply_validated_patch(workspace, validation)
+            approved_changed_paths: object = list(applied.changed_paths)
+            if state.get("review_repair_status") == "active":
+                allowed_paths = {
+                    *state.get("approved_changed_paths", ()),
+                    *validation.proposal.changed_paths,
+                }
+                actual_changed_paths = workspace_service.changed_paths(workspace)
+                if not set(actual_changed_paths).issubset(allowed_paths):
+                    raise CodingWorkspaceError("patch_apply_path_mismatch")
+                approved_changed_paths = Overwrite(list(actual_changed_paths))
         except CodingWorkspaceError as exc:
             return {"coding_result": _failed(state, exc.code)}
         return {
             "applied_result": applied,
-            "approved_changed_paths": list(applied.changed_paths),
+            "approved_changed_paths": approved_changed_paths,
             "format_round": (
                 int(state.get("format_round", 0)) + 1
                 if state.get("approval_origin") == "formatter"
