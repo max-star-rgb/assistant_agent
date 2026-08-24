@@ -1,6 +1,6 @@
 # LangChain-native Tool 与扩展架构
 
-最后更新：2026-08-21
+最后更新：2026-08-24
 
 ## Authority contract
 
@@ -170,6 +170,15 @@ coding 模式使用独立静态 Tool inventory：`coding_repo_list`、`coding_re
 analysis Tool 的 retry 只覆盖明确 transient cause chain；身份、权限、snapshot、schema、路径和其他安全错误立即传播，
 耗尽后的 transient 错误也传播到 worker 的受信失败分类，不能转换成供模型继续生成 succeeded result 的 error ToolMessage。
 
+final coding review 使用独立的静态只读 profile，并精确复用上述五个 snapshot-bound read Tool；三个并行 reviewer
+只能读取父 checkpoint 冻结的 final snapshot，固定 `provider_search_profile=none`。review profile 不包含
+`coding_propose_patch`、shell、validation command、dependency/artifact/credential、commit/merge 或任何 mutation
+Tool；review decision 是父 Graph 自有 interrupt，也不是 Tool。普通 reviewer/capability failure 只能形成 signed
+failed result 并由 canonical report 派生 `unavailable`，不会触发 Tool 写入、自动 patch、自动 repair 或自动 approval。
+pending review 的 Tool read 要求 active v2 immutable manifest；legacy、schema/digest mismatch、identity/permission 和
+snapshot contract 错误 fail closed，不能由 read retry 转换为可继续的模型观察。completed report resume 是否允许
+fresh snapshot rebind 由 runtime checkpoint contract 决定，不扩大 Tool 的 snapshot validation 或生命周期 ownership。
+
 实际 patch apply 是 `AssistantCodingGraph` 的确定性节点，不注册为 Tool。coding inventory 不加入普通
 fast/planning Agent；coding 不提供 shell、delete、commit、merge、push 或任意宿主路径访问。路径、symlink、
 protected glob、UTF-8、大小、base commit、file digest 和 patch digest 均由 Tool/backend fail closed 校验。
@@ -193,6 +202,8 @@ changed paths 与 repository 静态 profile；验证容器仍断网。私有 reg
 branch、commit message、author、Git argv、strategy 或 result commit；这些事实只来自 repository 配置和受信
 integration service。merge approval 是 Graph 自有 interrupt，不把 commit/merge 暴露进任何 Tool inventory。
 push、PR、fetch/pull、远程凭据和自动冲突修复没有注册或隐式执行路径。
+final review 的 reviewer、report 与 user decision 同样不会增加这些能力；integration 关闭时 review approve 只结束
+Graph，不能借由 Tool inventory 创建 commit 或 merge。
 
 ## Provider-native 能力
 

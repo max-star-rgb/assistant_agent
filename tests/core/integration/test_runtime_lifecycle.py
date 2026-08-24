@@ -422,6 +422,19 @@ def test_parent_graph_has_fast_planning_and_coding_native_branches(monkeypatch) 
             ("prepare_repair", "consume_repair_budget"),
             ("consume_repair_budget", "inspect_and_draft"),
         }.issubset(coding_edges)
+        review_gate_nodes = {
+            "prepare_review_snapshot",
+            "run_code_review",
+            "coding_review_decision",
+        }
+        assert review_gate_nodes.issubset(coding_nodes)
+        assert {
+            ("run_validation", "prepare_review_snapshot"),
+            ("prepare_review_snapshot", "run_code_review"),
+            ("run_code_review", "coding_review_decision"),
+            ("coding_review_decision", "create_commit"),
+            ("coding_review_decision", "summarize"),
+        }.issubset(coding_edges)
         repair_lane_nodes = {
             "run_validation",
             "prepare_repair",
@@ -441,7 +454,7 @@ def test_parent_graph_has_fast_planning_and_coding_native_branches(monkeypatch) 
         }.issubset(coding_edges)
         assert {
             source for source, target in coding_edges if target == "create_commit"
-        } == {"run_validation"}
+        } == {"run_validation", "coding_review_decision"}
         assert owner.graph.checkpointer is None
     finally:
         asyncio.run(owner.aclose())
@@ -686,6 +699,7 @@ def test_public_input_separates_mode_from_non_identity_runtime_context() -> None
         "media_capabilities",
         "realtime_media_mode",
         "visual_capability_token",
+        "coding_review_enabled",
     }
     assert context.assistant_execution_mode is None
     with pytest.raises(ValidationError):

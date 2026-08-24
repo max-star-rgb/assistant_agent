@@ -1,6 +1,6 @@
 # LangGraph-native Assistant 运行与流式架构
 
-最后更新：2026-08-21
+最后更新：2026-08-24
 
 ## Authority contract
 
@@ -70,6 +70,27 @@ repair 回边从
 `prepare_repair -> consume_repair_budget -> inspect_and_draft` 恢复，formatter/patch/dependency/credential/artifact/
 merge approval resume 也不重新进入分析；所有写入、命令、凭据、artifact 与 Git integration 继续位于唯一顺序
 mutation lane。
+
+final coding review 由 `AssistantRunContext.coding_review_enabled` 显式启用并默认关闭；关闭时，validation 成功后
+保持既有 applied terminal 或 integration 分支，不创建 review snapshot、不运行 reviewer，也不新增 approval。
+启用时，最终一轮 validation 全部通过后依次进入 `prepare_review_snapshot -> run_code_review ->
+coding_review_decision`：父图冻结当前 workspace 的只读 final snapshot，review 子图用原生 `Send` 并行派发三个
+固定 reviewer，再确定性 join 为有界 canonical report。reviewer 只使用 snapshot-bound list/search/read/status/diff
+Tool，固定 `provider_search_profile=none`，不拥有 proposal、apply、command、dependency、credential、artifact、
+commit、merge、network 或其他 mutation 能力。普通 reviewer/capability 失败形成 `unavailable` report；它不自动
+修复、不回到 draft/repair，也不绕过独立 user decision。cancel、permission、Graph control-flow、identity、schema、
+snapshot 与 digest 错误仍 fail closed 或原样传播。
+
+review decision 是 patch approval 和 merge approval 之外的独立 digest-bound 原生 interrupt。父 checkpoint、
+`CodingReviewInput`、每个 signed result、canonical report 和 decision payload 共同绑定 generation、workspace、base、
+snapshot ref、materialization schema version、tree/diff digest、snapshot 创建/过期时间、patch digest、最终 validation
+evidence digest 与 report digest。pending review 只接受 active `immutable_manifest_v2` 物理 snapshot；completed report
+resume 可在原 snapshot 已自然过期或物理资源已清理后，针对当前 workspace 重新创建 fresh v2 snapshot 并比较冻结内容
+身份。只有缺少新 version channel/字段且 canonical digest 仍符合历史编码的真正 completed v1 checkpoint 可以通过
+`legacy_v1 -> immutable_manifest_v2` fresh rebind；pending v1、v2 downgrade、任一 version mismatch 或当前 v2
+manifest/schema mismatch 都 fail closed。review reject 形成 rejected terminal；approve 在 integration 关闭时形成 applied
+terminal，在 integration 显式开启时才顺序进入既有 controlled commit/merge lane。review snapshot 只受既有 snapshot
+owner、lease、TTL 与 snapshot-only reaper 管理，不建立第二套 workspace cleanup 或自动修复流程。
 
 `run_validation` 遇到一个确定性 `test|lint|build` 命令的普通非零退出，且错误码为
 `verification_command_failed` 时，才由本地策略选中 eligible failure，沿原生
@@ -200,6 +221,12 @@ coding 子图内部的 analysis channel 是 opaque `CodingAnalysisSnapshot`、�
 派发尚未完成的 task；已 join、repair active 或任一 approval resume 都从既有 checkpoint 继续，不创建新 snapshot
 或重跑已完成分析。
 
+coding final review 另保存 expected snapshot schema version、opaque final snapshot、固定 reviewer task、signed result、
+canonical report/status、validation digest、decision context 与 audit decision。pending checkpoint 依赖 active v2
+snapshot；completed checkpoint 从上述有界 contract 恢复 decision，不重放已完成 reviewer，也不把已清理的 snapshot
+物理目录当作永久 mutation gate。新 coding cycle 原子清除这些 channel；terminal 清除 snapshot、input、task、result
+和 decision context，只保留 canonical report、status、generation、validation/version binding 与 decision audit。
+
 父图不投影或改写生成图片。`image_generation` 直接使用标准 `ToolMessage(content, artifact)`：模型下一次调用
 只读取窄文本 `content`，程序消费者从 `artifact.images[]` 读取受管图片引用。最终 `AIMessage` 保持模型原始
 回答，因此 Studio 当前只显示生成成功文本，不承诺图片预览；媒体 WebSocket 在入口适配层完成自己的 wire 投影。
@@ -255,6 +282,9 @@ Tool 在执行前触发原生 interrupt，planner 只有 Skill 加载控制 Tool
 重算后续 wave。
 phase model/tool call limit 由 `PhaseBudgetMiddleware` 承担，planning graph 再以同一 policy 结算 global
 model/tool/node/replan budget；只读 Tool retry 与 summarization 继续使用官方 middleware。
+coding patch、final review decision 和 merge approval 各自使用独立原生 interrupt；review decision 不属于 Tool
+middleware HITL，不能授权 patch apply 或 merge apply，也不能被 `unavailable` report、integration-disabled 配置或
+snapshot cleanup 自动跳过。
 
 ## 已退役兼容边界
 

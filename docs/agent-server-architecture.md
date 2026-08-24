@@ -1,6 +1,6 @@
 # LangGraph Agent Server 部署架构
 
-最后更新：2026-08-21
+最后更新：2026-08-24
 
 ## Authority contract
 
@@ -34,6 +34,12 @@ workspace TTL 仍沿用 resolve 触发的既有 `cleanup_expired()` 生命周期
 snapshot-only 清理；它不创建 Graph、run 或第二套 Runtime。pending checkpoint
 恢复严格校验既有物理 snapshot，过期、身份或 digest 不匹配时不静默重建；join 后的 approval/repair resume 只校验
 checkpoint contract 与 workspace/base，不要求 released snapshot 仍在物理 TTL 内，因此 snapshot 不是 mutation gate。
+final coding review 复用同一个 process-owned snapshot service、lease、TTL 与 snapshot-only reaper，不创建 review
+专用目录 owner 或 workspace reaper。pending review 只接受 active v2 immutable manifest；completed canonical report
+可在原物理 snapshot 缺失/自然过期后由 Graph 重新创建 fresh snapshot 做内容身份比较。该兼容不允许 pending v1、
+completed v2 schema downgrade 或 metadata/manifest mismatch；真正历史 completed v1 只按 checkpoint 中的 legacy
+schema/digest binding fresh-rebind。周期 owner 与 `aclose` 仍只删除受管 `analysis-snapshots` 子树，不触碰 workspace
+repo、Git admin metadata，不运行 reviewer、自动修复、commit 或 merge。
 
 所有 workspace、snapshot 与 integration Git 子进程都设置 `GIT_NO_LAZY_FETCH=1`、关闭 credential prompt 和 system/
 global config；partial/promisor repository 缺少本地对象时稳定 fail closed，不允许 Git 隐式 lazy fetch。analysis diff
@@ -55,6 +61,11 @@ digest，模型使用的临时 context 也不写入对话
 credential、artifact 与 merge approval resume 不重跑已完成分析，所有 mutation 仍由同一顺序治理 lane 执行。
 integration 默认关闭，且只在最终一轮完整 validation gates 通过后才能进入；
 关闭时终态保留 worktree 到 TTL，不 commit、merge、push 或写回 source repository。
+final review checkpoint 还保存 expected snapshot schema version、opaque final snapshot、input、固定 task inventory、
+signed bounded results、canonical report/status、validation digest、decision binding 与 audit decision，不保存 reviewer
+transcript、Provider client、文件句柄或宿主 snapshot path。`coding_review_enabled` 是服务端 run context 的显式
+default-off capability；启用后即使 integration 关闭也必须经过独立 review decision，`unavailable` 只描述 advisory
+review 质量，不产生自动批准或自动修复。
 
 repository 可独立显式启用本地 Docker sandbox。Agent Server process owner 只构造一份
 `DockerCodingSandboxBackend` 并注入唯一 validation service；backend 与 container ID 不进入 Graph state 或
@@ -127,6 +138,9 @@ preflight 要求配置 path 当前 checkout 精确等于 target branch、HEAD �
 source/target/result commit 进入 checkpoint，但宿主 path、Git process 和 stderr 不进入。独立 merge HITL 后
 最终目标写入只执行 `merge --ff-only <result_commit>`；HEAD 漂移、dirty、冲突或 preview 不匹配均停止且不
 重算。阶段 3 不 fetch/pull/push、不创建 PR、不使用远程凭据，也不自动修复冲突。
+当 final review 显式启用时，controlled commit 还必须位于 canonical report 的独立 user approve 之后；review reject、
+binding mismatch 或未完成 review 都不能调用 commit service。integration 关闭时 review approve 只产生 applied
+terminal，不隐式启用 Git integration。
 
 `langgraph.json` 只注册当前两张原生 Graph：
 
@@ -182,7 +196,8 @@ Memory Graph 的严格输入只有标准
 messages；它由 Assistant Graph 通过 Agent Server SDK 调度，不向普通用户入口暴露 run type。
 认证用户唯一来自 Agent Server 原生
 `Runtime.server_info.user.identity`；`AssistantRunContext` 不复制用户或租户身份，只保存有默认值的
-入口 profile、媒体能力以及媒体入口在 chat 开始时签发的 opaque 视觉 capability token。每次 run 的公开
+入口 profile、媒体能力、default-off coding review capability，以及媒体入口在 chat 开始时签发的 opaque 视觉
+capability token。每次 run 的公开
 `execution_mode` 不放入 context；只有上述服务端持久 assistant 资源可通过窄
 `assistant_execution_mode=planning` preset 覆盖 messages-only 默认值。窗口内容不进入标准 messages/context，
 也不由模型或普通 Graph 输入提交。middleware 和 Tool 必须以

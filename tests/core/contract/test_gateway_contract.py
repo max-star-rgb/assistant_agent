@@ -150,6 +150,7 @@ def test_native_run_context_contains_capabilities_not_identity() -> None:
         "media_capabilities",
         "realtime_media_mode",
         "visual_capability_token",
+        "coding_review_enabled",
     }
     assert context.assistant_execution_mode is None
     assert context.realtime_media_mode == "none"
