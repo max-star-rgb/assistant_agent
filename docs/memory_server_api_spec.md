@@ -1,20 +1,82 @@
-# Mem0 Graph Backend 私有 HTTP 接入契约
+# Memory Backend 私有 HTTP 接入契约
 
-最后更新：2026-08-13
+最后更新：2026-08-24
 
 ## Authority contract
 
 | 字段 | 内容 |
 | --- | --- |
-| 定位 | Mem0 graph backend 私有 HTTP adapter 子集的当前权威 |
-| Owns | `Mem0Client` 使用的 recall、turn capture、identity filter、响应字段与错误语义 |
-| Does not own | 通用 Memory Server 协议、Graph memory 节点/快照/ledger、LangMem |
-| 源码与 schema 入口 | `src/assistant_agent/memory/mem0/`、`src/assistant_agent/memory/backends/mem0.py` |
+| 定位 | Mem0 与远端视觉 Memory Service 私有 HTTP adapter 子集的当前权威 |
+| Owns | Mem0 recall/turn capture，以及远端视觉记忆 upload/task/query 请求和响应消费边界 |
+| Does not own | 通用 Memory Server 协议、Graph memory 节点/快照、LangMem、Media-Agent WebSocket wire |
+| 源码与 schema 入口 | `src/assistant_agent/memory/mem0/`、`src/assistant_agent/memory/remote_service.py` |
 | 验证入口 | `docs/authority.toml` 中 `memory-server-api.verification` |
 | 相邻 authority | Graph memory 架构见 [`memory-service-architecture.md`](memory-service-architecture.md) |
 
-项目不定义通用 Memory Server 协议。本文件只记录 Mem0 `memory_recall` / `memory_extract` 节点私有
-`Mem0Client` 实际使用的 Mem0 OSS REST 子集；完整行为以 Mem0 官方 API 为准。其他 backend 不依赖本协议。
+项目不定义通用 Memory Server 协议。本文件记录当前 Graph 实际消费的两个私有 adapter 子集：Mem0 OSS REST，
+以及显式启用的远端视觉 Memory Service。其他 backend 不依赖本协议。
+
+## 远端视觉 Memory Service
+
+该能力只在 `provider_mode=real`、`MEMORY_BACKEND=langmem`、
+`REMOTE_VISUAL_MEMORY_ENABLED=true` 且地址完整时启用。部署 URL 只来自本机未跟踪配置，不硬编码进源码。
+
+### 视频段摄入
+
+Media-Agent WebSocket 收到的独立 Annex-B H.264 帧同时进入实时 latest-wins 流水线和独立顺序归档 lane。
+归档 lane 每 30 秒或连接关闭时把 H.264 remux 为本机临时 MP4，并通过带 TTL 的 opaque capability URL
+供同一内网的远端服务拉取。
+
+```http
+POST /v1/media/upload
+Content-Type: application/json
+
+{
+  "session_id": "<native-thread-id>",
+  "user_id": "<authenticated-identity>",
+  "files": [{
+    "file_id": "<stable-segment-id>",
+    "file_url": "http://<agent-host>/internal/memory-media/<opaque-token>",
+    "filename": "<safe-name>.mp4",
+    "media_type": "video",
+    "start_time": "<ISO-8601>",
+    "metadata": {}
+  }]
+}
+```
+
+请求体不携带 H.264、MP4 bytes、Base64 或本机路径。远端通过 HTTP GET 拉取 MP4；返回的 `task_id` 用于：
+
+```http
+POST /v1/tasks_status
+Content-Type: application/json
+
+{"user_id":"<authenticated-identity>","task_id":"<task-id>"}
+```
+
+只有 `completed` 才撤销 URL 并删除本机 MP4。未完成项保存在本机 SQLite manifest，Agent Server lifespan
+重启后以同一稳定 `file_id` 重新提交。失败不影响 WebSocket ACK、实时视觉或 chat run。
+
+### 视觉记忆召回
+
+当前 `memory_recall` 内部并行执行 LangMem 文本召回和：
+
+```http
+POST /v1/memories/query
+Content-Type: application/json
+
+{
+  "user_id": "<authenticated-identity>",
+  "session_id": "<native-thread-id>",
+  "query": "<latest-human-text>",
+  "top_k": 8,
+  "direct_answer": false
+}
+```
+
+adapter 只消费 `results[]` 中 `type=text` 的非空 `content`。图片、Base64、URL、direct answer、远端身份字段
+和原始响应都不进入 Graph state。视觉分支具有独立 timeout，任何失败规范化为空结果；LangMem 和当前 turn
+继续。两路文本带来源标签合并后，仍受 `memory_context` 既有预算约束。
 
 ## 身份
 

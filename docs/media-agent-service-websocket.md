@@ -194,6 +194,11 @@ pending，旧消息仍收到正常 `videoResponse`，但不再解码、提交 VL
 的受治理 `live_view_inspect` Tool 通过进程级有界内存 frame index 解析该引用；H.264 hex、JPEG
 正文和本地路径均不进入 Graph State、prompt 或 Agent Server Store。
 
+显式启用远端视觉 Memory Service 时，同一批已校验 H.264 bytes 还会复制到独立顺序归档 lane；该 lane
+不复用实时视觉 latest-wins 队列。它每 30 秒或连接关闭时 remux 为 MP4，通过 Agent Server custom app 的
+短期 capability URL 供内网 Memory Service 拉取，并异步调用 `/v1/media/upload` 与 `/v1/tasks_status`。
+上传、轮询或归档失败只降级历史视觉记忆，不改变视频 ACK、实时视觉和 native chat run。
+
 视频热路径使用同一个安全 `video_index`，并在完成解码后增加服务端 `sequence`，依次记录
 `media_video_websocket_received`、`media_video_ingestion_dequeued`、`media_video_decode_started`、
 `media_video_decode_finished`、`media_video_context_indexed`、`media_video_semantic_submitted` 和

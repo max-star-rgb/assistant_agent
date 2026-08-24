@@ -137,7 +137,9 @@ class H264VideoIngestionService:
 
             if not destination.is_file() or destination.stat().st_size == 0:
                 destination.unlink(missing_ok=True)
-                raise H264VideoIngestionError("H264 decoder did not produce a JPEG frame")
+                raise H264VideoIngestionError(
+                    "H264 decoder did not produce a JPEG frame"
+                )
 
             decode_finished_ns = self.clock_ns()
             decode_latency_ms = _elapsed_ms(decode_started_ns, decode_finished_ns)
@@ -171,9 +173,15 @@ class H264VideoIngestionService:
                     ),
                     "h264_decode_latency_ms": decode_latency_ms,
                 },
-                fingerprint=tuple(decoded.fingerprint) if decoded and decoded.fingerprint else None,
-                fingerprint_width=decoded.width if decoded and decoded.width > 0 else None,
-                fingerprint_height=decoded.height if decoded and decoded.height > 0 else None,
+                fingerprint=tuple(decoded.fingerprint)
+                if decoded and decoded.fingerprint
+                else None,
+                fingerprint_width=decoded.width
+                if decoded and decoded.width > 0
+                else None,
+                fingerprint_height=decoded.height
+                if decoded and decoded.height > 0
+                else None,
             )
             index_started_ns = self.clock_ns()
             self.store.append_frame(frame)
@@ -200,7 +208,9 @@ class H264VideoIngestionService:
             )
             retained_uris = {
                 retained.uri
-                for retained in self.store.get_recent_frames(video_id, limit=self.window_size)
+                for retained in self.store.get_recent_frames(
+                    video_id, limit=self.window_size
+                )
             }
             for evicted in before:
                 if evicted.uri not in retained_uris:
@@ -219,26 +229,43 @@ class H264VideoIngestionService:
             except OSError:
                 pass
 
-    def _validated_h264_bytes(self, video_hex: str, video_config: dict[str, Any]) -> bytes:
-        codec = _optional_string(video_config.get("codec"))
-        if codec is None or codec.upper() != "H264":
-            raise H264VideoIngestionError("videoConfig.codec must be H264")
-        normalized = video_hex.strip()
-        if not normalized:
-            raise H264VideoIngestionError("videoContent is empty")
-        if re.fullmatch(r"[0-9a-fA-F]+", normalized) is None:
-            raise H264VideoIngestionError("videoContent must be valid hexadecimal")
-        if len(normalized) % 2:
-            raise H264VideoIngestionError("videoContent must contain an even number of hexadecimal characters")
-        byte_length = len(normalized) // 2
-        if byte_length > self.max_frame_bytes:
-            raise H264VideoIngestionError(
-                f"videoContent exceeds {self.max_frame_bytes} bytes"
-            )
-        h264_bytes = bytes.fromhex(normalized)
-        if not h264_bytes.startswith((b"\x00\x00\x01", b"\x00\x00\x00\x01")):
-            raise H264VideoIngestionError("videoContent must use an Annex-B NAL start code")
-        return h264_bytes
+    def _validated_h264_bytes(
+        self, video_hex: str, video_config: dict[str, Any]
+    ) -> bytes:
+        return validate_h264_bytes(
+            video_hex,
+            video_config,
+            max_frame_bytes=self.max_frame_bytes,
+        )
+
+
+def validate_h264_bytes(
+    video_hex: str,
+    video_config: dict[str, Any],
+    *,
+    max_frame_bytes: int = DEFAULT_MAX_FRAME_BYTES,
+) -> bytes:
+    """Validate one independent wire frame and return its Annex-B bytes."""
+
+    codec = _optional_string(video_config.get("codec"))
+    if codec is None or codec.upper() != "H264":
+        raise H264VideoIngestionError("videoConfig.codec must be H264")
+    normalized = video_hex.strip()
+    if not normalized:
+        raise H264VideoIngestionError("videoContent is empty")
+    if re.fullmatch(r"[0-9a-fA-F]+", normalized) is None:
+        raise H264VideoIngestionError("videoContent must be valid hexadecimal")
+    if len(normalized) % 2:
+        raise H264VideoIngestionError(
+            "videoContent must contain an even number of hexadecimal characters"
+        )
+    byte_length = len(normalized) // 2
+    if byte_length > max_frame_bytes:
+        raise H264VideoIngestionError(f"videoContent exceeds {max_frame_bytes} bytes")
+    h264_bytes = bytes.fromhex(normalized)
+    if not h264_bytes.startswith((b"\x00\x00\x01", b"\x00\x00\x00\x01")):
+        raise H264VideoIngestionError("videoContent must use an Annex-B NAL start code")
+    return h264_bytes
 
 
 def _decode_h264_with_ffmpeg(
@@ -296,7 +323,9 @@ def _decode_h264_with_ffmpeg(
         raise H264VideoIngestionError("FFmpeg could not decode the H264 frame")
     expected = fingerprint_width * fingerprint_height
     if len(result.stdout) < expected:
-        raise H264VideoIngestionError("FFmpeg did not produce a complete frame fingerprint")
+        raise H264VideoIngestionError(
+            "FFmpeg did not produce a complete frame fingerprint"
+        )
     return DecodedFrameData(
         fingerprint=tuple(result.stdout[:expected]),
         width=fingerprint_width,
@@ -308,7 +337,9 @@ def _timestamp_ms(value: str | None) -> int | None:
     if not value:
         return None
     try:
-        return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000)
+        return int(
+            datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000
+        )
     except ValueError:
         return None
 

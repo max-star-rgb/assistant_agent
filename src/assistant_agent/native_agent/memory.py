@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 import hashlib
 import importlib
+import logging
 from typing import Any, Protocol, runtime_checkable
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
@@ -30,6 +31,9 @@ from assistant_agent.native_agent.state import (
     AssistantRootState,
     MemoryExtractionState,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class MemoryBackendConfigurationError(RuntimeError):
@@ -229,6 +233,86 @@ class LangMemMemoryBackend:
             await asyncio.to_thread(self._manager.invoke, value, config=config)
 
 
+class HybridMemoryBackend:
+    """Recall text and remote visual memories concurrently; commit text only."""
+
+    backend_id = "hybrid"
+
+    def __init__(
+        self,
+        *,
+        text_backend: MemoryBackend,
+        visual_client: Any,
+        visual_timeout_seconds: float,
+        visual_top_k: int,
+    ) -> None:
+        self._text_backend = text_backend
+        self._visual_client = visual_client
+        self._visual_timeout_seconds = visual_timeout_seconds
+        self._visual_top_k = visual_top_k
+
+    async def recall(
+        self,
+        *,
+        identity: str,
+        thread_id: str | None,
+        run_id: str | None,
+        messages: Sequence[AnyMessage],
+        store: BaseStore | None,
+    ) -> tuple[str, ...]:
+        text_task = asyncio.create_task(
+            self._text_backend.recall(
+                identity=identity,
+                thread_id=thread_id,
+                run_id=run_id,
+                messages=messages,
+                store=store,
+            )
+        )
+        visual_task = asyncio.create_task(
+            self._visual_recall(
+                identity=identity,
+                thread_id=thread_id,
+                query=_last_human_text(messages),
+            )
+        )
+        text_result, visual_result = await asyncio.gather(text_task, visual_task)
+        return _bounded_texts(
+            (
+                *(f"[文本长期记忆] {value}" for value in text_result),
+                *(f"[视觉记忆] {value}" for value in visual_result),
+            )
+        )
+
+    async def _visual_recall(
+        self,
+        *,
+        identity: str,
+        thread_id: str | None,
+        query: str,
+    ) -> tuple[str, ...]:
+        if not query:
+            return ()
+        try:
+            async with asyncio.timeout(self._visual_timeout_seconds):
+                result = await self._visual_client.query_memories(
+                    user_id=identity,
+                    session_id=thread_id,
+                    query=query,
+                    top_k=self._visual_top_k,
+                )
+        except Exception as exc:  # noqa: BLE001 - optional dependency boundary.
+            logger.warning(
+                "visual_memory_recall_failed error_type=%s",
+                type(exc).__name__,
+            )
+            return ()
+        return _bounded_texts(result)
+
+    async def commit(self, **kwargs: Any) -> None:
+        await self._text_backend.commit(**kwargs)
+
+
 def create_memory_backend(
     config: ProviderConfig | None = None,
     *,
@@ -236,6 +320,7 @@ def create_memory_backend(
     mem0_client: Any | None = None,
     langmem_manager: Any | None = None,
     langmem_store: BaseStore | None = None,
+    visual_memory_client: Any | None = None,
 ) -> MemoryBackend:
     """Construct one backend without probing or silent fallback."""
 
@@ -268,7 +353,28 @@ def create_memory_backend(
             resolved,
             store=langmem_store,
         )
-        return LangMemMemoryBackend(manager=manager)
+        backend: MemoryBackend = LangMemMemoryBackend(manager=manager)
+        if resolved.remote_visual_memory_enabled:
+            if visual_memory_client is None:
+                from assistant_agent.memory.remote_service import (
+                    RemoteMemoryServiceClient,
+                )
+
+                visual_memory_client = RemoteMemoryServiceClient(
+                    base_url=resolved.remote_visual_memory_base_url or "",
+                    timeout_seconds=(
+                        resolved.remote_visual_memory_query_timeout_seconds
+                    ),
+                )
+            backend = HybridMemoryBackend(
+                text_backend=backend,
+                visual_client=visual_memory_client,
+                visual_timeout_seconds=(
+                    resolved.remote_visual_memory_query_timeout_seconds
+                ),
+                visual_top_k=resolved.remote_visual_memory_query_top_k,
+            )
+        return backend
     raise MemoryBackendConfigurationError(
         f"Unsupported memory backend: {resolved.memory_backend!r}."
     )
@@ -460,6 +566,7 @@ def _message_text(message: AnyMessage) -> str:
 
 
 __all__ = [
+    "HybridMemoryBackend",
     "MemoryBackend",
     "MemoryBackendConfigurationError",
     "create_memory_backend",

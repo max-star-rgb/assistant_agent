@@ -61,6 +61,8 @@ Assistant state。`RetryPolicy`、error handler
   request ID 干扰长期记忆；提取 instruction 只允许稳定用户事实、偏好、长期目标和可复用流程，显式排除天气、新闻、股价、
   日期时间、交通、搜索/Tool 结果，以及助理回答、自我描述、能力限制、知识截止日期和“知识库”措辞；
   非结构化记忆正文默认使用简体中文，代码、协议字段和专有名词可保留原文；
+- `langmem + remote visual`：显式启用后由组合 backend 在同一个 `memory_recall` 节点内并行召回 LangMem
+  与远端视觉文本记忆；视觉分支 fail-open，`commit` 仍只委托 LangMem，视频段摄入不进入 Memory Graph；
 - custom：composition 可注入任何满足 `MemoryBackend` 的第三方 adapter。
 
 mock mode 只能使用 disabled；远端 backend 要求 real mode 和完整显式配置，不能探测 key 后启用，也不能静默

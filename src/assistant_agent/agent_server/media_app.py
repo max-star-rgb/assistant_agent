@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+from pathlib import Path
 import re
 from dataclasses import dataclass, field
 from time import perf_counter_ns
@@ -45,7 +46,18 @@ from assistant_agent.api.rendering_3d_callback import (
     router as rendering_3d_callback_router,
 )
 from assistant_agent.config import ProviderConfig
-from assistant_agent.media.video.h264_video_ingestion import H264VideoIngestionService
+from assistant_agent.media.video.h264_video_ingestion import (
+    H264VideoIngestionService,
+    validate_h264_bytes,
+)
+from assistant_agent.media.video.remote_archive import (
+    H264ArchiveRecorder,
+    MediaDownloadRegistry,
+    RemoteVideoArchiveService,
+    RemoteVideoArchiveUploader,
+    VideoArchiveManifest,
+)
+from assistant_agent.memory.remote_service import RemoteMemoryServiceClient
 from assistant_agent.media.video.video_context import InMemoryVideoContextStore
 from assistant_agent.media.video.video_context import VideoFrame
 from assistant_agent.media.visual_perception import get_visual_perception_module
@@ -71,6 +83,14 @@ async def agent_server_lifespan(application: FastAPI):
 
     visual_module = get_visual_perception_module()
     application.state.visual_perception_module = visual_module
+    config = ProviderConfig.from_env()
+    video_archive = _create_remote_video_archive_service(config)
+    application.state.remote_video_archive_service = video_archive
+    application.state.memory_media_download_registry = (
+        video_archive.uploader.registry if video_archive is not None else None
+    )
+    if video_archive is not None:
+        await video_archive.recover()
     graph_warmup_task = asyncio.create_task(
         _warm_native_graph(),
         name="native-graph-warmup",
@@ -83,6 +103,8 @@ async def agent_server_lifespan(application: FastAPI):
             graph_warmup_task.cancel()
         await asyncio.gather(graph_warmup_task, return_exceptions=True)
         await close_native_assistant_graph()
+        if video_archive is not None:
+            await video_archive.aclose()
         await visual_module.aclose()
         if (
             getattr(application.state, "visual_perception_module", None)
@@ -152,6 +174,19 @@ app = FastAPI(
     lifespan=agent_server_lifespan,
 )
 app.include_router(rendering_3d_callback_router)
+
+
+@app.get("/internal/memory-media/{token}", include_in_schema=False)
+async def memory_media_download(request: Request, token: str) -> FileResponse:
+    registry = getattr(request.app.state, "memory_media_download_registry", None)
+    path = registry.resolve(token) if registry is not None else None
+    if path is None:
+        raise HTTPException(status_code=404, detail="memory media not found")
+    return FileResponse(
+        path,
+        media_type="video/mp4",
+        headers={"Cache-Control": "private, no-store"},
+    )
 
 
 @dataclass
@@ -407,6 +442,11 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
     interrupted_chats: set[str] = set()
     proactive_delivery = _ProactiveDeliveryConnection()
     visual_perception = _VisualPerceptionConnection()
+    video_archive = getattr(
+        websocket.app.state,
+        "remote_video_archive_service",
+        None,
+    )
     visual_module = getattr(websocket.app.state, "visual_perception_module", None)
     if visual_module is None:
         visual_module = get_visual_perception_module()
@@ -455,6 +495,7 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
                     proactive_delivery=proactive_delivery,
                     visual_module=visual_module,
                     visual_perception=visual_perception,
+                    video_archive=video_archive,
                     received_ns=received_ns,
                 )
             except (MediaProtocolError, ValueError) as exc:
@@ -478,6 +519,8 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
         if chat_tasks:
             await asyncio.gather(*chat_tasks.values(), return_exceptions=True)
         await visual_perception.aclose_video_tasks()
+        if video_archive is not None:
+            await video_archive.close_session(session.connection_id)
         if visual_perception.session is not None:
             await visual_perception.session.aclose()
         for video_id in session.video_ids:
@@ -507,6 +550,7 @@ async def _handle_frame(
     proactive_delivery,
     visual_module,
     visual_perception,
+    video_archive=None,
     received_ns: int | None = None,
 ) -> None:
     if frame.message in {"assistantControl", "assistantControlStart"}:
@@ -558,6 +602,12 @@ async def _handle_frame(
                     protocol_session_id=frame.session_id,
                 ),
             )
+            if video_archive is not None:
+                video_archive.open_session(
+                    connection_id=session.connection_id,
+                    user_id=authenticated_identity,
+                    session_id=thread_id,
+                )
         await artifact_hub.register(
             session_id=thread_id,
             subscriber_id=session.connection_id,
@@ -806,6 +856,20 @@ async def _handle_frame(
                 packet_index + 1,
                 len(packets),
             )
+        if video_archive is not None:
+            frame_rate = _positive_float(video_config.get("frameRate"), 25.0)
+            for _packet_video_index, video_content, config, captured_at in packets:
+                archived = video_archive.enqueue_frame(
+                    connection_id=session.connection_id,
+                    h264_bytes=validate_h264_bytes(video_content, config),
+                    captured_at=captured_at,
+                    frame_rate=frame_rate,
+                )
+                if not archived:
+                    logger.warning(
+                        "remote_visual_memory_archive_queue_full connection=%s",
+                        session.connection_id,
+                    )
         accepted = visual_perception.enqueue_video(
             lambda: _ingest_video_packets(
                 websocket,
@@ -1483,6 +1547,46 @@ def _agent_server_identity(websocket: WebSocket) -> str:
 
 def _create_video_ingestion() -> H264VideoIngestionService:
     return H264VideoIngestionService(store=InMemoryVideoContextStore())
+
+
+def _create_remote_video_archive_service(
+    config: ProviderConfig,
+) -> RemoteVideoArchiveService | None:
+    if not config.remote_visual_memory_enabled:
+        return None
+    if not (config.remote_visual_memory_download_base_url or "").strip():
+        raise ValueError(
+            "remote visual memory video upload requires a download base URL"
+        )
+    client = RemoteMemoryServiceClient(
+        base_url=config.remote_visual_memory_base_url or "",
+        timeout_seconds=config.remote_visual_memory_query_timeout_seconds,
+    )
+    registry = MediaDownloadRegistry(
+        base_url=config.remote_visual_memory_download_base_url or "",
+        ttl_seconds=config.remote_visual_memory_file_ttl_seconds,
+    )
+    recorder = H264ArchiveRecorder(
+        root=config.remote_visual_memory_spool_root,
+        segment_seconds=config.remote_visual_memory_segment_seconds,
+    )
+    uploader = RemoteVideoArchiveUploader(
+        client=client,
+        registry=registry,
+        poll_interval_seconds=config.remote_visual_memory_poll_interval_seconds,
+        manifest=VideoArchiveManifest(
+            Path(config.remote_visual_memory_spool_root) / "archive.sqlite3"
+        ),
+    )
+    return RemoteVideoArchiveService(recorder=recorder, uploader=uploader)
+
+
+def _positive_float(value: Any, default: float) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return default
+    return result if result > 0 else default
 
 
 __all__ = ["app", "media_graph_input", "native_response_from_state"]

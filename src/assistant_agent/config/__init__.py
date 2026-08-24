@@ -125,6 +125,15 @@ class ProviderConfig:
     memory_commit_ledger_path: str = ".local/langgraph/memory_commits.sqlite3"
     memory_extraction_delay_seconds: int = 1_800
     langmem_model: str | None = None
+    remote_visual_memory_enabled: bool = False
+    remote_visual_memory_base_url: str | None = None
+    remote_visual_memory_query_timeout_seconds: float = 5.0
+    remote_visual_memory_query_top_k: int = 8
+    remote_visual_memory_download_base_url: str | None = None
+    remote_visual_memory_segment_seconds: float = 30.0
+    remote_visual_memory_spool_root: str = ".data/remote_visual_memory"
+    remote_visual_memory_file_ttl_seconds: int = 86_400
+    remote_visual_memory_poll_interval_seconds: float = 2.0
     conversation_history_backend: ConversationHistoryBackend = "memory"
     conversation_history_path: str = ".local/memory/conversation_history.jsonl"
     max_conversation_history_turns: int = 0
@@ -254,6 +263,23 @@ class ProviderConfig:
             raise ValueError("memory commit ledger path must be non-empty")
         if self.memory_extraction_delay_seconds <= 0:
             raise ValueError("memory extraction delay must be positive")
+        if self.remote_visual_memory_enabled:
+            if self.memory_backend != "langmem":
+                raise ValueError("remote visual memory requires MEMORY_BACKEND=langmem")
+            if not (self.remote_visual_memory_base_url or "").strip():
+                raise ValueError("remote visual memory requires a base URL")
+        if self.remote_visual_memory_query_timeout_seconds <= 0:
+            raise ValueError("remote visual memory query timeout must be positive")
+        if self.remote_visual_memory_query_top_k <= 0:
+            raise ValueError("remote visual memory top_k must be positive")
+        if self.remote_visual_memory_segment_seconds <= 0:
+            raise ValueError("remote visual memory segment duration must be positive")
+        if not self.remote_visual_memory_spool_root.strip():
+            raise ValueError("remote visual memory spool root must be non-empty")
+        if self.remote_visual_memory_file_ttl_seconds <= 0:
+            raise ValueError("remote visual memory file TTL must be positive")
+        if self.remote_visual_memory_poll_interval_seconds <= 0:
+            raise ValueError("remote visual memory poll interval must be positive")
         if self.siglip2_cuda_device_id < 0:
             raise ValueError("siglip2 CUDA device id must be non-negative")
         if self.embedding_cuda_device_id < 0:
@@ -566,6 +592,40 @@ class ProviderConfig:
                 1_800,
             ),
             langmem_model=source.get("LANGMEM_MODEL"),
+            remote_visual_memory_enabled=_bool_env(
+                source.get("REMOTE_VISUAL_MEMORY_ENABLED"),
+                False,
+            ),
+            remote_visual_memory_base_url=source.get(
+                "REMOTE_VISUAL_MEMORY_BASE_URL"
+            ),
+            remote_visual_memory_query_timeout_seconds=_float_env(
+                source.get("REMOTE_VISUAL_MEMORY_QUERY_TIMEOUT_SECONDS"),
+                5.0,
+            ),
+            remote_visual_memory_query_top_k=_int_env(
+                source.get("REMOTE_VISUAL_MEMORY_QUERY_TOP_K"),
+                8,
+            ),
+            remote_visual_memory_download_base_url=source.get(
+                "REMOTE_VISUAL_MEMORY_DOWNLOAD_BASE_URL"
+            ),
+            remote_visual_memory_segment_seconds=_float_env(
+                source.get("REMOTE_VISUAL_MEMORY_SEGMENT_SECONDS"),
+                30.0,
+            ),
+            remote_visual_memory_spool_root=source.get(
+                "REMOTE_VISUAL_MEMORY_SPOOL_ROOT",
+                ".data/remote_visual_memory",
+            ),
+            remote_visual_memory_file_ttl_seconds=_int_env(
+                source.get("REMOTE_VISUAL_MEMORY_FILE_TTL_SECONDS"),
+                86_400,
+            ),
+            remote_visual_memory_poll_interval_seconds=_float_env(
+                source.get("REMOTE_VISUAL_MEMORY_POLL_INTERVAL_SECONDS"),
+                2.0,
+            ),
             conversation_history_backend=conversation_history_backend,
             conversation_history_path=conversation_history_path,
             max_conversation_history_turns=_int_env(

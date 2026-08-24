@@ -151,13 +151,16 @@ authority = "docs/memory_server_api_spec.md"
 read_when = [
   "Mem0 graph backend 私有 HTTP adapter 或 OSS REST 子集",
   "Mem0Client request/response、身份 filter 或错误语义",
+  "远端视觉 Memory Service upload、task status 或 query wire",
 ]
 source_globs = [
   "src/assistant_agent/memory/mem0/**",
+  "src/assistant_agent/memory/remote_service.py",
 ]
 thin_references = ["README.md", "docs/memory-service-architecture.md"]
 verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/langgraph-memory-nodes/test_mem0_nodes.py",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/remote-visual-memory",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
