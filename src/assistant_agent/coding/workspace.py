@@ -96,6 +96,10 @@ class _AnalysisSnapshotMetadata(BaseModel):
     workspace_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     repo_id: str = Field(min_length=1, max_length=80)
     tree_object: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    materialization_digest: str = Field(
+        default="0" * 64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
     status: CodingStatusResult
     diff: CodingDiffResult
     active_lease: bool = True
@@ -385,6 +389,11 @@ class CodingWorkspaceService:
                             published_root,
                             require_active=False,
                         )
+                        self._verify_analysis_snapshot_materialization(
+                            existing.snapshot,
+                            existing,
+                            published_root,
+                        )
                     except CodingWorkspaceError as exc:
                         if exc.code != "coding_analysis_snapshot_expired":
                             raise
@@ -439,11 +448,23 @@ class CodingWorkspaceService:
                 tree_root = temporary_root / _ANALYSIS_SNAPSHOT_TREE_DIR
                 tree_root.mkdir(mode=0o700)
                 self._materialize_analysis_files(tree_root, current_files)
+                self._make_analysis_tree_read_only(tree_root)
+                metadata = metadata.model_copy(
+                    update={
+                        "materialization_digest": (
+                            self._analysis_snapshot_materialization_digest(
+                                snapshot,
+                                metadata,
+                                temporary_root,
+                                error_code="coding_analysis_snapshot_failed",
+                            )
+                        )
+                    }
+                )
                 self._write_analysis_snapshot_metadata(
                     temporary_root / _ANALYSIS_SNAPSHOT_METADATA_FILE,
                     metadata,
                 )
-                self._make_analysis_tree_read_only(tree_root)
                 if self._cleanup_analysis_build_resources(
                     index_path=index_path,
                     object_root=object_root,
@@ -565,6 +586,11 @@ class CodingWorkspaceService:
                 identity=identity,
                 thread_id=thread_id,
                 workspace=workspace,
+            )
+            self._verify_analysis_snapshot_materialization(
+                snapshot,
+                metadata,
+                snapshot_root,
             )
 
     def release_analysis_snapshot(
@@ -1258,6 +1284,271 @@ class CodingWorkspaceService:
             raise CodingWorkspaceError("coding_analysis_snapshot_mismatch")
         if snapshot.expires_at <= self._clock():
             raise CodingWorkspaceError("coding_analysis_snapshot_expired")
+
+    def _verify_analysis_snapshot_materialization(
+        self,
+        snapshot: CodingAnalysisSnapshot,
+        metadata: _AnalysisSnapshotMetadata,
+        snapshot_root: Path,
+    ) -> None:
+        actual = self._analysis_snapshot_materialization_digest(
+            snapshot,
+            metadata,
+            snapshot_root,
+            error_code="coding_analysis_snapshot_mismatch",
+        )
+        if not hmac.compare_digest(metadata.materialization_digest, actual):
+            raise CodingWorkspaceError("coding_analysis_snapshot_mismatch")
+
+    def _analysis_snapshot_materialization_digest(
+        self,
+        snapshot: CodingAnalysisSnapshot,
+        metadata: _AnalysisSnapshotMetadata,
+        snapshot_root: Path,
+        *,
+        error_code: str,
+    ) -> str:
+        manifest_digest = self._analysis_snapshot_materialization_manifest(
+            snapshot_root,
+            error_code=error_code,
+        )
+        payload = json.dumps(
+            {
+                "schema": "coding-analysis-materialization-v1",
+                "snapshot": snapshot.model_dump(mode="json"),
+                "identity_digest": metadata.identity_digest,
+                "thread_digest": metadata.thread_digest,
+                "workspace_digest": metadata.workspace_digest,
+                "repo_id": metadata.repo_id,
+                "tree_object": metadata.tree_object,
+                "manifest_digest": manifest_digest,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hmac.new(self._secret(), payload, hashlib.sha256).hexdigest()
+
+    def _analysis_snapshot_materialization_manifest(
+        self,
+        snapshot_root: Path,
+        *,
+        error_code: str,
+    ) -> str:
+        directory_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        file_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+        )
+        parent_descriptor = root_descriptor = tree_descriptor = -1
+        budget = _AnalysisScanBudget(self.config)
+        digest = hashlib.sha256()
+
+        def fail(exc: BaseException | None = None) -> None:
+            if exc is None:
+                raise CodingWorkspaceError(error_code)
+            raise CodingWorkspaceError(error_code) from exc
+
+        def include(value: str | bytes | int) -> None:
+            raw = value if isinstance(value, bytes) else str(value).encode("utf-8")
+            digest.update(struct.pack(">Q", len(raw)))
+            digest.update(raw)
+
+        def same_node(first: os.stat_result, second: os.stat_result) -> bool:
+            return (
+                first.st_dev == second.st_dev
+                and first.st_ino == second.st_ino
+                and first.st_mode == second.st_mode
+                and first.st_size == second.st_size
+                and first.st_mtime_ns == second.st_mtime_ns
+                and first.st_ctime_ns == second.st_ctime_ns
+            )
+
+        def open_directory(components: tuple[str, ...]) -> int:
+            descriptor = os.dup(tree_descriptor)
+            try:
+                for component in components:
+                    opened = os.open(
+                        component,
+                        directory_flags,
+                        dir_fd=descriptor,
+                    )
+                    os.close(descriptor)
+                    descriptor = opened
+                return descriptor
+            except BaseException:
+                os.close(descriptor)
+                raise
+
+        try:
+            parent_descriptor = os.open(snapshot_root.parent, directory_flags)
+            initial_root = os.stat(
+                snapshot_root.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            root_descriptor = os.open(
+                snapshot_root.name,
+                directory_flags,
+                dir_fd=parent_descriptor,
+            )
+            opened_root = os.fstat(root_descriptor)
+            if not stat.S_ISDIR(opened_root.st_mode) or not same_node(
+                initial_root,
+                opened_root,
+            ):
+                fail()
+            initial_tree = os.stat(
+                _ANALYSIS_SNAPSHOT_TREE_DIR,
+                dir_fd=root_descriptor,
+                follow_symlinks=False,
+            )
+            tree_descriptor = os.open(
+                _ANALYSIS_SNAPSHOT_TREE_DIR,
+                directory_flags,
+                dir_fd=root_descriptor,
+            )
+            opened_tree = os.fstat(tree_descriptor)
+            if not stat.S_ISDIR(opened_tree.st_mode) or not same_node(
+                initial_tree,
+                opened_tree,
+            ):
+                fail()
+
+            include("coding-analysis-materialized-tree-v1")
+            for details in (opened_root, opened_tree):
+                include(details.st_dev)
+                include(details.st_ino)
+                include(stat.S_IMODE(details.st_mode))
+
+            budget.visit_directory()
+            pending: list[tuple[str, ...]] = [()]
+            while pending:
+                components = pending.pop()
+                directory_descriptor = open_directory(components)
+                try:
+                    before = os.fstat(directory_descriptor)
+                    if not stat.S_ISDIR(before.st_mode):
+                        fail()
+                    names: list[str] = []
+                    with os.scandir(directory_descriptor) as entries:
+                        for entry in entries:
+                            budget.visit_entry()
+                            names.append(entry.name)
+                    names.sort()
+                    after = os.fstat(directory_descriptor)
+                    if not same_node(before, after):
+                        fail()
+                finally:
+                    os.close(directory_descriptor)
+
+                for name in reversed(names):
+                    path_components = (*components, name)
+                    relative_path = "/".join(path_components)
+                    try:
+                        encoded_path = relative_path.encode("utf-8")
+                    except UnicodeEncodeError as exc:
+                        fail(exc)
+                    if (
+                        len(encoded_path) > 1_024
+                        or any(
+                            character in relative_path
+                            for character in ("\x00", "\n", "\r")
+                        )
+                    ):
+                        fail()
+                    parent = open_directory(components)
+                    try:
+                        initial = os.stat(
+                            name,
+                            dir_fd=parent,
+                            follow_symlinks=False,
+                        )
+                        if stat.S_ISDIR(initial.st_mode):
+                            opened = os.open(name, directory_flags, dir_fd=parent)
+                            try:
+                                details = os.fstat(opened)
+                            finally:
+                                os.close(opened)
+                            if not same_node(initial, details):
+                                fail()
+                            budget.visit_directory()
+                            include("directory")
+                            include(encoded_path)
+                            include(details.st_dev)
+                            include(details.st_ino)
+                            include(stat.S_IMODE(details.st_mode))
+                            pending.append(path_components)
+                            continue
+                        if not stat.S_ISREG(initial.st_mode):
+                            fail()
+                        budget.attempt_file(initial.st_size)
+                        if initial.st_size > self.config.max_file_bytes:
+                            fail()
+                        descriptor = os.open(name, file_flags, dir_fd=parent)
+                        try:
+                            opened = os.fstat(descriptor)
+                            if not same_node(initial, opened):
+                                fail()
+                            content_digest = hashlib.sha256()
+                            total_bytes = 0
+                            while True:
+                                chunk = os.read(descriptor, 65_536)
+                                if not chunk:
+                                    break
+                                total_bytes += len(chunk)
+                                budget.consume_read(len(chunk))
+                                if total_bytes > self.config.max_file_bytes:
+                                    fail()
+                                content_digest.update(chunk)
+                            confirmed = os.fstat(descriptor)
+                            if not same_node(opened, confirmed):
+                                fail()
+                        finally:
+                            os.close(descriptor)
+                        budget.include_file(total_bytes)
+                        include("file")
+                        include(encoded_path)
+                        include(confirmed.st_dev)
+                        include(confirmed.st_ino)
+                        include(stat.S_IMODE(confirmed.st_mode))
+                        include(total_bytes)
+                        include(content_digest.digest())
+                    finally:
+                        os.close(parent)
+
+            current_tree = os.stat(
+                _ANALYSIS_SNAPSHOT_TREE_DIR,
+                dir_fd=root_descriptor,
+                follow_symlinks=False,
+            )
+            current_root = os.stat(
+                snapshot_root.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            if not same_node(opened_tree, current_tree) or not same_node(
+                opened_root,
+                current_root,
+            ):
+                fail()
+            return digest.hexdigest()
+        except CodingWorkspaceError:
+            raise
+        except (OSError, ValueError) as exc:
+            fail(exc)
+        finally:
+            for descriptor in (
+                tree_descriptor,
+                root_descriptor,
+                parent_descriptor,
+            ):
+                if descriptor >= 0:
+                    os.close(descriptor)
 
     def _normalize_analysis_index(
         self,
