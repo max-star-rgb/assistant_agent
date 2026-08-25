@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+from hashlib import sha256
+import json
 import unicodedata
 from pathlib import PurePosixPath
 from typing import Literal, Self
@@ -103,6 +105,22 @@ def _require_sorted_unique(values: tuple[str, ...], *, field_name: str) -> tuple
     if tuple(sorted(values)) != values:
         raise ValueError(f"{field_name} must be sorted canonically")
     return values
+
+
+def _manifest_digest(value: BaseModel) -> str:
+    payload = json.dumps(
+        value.model_dump(mode="json"),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return sha256(payload).hexdigest()
+
+
+def _validate_digest(value: str) -> str:
+    if re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise ValueError("manifest_digest must be a lowercase SHA-256 digest")
+    return value
 
 
 class CodingBehaviorExecutionProfile(_Contract):
@@ -212,6 +230,38 @@ class CodingBehaviorCase(_Contract):
         return self
 
 
+class CodingBehaviorCaseBinding(_Contract):
+    """Redacted binding from one trusted case to its required grader inventory."""
+
+    schema_version: Literal[1]
+    case_id: StrictStr
+    fixture_id: StrictStr
+    manifest_digest: StrictStr
+    grader_ids: tuple[StrictStr, ...]
+
+    @field_validator("manifest_digest")
+    @classmethod
+    def _validate_manifest_digest(cls, value: str) -> str:
+        return _validate_digest(value)
+
+    @field_validator("grader_ids")
+    @classmethod
+    def _validate_grader_ids(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if not values or any(value not in TRUSTED_GRADER_IDS for value in values):
+            raise ValueError("grader_ids must be a non-empty trusted inventory")
+        return _require_sorted_unique(values, field_name="grader_ids")
+
+    @classmethod
+    def from_case(cls, case: CodingBehaviorCase) -> Self:
+        return cls(
+            schema_version=SCHEMA_VERSION,
+            case_id=case.case_id,
+            fixture_id=case.fixture_id,
+            manifest_digest=_manifest_digest(case),
+            grader_ids=case.grader_ids,
+        )
+
+
 class CodingBehaviorSuite(_Contract):
     schema_version: Literal[1]
     suite_id: StrictStr
@@ -237,6 +287,45 @@ class CodingBehaviorSuite(_Contract):
         if len(set(fixture_ids)) != len(fixture_ids):
             raise ValueError("cases contains a duplicate fixture_id")
         return values
+
+
+class CodingBehaviorSuiteBinding(_Contract):
+    """Redacted binding from one trusted suite to its complete case inventory."""
+
+    schema_version: Literal[1]
+    suite_id: StrictStr
+    manifest_digest: StrictStr
+    execution_profile: CodingBehaviorExecutionProfile
+    cases: tuple[CodingBehaviorCaseBinding, ...]
+
+    @field_validator("manifest_digest")
+    @classmethod
+    def _validate_manifest_digest(cls, value: str) -> str:
+        return _validate_digest(value)
+
+    @field_validator("cases")
+    @classmethod
+    def _validate_cases(
+        cls, values: tuple[CodingBehaviorCaseBinding, ...]
+    ) -> tuple[CodingBehaviorCaseBinding, ...]:
+        if not values:
+            raise ValueError("suite binding requires a non-empty case inventory")
+        case_ids = tuple(value.case_id for value in values)
+        if len(set(case_ids)) != len(case_ids):
+            raise ValueError("suite binding contains a duplicate case_id")
+        if tuple(sorted(case_ids)) != case_ids:
+            raise ValueError("suite binding cases must be sorted canonically")
+        return values
+
+    @classmethod
+    def from_suite(cls, suite: CodingBehaviorSuite) -> Self:
+        return cls(
+            schema_version=SCHEMA_VERSION,
+            suite_id=suite.suite_id,
+            manifest_digest=_manifest_digest(suite),
+            execution_profile=suite.execution_profile,
+            cases=tuple(CodingBehaviorCaseBinding.from_case(case) for case in suite.cases),
+        )
 
 
 class CodingBehaviorError(_Contract):
@@ -291,6 +380,7 @@ class CodingBehaviorCaseResult(_Contract):
         "scope-discipline-v1",
         "single-file-logic-bug-v1",
     ]
+    case_binding: CodingBehaviorCaseBinding
     status: Literal["passed", "failed"]
     checks: tuple[CodingBehaviorCheckResult, ...]
     error: CodingBehaviorError | None = None
@@ -327,11 +417,21 @@ class CodingBehaviorCaseResult(_Contract):
 
     @model_validator(mode="after")
     def _validate_status(self) -> Self:
+        if (
+            self.case_id != self.case_binding.case_id
+            or self.fixture_id != self.case_binding.fixture_id
+        ):
+            raise ValueError("case result identity must match its manifest binding")
+        check_ids = tuple(check.check_id for check in self.checks)
+        if not set(check_ids).issubset(self.case_binding.grader_ids):
+            raise ValueError("checks contain an ID outside the bound grader inventory")
         if self.status == "passed":
             if self.error is not None or self.cleanup_pending:
                 raise ValueError("passed case cannot contain an error or cleanup debt")
             if any(check.status != "passed" for check in self.checks):
                 raise ValueError("passed case requires all checks to pass")
+            if check_ids != self.case_binding.grader_ids:
+                raise ValueError("passed case requires the complete grader inventory")
         elif self.error is None:
             raise ValueError("failed case requires an error")
         return self
@@ -341,6 +441,7 @@ class CodingBehaviorSuiteResult(_Contract):
     schema_version: Literal[1]
     suite_id: StrictStr
     execution_profile: CodingBehaviorExecutionProfile
+    suite_binding: CodingBehaviorSuiteBinding
     status: Literal["passed", "failed"]
     cases: tuple[CodingBehaviorCaseResult, ...]
     elapsed_ms: StrictInt = Field(ge=0, le=115_200_000)
@@ -354,8 +455,17 @@ class CodingBehaviorSuiteResult(_Contract):
     @model_validator(mode="after")
     def _validate_status(self) -> Self:
         case_ids = tuple(case.case_id for case in self.cases)
-        if len(set(case_ids)) != len(case_ids):
-            raise ValueError("result cases contains a duplicate case_id")
+        bound_case_ids = tuple(case.case_id for case in self.suite_binding.cases)
+        if (
+            self.suite_id != self.suite_binding.suite_id
+            or self.execution_profile != self.suite_binding.execution_profile
+        ):
+            raise ValueError("suite result identity must match its manifest binding")
+        if case_ids != bound_case_ids:
+            raise ValueError("suite result requires the exact manifest case inventory")
+        for result, binding in zip(self.cases, self.suite_binding.cases, strict=True):
+            if result.case_binding != binding:
+                raise ValueError("case result binding does not match the suite manifest")
         if self.status == "passed":
             if self.error is not None or any(case.status != "passed" for case in self.cases):
                 raise ValueError("passed suite requires every case to pass without an error")
@@ -418,6 +528,7 @@ __all__ = [
     "ALLOWED_INTERRUPT_KINDS",
     "CODING_EVAL_ERROR_CODES",
     "CodingBehaviorCase",
+    "CodingBehaviorCaseBinding",
     "CodingBehaviorCaseResult",
     "CodingBehaviorCheckResult",
     "CodingBehaviorDryRunCase",
@@ -425,6 +536,7 @@ __all__ = [
     "CodingBehaviorError",
     "CodingBehaviorExecutionProfile",
     "CodingBehaviorSuite",
+    "CodingBehaviorSuiteBinding",
     "CodingBehaviorSuiteResult",
     "SCHEMA_VERSION",
     "TRUSTED_FIXTURE_IDS",
