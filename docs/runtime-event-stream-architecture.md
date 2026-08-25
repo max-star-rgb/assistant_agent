@@ -136,8 +136,9 @@ model -> END
 Supervisor 只通过官方 `TodoListMiddleware` 获得可执行 `write_todos` Tool，通过 Deep Agents
 `SubAgentMiddleware` 获得可执行 `task(description, subagent_type)` Tool；它不持有 `load_skill`、
 `load_skill_reference` 或业务 Tool。Todo 的 `content/status=pending|in_progress|completed` schema、更新语义和
-system prompt 均由锁定的 `langchain==1.3.15` middleware 提供，项目不再维护 Todo reducer、completed gate 或
-Worker result ledger。Supervisor 固定关闭 Provider-native search。
+执行逻辑均由锁定的 `langchain==1.3.15` middleware 提供；项目只通过其官方扩展参数提供中文 system prompt 与
+Tool description，不再维护 Todo reducer、completed gate 或 Worker result ledger。Supervisor 固定关闭
+Provider-native search。
 
 `task` 是 Deep Agents 0.7.8 提供的真实 `StructuredTool`，不是路由占位 schema。唯一注册的
 `general-purpose` 类型直接引用已经编译的共享 `AssistantFastAgent`。task 用 description 创建子 Agent 的唯一

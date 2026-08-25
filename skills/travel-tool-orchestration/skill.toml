@@ -1,6 +1,6 @@
 schema_version = 1
 skill_id = "travel-tool-orchestration"
-version = 5
+version = 9
 description = "用于酒店比较、目的地通勤、路线推荐导航、景点安排、旅行和按天行程决策。"
 enabled = true
 discoverable = true
@@ -18,3 +18,4 @@ governed_tools = [
 ]
 
 [references]
+tonglu-rafting-example = "references/tonglu-rafting-example.md"

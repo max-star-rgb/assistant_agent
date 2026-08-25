@@ -19,9 +19,8 @@ from langchain_core.messages import MessageLikeRepresentation
 
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.fast_agent import (
-    MemoryContextMiddleware,
+    RuntimeContextMiddleware,
     ToolProgressMiddleware,
-    TrustedRuntimeFactsMiddleware,
 )
 from assistant_agent.native_agent.providers import planning_supervisor_model_view
 from assistant_agent.native_agent.state import PlanningAgentState
@@ -32,6 +31,25 @@ _WRITE_TODOS_DESCRIPTION_ZH = """创建并管理当前工作会话的结构化�
 只在复杂、多步骤任务中使用。开始执行前把当前事项标记为 in_progress，完成后立即标记为 completed；
 如果遇到错误或阻塞，保持 in_progress 并记录需要解决的新事项。简单任务应直接完成，不必创建待办列表。
 最后一次更新待办后，还必须另发一条消息交付用户实际要求的结果。"""
+
+_WRITE_TODOS_SYSTEM_PROMPT_ZH = """## `write_todos`
+
+你可以使用 `write_todos` Tool 管理和规划复杂目标。对于复杂、多步骤目标，应使用该 Tool 跟踪每个必要步骤，
+并把较大的目标拆分为更小、更明确的 Todo。
+
+完成一个步骤后，必须立即把对应 Todo 标记为 completed，不要积攒多个已完成步骤后再批量更新。
+对于只需少量步骤的简单目标，应直接完成，不要调用 `write_todos`。创建和维护 Todo 会消耗时间与 token，
+仅在它确实有助于管理复杂任务时使用。
+
+## Todo 使用规则
+
+- 同一个 model turn 中不得并行调用多个 `write_todos`。
+- 执行过程中可以修订 Todo 列表；新信息可能带来新事项，也可能使旧事项不再相关。
+
+## 完成任务
+
+全部工作完成后，必须在最后一次 `write_todos` 调用之后的下一条消息中给出最终答复，不能把最终答复放在
+同一次 Tool 调用中。最终答复应直接从用户要求的实际结果开始，例如数据、计算、总结或分析，而不是只确认任务已完成。"""
 
 _TASK_DESCRIPTION_ZH = """启动一个临时子 Agent，在隔离的上下文窗口中完成复杂、多步骤任务。
 
@@ -95,7 +113,10 @@ def build_planning_agent(
         state_schema=PlanningAgentState,
         context_schema=AssistantRunContext,
         middleware=[
-            TodoListMiddleware(tool_description=_WRITE_TODOS_DESCRIPTION_ZH),
+            TodoListMiddleware(
+                system_prompt=_WRITE_TODOS_SYSTEM_PROMPT_ZH,
+                tool_description=_WRITE_TODOS_DESCRIPTION_ZH,
+            ),
             SubAgentMiddleware(
                 backend=StateBackend(),
                 subagents=[worker],
@@ -110,8 +131,7 @@ def build_planning_agent(
                 exit_behavior="end",
             ),
             SummarizationMiddleware(**summarization_options),
-            MemoryContextMiddleware(),
-            TrustedRuntimeFactsMiddleware(),
+            RuntimeContextMiddleware(),
             ToolProgressMiddleware(),
         ],
         name="AssistantPlanningAgent",

@@ -37,9 +37,10 @@ Skill control 或业务 Tool，只通过 Deep Agents 的 `task` 调用同一个 
 Skill 正文、Tool schema 或任意 Tool 名；这些状态不进入父图、后续 chat run 或 Memory Graph。
 
 Skill L0 index 使用简短自然语言列表。父图冻结的 `memory_context` 与 `trusted_runtime_facts` 都不进入
-system prompt：位于 summarization 内层的 model-call middleware 在最新真实 `HumanMessage` 前分别临时插入
-两条独立 `HumanMessage`。模型请求中的尾部顺序固定为 MemoryContext、TrustedRuntimeFacts、当前真实用户请求；
-前面的静态 system prompt 与持久历史保持稳定，以利于 Provider KV prefix cache。两条临时消息都不写入标准
+system prompt：位于 summarization 内层的 model-call middleware 在最新真实 `HumanMessage` 前把两者合并投影为
+一条临时 `HumanMessage`。组合消息内先呈现 TrustedRuntimeFacts，再以独立标题和引用格式呈现 Memory；模型请求尾部
+顺序固定为组合运行时上下文、当前真实用户请求。两类数据仍使用独立 state channel，并在组合消息内保留不同的 trust
+boundary；前面的静态 system prompt 与持久历史保持稳定，以利于 Provider KV prefix cache。该组合消息不写入标准
 messages state、checkpoint messages 或摘要；结构化事实快照本身由父图 state/checkpoint 保存。
 
 Memory 每一行以引用文本呈现，并明确为可能过时或错误的背景资料而非本轮指令；不能用于生成身份、权限、当前
@@ -65,15 +66,16 @@ token 阈值，两者可由现有环境变量覆盖。DeepSeek V4 Flash 使用�
 自建 conversation、完整问答边界或 summary state。
 
 planning coordinator 本身也是 `create_agent`。锁定依赖 `langchain==1.3.15` 的官方
-`TodoListMiddleware` 在每次 model call 动态追加其上游 `WRITE_TODOS_SYSTEM_PROMPT`，并提供原生
-`write_todos` Tool；生产代码不复制 prompt 正文，也不再叠加项目 A-lite completed 规则。Todo 采用上游
+`TodoListMiddleware` 在每次 model call 动态追加项目通过官方扩展参数提供的中文 system prompt，并提供原生
+`write_todos` Tool；项目同样通过官方扩展参数提供中文 Tool description，不复制或改写 middleware 执行逻辑，
+也不再叠加项目 A-lite completed 规则。Todo 采用上游
 `content/status=pending|in_progress|completed` schema，由模型通过官方 Tool 实时维护。
 
 Deep Agents 0.7.8 `SubAgentMiddleware` 提供原生 `task(description, subagent_type)` Tool；唯一
 `general-purpose` 类型直接引用已编译的 `AssistantFastAgent`。Supervisor 的标准 messages、Todo ToolCall、task
 ToolCall 与返回的 ToolMessage 全部保留在官方 conversation/checkpoint 中，不再经过项目 projection、working-memory
-JSON 或 marker。父级 MemoryContext 与 TrustedRuntimeFacts 仍由相同 middleware 在最新真实用户请求前临时插入两条
-独立 `HumanMessage`，不进入 system prompt、state messages 或摘要。
+JSON 或 marker。父级 Memory 与 TrustedRuntimeFacts 仍由相同 middleware 在最新真实用户请求前投影为一条分区明确的
+临时 `HumanMessage`，不进入 system prompt、state messages 或摘要。
 
 task 调用时，Deep Agents 把模型生成的完整 description 作为子 Agent 唯一的 `HumanMessage`，并传递冻结的
 Memory/TrustedRuntimeFacts、execution mode 与 Skill state；父 conversation、Todo 和 structured response 被上游

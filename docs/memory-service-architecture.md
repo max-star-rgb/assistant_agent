@@ -71,10 +71,11 @@ mock mode 只能使用 disabled；远端 backend 要求 real mode 和完整显�
 ## 冻结快照与安全
 
 state 只保存有界 `tuple[str, ...]` 与 `ready|empty|degraded`。最多 32 项、每项 4,000 字、总计 12,000 字。
-Memory 正文是不可信历史数据。model-call middleware 在最新真实用户请求前临时插入一条独立
-`HumanMessage`，用自然语言明确其仅为可能过时的背景资料；该消息只进入本次 Provider 请求，不写入
-messages state、checkpoint 或 summarization。Memory 不能覆盖当前请求，也不能用于确认身份、权限、当前事实、
-操作参数或 Tool schema。
+Memory 正文是不可信历史数据。model-call middleware 在最新真实用户请求前临时插入一条运行时上下文
+`HumanMessage`；其中 TrustedRuntimeFacts 与 Memory 使用独立标题分区，Memory 继续用引用格式和自然语言明确为
+可能过时的背景资料。该组合消息只进入本次 Provider 请求，不写入 messages state、checkpoint 或 summarization。
+`memory_context` 与 `trusted_runtime_facts` 仍是独立 state channel；Memory 不能覆盖当前请求，也不能用于确认身份、
+权限、当前事实、操作参数或 Tool schema。
 
 旧 `MemoryNodeBundle`、commit ledger 与 time-travel Memory 兼容层已随旧 Runtime 删除。Mem0 HTTP client 与
 identity adapter 继续由当前最小 `MemoryBackend` 复用；旧 checkpoint 不迁移进 `assistant-native-v3`。

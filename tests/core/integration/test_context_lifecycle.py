@@ -153,7 +153,7 @@ def test_frozen_memory_is_transient_context_before_the_current_request() -> None
 
 
 @pytest.mark.core_invariant("CTX-001")
-def test_planning_and_task_receive_transient_frozen_context() -> None:
+def test_planning_and_task_receive_one_transient_frozen_runtime_context() -> None:
     model = _CapturePlanningMessagesModel()
     model.observed_calls = []
     fast = build_fast_agent(model, [], skill_catalog=SkillCatalog())
@@ -193,8 +193,8 @@ def test_planning_and_task_receive_transient_frozen_context() -> None:
     )
     for messages in (parent_calls[0], child_call):
         humans = [item for item in messages if isinstance(item, HumanMessage)]
-        assert len(humans) == 3
-        assert "memory-sentinel" in str(humans[-3].content)
+        assert len(humans) == 2
+        assert "memory-sentinel" in str(humans[-2].content)
         assert "2026-08-24" in str(humans[-2].content)
         assert humans[-1].content == "request-sentinel"
     assert [
