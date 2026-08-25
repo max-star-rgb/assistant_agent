@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from hashlib import sha256
 import os
 from pathlib import Path, PurePosixPath
-import shutil
 import secrets
 import stat
 import subprocess
@@ -23,6 +22,10 @@ from assistant_agent.evaluation.coding_behavior import (
 
 _MAX_GIT_OUTPUT_BYTES = 65_536
 _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+_MAX_CLEANUP_ENTRIES = 4096
+_MAX_CLEANUP_FILES = 2048
+_MAX_CLEANUP_DEPTH = 32
+_MAX_CLEANUP_BYTES = 64 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,12 +53,18 @@ class _OwnedFixture:
     repository_name: str
     repository_device: int
     repository_inode: int
-    tombstone_name: str | None = None
     cleanup_identity_drift: bool = False
 
 
 class _CleanupIdentityDrift(RuntimeError):
     pass
+
+
+@dataclass(slots=True)
+class _CleanupBudget:
+    entries: int = 0
+    files: int = 0
+    bytes: int = 0
 
 
 def _cleanup_mutation_hook(parent_fd: int, name: str) -> None:
@@ -251,8 +260,6 @@ class CodingBehaviorFixtureStore:
         candidate = Path(safe_parent)
         if not candidate.is_dir() or candidate.is_symlink():
             raise ValueError("fixture store requires an existing safe parent")
-        if not shutil.rmtree.avoids_symlink_attacks:
-            raise ValueError("fixture store requires fd-safe cleanup support")
         try:
             self._parent_fd = os.open(candidate, _DIRECTORY_FLAGS)
         except OSError as exc:
@@ -283,11 +290,14 @@ class CodingBehaviorFixtureStore:
         self._root_inode = root_stat.st_ino
         self._store_nonce = secrets.token_bytes(32)
         self._owned: dict[str, _OwnedFixture] = {}
+        self._issued_case_ids: set[str] = set()
 
     def create(self, case: CodingBehaviorCase) -> CodingBehaviorFixture:
         if not isinstance(case, CodingBehaviorCase):
             raise ValueError("fixture creation requires a trusted fixture case")
         fixture_id = case.fixture_id
+        if case.case_id in self._issued_case_ids:
+            raise ValueError("fixture store permits one bounded sentinel per case")
         definition = TRUSTED_FIXTURE_CATALOG.get(fixture_id)
         if definition is None:
             raise ValueError("fixture_id is not a trusted fixture")
@@ -350,22 +360,9 @@ class CodingBehaviorFixtureStore:
                 repository_device=repository_stat.st_dev,
                 repository_inode=repository_stat.st_ino,
             )
+            self._issued_case_ids.add(case.case_id)
             return fixture
         except BaseException:
-            try:
-                failed_fd = os.open(
-                    repository_name,
-                    _DIRECTORY_FLAGS,
-                    dir_fd=self._root_fd,
-                )
-                failed_stat = os.fstat(failed_fd)
-                self._clear_directory_fd(
-                    failed_fd,
-                    ((self._root_fd, repository_name, failed_stat.st_dev, failed_stat.st_ino),),
-                )
-                os.close(failed_fd)
-            except (OSError, ValueError, _CleanupIdentityDrift):
-                pass
             raise
         finally:
             os.close(repository_fd)
@@ -421,8 +418,6 @@ class CodingBehaviorFixtureStore:
             or fixture.case_binding_digest != expected_binding.manifest_digest
         ):
             raise ValueError("fixture capability case binding mismatch")
-        if owned.tombstone_name is not None:
-            raise ValueError("fixture capability cleanup pending")
         return owned
 
     def cleanup(
@@ -440,81 +435,25 @@ class CodingBehaviorFixtureStore:
             raise ValueError("fixture capability case binding mismatch")
         if owned.cleanup_identity_drift:
             raise ValueError("fixture cleanup pending")
-        if owned.tombstone_name is None:
-            lease = self.resolve(fixture, case)
-            tombstone = f".cleanup-{fixture.capability_token}"
-            try:
-                _cleanup_mutation_hook(self._root_fd, owned.repository_name)
-                lease.validate()
-                os.rename(
-                    owned.repository_name,
-                    tombstone,
-                    src_dir_fd=self._root_fd,
-                    dst_dir_fd=self._root_fd,
-                )
-                moved = os.stat(
-                    tombstone,
-                    dir_fd=self._root_fd,
-                    follow_symlinks=False,
-                )
-                if (
-                    moved.st_dev != owned.repository_device
-                    or moved.st_ino != owned.repository_inode
-                ):
-                    try:
-                        os.rename(
-                            tombstone,
-                            owned.repository_name,
-                            src_dir_fd=self._root_fd,
-                            dst_dir_fd=self._root_fd,
-                        )
-                    finally:
-                        owned.cleanup_identity_drift = True
-                    raise _CleanupIdentityDrift
-            except OSError as exc:
-                raise ValueError("fixture cleanup pending") from exc
-            except _CleanupIdentityDrift as exc:
-                raise ValueError("fixture cleanup pending") from exc
-            except ValueError as exc:
-                owned.cleanup_identity_drift = True
-                raise ValueError("fixture cleanup pending") from exc
-            finally:
-                lease.close()
-            owned.tombstone_name = tombstone
-        assert owned.tombstone_name is not None
-        tombstone_fd = -1
+        lease: FixtureLease | None = None
         try:
-            tombstone_fd = os.open(
-                owned.tombstone_name,
-                _DIRECTORY_FLAGS,
-                dir_fd=self._root_fd,
-            )
-            tombstone_stat = os.fstat(tombstone_fd)
-            if (
-                tombstone_stat.st_dev != owned.repository_device
-                or tombstone_stat.st_ino != owned.repository_inode
-            ):
-                raise _CleanupIdentityDrift
-            chain = (
-                (
-                    self._root_fd,
-                    owned.tombstone_name,
-                    owned.repository_device,
-                    owned.repository_inode,
-                ),
-            )
-            self._clear_directory_fd(tombstone_fd, chain)
-            self._validate_cleanup_chain(chain)
-            if os.listdir(tombstone_fd):
-                raise ValueError("fixture cleanup pending")
+            lease = self.resolve(fixture, case)
+            _cleanup_mutation_hook(self._root_fd, owned.repository_name)
+            lease.validate()
+            chain = ((self._root_fd, owned.repository_name, owned.repository_device, owned.repository_inode),)
+            budget = _CleanupBudget()
+            self._preflight_scrub(lease.repository_fd, chain, 0, budget)
+            lease.validate()
+            self._scrub_regular_content(lease.repository_fd, chain)
+            lease.validate()
         except _CleanupIdentityDrift as exc:
             owned.cleanup_identity_drift = True
             raise ValueError("fixture cleanup pending") from exc
         except (OSError, ValueError) as exc:
             raise ValueError("fixture cleanup pending") from exc
         finally:
-            if tombstone_fd >= 0:
-                os.close(tombstone_fd)
+            if lease is not None:
+                lease.close()
         self._owned.pop(fixture.capability_token, None)
         return "released"
 
@@ -535,98 +474,118 @@ class CodingBehaviorFixtureStore:
             if current.st_dev != expected_device or current.st_ino != expected_inode:
                 raise _CleanupIdentityDrift
 
-    def _clear_directory_fd(
+    def _preflight_scrub(
+        self,
+        directory_fd: int,
+        chain: tuple[tuple[int, str, int, int], ...],
+        depth: int,
+        budget: _CleanupBudget,
+    ) -> None:
+        self._validate_cleanup_chain(chain)
+        if depth > _MAX_CLEANUP_DEPTH:
+            raise ValueError("fixture cleanup budget exceeded")
+        for name in tuple(os.listdir(directory_fd)):
+            if not name or name in {".", ".."} or "/" in name or "\x00" in name:
+                raise ValueError("fixture cleanup pending")
+            budget.entries += 1
+            if budget.entries > _MAX_CLEANUP_ENTRIES:
+                raise ValueError("fixture cleanup budget exceeded")
+            self._validate_cleanup_chain(chain)
+            try:
+                entry = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            except OSError as exc:
+                raise _CleanupIdentityDrift from exc
+            if stat.S_ISDIR(entry.st_mode):
+                try:
+                    child_fd = os.open(name, _DIRECTORY_FLAGS, dir_fd=directory_fd)
+                except OSError as exc:
+                    raise _CleanupIdentityDrift from exc
+                try:
+                    opened = os.fstat(child_fd)
+                    if opened.st_dev != entry.st_dev or opened.st_ino != entry.st_ino:
+                        raise _CleanupIdentityDrift
+                    child_chain = chain + ((directory_fd, name, entry.st_dev, entry.st_ino),)
+                    self._preflight_scrub(child_fd, child_chain, depth + 1, budget)
+                finally:
+                    os.close(child_fd)
+            elif stat.S_ISREG(entry.st_mode):
+                budget.files += 1
+                budget.bytes += entry.st_size
+                if budget.files > _MAX_CLEANUP_FILES or budget.bytes > _MAX_CLEANUP_BYTES:
+                    raise ValueError("fixture cleanup budget exceeded")
+            else:
+                raise ValueError("fixture cleanup requires a symlink-free regular tree")
+
+    def _scrub_regular_content(
         self,
         directory_fd: int,
         chain: tuple[tuple[int, str, int, int], ...],
     ) -> None:
         self._validate_cleanup_chain(chain)
         for name in tuple(os.listdir(directory_fd)):
-            if not name or name in {".", ".."} or "/" in name or "\x00" in name:
-                raise ValueError("fixture cleanup pending")
             self._validate_cleanup_chain(chain)
             try:
                 entry = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
             except OSError as exc:
                 raise _CleanupIdentityDrift from exc
-            mode = entry.st_mode
-            opened_fd = -1
-            child_chain = chain
-            if stat.S_ISDIR(mode):
+            if stat.S_ISDIR(entry.st_mode):
                 try:
-                    opened_fd = os.open(name, _DIRECTORY_FLAGS, dir_fd=directory_fd)
+                    child_fd = os.open(name, _DIRECTORY_FLAGS, dir_fd=directory_fd)
                 except OSError as exc:
                     raise _CleanupIdentityDrift from exc
-                opened_stat = os.fstat(opened_fd)
-                if opened_stat.st_dev != entry.st_dev or opened_stat.st_ino != entry.st_ino:
-                    os.close(opened_fd)
-                    raise _CleanupIdentityDrift
-                child_chain = chain + (
-                    (directory_fd, name, entry.st_dev, entry.st_ino),
-                )
-                self._clear_directory_fd(opened_fd, child_chain)
-            elif stat.S_ISREG(mode):
                 try:
-                    opened_fd = os.open(
-                        name,
-                        os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                        dir_fd=directory_fd,
+                    opened = os.fstat(child_fd)
+                    if opened.st_dev != entry.st_dev or opened.st_ino != entry.st_ino:
+                        raise _CleanupIdentityDrift
+                    _cleanup_mutation_hook(directory_fd, name)
+                    self._validate_cleanup_chain(chain)
+                    current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                    if current.st_dev != entry.st_dev or current.st_ino != entry.st_ino:
+                        raise _CleanupIdentityDrift
+                    child_chain = chain + ((directory_fd, name, entry.st_dev, entry.st_ino),)
+                    self._scrub_regular_content(child_fd, child_chain)
+                finally:
+                    os.close(child_fd)
+            elif stat.S_ISREG(entry.st_mode):
+                try:
+                    original_fd = os.open(
+                        name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory_fd
                     )
                 except OSError as exc:
                     raise _CleanupIdentityDrift from exc
-                opened_stat = os.fstat(opened_fd)
-                if opened_stat.st_dev != entry.st_dev or opened_stat.st_ino != entry.st_ino:
-                    os.close(opened_fd)
-                    raise _CleanupIdentityDrift
-            elif not stat.S_ISLNK(mode):
-                raise ValueError("fixture cleanup pending")
-
-            _cleanup_mutation_hook(directory_fd, name)
-            self._validate_cleanup_chain(chain)
-            try:
-                current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-            except OSError as exc:
-                if opened_fd >= 0:
-                    os.close(opened_fd)
-                raise _CleanupIdentityDrift from exc
-            if current.st_dev != entry.st_dev or current.st_ino != entry.st_ino:
-                if opened_fd >= 0:
-                    os.close(opened_fd)
-                raise _CleanupIdentityDrift
-
-            quarantine = f".entry-{secrets.token_hex(16)}"
-            try:
-                os.rename(
-                    name,
-                    quarantine,
-                    src_dir_fd=directory_fd,
-                    dst_dir_fd=directory_fd,
-                )
-                quarantined = os.stat(
-                    quarantine,
-                    dir_fd=directory_fd,
-                    follow_symlinks=False,
-                )
-                if quarantined.st_dev != entry.st_dev or quarantined.st_ino != entry.st_ino:
-                    raise _CleanupIdentityDrift
-                self._validate_cleanup_chain(chain)
-                if stat.S_ISDIR(mode):
-                    assert opened_fd >= 0
-                    if os.listdir(opened_fd):
-                        raise ValueError("fixture cleanup pending")
-                    os.close(opened_fd)
-                    opened_fd = -1
-                    os.rmdir(quarantine, dir_fd=directory_fd)
-                elif stat.S_ISREG(mode):
-                    assert opened_fd >= 0
-                    os.close(opened_fd)
-                    opened_fd = -1
-                    os.unlink(quarantine, dir_fd=directory_fd)
-                else:
-                    os.unlink(quarantine, dir_fd=directory_fd)
-            finally:
-                if opened_fd >= 0:
-                    os.close(opened_fd)
+                writer_fd = -1
+                try:
+                    opened = os.fstat(original_fd)
+                    if opened.st_dev != entry.st_dev or opened.st_ino != entry.st_ino:
+                        raise _CleanupIdentityDrift
+                    _cleanup_mutation_hook(directory_fd, name)
+                    self._validate_cleanup_chain(chain)
+                    current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                    if current.st_dev != entry.st_dev or current.st_ino != entry.st_ino:
+                        raise _CleanupIdentityDrift
+                    os.fchmod(original_fd, stat.S_IMODE(opened.st_mode) | stat.S_IWUSR)
+                    writer_fd = os.open(
+                        f"/proc/self/fd/{original_fd}", os.O_WRONLY | os.O_CLOEXEC
+                    )
+                    writer_stat = os.fstat(writer_fd)
+                    if writer_stat.st_dev != entry.st_dev or writer_stat.st_ino != entry.st_ino:
+                        raise _CleanupIdentityDrift
+                    os.ftruncate(writer_fd, 0)
+                    os.fsync(writer_fd)
+                    self._validate_cleanup_chain(chain)
+                    after = os.stat(
+                        name,
+                        dir_fd=directory_fd,
+                        follow_symlinks=False,
+                    )
+                    if after.st_dev != entry.st_dev or after.st_ino != entry.st_ino:
+                        raise _CleanupIdentityDrift
+                finally:
+                    if writer_fd >= 0:
+                        os.close(writer_fd)
+                    os.close(original_fd)
+            else:
+                raise ValueError("fixture cleanup requires a symlink-free regular tree")
 
     def _verify_root_identity(self) -> None:
         try:
