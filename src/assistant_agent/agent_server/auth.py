@@ -12,6 +12,15 @@ from assistant_agent.agent_server.config import (
     PLANNING_ASSISTANT_NAME,
 )
 from assistant_agent.agent_server.client import THREAD_GRAPH_METADATA_KEY
+from assistant_agent.agent_server.attestation import (
+    execution_attestation_digest,
+    issue_evaluation_context_token,
+    verify_evaluation_context_token,
+)
+from assistant_agent.agent_server.graph import get_native_assistant_execution_attestation
+
+
+_EVALUATION_TOKEN_KEY = "coding_eval_context_token"
 
 
 auth = Auth()
@@ -120,6 +129,27 @@ async def authorize_thread_create(
         return False
     metadata["owner"] = str(ctx.user.identity)
     metadata[THREAD_GRAPH_METADATA_KEY] = graph_id
+    eval_identity = metadata.get("coding_eval_identity")
+    eval_repository = metadata.get("coding_eval_repo_id")
+    eval_case = metadata.get("coding_eval_case_id")
+    if any(value is not None for value in (eval_identity, eval_repository, eval_case)):
+        if not all(
+            isinstance(value, str) and bool(value) and len(value) <= 160
+            for value in (eval_identity, eval_repository, eval_case)
+        ) or eval_identity != str(ctx.user.identity):
+            return False
+        try:
+            digest = execution_attestation_digest(
+                get_native_assistant_execution_attestation()
+            )
+        except RuntimeError:
+            return False
+        metadata[_EVALUATION_TOKEN_KEY] = issue_evaluation_context_token(
+            identity=eval_identity,
+            repository_id=eval_repository,
+            case_id=eval_case,
+            attestation_digest=digest,
+        )
     return None
 
 
@@ -175,6 +205,31 @@ async def authorize_run_create(
     metadata["owner"] = str(ctx.user.identity)
     if str(value.get("assistant_id")) == MEMORY_GRAPH_ID:
         return {"owner": str(ctx.user.identity)}
+    context = value.setdefault("context", {})
+    token = context.pop(_EVALUATION_TOKEN_KEY, None)
+    repository_id = context.pop("evaluation_repository_id", None)
+    case_id = context.pop("evaluation_case_id", None)
+    context.pop("evaluation_execution_attestation_digest", None)
+    requested_evaluation = context.get("entry_profile") == "evaluation"
+    trusted = False
+    if requested_evaluation and isinstance(token, str) and isinstance(repository_id, str) and isinstance(case_id, str):
+        try:
+            digest = execution_attestation_digest(
+                get_native_assistant_execution_attestation()
+            )
+        except RuntimeError:
+            digest = ""
+        trusted = verify_evaluation_context_token(
+            token,
+            identity=str(ctx.user.identity),
+            repository_id=repository_id,
+            case_id=case_id,
+            attestation_digest=digest,
+        )
+        if trusted:
+            context["entry_profile"] = "evaluation"
+    if requested_evaluation and not trusted:
+        context["entry_profile"] = "agent_server"
     return {
         "owner": str(ctx.user.identity),
         THREAD_GRAPH_METADATA_KEY: ASSISTANT_GRAPH_ID,

@@ -690,9 +690,22 @@ class CodingBehaviorAgentServerDriver:
                 case_id=case.case_id,
             ):
                 return await failed("coding_eval_repository_not_bound", "permission")
+            thread_metadata = _mapping(thread.get("metadata"), label="thread metadata")
+            evaluation_context_token = thread_metadata.get("coding_eval_context_token")
+            if not isinstance(evaluation_context_token, str):
+                if self.expected_execution_attestation_digest is not None:
+                    return await failed("coding_eval_repository_not_bound", "permission")
+                evaluation_context_token = "unattested-driver-test-context"
+            evaluation_context = {
+                "entry_profile": "evaluation",
+                "assistant_execution_mode": "coding",
+                "coding_eval_context_token": evaluation_context_token,
+                "evaluation_case_id": case.case_id,
+                "evaluation_repository_id": policy.repository_id,
+            }
             await start_run(
                 input={"messages": [{"role": "user", "content": case.request}], "execution_mode": "coding", "coding_repo_id": policy.repository_id},
-                context={"entry_profile": "evaluation", "assistant_execution_mode": "coding"},
+                context=evaluation_context,
                 metadata={"coding_eval_case_id": case.case_id},
             )
             while True:
@@ -784,7 +797,7 @@ class CodingBehaviorAgentServerDriver:
                         await start_run(
                             command={"resume": {"decision": "reject"}},
                             checkpoint_id=checkpoint_id,
-                            context={"entry_profile": "evaluation", "assistant_execution_mode": "coding"},
+                            context=evaluation_context,
                         )
                     except Exception:
                         return await failed(
@@ -805,7 +818,7 @@ class CodingBehaviorAgentServerDriver:
                         await start_run(
                             command={"resume": {"decision": "reject"}},
                             checkpoint_id=checkpoint_id,
-                            context={"entry_profile": "evaluation", "assistant_execution_mode": "coding"},
+                            context=evaluation_context,
                         )
                     except Exception:
                         return await failed(
@@ -819,7 +832,7 @@ class CodingBehaviorAgentServerDriver:
                 await start_run(
                     command={"resume": response},
                     checkpoint_id=checkpoint_id,
-                    context={"entry_profile": "evaluation", "assistant_execution_mode": "coding"},
+                    context=evaluation_context,
                 )
         except _RunCleanupPending:
             return await failed(

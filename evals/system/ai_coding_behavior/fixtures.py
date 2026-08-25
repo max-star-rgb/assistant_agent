@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import fcntl
 from hashlib import sha256
+import json
 import os
 from pathlib import Path, PurePosixPath
 import secrets
@@ -27,6 +29,10 @@ _MAX_CLEANUP_FILES = 2048
 _MAX_CLEANUP_DEPTH = 32
 _MAX_CLEANUP_BYTES = 64 * 1024 * 1024
 _MAX_FIXTURE_SLOTS = 32
+_MAX_RETAINED_STORES = 64
+_STORE_PREFIX = "ai-coding-behavior-"
+_RETENTION_MARKER = ".retention-v1.json"
+_RETENTION_LOCK = ".retention-v1.lock"
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,41 +284,197 @@ def _contains_symlink(path: Path) -> bool:
 class CodingBehaviorFixtureStore:
     """Own an fd-anchored management root beneath a caller-owned safe parent."""
 
-    def __init__(self, safe_parent: Path) -> None:
+    def __init__(self, safe_parent: Path, *, safe_parent_fd: int | None = None) -> None:
         candidate = Path(safe_parent)
         if not candidate.is_dir() or candidate.is_symlink():
             raise ValueError("fixture store requires an existing safe parent")
         try:
-            self._parent_fd = os.open(candidate, _DIRECTORY_FLAGS)
+            self._parent_fd = (
+                os.dup(safe_parent_fd)
+                if safe_parent_fd is not None
+                else os.open(candidate, _DIRECTORY_FLAGS)
+            )
         except OSError as exc:
             raise ValueError("fixture store requires an existing safe parent") from exc
         parent_stat = os.fstat(self._parent_fd)
         self._parent_device = parent_stat.st_dev
         self._parent_inode = parent_stat.st_ino
         self.parent = candidate.resolve(strict=True)
-        created = Path(
-            tempfile.mkdtemp(
-                prefix="ai-coding-behavior-",
-                dir=f"/proc/self/fd/{self._parent_fd}",
-            )
-        )
-        self._root_name = created.name
+        self._closed = False
+        lock_fd = self._acquire_retention_lock()
         try:
-            self._root_fd = os.open(
-                self._root_name,
-                _DIRECTORY_FLAGS,
-                dir_fd=self._parent_fd,
+            self._require_retention_capacity()
+            created = Path(
+                tempfile.mkdtemp(
+                    prefix=_STORE_PREFIX,
+                    dir=f"/proc/self/fd/{self._parent_fd}",
+                )
             )
-        except OSError:
+            self._root_name = created.name
+            self._root_fd = os.open(
+                self._root_name, _DIRECTORY_FLAGS, dir_fd=self._parent_fd
+            )
+            root_stat = os.fstat(self._root_fd)
+            self._root_device = root_stat.st_dev
+            self._root_inode = root_stat.st_ino
+            self._write_retention_marker("active", exclusive=True)
+        except BaseException:
+            if hasattr(self, "_root_fd"):
+                os.close(self._root_fd)
             os.close(self._parent_fd)
             raise
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
         self.root = self.parent / self._root_name
-        root_stat = os.fstat(self._root_fd)
-        self._root_device = root_stat.st_dev
-        self._root_inode = root_stat.st_ino
         self._store_nonce = secrets.token_bytes(32)
         self._owned: dict[str, _OwnedFixture] = {}
         self._issued_case_ids: set[str] = set()
+
+    @property
+    def parent_fd(self) -> int:
+        return self._parent_fd
+
+    @property
+    def root_fd(self) -> int:
+        return self._root_fd
+
+    def __enter__(self) -> "CodingBehaviorFixtureStore":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        del exc_type, exc, traceback
+        self.close()
+
+    def close(self) -> Literal["released_with_bounded_sentinel"]:
+        if self._closed:
+            if self._owned:
+                raise ValueError("fixture store cleanup pending")
+            return "released_with_bounded_sentinel"
+        pending = bool(self._owned)
+        try:
+            self._verify_root_identity()
+            if not pending:
+                self._write_retention_marker("released_with_bounded_sentinel")
+        finally:
+            os.close(self._root_fd)
+            os.close(self._parent_fd)
+            self._closed = True
+        if pending:
+            raise ValueError("fixture store cleanup pending")
+        return "released_with_bounded_sentinel"
+
+    def _acquire_retention_lock(self) -> int:
+        flags = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC
+        lock_fd = os.open(_RETENTION_LOCK, flags, 0o600, dir_fd=self._parent_fd)
+        lock_stat = os.fstat(lock_fd)
+        if (
+            not stat.S_ISREG(lock_stat.st_mode)
+            or lock_stat.st_nlink != 1
+            or lock_stat.st_uid != os.geteuid()
+        ):
+            os.close(lock_fd)
+            raise ValueError("fixture retention lock is unsafe")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        return lock_fd
+
+    def _require_retention_capacity(self) -> None:
+        retained = 0
+        for name in os.listdir(self._parent_fd):
+            if not name.startswith(_STORE_PREFIX):
+                continue
+            retained += 1
+            if retained >= _MAX_RETAINED_STORES:
+                raise ValueError(
+                    "fixture retention limit reached; operator cleanup is required"
+                )
+            directory_fd = os.open(name, _DIRECTORY_FLAGS, dir_fd=self._parent_fd)
+            try:
+                directory_stat = os.fstat(directory_fd)
+                marker_fd = os.open(
+                    _RETENTION_MARKER,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=directory_fd,
+                )
+                try:
+                    marker_stat = os.fstat(marker_fd)
+                    if (
+                        not stat.S_ISREG(marker_stat.st_mode)
+                        or marker_stat.st_nlink != 1
+                        or marker_stat.st_uid != os.geteuid()
+                    ):
+                        raise ValueError("fixture retention marker is unsafe")
+                    payload = os.read(marker_fd, 4097)
+                finally:
+                    os.close(marker_fd)
+                marker = json.loads(payload)
+                if (
+                    len(payload) > 4096
+                    or marker.get("schema_version") != 1
+                    or marker.get("owner_uid") != os.geteuid()
+                    or marker.get("root_device") != directory_stat.st_dev
+                    or marker.get("root_inode") != directory_stat.st_ino
+                    or marker.get("status")
+                    not in {"active", "released_with_bounded_sentinel"}
+                ):
+                    raise ValueError("fixture retention marker is unsafe")
+            except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+                raise ValueError(
+                    "fixture retention registry is unsafe; operator cleanup is required"
+                ) from exc
+            finally:
+                os.close(directory_fd)
+
+    def _write_retention_marker(self, status: str, *, exclusive: bool = False) -> None:
+        payload = json.dumps(
+            {
+                "owner_uid": os.geteuid(),
+                "root_device": self._root_device,
+                "root_inode": self._root_inode,
+                "schema_version": 1,
+                "status": status,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+        marker_name = _RETENTION_MARKER
+        if not exclusive:
+            current_fd = os.open(
+                _RETENTION_MARKER,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=self._root_fd,
+            )
+            try:
+                current = os.fstat(current_fd)
+                if (
+                    not stat.S_ISREG(current.st_mode)
+                    or current.st_nlink != 1
+                    or current.st_uid != os.geteuid()
+                ):
+                    raise ValueError("fixture retention marker is unsafe")
+            finally:
+                os.close(current_fd)
+            marker_name = f"{_RETENTION_MARKER}.tmp-{secrets.token_hex(8)}"
+        marker_fd = os.open(
+            marker_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd=self._root_fd,
+        )
+        try:
+            if os.write(marker_fd, payload) != len(payload):
+                raise OSError("short retention marker write")
+            os.fsync(marker_fd)
+        finally:
+            os.close(marker_fd)
+        if not exclusive:
+            os.rename(
+                marker_name,
+                _RETENTION_MARKER,
+                src_dir_fd=self._root_fd,
+                dst_dir_fd=self._root_fd,
+            )
+        os.fsync(self._root_fd)
 
     def create(self, case: CodingBehaviorCase) -> CodingBehaviorFixture:
         if not isinstance(case, CodingBehaviorCase):
@@ -479,8 +641,8 @@ class CodingBehaviorFixtureStore:
         self,
         fixture: CodingBehaviorFixture,
         case: CodingBehaviorCase,
-    ) -> Literal["released"]:
-        """Destroy repository content and retain one empty owned sentinel."""
+    ) -> Literal["released_with_bounded_sentinel"]:
+        """Scrub repository content and retain one globally bounded sentinel."""
         self._verify_root_identity()
         owned = self._owned.get(fixture.capability_token)
         if owned is None or owned.fixture != fixture:
@@ -542,7 +704,7 @@ class CodingBehaviorFixtureStore:
             if lease is not None:
                 lease.close()
         self._owned.pop(fixture.capability_token, None)
-        return "released"
+        return "released_with_bounded_sentinel"
 
     def _validate_cleanup_chain(
         self,

@@ -69,7 +69,6 @@ from evals.system.ai_coding_behavior.graders import (
     HeldOutValidationResult,
     grade_coding_behavior_case,
 )
-from evals.system.common.artifacts import create_run_dir, write_json
 
 
 BASELINE_SUITE_ID = "baseline-v1"
@@ -533,8 +532,18 @@ def build_real_run_options(
 class IsolatedHeldOutValidationExecutor:
     """Run a fixed held-out command through the existing network-none sandbox."""
 
-    def __init__(self, *, work_root: Path, sandbox_image: str) -> None:
+    def __init__(
+        self, *, work_root: Path, sandbox_image: str, work_root_fd: int | None = None
+    ) -> None:
         self._work_root = work_root.resolve()
+        self._work_root_fd = (
+            os.dup(work_root_fd)
+            if work_root_fd is not None
+            else os.open(
+                self._work_root,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            )
+        )
         self._sandbox_image = sandbox_image
         self._sandbox = DockerCodingSandboxBackend(
             owner_id=f"coding-eval-{secrets.token_hex(8)}"
@@ -547,9 +556,19 @@ class IsolatedHeldOutValidationExecutor:
         if program is None:
             raise ValueError("held-out command is not in the trusted catalog")
         self._require_repository_binding(request)
-        snapshot_parent = self._work_root / "held-out-snapshots"
-        _prepare_owned_directory(snapshot_parent)
-        debt = _SnapshotCleanupDebt.reserve(snapshot_parent, prefix="snapshot-")
+        snapshot_parent_capability = _open_owned_directory_at(
+            self._work_root_fd,
+            self._work_root,
+            Path("held-out-snapshots"),
+        )
+        try:
+            debt = _SnapshotCleanupDebt.reserve(
+                snapshot_parent_capability.path,
+                prefix="snapshot-",
+                parent_fd=snapshot_parent_capability.fd,
+            )
+        finally:
+            snapshot_parent_capability.close()
         temporary = debt.path
         snapshot = temporary / "repository"
         snapshot_fd = -1
@@ -683,7 +702,12 @@ class IsolatedHeldOutValidationExecutor:
             ]
             if not self._cleanup_debts:
                 break
-        sandbox_released = asyncio.run(self._sandbox.aclose())
+        try:
+            sandbox_released = asyncio.run(self._sandbox.aclose())
+        finally:
+            if self._work_root_fd >= 0:
+                os.close(self._work_root_fd)
+                self._work_root_fd = -1
         return not self._cleanup_debts and sandbox_released
 
     @staticmethod
@@ -758,6 +782,104 @@ class _FixtureCleanupDebt:
         raise TypeError("fixture cleanup debt is not serializable")
 
 
+@dataclass(slots=True)
+class _OwnedDirectory:
+    path: Path
+    fd: int
+    device: int
+    inode: int
+    _closed: bool = False
+
+    def validate(self) -> None:
+        if self._closed:
+            raise CodingBehaviorRunnerConfigurationError(
+                "coding behavior output root capability is closed"
+            )
+        current = os.fstat(self.fd)
+        if (
+            current.st_dev != self.device
+            or current.st_ino != self.inode
+            or not stat.S_ISDIR(current.st_mode)
+            or current.st_uid != os.geteuid()
+        ):
+            raise CodingBehaviorRunnerConfigurationError(
+                "coding behavior output root identity changed"
+            )
+
+    def close(self) -> None:
+        if not self._closed:
+            os.close(self.fd)
+            self._closed = True
+
+    def __enter__(self) -> "_OwnedDirectory":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        del exc_type, exc, traceback
+        self.close()
+
+
+def _open_owned_directory_at(
+    trusted_root_fd: int, trusted_root: Path, relative: Path
+) -> _OwnedDirectory:
+    """Create/open a runner-owned directory strictly beneath one trusted dirfd."""
+
+    if relative.is_absolute() or not relative.parts or any(
+        part in {"", ".", ".."} for part in relative.parts
+    ):
+        raise CodingBehaviorRunnerConfigurationError(
+            "coding behavior output root is unsafe"
+        )
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    current_fd = os.dup(trusted_root_fd)
+    current_path = Path(trusted_root)
+    try:
+        for component in relative.parts:
+            try:
+                os.mkdir(component, mode=0o700, dir_fd=current_fd)
+            except FileExistsError:
+                pass
+            try:
+                next_fd = os.open(component, flags, dir_fd=current_fd)
+            except OSError as exc:
+                raise CodingBehaviorRunnerConfigurationError(
+                    "coding behavior output root is unsafe"
+                ) from exc
+            entry = os.fstat(next_fd)
+            if not stat.S_ISDIR(entry.st_mode) or entry.st_uid != os.geteuid():
+                os.close(next_fd)
+                raise CodingBehaviorRunnerConfigurationError(
+                    "coding behavior output root is unsafe"
+                )
+            os.close(current_fd)
+            current_fd = next_fd
+            current_path = current_path / component
+        final = os.fstat(current_fd)
+        return _OwnedDirectory(
+            path=current_path,
+            fd=current_fd,
+            device=final.st_dev,
+            inode=final.st_ino,
+        )
+    except BaseException:
+        os.close(current_fd)
+        raise
+
+
+def _open_owned_directory(trusted_root: Path, relative: Path) -> _OwnedDirectory:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    try:
+        trusted_root_fd = os.open(trusted_root, flags)
+    except OSError as exc:
+        raise CodingBehaviorRunnerConfigurationError(
+            "coding behavior trusted root is unsafe"
+        ) from exc
+    try:
+        return _open_owned_directory_at(trusted_root_fd, trusted_root, relative)
+    finally:
+        os.close(trusted_root_fd)
+
+
 class _SnapshotCleanupDebt:
     __slots__ = (
         "_path",
@@ -784,22 +906,34 @@ class _SnapshotCleanupDebt:
         self._released = False
 
     @classmethod
-    def reserve(cls, parent: Path, *, prefix: str) -> "_SnapshotCleanupDebt":
-        parent_fd = os.open(
-            parent,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-        )
-        path: Path | None = None
-        try:
-            path = Path(tempfile.mkdtemp(prefix=prefix, dir=parent))
-            directory_fd = os.open(
-                path,
+    def reserve(
+        cls, parent: Path, *, prefix: str, parent_fd: int | None = None
+    ) -> "_SnapshotCleanupDebt":
+        parent_fd = (
+            os.dup(parent_fd)
+            if parent_fd is not None
+            else os.open(
+                parent,
                 os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
             )
+        )
+        path: Path | None = None
+        created_name: str | None = None
+        try:
+            created = Path(
+                tempfile.mkdtemp(prefix=prefix, dir=f"/proc/self/fd/{parent_fd}")
+            )
+            created_name = created.name
+            path = parent / created.name
+            directory_fd = os.open(
+                created.name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=parent_fd,
+            )
         except Exception:
-            if path is not None:
+            if created_name is not None:
                 try:
-                    os.rmdir(path)
+                    os.rmdir(created_name, dir_fd=parent_fd)
                 except OSError:
                     pass
             os.close(parent_fd)
@@ -1430,19 +1564,28 @@ def _run_real_suite(
     test_confirmation_capability: object | None,
 ) -> CodingBehaviorSuiteResult:
     started = monotonic()
-    _prepare_owned_directory(_OUTPUT_ROOT)
-    _prepare_owned_directory(_WORK_PARENT)
-    store = CodingBehaviorFixtureStore(_WORK_PARENT)
+    work_capability = _open_owned_directory(
+        _REPO_ROOT, _WORK_PARENT.relative_to(_REPO_ROOT)
+    )
+    try:
+        store = CodingBehaviorFixtureStore(
+            _WORK_PARENT, safe_parent_fd=work_capability.fd
+        )
+    except BaseException:
+        work_capability.close()
+        raise
     prepared: list[_PreparedCase] = []
     case_results: dict[str, CodingBehaviorCaseResult] = {}
     fixture_cleanup_debts: list[tuple[str, _FixtureCleanupDebt]] = []
     thread_cleanup_debts: list[tuple[str, object]] = []
     outer_cleanup_pending: set[str] = set()
+    fixture_retention_status = "released_with_bounded_sentinel"
     attestation: AgentServerExecutionAttestation | None = None
     identity = f"coding-eval-{secrets.token_hex(12)}"
     executor = IsolatedHeldOutValidationExecutor(
         work_root=_WORK_PARENT,
         sandbox_image=options.sandbox_image,
+        work_root_fd=work_capability.fd,
     )
     try:
         for case in suite.cases:
@@ -1641,6 +1784,13 @@ def _run_real_suite(
                 outer_cleanup_pending.add(case_id)
         if not executor.close():
             outer_cleanup_pending.update(case.case_id for case in suite.cases)
+        try:
+            store.close()
+        except Exception:
+            fixture_retention_status = "cleanup_pending"
+            outer_cleanup_pending.update(case.case_id for case in suite.cases)
+        finally:
+            work_capability.close()
 
     for case in suite.cases:
         if case.case_id in outer_cleanup_pending:
@@ -1672,6 +1822,7 @@ def _run_real_suite(
         status="passed" if all(item.status == "passed" for item in ordered) else "failed",
         cases=ordered,
         elapsed_ms=min(115_200_000, max(0, int((monotonic() - started) * 1000))),
+        fixture_retention_status=fixture_retention_status,
     )
     validated = validate_coding_behavior_suite_result(suite, result)
     write_result_artifact(
@@ -2045,6 +2196,7 @@ def write_result_artifact(
     suite: CodingBehaviorSuite,
     result: CodingBehaviorSuiteResult,
     attestation: AgentServerExecutionAttestation | None,
+    trusted_root: Path | None = None,
 ) -> Path:
     validated = validate_coding_behavior_suite_result(suite, result)
     failure_categories = {
@@ -2077,20 +2229,96 @@ def write_result_artifact(
         raise CodingBehaviorRunnerConfigurationError(
             "coding behavior artifact exceeds its bound"
         )
-    _prepare_owned_directory(root)
-    run_dir = create_run_dir(root, domain="run", case_id=suite.suite_id)
-    temporary = run_dir / ".result.json.tmp"
-    destination = run_dir / "result.json"
-    write_json(temporary, payload)
-    with temporary.open("rb") as stream:
-        os.fsync(stream.fileno())
-    os.replace(temporary, destination)
-    directory_fd = os.open(run_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    if trusted_root is None:
+        try:
+            relative = root.relative_to(_REPO_ROOT)
+        except ValueError as exc:
+            raise CodingBehaviorRunnerConfigurationError(
+                "artifact root requires an explicit trusted root capability"
+            ) from exc
+        trusted_root = _REPO_ROOT
+    else:
+        try:
+            relative = root.relative_to(trusted_root)
+        except ValueError as exc:
+            raise CodingBehaviorRunnerConfigurationError(
+                "artifact root escapes its trusted root capability"
+            ) from exc
+    root_capability = _open_owned_directory(trusted_root, relative)
+    run_name = "run-" + sha256(
+        f"{suite.suite_id}:{secrets.token_hex(16)}".encode("utf-8")
+    ).hexdigest()[:32]
     try:
+        os.mkdir(run_name, mode=0o700, dir_fd=root_capability.fd)
+        directory_fd = os.open(
+            run_name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=root_capability.fd,
+        )
+    except BaseException:
+        root_capability.close()
+        raise
+    temporary_name = ".result.json.tmp"
+    destination_name = "result.json"
+    try:
+        directory_stat = os.fstat(directory_fd)
+        if not stat.S_ISDIR(directory_stat.st_mode) or directory_stat.st_uid != os.geteuid():
+            raise CodingBehaviorRunnerConfigurationError(
+                "coding behavior artifact directory is unsafe"
+            )
+        temporary_fd = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd=directory_fd,
+        )
+        try:
+            offset = 0
+            while offset < len(encoded):
+                written = os.write(temporary_fd, encoded[offset:])
+                if written <= 0:
+                    raise OSError("short coding behavior artifact write")
+                offset += written
+            os.fsync(temporary_fd)
+            temporary_stat = os.fstat(temporary_fd)
+            if (
+                not stat.S_ISREG(temporary_stat.st_mode)
+                or temporary_stat.st_nlink != 1
+                or temporary_stat.st_uid != os.geteuid()
+            ):
+                raise CodingBehaviorRunnerConfigurationError(
+                    "coding behavior artifact temporary file is unsafe"
+                )
+        finally:
+            os.close(temporary_fd)
+        os.rename(
+            temporary_name,
+            destination_name,
+            src_dir_fd=directory_fd,
+            dst_dir_fd=directory_fd,
+        )
+        destination_fd = os.open(
+            destination_name,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=directory_fd,
+        )
+        try:
+            destination_stat = os.fstat(destination_fd)
+            if (
+                destination_stat.st_dev != temporary_stat.st_dev
+                or destination_stat.st_ino != temporary_stat.st_ino
+                or destination_stat.st_uid != os.geteuid()
+            ):
+                raise CodingBehaviorRunnerConfigurationError(
+                    "coding behavior artifact identity changed"
+                )
+        finally:
+            os.close(destination_fd)
         os.fsync(directory_fd)
     finally:
         os.close(directory_fd)
-    return destination
+        root_capability.close()
+    return root / run_name / destination_name
 
 
 def _require_redacted_artifact_value(value: object, *, key: str = "") -> None:
@@ -2169,11 +2397,14 @@ def _artifact_key_is_secret_like(value: str) -> bool:
 
 
 def _prepare_owned_directory(path: Path) -> None:
-    path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if path.is_symlink() or not path.is_dir():
-        raise CodingBehaviorRunnerConfigurationError(
-            "coding behavior output root is unsafe"
-        )
+    try:
+        relative = path.relative_to(_REPO_ROOT)
+        trusted_root = _REPO_ROOT
+    except ValueError:
+        trusted_root = path.parent
+        relative = Path(path.name)
+    with _open_owned_directory(trusted_root, relative):
+        pass
 
 
 def _parser() -> argparse.ArgumentParser:

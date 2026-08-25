@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from hashlib import sha256
+import hmac
 import json
 import re
 import secrets
@@ -20,6 +21,7 @@ _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,159}$")
 _SAFE_REPOSITORY_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,79}$")
 _HEX_64 = re.compile(r"^[0-9a-f]{64}$")
 _HEX_32 = re.compile(r"^[0-9a-f]{32}$")
+_EVALUATION_CONTEXT_SECRET = secrets.token_bytes(32)
 
 
 class AgentServerExecutionAttestation(BaseModel):
@@ -99,6 +101,40 @@ def execution_attestation_digest(
     return attestation.canonical_digest()
 
 
+def issue_evaluation_context_token(
+    *, identity: str, repository_id: str, case_id: str, attestation_digest: str
+) -> str:
+    """Sign one bounded evaluation context without exposing the process secret."""
+
+    values = (identity, repository_id, case_id)
+    if any(not value or len(value) > 160 or "\x00" in value for value in values):
+        raise ValueError("evaluation context identity is invalid")
+    if _HEX_64.fullmatch(attestation_digest) is None:
+        raise ValueError("evaluation attestation digest is invalid")
+    payload = "\x00".join((*values, attestation_digest)).encode("utf-8")
+    return hmac.new(_EVALUATION_CONTEXT_SECRET, payload, sha256).hexdigest()
+
+
+def verify_evaluation_context_token(
+    token: str,
+    *,
+    identity: str,
+    repository_id: str,
+    case_id: str,
+    attestation_digest: str,
+) -> bool:
+    try:
+        expected = issue_evaluation_context_token(
+            identity=identity,
+            repository_id=repository_id,
+            case_id=case_id,
+            attestation_digest=attestation_digest,
+        )
+    except ValueError:
+        return False
+    return bool(_HEX_64.fullmatch(token)) and hmac.compare_digest(token, expected)
+
+
 def coding_registry_digest(
     repositories: Mapping[str, CodingRepositoryConfig],
 ) -> tuple[str, dict[str, str]]:
@@ -138,4 +174,6 @@ __all__ = [
     "coding_registry_digest",
     "coding_repository_config_digest",
     "execution_attestation_digest",
+    "issue_evaluation_context_token",
+    "verify_evaluation_context_token",
 ]

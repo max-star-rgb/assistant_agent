@@ -404,9 +404,10 @@ def build_coding_graph(
     ) -> dict[str, object]:
         if state.get("coding_result") is not None:
             return {}
-        if execution_attestation_digest is not None and state.get(
-            "execution_attestation_digest"
-        ) != execution_attestation_digest:
+        checkpoint_digest = state.get("execution_attestation_digest")
+        if isinstance(checkpoint_digest, str) and (
+            checkpoint_digest != execution_attestation_digest
+        ):
             return {
                 "coding_result": CodingTerminalResult(
                     status="failed",
@@ -2088,9 +2089,9 @@ def build_coding_graph(
             review_input = CodingReviewInput.model_validate(state.get("review_input"))
             projected = {
                 "coding_repo_id": state["coding_repo_id"],
-                "execution_attestation_digest": state[
+                "execution_attestation_digest": state.get(
                     "execution_attestation_digest"
-                ],
+                ),
                 "attestation_mismatch_signals": [],
                 "workspace_ref": review_input.workspace_ref,
                 "base_commit": review_input.base_commit,
@@ -2718,9 +2719,9 @@ def build_coding_graph(
         state: CodingState,
         runtime: Runtime[AssistantRunContext],
     ) -> dict[str, object]:
-        del runtime
         return begin_coding_cycle_node(
             state,
+            runtime=runtime,
             execution_attestation_digest=execution_attestation_digest,
         )
 
@@ -2859,13 +2860,21 @@ def build_coding_graph(
 def begin_coding_cycle_node(
     state: CodingState,
     *,
+    runtime: Runtime[AssistantRunContext] | object | None = None,
     execution_attestation_digest: str | None = None,
 ) -> dict[str, object]:
     """Start a plain-input cycle and atomically discard prior local state."""
 
+    context = getattr(runtime, "context", None)
+    profile = context.get("entry_profile") if isinstance(context, Mapping) else getattr(context, "entry_profile", None)
+    trusted_digest = (
+        execution_attestation_digest
+        if profile == "evaluation"
+        else None
+    )
     return {
         "coding_cycle_generation": int(state.get("coding_cycle_generation") or 0) + 1,
-        "execution_attestation_digest": execution_attestation_digest,
+        "execution_attestation_digest": trusted_digest,
         "attestation_cleanup_status": "released",
             "attestation_mismatch_signals": Overwrite([]),
         "workspace_ref": None,
@@ -4368,9 +4377,9 @@ def route_analysis_workers(state: CodingState) -> list[Send] | str:
             {
                 "messages": _analysis_worker_messages(state, task, snapshot),
                 "coding_repo_id": state["coding_repo_id"],
-                "execution_attestation_digest": state[
+                "execution_attestation_digest": state.get(
                     "execution_attestation_digest"
-                ],
+                ),
                 "attestation_mismatch_signals": [],
                 "workspace_ref": state["workspace_ref"],
                 "base_commit": state["base_commit"],

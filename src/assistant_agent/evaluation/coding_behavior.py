@@ -478,6 +478,9 @@ class CodingBehaviorSuiteResult(_Contract):
     cases: tuple[CodingBehaviorCaseResult, ...]
     elapsed_ms: StrictInt = Field(ge=0, le=115_200_000)
     error: CodingBehaviorError | None = None
+    fixture_retention_status: Literal[
+        "released_with_bounded_sentinel", "cleanup_pending"
+    ] = "released_with_bounded_sentinel"
 
     @field_validator("suite_id")
     @classmethod
@@ -499,10 +502,20 @@ class CodingBehaviorSuiteResult(_Contract):
             if result.case_binding != binding:
                 raise ValueError("case result binding does not match the suite manifest")
         if self.status == "passed":
-            if self.error is not None or any(case.status != "passed" for case in self.cases):
+            if (
+                self.error is not None
+                or self.fixture_retention_status != "released_with_bounded_sentinel"
+                or any(case.status != "passed" for case in self.cases)
+            ):
                 raise ValueError("passed suite requires every case to pass without an error")
         elif self.error is None and all(case.status == "passed" for case in self.cases):
             raise ValueError("failed suite requires a failed case or suite error")
+        if self.fixture_retention_status == "cleanup_pending" and not any(
+            case.cleanup_pending for case in self.cases
+        ):
+            raise ValueError(
+                "fixture retention cleanup debt requires a cleanup-pending case"
+            )
         return self
 
 
