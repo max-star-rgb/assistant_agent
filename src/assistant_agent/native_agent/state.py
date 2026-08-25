@@ -172,6 +172,9 @@ class CodingState(AgentState):
 
     coding_cycle_generation: NotRequired[int]
     execution_attestation_digest: NotRequired[str | None]
+    attestation_cleanup_status: NotRequired[
+        Literal["active", "released", "cleanup_pending"]
+    ]
     attestation_mismatch_signals: NotRequired[
         Annotated[list[str], merge_attestation_mismatch_signals]
     ]

@@ -146,7 +146,8 @@ def _coding_attestation_failure(state: Mapping[str, object]) -> dict[str, object
     return {
         "coding_result": _failed(
             state, "coding_eval_execution_attestation_mismatch"
-        )
+        ),
+        "attestation_cleanup_status": "active",
     }
 
 
@@ -157,6 +158,7 @@ def _guard_coding_node(
     allow_evaluation_bootstrap: bool = False,
     allow_signal_fanin: bool = False,
     attestation_cleanup: Any | None = None,
+    allow_cleanup_retry: bool = False,
 ) -> Any:
     def is_evaluation(args: tuple[object, ...], kwargs: Mapping[str, object]) -> bool:
         candidates = (*args, *kwargs.values())
@@ -203,6 +205,7 @@ def _guard_coding_node(
         except Exception:
             return {
                 **update,
+                "attestation_cleanup_status": "cleanup_pending",
                 "analysis_snapshot_release_status": "cleanup_pending",
                 "review_snapshot_release_status": "cleanup_pending",
                 "approval_status": None,
@@ -213,7 +216,13 @@ def _guard_coding_node(
                 "review_decision": None,
                 "merge_approval_status": None,
             }
-        return dict(cleaned)
+        cleaned_update = dict(cleaned)
+        return {
+            **cleaned_update,
+            "attestation_cleanup_status": cleaned_update.get(
+                "attestation_cleanup_status", "released"
+            ),
+        }
 
     def is_signal_fanin(state: object) -> bool:
         return (
@@ -227,6 +236,11 @@ def _guard_coding_node(
         async def guarded_async(state: object, *args: object, **kwargs: object) -> object:
             if mismatch(state, args, kwargs):
                 if is_attestation_cleanup(state):
+                    if (
+                        state.get("attestation_cleanup_status") != "released"
+                        and allow_cleanup_retry
+                    ):
+                        return failure_update(state)
                     return {}
                 if not is_signal_fanin(state):
                     return failure_update(state)
@@ -238,6 +252,11 @@ def _guard_coding_node(
     def guarded_sync(state: object, *args: object, **kwargs: object) -> object:
         if mismatch(state, args, kwargs):
             if is_attestation_cleanup(state):
+                if (
+                    state.get("attestation_cleanup_status") != "released"
+                    and allow_cleanup_retry
+                ):
+                    return failure_update(state)
                 return {}
             if not is_signal_fanin(state):
                 return failure_update(state)
@@ -473,11 +492,8 @@ def build_coding_graph(
         config: RunnableConfig,
     ) -> dict[str, object]:
         if state.get("attestation_mismatch_signals"):
-            return {
-                "coding_result": _failed(
-                    state, "coding_eval_execution_attestation_mismatch"
-                )
-            }
+            failure = _coding_attestation_failure(state)
+            return cleanup_attestation_failure({**state, **failure})
         workspace = _resolve_workspace(state, runtime, config, workspace_service)
         snapshot = CodingAnalysisSnapshot.model_validate(state["analysis_snapshot"])
         status, results = join_analysis_results(
@@ -2045,11 +2061,8 @@ def build_coding_graph(
                 context=runtime.context,
             )
             if output.get("attestation_mismatch_signals"):
-                return {
-                    "coding_result": _failed(
-                        state, "coding_eval_execution_attestation_mismatch"
-                    )
-                }
+                failure = _coding_attestation_failure(state)
+                return cleanup_attestation_failure({**state, **failure})
             tasks = tuple(
                 CodingReviewTask.model_validate(item)
                 for item in output.get("review_tasks", ())
@@ -2593,13 +2606,7 @@ def build_coding_graph(
     def cleanup_attestation_failure(
         state: CodingState,
     ) -> dict[str, object]:
-        update = summarize_node(
-            state,
-            get_runtime(AssistantRunContext),
-            get_config(),
-        )
-        return {
-            **update,
+        terminal_channels = {
             "approval_status": None,
             "dependency_approval_status": None,
             "credential_approval_status": None,
@@ -2607,6 +2614,25 @@ def build_coding_graph(
             "review_decision_context": None,
             "review_decision": None,
             "merge_approval_status": None,
+        }
+        try:
+            update = summarize_node(
+                state,
+                get_runtime(AssistantRunContext),
+                get_config(),
+            )
+        except Exception:
+            return {
+                "coding_result": state["coding_result"],
+                "attestation_cleanup_status": "cleanup_pending",
+                "analysis_snapshot_release_status": "cleanup_pending",
+                "review_snapshot_release_status": "cleanup_pending",
+                **terminal_channels,
+            }
+        return {
+            **update,
+            "attestation_cleanup_status": "released",
+            **terminal_channels,
         }
 
     def add_coding_node(name: str, node: Any, **kwargs: Any) -> None:
@@ -2623,6 +2649,7 @@ def build_coding_graph(
                 allow_evaluation_bootstrap=name == "begin_coding_cycle",
                 allow_signal_fanin=name == "join_analysis",
                 attestation_cleanup=cleanup_attestation_failure,
+                allow_cleanup_retry=name == "summarize",
             ),
             **kwargs,
         )
@@ -2778,7 +2805,8 @@ def begin_coding_cycle_node(
 
     return {
         "coding_cycle_generation": int(state.get("coding_cycle_generation") or 0) + 1,
-            "execution_attestation_digest": execution_attestation_digest,
+        "execution_attestation_digest": execution_attestation_digest,
+        "attestation_cleanup_status": "released",
             "attestation_mismatch_signals": Overwrite([]),
         "workspace_ref": None,
         "base_commit": None,
