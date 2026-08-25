@@ -155,8 +155,10 @@ def _attestation_cleanup_released(
     state: Mapping[str, object],
     update: Mapping[str, object],
 ) -> bool:
-    merged = {**state, **update}
-    successful = {None, "released", "removed", "not_created"}
+    release_authorities = (
+        "analysis_snapshot_release_status",
+        "review_snapshot_release_status",
+    )
     approval_channels = (
         "approval_status",
         "dependency_approval_status",
@@ -166,33 +168,27 @@ def _attestation_cleanup_released(
         "review_decision",
         "merge_approval_status",
     )
-    if any(merged.get(channel) is not None for channel in approval_channels):
-        return False
+    missing = object()
 
-    def inspect_value(value: object) -> bool:
-        if isinstance(value, BaseModel):
-            return inspect_value(value.model_dump(mode="python"))
-        if isinstance(value, Mapping):
-            for key, item in value.items():
-                if key == "attestation_cleanup_status":
-                    continue
-                if key == "cleanup_pending" and bool(item):
-                    return False
-                if (
-                    key.endswith("_release_status")
-                    or key.endswith("_cleanup_status")
-                ) and item not in successful:
-                    return False
-                if key.endswith("_debt") and item is not None:
-                    return False
-                if not inspect_value(item):
-                    return False
-            return True
-        if isinstance(value, (tuple, list)):
-            return all(inspect_value(item) for item in value)
-        return True
+    def authority_value(key: str) -> object:
+        try:
+            if not isinstance(state, Mapping) or not isinstance(update, Mapping):
+                return missing
+            if key in update:
+                return update[key]
+            return state.get(key)
+        except Exception:
+            return missing
 
-    return inspect_value(merged)
+    for field in release_authorities:
+        value = authority_value(field)
+        if value is missing:
+            return False
+        if value is not None and not (
+            type(value) is str and value == "released"
+        ):
+            return False
+    return all(authority_value(channel) is None for channel in approval_channels)
 
 
 def _guard_coding_node(
