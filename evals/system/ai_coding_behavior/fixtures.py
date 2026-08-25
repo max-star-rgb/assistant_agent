@@ -8,10 +8,11 @@ import os
 from pathlib import Path, PurePosixPath
 import shutil
 import secrets
+import stat
 import subprocess
 import tempfile
 from types import MappingProxyType
-from typing import Mapping
+from typing import Literal, Mapping
 
 from assistant_agent.evaluation.coding_behavior import (
     TRUSTED_FIXTURE_IDS,
@@ -50,6 +51,15 @@ class _OwnedFixture:
     repository_device: int
     repository_inode: int
     tombstone_name: str | None = None
+    cleanup_identity_drift: bool = False
+
+
+class _CleanupIdentityDrift(RuntimeError):
+    pass
+
+
+def _cleanup_mutation_hook(parent_fd: int, name: str) -> None:
+    """Test seam immediately before a cleanup namespace mutation."""
 
 
 class FixtureLease:
@@ -265,7 +275,6 @@ class CodingBehaviorFixtureStore:
                 dir_fd=self._parent_fd,
             )
         except OSError:
-            shutil.rmtree(self._root_name, dir_fd=self._parent_fd)
             os.close(self._parent_fd)
             raise
         self.root = self.parent / self._root_name
@@ -343,7 +352,20 @@ class CodingBehaviorFixtureStore:
             )
             return fixture
         except BaseException:
-            shutil.rmtree(repository_name, dir_fd=self._root_fd)
+            try:
+                failed_fd = os.open(
+                    repository_name,
+                    _DIRECTORY_FLAGS,
+                    dir_fd=self._root_fd,
+                )
+                failed_stat = os.fstat(failed_fd)
+                self._clear_directory_fd(
+                    failed_fd,
+                    ((self._root_fd, repository_name, failed_stat.st_dev, failed_stat.st_ino),),
+                )
+                os.close(failed_fd)
+            except (OSError, ValueError, _CleanupIdentityDrift):
+                pass
             raise
         finally:
             os.close(repository_fd)
@@ -407,7 +429,8 @@ class CodingBehaviorFixtureStore:
         self,
         fixture: CodingBehaviorFixture,
         case: CodingBehaviorCase,
-    ) -> None:
+    ) -> Literal["released"]:
+        """Destroy repository content and retain one empty owned sentinel."""
         self._verify_root_identity()
         owned = self._owned.get(fixture.capability_token)
         if owned is None or owned.fixture != fixture:
@@ -415,19 +438,48 @@ class CodingBehaviorFixtureStore:
         expected_binding = CodingBehaviorCaseBinding.from_case(case)
         if fixture.case_binding_digest != expected_binding.manifest_digest:
             raise ValueError("fixture capability case binding mismatch")
+        if owned.cleanup_identity_drift:
+            raise ValueError("fixture cleanup pending")
         if owned.tombstone_name is None:
             lease = self.resolve(fixture, case)
-            lease.close()
             tombstone = f".cleanup-{fixture.capability_token}"
             try:
+                _cleanup_mutation_hook(self._root_fd, owned.repository_name)
+                lease.validate()
                 os.rename(
                     owned.repository_name,
                     tombstone,
                     src_dir_fd=self._root_fd,
                     dst_dir_fd=self._root_fd,
                 )
+                moved = os.stat(
+                    tombstone,
+                    dir_fd=self._root_fd,
+                    follow_symlinks=False,
+                )
+                if (
+                    moved.st_dev != owned.repository_device
+                    or moved.st_ino != owned.repository_inode
+                ):
+                    try:
+                        os.rename(
+                            tombstone,
+                            owned.repository_name,
+                            src_dir_fd=self._root_fd,
+                            dst_dir_fd=self._root_fd,
+                        )
+                    finally:
+                        owned.cleanup_identity_drift = True
+                    raise _CleanupIdentityDrift
             except OSError as exc:
                 raise ValueError("fixture cleanup pending") from exc
+            except _CleanupIdentityDrift as exc:
+                raise ValueError("fixture cleanup pending") from exc
+            except ValueError as exc:
+                owned.cleanup_identity_drift = True
+                raise ValueError("fixture cleanup pending") from exc
+            finally:
+                lease.close()
             owned.tombstone_name = tombstone
         assert owned.tombstone_name is not None
         tombstone_fd = -1
@@ -442,16 +494,139 @@ class CodingBehaviorFixtureStore:
                 tombstone_stat.st_dev != owned.repository_device
                 or tombstone_stat.st_ino != owned.repository_inode
             ):
+                raise _CleanupIdentityDrift
+            chain = (
+                (
+                    self._root_fd,
+                    owned.tombstone_name,
+                    owned.repository_device,
+                    owned.repository_inode,
+                ),
+            )
+            self._clear_directory_fd(tombstone_fd, chain)
+            self._validate_cleanup_chain(chain)
+            if os.listdir(tombstone_fd):
                 raise ValueError("fixture cleanup pending")
-            os.close(tombstone_fd)
-            tombstone_fd = -1
-            shutil.rmtree(owned.tombstone_name, dir_fd=self._root_fd)
+        except _CleanupIdentityDrift as exc:
+            owned.cleanup_identity_drift = True
+            raise ValueError("fixture cleanup pending") from exc
         except (OSError, ValueError) as exc:
             raise ValueError("fixture cleanup pending") from exc
         finally:
             if tombstone_fd >= 0:
                 os.close(tombstone_fd)
         self._owned.pop(fixture.capability_token, None)
+        return "released"
+
+    def _validate_cleanup_chain(
+        self,
+        chain: tuple[tuple[int, str, int, int], ...],
+    ) -> None:
+        self._verify_root_identity()
+        for parent_fd, name, expected_device, expected_inode in chain:
+            try:
+                current = os.stat(
+                    name,
+                    dir_fd=parent_fd,
+                    follow_symlinks=False,
+                )
+            except OSError as exc:
+                raise _CleanupIdentityDrift from exc
+            if current.st_dev != expected_device or current.st_ino != expected_inode:
+                raise _CleanupIdentityDrift
+
+    def _clear_directory_fd(
+        self,
+        directory_fd: int,
+        chain: tuple[tuple[int, str, int, int], ...],
+    ) -> None:
+        self._validate_cleanup_chain(chain)
+        for name in tuple(os.listdir(directory_fd)):
+            if not name or name in {".", ".."} or "/" in name or "\x00" in name:
+                raise ValueError("fixture cleanup pending")
+            self._validate_cleanup_chain(chain)
+            try:
+                entry = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            except OSError as exc:
+                raise _CleanupIdentityDrift from exc
+            mode = entry.st_mode
+            opened_fd = -1
+            child_chain = chain
+            if stat.S_ISDIR(mode):
+                try:
+                    opened_fd = os.open(name, _DIRECTORY_FLAGS, dir_fd=directory_fd)
+                except OSError as exc:
+                    raise _CleanupIdentityDrift from exc
+                opened_stat = os.fstat(opened_fd)
+                if opened_stat.st_dev != entry.st_dev or opened_stat.st_ino != entry.st_ino:
+                    os.close(opened_fd)
+                    raise _CleanupIdentityDrift
+                child_chain = chain + (
+                    (directory_fd, name, entry.st_dev, entry.st_ino),
+                )
+                self._clear_directory_fd(opened_fd, child_chain)
+            elif stat.S_ISREG(mode):
+                try:
+                    opened_fd = os.open(
+                        name,
+                        os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                        dir_fd=directory_fd,
+                    )
+                except OSError as exc:
+                    raise _CleanupIdentityDrift from exc
+                opened_stat = os.fstat(opened_fd)
+                if opened_stat.st_dev != entry.st_dev or opened_stat.st_ino != entry.st_ino:
+                    os.close(opened_fd)
+                    raise _CleanupIdentityDrift
+            elif not stat.S_ISLNK(mode):
+                raise ValueError("fixture cleanup pending")
+
+            _cleanup_mutation_hook(directory_fd, name)
+            self._validate_cleanup_chain(chain)
+            try:
+                current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            except OSError as exc:
+                if opened_fd >= 0:
+                    os.close(opened_fd)
+                raise _CleanupIdentityDrift from exc
+            if current.st_dev != entry.st_dev or current.st_ino != entry.st_ino:
+                if opened_fd >= 0:
+                    os.close(opened_fd)
+                raise _CleanupIdentityDrift
+
+            quarantine = f".entry-{secrets.token_hex(16)}"
+            try:
+                os.rename(
+                    name,
+                    quarantine,
+                    src_dir_fd=directory_fd,
+                    dst_dir_fd=directory_fd,
+                )
+                quarantined = os.stat(
+                    quarantine,
+                    dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+                if quarantined.st_dev != entry.st_dev or quarantined.st_ino != entry.st_ino:
+                    raise _CleanupIdentityDrift
+                self._validate_cleanup_chain(chain)
+                if stat.S_ISDIR(mode):
+                    assert opened_fd >= 0
+                    if os.listdir(opened_fd):
+                        raise ValueError("fixture cleanup pending")
+                    os.close(opened_fd)
+                    opened_fd = -1
+                    os.rmdir(quarantine, dir_fd=directory_fd)
+                elif stat.S_ISREG(mode):
+                    assert opened_fd >= 0
+                    os.close(opened_fd)
+                    opened_fd = -1
+                    os.unlink(quarantine, dir_fd=directory_fd)
+                else:
+                    os.unlink(quarantine, dir_fd=directory_fd)
+            finally:
+                if opened_fd >= 0:
+                    os.close(opened_fd)
 
     def _verify_root_identity(self) -> None:
         try:
