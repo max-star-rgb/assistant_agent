@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import functools
+import inspect
 import json
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -129,6 +131,43 @@ class _MissingModelCodingReviewGraph:
     async def ainvoke(self, state: object, *, config: object, context: object):
         del state, config, context
         raise PermissionError("coding_review_requires_configured_model")
+
+
+def _coding_attestation_failure() -> Command:
+    return Command(
+        goto=END,
+        update={
+            "status": "failed",
+            "terminal_status": "failed",
+            "error_code": "coding_execution_attestation_mismatch",
+            "error_message": "Coding execution attestation changed before node execution.",
+        },
+    )
+
+
+def _guard_coding_node(node: Any, current_digest: str | None) -> Any:
+    def mismatch(state: object) -> bool:
+        if not isinstance(state, Mapping):
+            return False
+        expected = state.get("execution_attestation_digest")
+        return isinstance(expected, str) and expected != current_digest
+
+    if inspect.iscoroutinefunction(node):
+        @functools.wraps(node)
+        async def guarded_async(state: object, *args: object, **kwargs: object) -> object:
+            if mismatch(state):
+                return _coding_attestation_failure()
+            return await node(state, *args, **kwargs)
+
+        return guarded_async
+
+    @functools.wraps(node)
+    def guarded_sync(state: object, *args: object, **kwargs: object) -> object:
+        if mismatch(state):
+            return _coding_attestation_failure()
+        return node(state, *args, **kwargs)
+
+    return guarded_sync
 
 
 def build_coding_graph(
@@ -2454,16 +2493,29 @@ def build_coding_graph(
         return "summarize" if state.get("coding_result") is not None else "merge_approval"
 
     builder = StateGraph(CodingState, context_schema=AssistantRunContext)
+
+    def add_coding_node(name: str, node: Any, **kwargs: Any) -> None:
+        error_handler = kwargs.get("error_handler")
+        if error_handler is not None:
+            kwargs["error_handler"] = _guard_coding_node(
+                error_handler, execution_attestation_digest
+            )
+        builder.add_node(
+            name,
+            _guard_coding_node(node, execution_attestation_digest),
+            **kwargs,
+        )
+
     def begin_attested_coding_cycle(state: CodingState) -> dict[str, object]:
         return begin_coding_cycle_node(
             state,
             execution_attestation_digest=execution_attestation_digest,
         )
 
-    builder.add_node("begin_coding_cycle", begin_attested_coding_cycle)
-    builder.add_node("resolve_workspace", resolve_workspace_node)
-    builder.add_node("prepare_analysis", prepare_analysis_node)
-    builder.add_node(
+    add_coding_node("begin_coding_cycle", begin_attested_coding_cycle)
+    add_coding_node("resolve_workspace", resolve_workspace_node)
+    add_coding_node("prepare_analysis", prepare_analysis_node)
+    add_coding_node(
         "analyze_workspace",
         analyze_workspace_node,
         input_schema=CodingAnalysisWorkerState,
@@ -2476,40 +2528,40 @@ def build_coding_graph(
         ),
         error_handler=analysis_failure_node,
     )
-    builder.add_node("join_analysis", join_analysis_node)
-    builder.add_node("inspect_and_draft", inspect_and_draft_node)
-    builder.add_node("validate_proposal", validate_proposal_node)
-    builder.add_node("prepare_repair", prepare_repair_node)
-    builder.add_node("consume_repair_budget", consume_repair_budget_node)
-    builder.add_node("approval", approval_node)
-    builder.add_node("apply_patch", apply_patch_node)
-    builder.add_node("plan_dependencies", plan_dependencies_node)
-    builder.add_node("dependency_approval", dependency_approval_node)
-    builder.add_node("plan_credentials", plan_credentials_node)
-    builder.add_node("credential_approval", credential_approval_node)
-    builder.add_node("plan_artifacts", plan_artifacts_node)
-    builder.add_node("artifact_approval", artifact_approval_node)
-    builder.add_node("run_validation", run_validation_node)
-    builder.add_node("prepare_review_snapshot", prepare_review_snapshot_node)
-    builder.add_node("run_code_review", run_code_review_node)
-    builder.add_node("coding_review_decision", coding_review_decision_node)
-    builder.add_node(
+    add_coding_node("join_analysis", join_analysis_node)
+    add_coding_node("inspect_and_draft", inspect_and_draft_node)
+    add_coding_node("validate_proposal", validate_proposal_node)
+    add_coding_node("prepare_repair", prepare_repair_node)
+    add_coding_node("consume_repair_budget", consume_repair_budget_node)
+    add_coding_node("approval", approval_node)
+    add_coding_node("apply_patch", apply_patch_node)
+    add_coding_node("plan_dependencies", plan_dependencies_node)
+    add_coding_node("dependency_approval", dependency_approval_node)
+    add_coding_node("plan_credentials", plan_credentials_node)
+    add_coding_node("credential_approval", credential_approval_node)
+    add_coding_node("plan_artifacts", plan_artifacts_node)
+    add_coding_node("artifact_approval", artifact_approval_node)
+    add_coding_node("run_validation", run_validation_node)
+    add_coding_node("prepare_review_snapshot", prepare_review_snapshot_node)
+    add_coding_node("run_code_review", run_code_review_node)
+    add_coding_node("coding_review_decision", coding_review_decision_node)
+    add_coding_node(
         "consume_review_repair_budget",
         consume_review_repair_budget_node,
     )
-    builder.add_node(
+    add_coding_node(
         "consume_review_repair_context",
         consume_review_repair_context_node,
     )
-    builder.add_node(
+    add_coding_node(
         "checkpoint_review_repair_redraft",
         checkpoint_review_repair_redraft_node,
     )
-    builder.add_node("create_commit", create_commit_node)
-    builder.add_node("prepare_merge", prepare_merge_node)
-    builder.add_node("merge_approval", merge_approval_node)
-    builder.add_node("apply_merge", apply_merge_node)
-    builder.add_node("summarize", summarize_node)
+    add_coding_node("create_commit", create_commit_node)
+    add_coding_node("prepare_merge", prepare_merge_node)
+    add_coding_node("merge_approval", merge_approval_node)
+    add_coding_node("apply_merge", apply_merge_node)
+    add_coding_node("summarize", summarize_node)
     builder.add_edge(START, "begin_coding_cycle")
     builder.add_edge("begin_coding_cycle", "resolve_workspace")
     builder.add_conditional_edges(

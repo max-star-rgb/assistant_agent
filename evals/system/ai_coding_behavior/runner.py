@@ -221,7 +221,8 @@ class IsolatedHeldOutValidationExecutor:
         self._require_repository_binding(request)
         snapshot_parent = self._work_root / "held-out-snapshots"
         _prepare_owned_directory(snapshot_parent)
-        temporary = Path(tempfile.mkdtemp(prefix="snapshot-", dir=snapshot_parent))
+        debt = _SnapshotCleanupDebt.reserve(snapshot_parent, prefix="snapshot-")
+        temporary = debt.path
         snapshot = temporary / "repository"
         snapshot_fd = -1
         cleanup_pending = False
@@ -331,7 +332,6 @@ class IsolatedHeldOutValidationExecutor:
         finally:
             if snapshot_fd >= 0:
                 os.close(snapshot_fd)
-            debt = _SnapshotCleanupDebt.issue(temporary)
             if not debt.retry():
                 self._cleanup_debts.append(debt)
                 cleanup_pending = True
@@ -431,47 +431,128 @@ class _FixtureCleanupDebt:
 
 
 class _SnapshotCleanupDebt:
-    __slots__ = ("_path", "_device", "_inode", "_released")
+    __slots__ = (
+        "_path",
+        "_parent_fd",
+        "_directory_fd",
+        "_device",
+        "_inode",
+        "_released",
+    )
 
-    def __init__(self, path: Path, device: int, inode: int) -> None:
+    def __init__(
+        self,
+        path: Path,
+        parent_fd: int,
+        directory_fd: int,
+        device: int,
+        inode: int,
+    ) -> None:
         self._path = path
+        self._parent_fd = parent_fd
+        self._directory_fd = directory_fd
         self._device = device
         self._inode = inode
         self._released = False
 
     @classmethod
-    def issue(cls, path: Path) -> "_SnapshotCleanupDebt":
-        metadata = path.lstat()
-        if not stat.S_ISDIR(metadata.st_mode) or path.is_symlink():
-            raise ValueError("snapshot cleanup capability requires an exact directory")
-        return cls(path, metadata.st_dev, metadata.st_ino)
+    def reserve(cls, parent: Path, *, prefix: str) -> "_SnapshotCleanupDebt":
+        parent_fd = os.open(
+            parent,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+        path: Path | None = None
+        try:
+            path = Path(tempfile.mkdtemp(prefix=prefix, dir=parent))
+            directory_fd = os.open(
+                path,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            )
+        except Exception:
+            if path is not None:
+                try:
+                    os.rmdir(path)
+                except OSError:
+                    pass
+            os.close(parent_fd)
+            raise
+        metadata = os.fstat(directory_fd)
+        return cls(
+            path,
+            parent_fd,
+            directory_fd,
+            metadata.st_dev,
+            metadata.st_ino,
+        )
+
+    @property
+    def path(self) -> Path:
+        return self._path
 
     def retry(self) -> bool:
         if self._released:
             return True
         try:
-            metadata = self._path.lstat()
-        except FileNotFoundError:
-            self._released = True
-            return True
+            matches = []
+            for name in os.listdir(self._parent_fd):
+                metadata = os.stat(
+                    name,
+                    dir_fd=self._parent_fd,
+                    follow_symlinks=False,
+                )
+                if (
+                    stat.S_ISDIR(metadata.st_mode)
+                    and metadata.st_dev == self._device
+                    and metadata.st_ino == self._inode
+                ):
+                    matches.append(name)
         except OSError:
             return False
-        if (
-            not stat.S_ISDIR(metadata.st_mode)
-            or self._path.is_symlink()
-            or metadata.st_dev != self._device
-            or metadata.st_ino != self._inode
-        ):
+        if not matches:
+            try:
+                released = os.fstat(self._directory_fd).st_nlink == 0
+            except OSError:
+                released = False
+            if released:
+                self._release_descriptors()
+            return released
+        if len(matches) != 1:
             return False
         try:
-            shutil.rmtree(self._path)
+            _remove_snapshot_fd_tree(self._directory_fd)
+            os.rmdir(matches[0], dir_fd=self._parent_fd)
         except OSError:
             return False
-        self._released = not self._path.exists()
-        return self._released
+        self._release_descriptors()
+        return True
+
+    def _release_descriptors(self) -> None:
+        if self._released:
+            return
+        os.close(self._directory_fd)
+        os.close(self._parent_fd)
+        self._released = True
 
     def __reduce__(self) -> object:
         raise TypeError("snapshot cleanup debt is not serializable")
+
+
+def _remove_snapshot_fd_tree(directory_fd: int) -> None:
+    for name in os.listdir(directory_fd):
+        metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        if stat.S_ISDIR(metadata.st_mode):
+            child_fd = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=directory_fd,
+            )
+            try:
+                _remove_snapshot_fd_tree(child_fd)
+            finally:
+                os.close(child_fd)
+            os.rmdir(name, dir_fd=directory_fd)
+        else:
+            os.unlink(name, dir_fd=directory_fd)
 
 
 def _materialize_git_tree_snapshot(

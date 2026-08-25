@@ -349,33 +349,44 @@ class DockerCodingSandboxBackend:
             ]
             if not self._cleanup_debts:
                 break
+        inventory = self._owner_container_inventory()
+        if inventory is None:
+            return False
+        released = not self._cleanup_debts
+        for reference in inventory:
+            released = self._remove(reference) in {"removed", "not_created"} and released
+        return released
+
+    def _owner_container_inventory(self) -> tuple[str, ...] | None:
         listed = self._run((
             self._docker, "ps", "-aq", "--filter",
             f"label=assistant_agent.coding.owner={self._owner_id}",
         ), timeout=10.0)
         if listed is None or listed.returncode != 0:
-            return False
-        released = not self._cleanup_debts
-        for raw_reference in listed.stdout.splitlines():
-            reference = raw_reference.strip()
-            if _CONTAINER_REFERENCE.fullmatch(reference) is not None:
-                released = self._remove(reference) in {"removed", "not_created"} and released
-        return released
+            return None
+        references = tuple(item.strip() for item in listed.stdout.splitlines() if item.strip())
+        if any(_CONTAINER_ID.fullmatch(item) is None for item in references):
+            return None
+        if len(set(references)) != len(references):
+            return None
+        return tuple(sorted(references))
 
     def _retry_container_cleanup(
         self, reference: str, expected_container_id: str | None
     ) -> bool:
         if _CONTAINER_REFERENCE.fullmatch(reference) is None:
             return False
-        if expected_container_id is None:
-            return False
         actual_container_id = self._inspect_id(reference)
-        if actual_container_id != expected_container_id:
+        if actual_container_id is None:
+            return self._owner_container_inventory() == ()
+        if expected_container_id is None or actual_container_id != expected_container_id:
             return False
-        return self._remove(reference, allow_absent=True) in {
-            "removed",
-            "not_created",
-        }
+        cleanup_status = self._remove(reference, allow_absent=True)
+        if cleanup_status in {"removed", "not_created"}:
+            return True
+        if self._inspect_id(reference) is not None:
+            return False
+        return self._owner_container_inventory() == ()
 
     def _require_local_image(self, image: str) -> str | None:
         completed = self._run((
