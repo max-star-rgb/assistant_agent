@@ -6,10 +6,12 @@ import asyncio
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
+import inspect
 import json
 import re
 from time import monotonic
 from typing import Any, Literal, Protocol
+from uuid import uuid4
 
 from httpx import HTTPStatusError, TransportError
 from langgraph_sdk import get_client
@@ -35,9 +37,10 @@ class _Threads(Protocol):
 
 
 class _Runs(Protocol):
-    async def create(self, thread_id: str, assistant_id: str, **kwargs: Any) -> Mapping[str, Any]: ...
+    async def create(self, thread_id: str, assistant_id: str, *, run_id: str, **kwargs: Any) -> Mapping[str, Any]: ...
     async def join(self, thread_id: str, run_id: str) -> object: ...
     async def cancel(self, thread_id: str, run_id: str, **kwargs: Any) -> None: ...
+    async def get(self, thread_id: str, run_id: str) -> Mapping[str, Any]: ...
 
 
 class CodingBehaviorAgentServerClient(Protocol):
@@ -72,7 +75,7 @@ class CodingBehaviorDriverResult:
     status: Literal["completed", "failed"]
     terminal_status: str | None
     error_code: str | None
-    failure_category: Literal["none", "governance", "permission", "transport", "cancelled", "deadline", "terminal"]
+    failure_category: Literal["none", "configuration", "governance", "permission", "transport", "cancelled", "deadline", "terminal"]
     thread_digest: str
     run_digests: tuple[str, ...]
     interrupt_kinds: tuple[str, ...]
@@ -248,6 +251,34 @@ class CodingBehaviorAgentServerDriver:
         def elapsed_ms() -> int:
             return max(0, min(3_600_000, int((self.clock() - started) * 1000)))
 
+        def preflight_failed(code: str, category: str) -> CodingBehaviorDriverResult:
+            return CodingBehaviorDriverResult(
+                status="failed",
+                terminal_status=None,
+                error_code=code,
+                failure_category=category,  # type: ignore[arg-type]
+                thread_digest=_digest("uncreated"),
+                run_digests=(),
+                interrupt_kinds=(),
+                interrupt_count=0,
+                transitions=(),
+                elapsed_ms=elapsed_ms(),
+            )
+
+        if case != policy.case:
+            return preflight_failed("coding_eval_case_invalid", "governance")
+        try:
+            supports_client_run_id = "run_id" in inspect.signature(
+                self.client.runs.create
+            ).parameters
+        except (TypeError, ValueError):
+            supports_client_run_id = False
+        if not supports_client_run_id:
+            return preflight_failed(
+                "coding_eval_configuration_error",
+                "configuration",
+            )
+
         async def bounded(factory: Callable[[], Any]) -> Any:
             remaining = deadline - self.clock()
             if remaining <= 0:
@@ -267,6 +298,14 @@ class CodingBehaviorAgentServerDriver:
                         ),
                         timeout=5.0,
                     )
+                    cancelled = await asyncio.wait_for(
+                        self.client.runs.get(thread_id, current_run_id),
+                        timeout=5.0,
+                    )
+                    if cancelled.get("run_id") != current_run_id or cancelled.get(
+                        "status"
+                    ) in {"pending", "running", None}:
+                        raise ValueError("cancelled run did not reach a terminal status")
                 except Exception:
                     category = "cancelled"
                 current_run_id = None
@@ -281,20 +320,30 @@ class CodingBehaviorAgentServerDriver:
 
         async def start_run(**kwargs: Any) -> None:
             nonlocal current_run_id
+            value = str(uuid4())
+            current_run_id = value
+            run_ids.append(value)
             run = await bounded(
                 lambda: self.client.runs.create(
                     thread_id,
                     ASSISTANT_GRAPH_ID,
+                    run_id=value,
                     multitask_strategy="reject",
                     **kwargs,
                 )
             )
-            value = _mapping(run, label="run").get("run_id")
-            if not isinstance(value, str) or not value or value in run_ids:
-                raise ValueError("run identity is missing")
-            current_run_id = value
-            run_ids.append(value)
+            if _mapping(run, label="run").get("run_id") != value:
+                raise ValueError("run identity does not match the predeclared ID")
             await bounded(lambda: self.client.runs.join(thread_id, value))
+            terminal_run = await bounded(
+                lambda: self.client.runs.get(thread_id, value)
+            )
+            if terminal_run.get("run_id") != value or terminal_run.get("status") in {
+                "pending",
+                "running",
+                None,
+            }:
+                raise ValueError("joined run did not reach a terminal status")
             current_run_id = None
 
         try:
@@ -399,12 +448,19 @@ class CodingBehaviorAgentServerDriver:
                 consumed_checkpoint_ids.add(checkpoint_id)
                 kind = _interrupt_kind(payload)
                 if kind is None:
-                    current_run_id = await self._reject(
-                        thread_id,
-                        checkpoint_id=checkpoint_id,
-                        bounded=bounded,
-                        run_ids=run_ids,
-                    )
+                    current_run_id = str(uuid4())
+                    run_ids.append(current_run_id)
+                    try:
+                        await self._reject(
+                            thread_id,
+                            run_id=current_run_id,
+                            checkpoint_id=checkpoint_id,
+                            bounded=bounded,
+                        )
+                    except Exception:
+                        return await failed(
+                            "coding_eval_unknown_interrupt", "governance"
+                        )
                     return await failed("coding_eval_unknown_interrupt", "governance")
                 if len(kinds) >= self.max_interrupts:
                     return await failed("coding_eval_interrupt_budget_exceeded", "governance")
@@ -416,12 +472,19 @@ class CodingBehaviorAgentServerDriver:
                 try:
                     response = policy.response(kind, payload)
                 except ValueError:
-                    current_run_id = await self._reject(
-                        thread_id,
-                        checkpoint_id=checkpoint_id,
-                        bounded=bounded,
-                        run_ids=run_ids,
-                    )
+                    current_run_id = str(uuid4())
+                    run_ids.append(current_run_id)
+                    try:
+                        await self._reject(
+                            thread_id,
+                            run_id=current_run_id,
+                            checkpoint_id=checkpoint_id,
+                            bounded=bounded,
+                        )
+                    except Exception:
+                        return await failed(
+                            "coding_eval_unknown_interrupt", "governance"
+                        )
                     return await failed("coding_eval_unknown_interrupt", "governance")
                 kinds.append(kind)
                 transitions.append(_transition(len(transitions) + 1, kind, state))
@@ -449,28 +512,31 @@ class CodingBehaviorAgentServerDriver:
         self,
         thread_id: str,
         *,
+        run_id: str,
         checkpoint_id: str,
         bounded: Callable[[Callable[[], Any]], Any],
-        run_ids: list[str],
-    ) -> str | None:
-        try:
-            run = await bounded(
-                lambda: self.client.runs.create(
-                    thread_id,
-                    ASSISTANT_GRAPH_ID,
-                    command={"resume": {"decision": "reject"}},
-                    checkpoint_id=checkpoint_id,
-                    context={"entry_profile": "evaluation", "assistant_execution_mode": "coding"},
-                    multitask_strategy="reject",
-                )
+    ) -> None:
+        run = await bounded(
+            lambda: self.client.runs.create(
+                thread_id,
+                ASSISTANT_GRAPH_ID,
+                run_id=run_id,
+                command={"resume": {"decision": "reject"}},
+                checkpoint_id=checkpoint_id,
+                context={"entry_profile": "evaluation", "assistant_execution_mode": "coding"},
+                multitask_strategy="reject",
             )
-            run_id = _mapping(run, label="reject run").get("run_id")
-            if not isinstance(run_id, str) or not run_id:
-                raise ValueError("reject run identity is missing")
-            run_ids.append(run_id)
-            return run_id
-        except Exception:
-            return None
+        )
+        if _mapping(run, label="reject run").get("run_id") != run_id:
+            raise ValueError("reject run identity does not match the predeclared ID")
+        await bounded(lambda: self.client.runs.join(thread_id, run_id))
+        terminal_run = await bounded(lambda: self.client.runs.get(thread_id, run_id))
+        if terminal_run.get("run_id") != run_id or terminal_run.get("status") in {
+            "pending",
+            "running",
+            None,
+        }:
+            raise ValueError("reject run did not reach a terminal status")
 
 
 def _thread_owner(thread: Mapping[str, Any]) -> object:
