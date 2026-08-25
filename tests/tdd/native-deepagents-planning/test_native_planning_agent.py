@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
+from pathlib import Path
 from typing import Any
 
+from deepagents.backends import FilesystemBackend
+from langchain_core.runnables import RunnableLambda
 from langchain.agents.middleware import TodoListMiddleware
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
@@ -158,3 +161,95 @@ def test_real_task_tool_runs_compiled_fast_subagents_in_parallel() -> None:
         "task-beta": "subagent:beta",
     }
     assert result["messages"][-1].content == "native-planning-final"
+
+
+class _PlannerLoadsSkillBeforeTaskModel(MockAssistantChatModel):
+    _planning_calls: int = PrivateAttr(default=0)
+
+    def _response_message(self, messages: list[AnyMessage], **kwargs: Any) -> AIMessage:
+        if {"task", "write_todos", "load_skill"} <= _tool_names(kwargs.get("tools")):
+            self._planning_calls += 1
+            if self._planning_calls == 1:
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "load_skill",
+                            "args": {"skill_id": "travel-sentinel"},
+                            "id": "planner-load-skill",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            if self._planning_calls == 2:
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "task",
+                            "args": {
+                                "description": "worker-sentinel",
+                                "subagent_type": "general-purpose",
+                            },
+                            "id": "planner-task",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            return AIMessage(content="planner-final")
+        raise AssertionError("only the planning coordinator should call this model")
+
+
+def _skills_backend(root: Path) -> FilesystemBackend:
+    skill_dir = root / "travel-sentinel"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: travel-sentinel\n"
+        "description: Travel sentinel.\n"
+        "---\n\n"
+        "INHERITED-SKILL-SENTINEL\n",
+        encoding="utf-8",
+    )
+    return FilesystemBackend(root_dir=root, virtual_mode=True)
+
+
+def test_planner_loaded_skill_state_is_mapped_into_worker_without_writeback(
+    tmp_path: Path,
+) -> None:
+    observed_worker_states: list[dict[str, Any]] = []
+
+    def worker(state: dict[str, Any]) -> dict[str, Any]:
+        observed_worker_states.append(state)
+        return {
+            "messages": [AIMessage(content="worker-complete")],
+            "loaded_skill_ids": ["worker-only-skill"],
+            "skill_reference_grants": {"worker-only-skill": ["reference"]},
+            "active_tool_profile_ids": ["worker-only-profile"],
+        }
+
+    graph = build_planning_agent(
+        _PlannerLoadsSkillBeforeTaskModel(),
+        RunnableLambda(worker),
+        skills_backend=_skills_backend(tmp_path / "skills"),
+    )
+    result = graph.invoke(
+        {
+            "messages": [HumanMessage(content="request-sentinel")],
+            "memory_context": (),
+            "memory_status": "empty",
+            "execution_mode": "planning",
+        },
+        context=AssistantRunContext(),
+    )
+
+    assert len(observed_worker_states) == 1
+    worker_state = observed_worker_states[0]
+    assert worker_state["loaded_skill_ids"] == ["travel-sentinel"]
+    assert worker_state["skill_reference_grants"] == {"travel-sentinel": []}
+    assert "planner_loaded_skill_ids" not in worker_state
+    assert "planner_skill_reference_grants" not in worker_state
+    assert result["planner_loaded_skill_ids"] == ["travel-sentinel"]
+    assert "loaded_skill_ids" not in result
+    assert "skill_reference_grants" not in result
+    assert "active_tool_profile_ids" not in result

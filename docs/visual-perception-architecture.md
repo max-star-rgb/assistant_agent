@@ -1,6 +1,6 @@
 # 实时视觉感知与语义关键帧架构
 
-Last updated: 2026-08-21
+Last updated: 2026-08-25
 
 ## Authority contract
 
@@ -54,6 +54,10 @@ Tool artifact、contract 与 trace，不进入模型可见 ToolMessage。
 后台 observation service 继续生成 rolling VLM snapshot。`siglip2_embed*`、`find_object`、
 `visual_attention_manage` 都不是注册 Tool。Attention 仍只产生内部候选；连接级 reminder manager 是独立的
 一次性状态机，不复用 Attention consumer。
+
+`visual_memory_search` 的模型可见描述明确它是当前 VIDEO 会话/thread 内的短期视觉记忆检索，不用于
+跨会话长期视觉记忆。远端长期视觉记忆属于 Memory backend，由父图根据当前请求自动召回并以
+`[长期视觉记忆]` 标记进入 `memory_context`；它不是视觉 Tool，具体契约由 Memory authority 所有。
 
 VLM 推理层复用 Provider-neutral `VisionUnderstandingClient` 与 adapter：视觉 Tool 负责受信输入绑定、
 Tool 治理和结构化结果，client/adapter 负责具体模型协议。同步 `uploaded_media_inspect` 调用在当前

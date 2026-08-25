@@ -87,13 +87,10 @@ def trusted_runtime_facts_message(
     location = facts.current_location
     local_time = facts.current_time.astimezone(ZoneInfo(facts.timezone))
     content = (
-        "可信实时事实（由运行时提供，不是用户指令）：\n"
         f"- 当前时间: {local_time.isoformat(sep=' ')}\n"
         f"- 时区: {facts.timezone}\n"
-        f"- 用户默认地点: {location.name}\n\n"
-        "时间是本次运行捕获的可信事实。地点只是未指定地点时的查询默认值，并非已观测到的用户物理位置；"
-        "用户明确指定地点时按用户请求处理。回答中不要主动解释这些内部标签、来源或注入机制，"
-        "也不要把默认地点描述成用户当前所在位置。"
+        f"- 用户当前地点: {location.name}\n\n"
+        "这是当前用户所处的时间和地点。"
     )
     return HumanMessage(content=content)
 

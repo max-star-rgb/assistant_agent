@@ -27,27 +27,22 @@ discovery 或 Registry lookup。
 `read_file`，也不注册原有 `file_read`。模型只能使用无路径参数的 `load_skill(skill_id)` 读取完整正文，再使用
 `load_skill_reference(skill_id, reference_id)` 读取本轮已授权的扁平 Markdown reference。
 
-`NativeSkillToolExposureMiddleware` 只使用原生 `wrap_model_call`，按受信 frontmatter 的 `allowed-tools` 和 fast agent
-子图当前 state/checkpoint namespace 内 `active_skill_ids` 缩小 `ModelRequest.tools`：未加载 Skill 时，被其声明的
-Tool schema 不发给模型。`load_skill` 按 LangGraph 原生 Tool state-update 契约返回包含完整 Skill 正文的标准
-`ToolMessage` 和 `Command(update=...)`，由既有 `ToolNode` 写入 `active_skill_ids` 与自动发现的窄
-`skill_reference_grants`。下一次模型调用时，exposure middleware 才从受信元数据快照机械派生可见 Tool schema。
-Skill/reference channel 可在 planning agent 与 task 子 Agent 间通过标准 state reducer 合并，但不进入
-`AssistantRootGraph` 或 Memory Graph。Tool 名只从本地 `SKILL.md` frontmatter 解析，不接受模型或 Tool artifact
-声明任意 grant；该可见性层不替代具体 Tool 的身份、授权、参数和副作用校验。未被任何 Skill 声明的 Tool 保持独立
-可见。fast 在 Skill 加载后获得对应
-业务 Tool schema。planning coordinator 是另一个官方 `create_agent`，其 Tool inventory 只来自
-`TodoListMiddleware.write_todos` 与 Deep Agents `SubAgentMiddleware.task`；它不注册 Skill control 或业务 Tool。
-`task` 是进入内置 `ToolNode` 的真实 `StructuredTool`，内部调用预编译 `AssistantFastAgent`。Supervisor 固定关闭
-Provider-native search，Skill 加载、业务联网与执行只发生在 task 子 Agent。
+Skill 与 Tool 可见性是两条独立机制。`load_skill` 按 LangGraph 原生 Tool state-update 契约返回包含完整 Skill 正文的
+标准 `ToolMessage` 和 `Command(update=...)`，只写入当前角色的 `loaded_skill_ids` 与自动发现的窄
+`skill_reference_grants`；标准 `SKILL.md` 不声明项目 Tool 权限，也不能激活 Tool。
 
-成功的 `load_skill` 继续通过标准 `Command(update=...)` 写入受信 `active_skill_ids` 和 reference grant，并在其
-标准 `ToolMessage` 中返回完整 `SKILL.md` 正文；成功
-`load_skill_reference` 的标准 `ToolMessage` 表明本轮实际读取的 reference。task 子 Agent 复用同一个
-`AssistantFastAgent`，渐进暴露 middleware 仍按受信 Skill state决定业务 Tool schema；默认业务 Tool 仍按静态
-inventory 可见。Deep Agents 只通过标准 state update 把实际生成的 Skill/reference state 合并回 planning agent，
-不建立 authorization envelope、capability catalog 或节点 Tool allowlist；Todo、子 Agent 文本或 Tool artifact 都不能
-声明新 grant。
+通用 `ToolProfileMiddleware` 是 `create_agent` 级能力：受信静态 catalog 把 profile ID 映射到已经注册的 Tool 名，
+middleware 自带只读控制 Tool `activate_tool_profile(profile_id)`，并在当前 Agent invocation 的后续 model call 中按
+`active_tool_profile_ids` 缩小 `ModelRequest.tools`。激活不会执行业务动作，profile ID 不能由 Skill、Todo、子 Agent
+文本或 Tool artifact 动态声明；具体 Tool 的身份、授权、参数与副作用校验保持不变。未归属任何 Tool Profile 的 Tool
+始终独立可见。
+
+planning coordinator 是独立的官方 `create_agent`：它可使用只读 `load_skill`/`load_skill_reference` 在任务拆解前读取
+专项知识，并使用 `write_todos` 与 `task`；它不装配 `ToolProfileMiddleware`，因此不能激活 profile 或调用业务 Tool。
+执行子 Agent 复用 `AssistantFastAgent`；Planner 是否加载 Skill 仍由 LLM 自主决定，一旦加载，compiled worker 边界把
+Planner Skill ID/reference grant 窄映射为 worker 已加载 Skill state，避免重复加载。没有继承对应 Skill 时，worker
+仍可自主加载；Tool Profile 始终由 worker 在自己的 invocation 中独立激活。Planner 与 worker 使用不同名称的 Skill
+state channel，worker 的 Skill/Profile state 不回写 Planner，Skill state 也不构成 profile 或业务 Tool 授权。
 
 媒体 Tool 使用另一条与 Skill 正交的条件暴露链。`ConditionalToolExposureMiddleware` 只过滤已经静态注册在
 `request.tools` 中的 Tool，并按 Tool metadata 的封闭 `availability` 枚举读取可信运行事实：
@@ -55,8 +50,8 @@ inventory 可见。Deep Agents 只通过标准 state update 把实际生成的 S
 WebSocket 已成功完成 `callType=VIDEO` 的 control 握手，且本轮冻结投影已经包含 selector 选中的目标关键帧；
 `visual_memory_search` 还要求当前
 `user/thread/as-of sequence` 已存在可检索视觉文本；`visual_reminder_manage` 要求媒体侧至少已有一个视频包
-成功解码并绑定到该连接，不能只靠 VIDEO 握手出现。它不读取 `active_skill_ids` 或
-`skill_reference_grants`，不根据用户关键词推断意图，探针异常时 fail closed。Tool 自身在执行时再次校验
+成功解码并绑定到该连接，不能只靠 VIDEO 握手出现。它不读取 Skill 或 `active_tool_profile_ids` state，
+不根据用户关键词推断意图，探针异常时 fail closed。Tool 自身在执行时再次校验
 握手、媒体来源和身份边界，避免绕过模型可见性直接调用。
 
 每个内建 Tool：
@@ -75,6 +70,9 @@ WebSocket 已成功完成 `callType=VIDEO` 的 control 握手，且本轮冻结�
 `uploaded_media_inspect`、`live_view_inspect`、`visual_memory_search` 和 `visual_reminder_manage` 都由原生
 函数 Tool 工厂构造；Tool
 层只负责标准执行与可信运行事实注入，视觉算法和资源复用全部由视觉 authority 负责。
+`visual_memory_search` 的 Tool description 与 `query` 参数说明都将其限定为当前 VIDEO 会话/thread 的
+短期视觉记忆检索；它不查询跨会话的长期视觉 backend。长期视觉结果由 Memory 节点自动召回，并以
+`[长期视觉记忆]` 标记出现在临时历史记忆中，不通过 Tool 补查。
 `live_view_inspect` 的模型可见 content 固定为
 `window[{sequence, captured_at}] + vlm_response`，其中北京时间由 Tool owner 从受信媒体时间机械格式化；
 完整视觉状态与诊断只属于 artifact、contract 与 trace，不重复投影给主模型。
@@ -88,14 +86,13 @@ WebSocket 已成功完成 `callType=VIDEO` 的 control 握手，且本轮冻结�
 `live_view_inspect` 为避免重复当前画面调用而不进入 read retry 清单，但仍单独启用同一个
 `BaseTool.handle_tool_error` 边界；关键帧 capability 在暴露后失效时只返回一次 error `ToolMessage`。
 
-fast `create_agent` 使用官方 `ModelCallLimitMiddleware` 与 `ToolCallLimitMiddleware` 提供 per-invocation
-安全上限；planning coordinator 也独立使用官方 limit middleware，不写 usage、reservation 或 recovery ledger。
-需要独立 run 上限的业务 Tool 在受信静态
-metadata 中声明正整数 `run_call_limit`；composition 从全部 Tool 机械构造唯一
-`PerToolCallLimitMiddleware.after_model` 节点，由一个 Tool-name→limit 映射分别计数并为超限调用生成标准 error
-`ToolMessage`，不执行被阻止的 Tool，未配置 Tool 原样放行。该策略不读取用户文本、模型参数或运行时 artifact，
-也不是全 inventory limiter。当前 `live_view_inspect` 声明 `run_call_limit=1`，避免同一个 run 重复执行昂贵实时观察；
-后续其他 Tool 可通过相同 metadata 进入同一通用节点，fast agent 装配不识别具体 Tool 名。
+fast `create_agent` 与 planning coordinator 使用官方 `ModelCallLimitMiddleware` 提供每个 invocation 最多 12 次
+model call 的安全上限，不设置跨 Tool 的总调用上限，也不写 usage、reservation 或 recovery ledger。
+composition 机械构造唯一 `PerToolCallLimitMiddleware.after_model` 节点：每个 Tool 同一组规范化 JSON 参数在一个 run
+最多执行一次，每个 Tool 最多执行 12 组不同参数；重复或超限调用生成标准 error `ToolMessage`，其他 Tool 和同批允许
+调用继续执行。业务 Tool 可在受信静态 metadata 中用正整数 `run_call_limit` 声明更低上限。该策略不读取用户文本或
+运行时 artifact，不跨 Tool 汇总计数。当前 `live_view_inspect` 声明 `run_call_limit=1`；fast/planning 装配均不识别
+具体 Tool 名。
 
 fast agent 的最内层 `ToolProgressMiddleware` 使用官方 `ToolRuntime.stream_writer` 向原生 custom stream 发出
 每次逻辑 Tool 调用的 `started` 和 `completed|failed` 生命周期。事件只携带 `type=tool_progress`、标准
@@ -133,10 +130,9 @@ production composition 创建一个指向仓库 `skills/` 的只读虚拟根 bac
 失败结果、非法坐标和其他 MCP Tool 保持原样。最终答复原样保留该 Markdown 链接；移动端可尝试调起
 高德 App，其他终端使用高德 H5 页面。
 
-Skill frontmatter 的 `allowed-tools` 使用上述最终 namespace 名，因此 MCP Tool 与本地 Tool 使用同一渐进暴露机制。
-未被任何 Skill 声明的 allowlisted MCP Tool 默认对模型可见。高德
-`mcp_amap_maps_maps_weather` 明确不归旅行 Skill 所有，保持独立暴露，使单独天气问题无需先加载旅行 Skill；旅行
-Skill 在活动可成行性判断中仍可直接使用这个独立只读 Tool。
+Tool Profile 使用上述最终 namespace 名，因此 MCP Tool 与本地 Tool 使用同一通用激活机制。未归属 Tool Profile 的
+allowlisted MCP Tool 默认对模型可见。高德 `mcp_amap_maps_maps_weather` 明确不归 `travel` Tool Profile，保持独立
+暴露，使单独天气问题无需激活旅行工具组；旅行 Skill 在活动可成行性判断中仍可指导执行 Agent 直接使用这个独立只读 Tool。
 
 MCP 只有一份 `MCPServerConfig` 文件 schema：根对象包含 `servers` 列表，每个 server 只声明官方 adapter
 connection、显式 Tool allowlist、read-only 集合与 namespace。MCP 未启用时不读取配置；显式启用后，配置文件

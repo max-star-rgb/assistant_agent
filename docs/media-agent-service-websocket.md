@@ -1,6 +1,6 @@
 # Media-Agent WebSocket 接口权威文档
 
-Last updated: 2026-08-24
+Last updated: 2026-08-25
 
 ## Authority contract
 
@@ -46,6 +46,20 @@ Last updated: 2026-08-24
 {"code":0,"message":"success","phoneNumber":"user-1"}
 ```
 
+服务端发送成功 control ACK 后，立即在同一连接发送一次非 durable 问候：
+
+```json
+{
+  "message": "chatResponse",
+  "body": "{\"number\":\"user-1\",\"message\":{\"type\":\"BRIEF\",\"chatIndex\":\"greeting:media-...\",\"content\":{\"intentResult\":{\"description\":\"你好呀～～\",\"status\":\"SUCCESS\"}}},\"displayOnly\":false,\"display_only\":false,\"sequence\":1,\"final\":true}"
+}
+```
+
+兼容 `assistantControlStart` 的连接也在 `assistantControlStartAck` 后发送同一问候。问候以 WebSocket
+连接为粒度只发送一次，不创建 Agent run、不写入 Memory、不进入 durable 主动投递 Store，也不携带
+`deliveryId` 或要求客户端 ACK。首帧直接为 `chat` 的旧 lazy bind 兼容路径没有成功 control ACK，因此不发送
+连接问候。
+
 兼容 `assistantControlStart`，其 user 位于 `userInfo.number`，成功响应为
 `assistantControlStartAck` 和 `{"code":"OK"}`。legacy AR 链路中的后续 `chat.userNumber` 和
 `video.userNumber` 沿用旧协议的独立号码口径，不强制与 `userInfo.number` 相等；native thread 和认证身份
@@ -83,7 +97,10 @@ capability token 放入 run context；token 按认证身份与 thread 校验，r
   必须与握手一致，legacy `assistantControlStart` 保持独立号码口径兼容。
 - 每项必须有 `speakerNumber`、`time`；当前 Graph 输入取最后一条非空 `speechContent`。
 - `chatIndex` 关联 run，`deliveryId` 只关联本次媒体投递 ACK。
-- 媒体入口以 `multitask_strategy=enqueue` 创建 native run。
+- 媒体入口以 `multitask_strategy=interrupt` 创建 native run。若同一 thread 的旧 chat run 仍处于
+  pending/running/retrying，Agent Server 原子终止旧 run，保留其已提交 checkpoint，并把当前用户输入加入该
+  thread 后继续；若旧 run 已进入终态，当前 run 正常从 thread 最新状态开始。媒体入口不扫描或拼接历史，
+  不把新用户消息伪装成 `Command(resume)`。
 
 收到请求后先发：
 
@@ -260,7 +277,8 @@ run/checkpoint，也不宣称跨进程、离线或 exactly-once 投递；没有 
 `assistant_graph_id=assistant-native-v3`；v1/v2 或缺失字段的 thread 在 session bind 和 run 创建前拒绝。
 custom route 创建 run 时使用 `stream_resumable=true` 与 `on_disconnect=continue`，内部订阅临时断开后从最后
 event ID 调用 `threads.join_stream`，而不是重建项目自有 session/runtime。同一连接的重复 `chatIndex` 在创建
-第二个 run 前拒绝，后续不同 chat 使用 Agent Server `enqueue`。
+第二个 run 前拒绝；后续不同 chat 使用 Agent Server 原生 `interrupt`，避免旧的 pending/retrying run 永久阻塞
+新用户轮次。
 
 媒体 WebSocket 断开时仍 best-effort cancel 该连接的活动 reactive run。主动 durable 行释放 connection lease，
 相同 `user + vendor sessionId` 重连到同一 native thread 后重发未 ACK 行；reactive chat 的既有终包仍只由

@@ -1,6 +1,6 @@
 # Memory Backend 私有 HTTP 接入契约
 
-最后更新：2026-08-24
+最后更新：2026-08-25
 
 ## Authority contract
 
@@ -68,7 +68,6 @@ Content-Type: application/json
 
 {
   "user_id": "<authenticated-identity>",
-  "session_id": "<native-thread-id>",
   "query": "<latest-human-text>",
   "top_k": 8,
   "direct_answer": false
@@ -77,12 +76,15 @@ Content-Type: application/json
 
 adapter 只消费 `results[]` 中 `type=text` 的非空 `content`。图片、Base64、URL、direct answer、远端身份字段
 和原始响应都不进入 Graph state。视觉分支具有独立 timeout，任何失败规范化为空结果；LangMem 和当前 turn
-继续。两路文本带来源标签合并后，仍受 `memory_context` 既有预算约束。
+继续。远端文本以 `[长期视觉记忆]` 来源标签与 LangMem 结果合并，仍受 `memory_context` 既有预算约束。
+该标签用于区分自动跨会话召回与当前 VIDEO 会话的短期 `visual_memory_search` Tool 结果。
 
 ### 远端视觉服务身份
 
-远端视觉请求的 `user_id` 来自 Agent Server 认证 principal，`session_id` 使用 native thread ID；客户端媒体
-payload 不能覆盖这两个字段。当前 tokenless developer auth 只适用于受信内网，不能当作公网认证机制。
+远端视觉上传请求的 `user_id` 来自 Agent Server 认证 principal，`session_id` 使用 native thread ID；客户端
+媒体 payload 不能覆盖这两个字段。视觉查询请求只发送同一可信 `user_id`，有意不发送 `session_id`，以检索
+该用户跨 thread 的长期视觉记忆；用户消息或客户端 payload 均不能补写或覆盖查询身份字段。当前 tokenless
+developer auth 只适用于受信内网，不能当作公网认证机制。
 
 ## Mem0 身份
 

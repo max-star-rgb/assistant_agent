@@ -272,7 +272,6 @@ class HybridMemoryBackend:
         visual_task = asyncio.create_task(
             self._visual_recall(
                 identity=identity,
-                thread_id=thread_id,
                 query=_last_human_text(messages),
             )
         )
@@ -280,7 +279,7 @@ class HybridMemoryBackend:
         return _bounded_texts(
             (
                 *text_result,
-                *(f"[视觉记忆] {value}" for value in visual_result),
+                *(f"[长期视觉记忆] {value}" for value in visual_result),
             )
         )
 
@@ -288,7 +287,6 @@ class HybridMemoryBackend:
         self,
         *,
         identity: str,
-        thread_id: str | None,
         query: str,
     ) -> tuple[str, ...]:
         if not query:
@@ -297,7 +295,6 @@ class HybridMemoryBackend:
             async with asyncio.timeout(self._visual_timeout_seconds):
                 result = await self._visual_client.query_memories(
                     user_id=identity,
-                    session_id=thread_id,
                     query=query,
                     top_k=self._visual_top_k,
                 )

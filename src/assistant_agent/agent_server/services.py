@@ -96,7 +96,6 @@ class AgentServerExecutionOwner:
             model,
             tools,
             model_call_limit=config.max_tool_iterations,
-            tool_call_limit=config.max_tool_iterations,
             context_window_tokens=config.context_input_token_limit,
             compaction_trigger_ratio=config.context_compaction_trigger_ratio,
             compaction_target_ratio=config.context_compaction_target_ratio,
@@ -112,8 +111,8 @@ class AgentServerExecutionOwner:
         planning_agent = build_planning_agent(
             model,
             fast_agent,
+            skills_backend=skills_backend,
             model_call_limit=config.max_tool_iterations,
-            tool_call_limit=config.max_tool_iterations,
             context_window_tokens=config.context_input_token_limit,
             compaction_trigger_ratio=config.context_compaction_trigger_ratio,
             compaction_target_ratio=config.context_compaction_target_ratio,

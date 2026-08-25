@@ -88,7 +88,7 @@ class FastAgentState(AgentState):
     execution_mode: NotRequired[ExecutionMode]
     trusted_runtime_facts: NotRequired[dict[str, object]]
     provider_search_profile: NotRequired[ProviderSearchProfile]
-    active_skill_ids: NotRequired[Annotated[list[str], _merge_unique_strings]]
+    loaded_skill_ids: NotRequired[Annotated[list[str], _merge_unique_strings]]
     skill_reference_grants: NotRequired[
         Annotated[dict[str, list[str]], _merge_reference_grants]
     ]
@@ -108,8 +108,10 @@ class PlanningAgentState(AgentState):
     provider_search_profile: NotRequired[
         Annotated[ProviderSearchProfile, _merge_identical_value]
     ]
-    active_skill_ids: NotRequired[Annotated[list[str], _merge_unique_strings]]
-    skill_reference_grants: NotRequired[
+    planner_loaded_skill_ids: NotRequired[
+        Annotated[list[str], _merge_unique_strings]
+    ]
+    planner_skill_reference_grants: NotRequired[
         Annotated[dict[str, list[str]], _merge_reference_grants]
     ]
 

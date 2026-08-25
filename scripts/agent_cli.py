@@ -75,7 +75,7 @@ def _run_once(client: Any, *, text: str, thread_id: str, mode: str) -> int:
             "execution_mode": mode,
         },
         context=_context(),
-        multitask_strategy="enqueue",
+        multitask_strategy="interrupt",
     )
     print(_response_text(result))
     return 0

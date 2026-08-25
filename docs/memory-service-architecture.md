@@ -1,6 +1,6 @@
 # LangGraph-native 长期记忆架构
 
-最后更新：2026-08-24
+最后更新：2026-08-25
 
 ## Authority contract
 
@@ -35,7 +35,8 @@ LangGraph `RetryPolicy(max_attempts=3)`；最终失败由 LangGraph 原生 node 
 `runs.cancel(thread_id, run_id, wait=True, action="rollback")`，随后在同一个 conversation thread 上调用
 `runs.create` 创建新的
 `assistant-memory-v1` delayed run，默认 `after_seconds=1800`、`multitask_strategy="enqueue"`，并写入上述
-metadata 标记。这段回答后的 refresh 不取消 pending chat run，也不改变各入口既有的 `enqueue` 并发语义；
+metadata 标记。这段回答后的 refresh 不取消 pending chat run，也不改变普通用户 chat 入口既有的 `interrupt`
+并发语义；
 移除回答前 SDK 往返后，模型可更早开始生成。项目不实现 timer、进程队列或 session manager；延时与队列由
 Agent Server 管理。SDK 调用只等待 Server 接受请求，不等待提取模型；refresh 异常由原生 error handler 隔离。
 
@@ -62,7 +63,10 @@ Assistant state。`RetryPolicy`、error handler
   日期时间、交通、搜索/Tool 结果，以及助理回答、自我描述、能力限制、知识截止日期和“知识库”措辞；
   非结构化记忆正文默认使用简体中文，代码、协议字段和专有名词可保留原文；
 - `langmem + remote visual`：显式启用后由组合 backend 在同一个 `memory_recall` 节点内并行召回 LangMem
-  与远端视觉文本记忆；视觉分支 fail-open，`commit` 仍只委托 LangMem，视频段摄入不进入 Memory Graph；
+  与远端视觉文本记忆；远端分支使用可信用户身份和最新一条用户文本检索，查询请求有意不发送
+  `session_id`，从而召回该用户跨会话的长期视觉记忆。结果以 `[长期视觉记忆]` 标记后自动进入冻结
+  `memory_context`。这条用户级召回不是 `visual_memory_search` Tool；后者只检索当前 VIDEO 会话/thread
+  的短期视觉时间线。视觉分支 fail-open，`commit` 仍只委托 LangMem，视频段摄入不进入 Memory Graph；
 - custom：composition 可注入任何满足 `MemoryBackend` 的第三方 adapter。
 
 mock mode 只能使用 disabled；远端 backend 要求 real mode 和完整显式配置，不能探测 key 后启用，也不能静默

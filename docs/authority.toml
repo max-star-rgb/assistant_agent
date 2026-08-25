@@ -105,7 +105,7 @@ source_globs = [
   ".env.example",
   "src/assistant_agent/config/**",
   "src/assistant_agent/native_agent/providers.py",
-  "src/assistant_agent/native_agent/tool_exposure.py",
+  "src/assistant_agent/native_agent/tool_profiles.py",
   "src/assistant_agent/native_agent/tools.py",
   "src/assistant_agent/skills/**",
   "src/assistant_agent/tools/**",

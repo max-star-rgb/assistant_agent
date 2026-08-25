@@ -133,24 +133,29 @@ model -> tools -> model
 model -> END
 ```
 
-Supervisor 只通过官方 `TodoListMiddleware` 获得可执行 `write_todos` Tool，通过 Deep Agents
-`SubAgentMiddleware` 获得可执行 `task(description, subagent_type)` Tool；它不持有 `load_skill`、
-`load_skill_reference` 或业务 Tool。Todo 的 `content/status=pending|in_progress|completed` schema、更新语义和
+Supervisor 通过官方 `TodoListMiddleware` 获得可执行 `write_todos` Tool，通过 Deep Agents
+`SubAgentMiddleware` 获得可执行 `task(description, subagent_type)` Tool，并持有只读 `load_skill`/
+`load_skill_reference` 以在拆解前读取专项知识；它不持有 `activate_tool_profile` 或业务 Tool。Todo 的
+`content/status=pending|in_progress|completed` schema、更新语义和
 执行逻辑均由锁定的 `langchain==1.3.15` middleware 提供；项目只通过其官方扩展参数提供中文 system prompt 与
 Tool description，不再维护 Todo reducer、completed gate 或 Worker result ledger。Supervisor 固定关闭
 Provider-native search。
 
 `task` 是 Deep Agents 0.7.8 提供的真实 `StructuredTool`，不是路由占位 schema。唯一注册的
 `general-purpose` 类型直接引用已经编译的共享 `AssistantFastAgent`。task 用 description 创建子 Agent 的唯一
-`HumanMessage`，同时传递父 planning state 中冻结的 Memory/TrustedRuntimeFacts、execution mode 与 Skill state；
-父 conversation、Todo 和 structured response 不进入子 Agent。子 Agent 可按自身原生循环加载 Skill、调用业务 Tool、
+`HumanMessage`，同时传递父 planning state 中冻结的 Memory/TrustedRuntimeFacts 与 execution mode。Planner 是否加载
+Skill 仍由 LLM 自主决定；一旦加载，项目在 compiled worker 边界把 Planner Skill ID/reference grant 窄映射为 worker
+已加载 Skill state。父 conversation、Todo、Tool Profile、调用计数和 structured response 不进入子 Agent。没有继承
+对应 Skill 时，子 Agent 仍可按自身原生循环加载 Skill、激活 Tool Profile、调用业务 Tool、
 summarize 或触发 planning 模式非 read HITL。完成后 Deep Agents 只把 structured response 或最后一条非空
-`AIMessage` 文本写成原 task call 对应的父级 `ToolMessage`，不回灌内部 AI/Tool transcript。
+`AIMessage` 文本写成原 task call 对应的父级 `ToolMessage`；项目结果投影不回灌 worker Skill/Profile state 或内部
+AI/Tool transcript。
 
 同一 `AIMessage` 中的多个 task call 由 `create_agent` 内置 `ToolNode` 并行执行；fan-out/fan-in、Tool 错误、
 `Command` state update 与 checkpoint 都使用上游实现。项目只为 task 并发回写的冻结字段声明“结果必须一致”的
-LangGraph reducer，并继续合并子 Agent 返回的 Skill ID/reference；不再维护 controls、`Send(worker)`、join、
-wave、attempt、reservation 或 recovery ledger。
+LangGraph reducer；Planner 与 worker 的 Skill/Profile state 使用角色局部 channel，只有 Planner→worker 的已加载
+Skill 窄映射，不合并为 Tool Profile、权限或能力授予。
+主链也不再维护 controls、`Send(worker)`、join、wave、attempt、reservation 或 recovery ledger。
 
 
 ## State 与恢复
@@ -158,10 +163,12 @@ wave、attempt、reservation 或 recovery ledger。
 生产 state channel、checkpoint 和 reducer 调度全部使用 LangGraph 原生能力。父图继续以标准
 `AgentState.messages` / `add_messages` 为事实源，并只增加 `execution_mode`、冻结的
 `memory_context/memory_status` 与 `trusted_runtime_facts`。fast agent 子图使用成功 `load_skill` 产生的
-`active_skill_ids` 和窄 `skill_reference_grants`。
+`loaded_skill_ids`、窄 `skill_reference_grants`，以及显式 `activate_tool_profile` 产生的
+`active_tool_profile_ids`。
 
-planning agent 只在官方 state 中保存标准 `messages`、`todos`、冻结的 Memory/TrustedRuntimeFacts、execution mode
-及子 Agent 返回的 Skill/reference state。Todo 不含项目 `todo_id`，也没有 `worker_results` 或 `worker_writes`
+planning agent 只在官方 state 中保存标准 `messages`、`todos`、冻结的 Memory/TrustedRuntimeFacts、execution mode，
+以及自身只读 Skill 加载产生的 `planner_loaded_skill_ids`/`planner_skill_reference_grants`。它不保存或激活 Tool Profile。
+Todo 不含项目 `todo_id`，也没有 `worker_results` 或 `worker_writes`
 channel。task 调用、结果与 Todo 更新都作为标准 AI/Tool transcript 进入 checkpoint；子 Agent 私有 transcript
 不进入父 state。恢复、并行 Tool pending writes 与错误语义均由 `create_agent`/`ToolNode`/Agent Server 所有。
 
@@ -198,10 +205,10 @@ assistant UUID 保留并改绑 v3，Studio 需要在该 assistant 下创建新 t
 不阻止 Memory 等独立 Graph 使用自己的 thread 与版本身份。
 
 
-完整 Tool inventory 仍静态注册给 fast `create_agent` 的 `ToolNode`；每次 model call 的可见子集由 Deep Agents
-`SkillsMiddleware` 发现的标准 `SKILL.md` 元数据、项目窄 exposure middleware 与上述 Skill 激活状态派生。
-`allowed-tools` 只治理明确声明的 Tool，未声明 Tool 保持独立可见。该过滤不创建第二套 Tool runtime，也不改变 ToolNode 对已注册 Tool
-的标准执行路径。
+完整 Tool inventory 仍静态注册给 fast `create_agent` 的 `ToolNode`；通用 `ToolProfileMiddleware` 自带
+`activate_tool_profile`，每次 model call 的可见子集由受信静态 profile catalog 与当前 invocation 的激活状态派生。
+Skill 只提供渐进知识，不参与 Tool 授权；未归属 profile 的 Tool 保持独立可见。该过滤不创建第二套 Tool runtime，
+也不改变 ToolNode 对已注册 Tool 的标准执行路径。
 
 回答生成后，主图通过官方 Agent Server SDK 查询同 thread 的 pending runs，只对带
 `assistant_agent_run_kind=memory_extraction` metadata 的旧 Memory run 执行 `cancel(..., action="rollback")`，
@@ -233,8 +240,9 @@ trace 展开，不再显示固定 controls/worker/join 节点。媒体 custom ro
 `HumanInTheLoopMiddleware` 使用 state-aware `when` predicate：fast 模式自动放行；planning task 内的 fast 子 Agent
 对非 read 业务 Tool 在执行前触发原生 interrupt。恢复使用 Agent Server/LangGraph `Command(resume=...)`。
 共享 fast 子 Agent 使用官方
-`ModelCallLimitMiddleware`、`ToolCallLimitMiddleware`、只读 Tool retry、summarization 与 metadata-driven
-per-Tool limiter；planning coordinator 自身也使用官方 model/tool call limit 与 summarization，不维护全局 budget ledger。
+`ModelCallLimitMiddleware`、只读 Tool retry、summarization 与参数级 per-Tool limiter；每个 invocation 最多 12 次
+model call，不设全 Tool 总调用上限，每个 Tool 同一规范化参数最多执行一次、不同参数最多执行 12 次，metadata 可声明
+更低上限。planning coordinator 使用相同边界，不维护全局 budget ledger。
 coding patch、final review decision 和 merge approval 各自使用独立原生 interrupt；review decision 不属于 Tool
 middleware HITL，不能授权 patch apply 或 merge apply，也不能被 `unavailable` report、integration-disabled 配置或
 snapshot cleanup 自动跳过。

@@ -231,6 +231,37 @@ def proactive_chat_response(
     )
 
 
+def connection_greeting_response(
+    *,
+    session_id: str | None,
+    user_id: str,
+    connection_id: str,
+) -> dict[str, Any]:
+    """Project the one-time greeting for a successfully bound connection."""
+
+    return envelope(
+        message="chatResponse",
+        session_id=session_id,
+        body={
+            "number": user_id,
+            "message": {
+                "type": "BRIEF",
+                "chatIndex": f"greeting:{connection_id}",
+                "content": {
+                    "intentResult": {
+                        "description": "你好呀～～",
+                        "status": "SUCCESS",
+                    }
+                },
+            },
+            "displayOnly": False,
+            "display_only": False,
+            "sequence": 1,
+            "final": True,
+        },
+    )
+
+
 def failure_response(
     *, message: str, session_id: str | None, detail: str
 ) -> dict[str, Any]:
@@ -303,6 +334,7 @@ __all__ = [
     "MediaEnvelope",
     "MediaProtocolError",
     "artifact_completed_response",
+    "connection_greeting_response",
     "envelope",
     "failure_response",
     "parse_chat",

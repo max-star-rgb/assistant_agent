@@ -27,6 +27,7 @@ from assistant_agent.agent_server.graph import close_native_assistant_graph
 from assistant_agent.agent_server.config import ASSISTANT_GRAPH_ID
 from assistant_agent.agent_server.media_protocol import (
     MediaProtocolError,
+    connection_greeting_response,
     envelope,
     failure_response,
     parse_chat,
@@ -654,6 +655,15 @@ async def _handle_frame(
             send_lock,
             envelope(message=message, session_id=frame.session_id, body=body),
         )
+        await _send_json(
+            websocket,
+            send_lock,
+            connection_greeting_response(
+                session_id=frame.session_id,
+                user_id=user_id,
+                connection_id=session.connection_id,
+            ),
+        )
         return
     if frame.message == "chat":
         chat_received_ns = received_ns or perf_counter_ns()
@@ -982,7 +992,7 @@ async def _run_chat(
                 visual_target_video_id=visual_target_video_id,
             ),
             context=run_context,
-            multitask_strategy="enqueue",
+            multitask_strategy="interrupt",
             on_run_created=bind_run,
         ):
             event_id = part.get("id")

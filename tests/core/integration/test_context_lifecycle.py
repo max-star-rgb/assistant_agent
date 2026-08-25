@@ -2,19 +2,21 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from deepagents.backends import FilesystemBackend
 import pytest
 from langchain.agents.middleware import (
     HumanInTheLoopMiddleware,
     ModelCallLimitMiddleware,
     SummarizationMiddleware,
-    ToolCallLimitMiddleware,
     ToolRetryMiddleware,
 )
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool
+from langchain_core.runnables import RunnableLambda
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
@@ -29,6 +31,10 @@ from assistant_agent.native_agent.runtime_facts import (
 )
 from assistant_agent.native_agent.state import PlanningAgentState
 from assistant_agent.native_agent.tool_call_limits import PerToolCallLimitMiddleware
+from assistant_agent.native_agent.tool_profiles import (
+    ToolProfileMiddleware,
+    project_tool_profiles,
+)
 
 
 def _tool_names(raw_tools: object) -> set[str]:
@@ -126,6 +132,45 @@ class _FastWriteModel(MockAssistantChatModel):
         )
 
 
+class _PlanningSkillHandoffModel(MockAssistantChatModel):
+    _planning_calls: int = PrivateAttr(default=0)
+
+    def _response_message(self, messages, **kwargs):
+        del messages
+        visible = _tool_names(kwargs.get("tools"))
+        if {"task", "write_todos", "load_skill"} <= visible:
+            self._planning_calls += 1
+            if self._planning_calls == 1:
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "load_skill",
+                            "args": {"skill_id": "skill-sentinel"},
+                            "id": "load-skill-sentinel",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            if self._planning_calls == 2:
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "task",
+                            "args": {
+                                "description": "task-sentinel",
+                                "subagent_type": "general-purpose",
+                            },
+                            "id": "task-sentinel",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            return AIMessage(content="planning-complete")
+        raise AssertionError("worker uses a dedicated runnable")
+
+
 @pytest.mark.core_invariant("CTX-001")
 def test_frozen_memory_is_transient_context_before_the_current_request() -> None:
     model = _CaptureMessagesModel()
@@ -202,6 +247,58 @@ def test_planning_and_task_receive_one_transient_frozen_runtime_context() -> Non
 
 
 @pytest.mark.core_invariant("CTX-001")
+def test_planner_loaded_skill_state_is_narrowly_inherited_by_task(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / "skills" / "skill-sentinel"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: skill-sentinel\n"
+        "description: Generic skill sentinel.\n"
+        "---\n\n"
+        "Generic inherited guidance.\n",
+        encoding="utf-8",
+    )
+    observed_worker_states: list[dict[str, Any]] = []
+
+    def worker(state: dict[str, Any]) -> dict[str, Any]:
+        observed_worker_states.append(state)
+        return {
+            "messages": [AIMessage(content="worker-complete")],
+            "loaded_skill_ids": ["worker-local-sentinel"],
+            "active_tool_profile_ids": ["worker-profile-sentinel"],
+        }
+
+    graph = build_planning_agent(
+        _PlanningSkillHandoffModel(),
+        RunnableLambda(worker),
+        skills_backend=FilesystemBackend(
+            root_dir=tmp_path / "skills",
+            virtual_mode=True,
+        ),
+    )
+    result = graph.invoke(
+        {
+            "messages": [HumanMessage(content="request-sentinel")],
+            "memory_context": (),
+            "memory_status": "empty",
+            "execution_mode": "planning",
+        },
+        context=AssistantRunContext(),
+    )
+
+    assert observed_worker_states[0]["loaded_skill_ids"] == ["skill-sentinel"]
+    assert observed_worker_states[0]["skill_reference_grants"] == {
+        "skill-sentinel": []
+    }
+    assert "planner_loaded_skill_ids" not in observed_worker_states[0]
+    assert result["planner_loaded_skill_ids"] == ["skill-sentinel"]
+    assert "loaded_skill_ids" not in result
+    assert "active_tool_profile_ids" not in result
+
+
+@pytest.mark.core_invariant("CTX-001")
 def test_create_agent_owns_native_limits_summary_retry_hitl_and_per_tool_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -234,23 +331,33 @@ def test_create_agent_owns_native_limits_summary_retry_hitl_and_per_tool_limit(
         MockAssistantChatModel(),
         [write_tool, read_tool, limited_tool],
         model_call_limit=3,
-        tool_call_limit=4,
     )
     nodes = set(graph.get_graph().nodes)
     per_tool = [item for item in captured if isinstance(item, PerToolCallLimitMiddleware)]
 
     assert any(isinstance(item, ModelCallLimitMiddleware) for item in captured)
-    assert any(isinstance(item, ToolCallLimitMiddleware) for item in captured)
     assert [item.run_limits for item in per_tool] == [{"limited_probe": 1}]
+    assert [item.default_run_limit for item in per_tool] == [12]
     assert any("SummarizationMiddleware" in node for node in nodes)
     assert any(isinstance(item, SummarizationMiddleware) for item in captured)
     assert any("HumanInTheLoopMiddleware" in node for node in nodes)
     assert any(isinstance(item, HumanInTheLoopMiddleware) for item in captured)
     assert any(isinstance(item, ToolRetryMiddleware) for item in captured)
     assert "SkillsMiddleware" in {type(item).__name__ for item in captured}
-    assert "NativeSkillToolExposureMiddleware" in {
-        type(item).__name__ for item in captured
-    }
+    profile_middleware = [
+        item for item in captured if isinstance(item, ToolProfileMiddleware)
+    ]
+    assert len(profile_middleware) == 1
+    assert [tool.name for tool in profile_middleware[0].tools] == [
+        "activate_tool_profile"
+    ]
+    travel_profile = next(
+        profile
+        for profile in project_tool_profiles()
+        if profile.profile_id == "travel"
+    )
+    assert "lodging_search" in travel_profile.tool_names
+    assert "mcp_amap_maps_maps_weather" not in travel_profile.tool_names
 
 
 @pytest.mark.core_invariant("CTX-001")

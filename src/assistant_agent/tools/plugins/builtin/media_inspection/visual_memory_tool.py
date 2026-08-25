@@ -256,14 +256,23 @@ def create_visual_memory_search_tool(
             Field(
                 min_length=1,
                 max_length=500,
-                description="要在当前会话历史画面文本中检索的对象、场景或事件。",
+                description=(
+                    "要在当前 VIDEO 会话的短期视觉记忆文本中检索的"
+                    "对象、场景或事件；不用于跨会话长期视觉记忆。"
+                ),
             ),
         ],
         runtime: ToolRuntime[AssistantRunContext],
         time_window: VisualMemoryTimeWindow | None = None,
         search_mode: Literal["auto", "object", "scene", "event"] = "auto",
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """检索实时视觉链已经生成的当前会话历史文本，不重新调用视觉模型。"""
+        """检索当前实时 VIDEO 会话/thread 内的短期视觉记忆文本。
+
+        用户询问当前视频会话中较早出现的对象、场景、事件或找回视觉线索时调用。
+        本工具不重新调用视觉模型，不查询跨会话的长期视觉记忆。长期视觉记忆由系统
+        根据当前请求自动召回，并在相关历史记忆中标记为“[长期视觉记忆]”；不要用本工具
+        尝试补查跨会话历史。用户询问当前画面时应使用 live_view_inspect。
+        """
 
         def search_visual_memory() -> ToolResult:
             if runtime.context.realtime_media_mode != "video":

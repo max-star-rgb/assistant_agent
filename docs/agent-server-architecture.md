@@ -1,6 +1,6 @@
 # LangGraph Agent Server 部署架构
 
-最后更新：2026-08-24
+最后更新：2026-08-25
 
 ## Authority contract
 
@@ -296,6 +296,11 @@ operator 需要检查或恢复 conversation 时，`scripts/agent_cli.py` 直接�
 checkpoint 创建 replay 分支，`runs.cancel(action="rollback", wait=True)` 丢弃仍可取消的 run 及其
 checkpoints。replay 与 rollback 都要求精确确认；项目不读取 saver、不维护 checkpoint facade，也不把 Graph
 state 回滚描述为已完成外部 Tool 副作用的自动撤销。
+
+普通用户 chat（媒体入口与 CLI）使用 Agent Server 原生 `multitask_strategy="interrupt"`。同一 thread
+存在 pending/running/retrying 旧 run 时，由 Agent Server 中止旧 run、保留已提交 checkpoint，并把新用户输入
+加入 thread 后继续；旧 run 已进入终态时，新 run 正常开始。显式 checkpoint replay 继续使用 `enqueue`。
+项目不为该行为扫描旧 run、手工合并历史或实现第二套恢复状态机。
 
 所有当前 chat 入口最终调用同一个 `assistant-native-v3`，因此 Memory debounce 不散落在 Studio、CLI、HTTP 或
 WebSocket adapter：主图在回答后使用官方 SDK 查找并 rollback 同 thread、带专用 metadata 的旧 pending Memory

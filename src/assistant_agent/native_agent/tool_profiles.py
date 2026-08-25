@@ -1,0 +1,257 @@
+"""Generic create_agent middleware for explicit Tool Profile activation."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Awaitable, Callable, Sequence
+from typing import Annotated, Any, NotRequired
+
+from langchain.agents import AgentState
+from langchain.agents.middleware import ModelRequest
+from langchain.agents.middleware.types import AgentMiddleware, ModelResponse
+from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.tools import BaseTool, ToolException, tool
+from langgraph.prebuilt import ToolRuntime
+from langgraph.types import Command
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from assistant_agent.tools.native_boundary import configure_builtin_tool
+
+
+ACTIVATE_TOOL_PROFILE_TOOL_NAME = "activate_tool_profile"
+
+
+def _merge_unique_profile_ids(left: list[str], right: list[str]) -> list[str]:
+    return list(dict.fromkeys([*left, *right]))
+
+
+class ToolProfileState(AgentState):
+    """Run-local state owned by ``ToolProfileMiddleware``."""
+
+    active_tool_profile_ids: NotRequired[
+        Annotated[list[str], _merge_unique_profile_ids]
+    ]
+
+
+class ToolProfile(BaseModel):
+    """Trusted static mapping from one profile ID to registered Tool names."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    profile_id: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
+    )
+    description: str = Field(min_length=1, max_length=500)
+    tool_names: tuple[str, ...] = Field(min_length=1)
+
+    @field_validator("tool_names")
+    @classmethod
+    def _validate_tool_names(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(name.strip() for name in value)
+        if any(not name for name in normalized):
+            raise ValueError("tool profile names must not be blank")
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("tool profile names must be unique")
+        return normalized
+
+
+class _ToolProfileCatalog(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    profiles: tuple[ToolProfile, ...]
+
+    @model_validator(mode="after")
+    def _validate_profiles(self) -> "_ToolProfileCatalog":
+        profile_ids = [profile.profile_id for profile in self.profiles]
+        if len(profile_ids) != len(set(profile_ids)):
+            raise ValueError("tool profile IDs must be unique")
+        owners: dict[str, str] = {}
+        for profile in self.profiles:
+            for tool_name in profile.tool_names:
+                previous = owners.setdefault(tool_name, profile.profile_id)
+                if previous != profile.profile_id:
+                    raise ValueError(
+                        f"tool {tool_name!r} belongs to multiple profiles"
+                    )
+        return self
+
+
+class ToolProfileMiddleware(AgentMiddleware[ToolProfileState, Any]):
+    """Add explicit profile activation and filter pre-registered Tools by state."""
+
+    state_schema = ToolProfileState
+
+    def __init__(self, profiles: Sequence[ToolProfile]) -> None:
+        super().__init__()
+        catalog = _ToolProfileCatalog(profiles=tuple(profiles))
+        self._profiles_by_id = {
+            profile.profile_id: profile for profile in catalog.profiles
+        }
+        self._claimed_tool_names = frozenset(
+            tool_name
+            for profile in catalog.profiles
+            for tool_name in profile.tool_names
+        )
+        self.tools = [self._create_activate_tool()]
+
+    @property
+    def profiles(self) -> tuple[ToolProfile, ...]:
+        """Return the trusted profile index in deterministic order."""
+
+        return tuple(self._profiles_by_id.values())
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse | AIMessage],
+    ) -> ModelResponse | AIMessage:
+        return handler(self._request_with_visible_tools(request))
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse | AIMessage]],
+    ) -> ModelResponse | AIMessage:
+        return await handler(self._request_with_visible_tools(request))
+
+    def _request_with_visible_tools(self, request: ModelRequest) -> ModelRequest:
+        active_profile_ids = _string_values(
+            request.state.get("active_tool_profile_ids")
+        )
+        active_tool_names = {
+            tool_name
+            for profile_id in active_profile_ids
+            for tool_name in self._tool_names_for_profile(profile_id)
+        }
+        visible_tools = [
+            candidate
+            for candidate in request.tools
+            if not isinstance(candidate, BaseTool)
+            or candidate.name not in self._claimed_tool_names
+            or candidate.name in active_tool_names
+        ]
+        return request.override(tools=visible_tools)
+
+    def _tool_names_for_profile(self, profile_id: str) -> tuple[str, ...]:
+        profile = self._profiles_by_id.get(profile_id)
+        return profile.tool_names if profile is not None else ()
+
+    def _create_activate_tool(self) -> BaseTool:
+        profile_index = "\n".join(
+            f"- {profile.profile_id}: {profile.description}"
+            for profile in self.profiles
+        ) or "- 当前没有可激活的 Tool Profile。"
+        profiles_by_id = self._profiles_by_id
+
+        @tool(
+            ACTIVATE_TOOL_PROFILE_TOOL_NAME,
+            description=(
+                "仅当完成当前任务确实需要某组尚不可见的执行工具时，按受信 profile_id 激活该组工具。"
+                "激活只影响当前 Agent invocation 的后续模型调用，不执行任何业务动作，也不读取 Skill。"
+                "不得猜测或组合 profile_id。可用 Tool Profile：\n"
+                f"{profile_index}"
+            ),
+        )
+        def activate_tool_profile(
+            profile_id: Annotated[
+                str,
+                Field(
+                    min_length=1,
+                    max_length=64,
+                    pattern=r"^[a-z0-9][a-z0-9-]*$",
+                    description="当前任务需要的受信 Tool Profile 标识。",
+                ),
+            ],
+            runtime: ToolRuntime[Any],
+        ) -> Command:
+            profile = profiles_by_id.get(profile_id)
+            if profile is None:
+                raise ToolException("tool_profile_not_found")
+            observation = {
+                "status": "succeeded",
+                "summary": "Tool Profile 已激活。",
+                "profile_id": profile.profile_id,
+            }
+            return Command(
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=json.dumps(
+                                observation,
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            ),
+                            artifact={
+                                **observation,
+                                "tool_count": len(profile.tool_names),
+                            },
+                            name=ACTIVATE_TOOL_PROFILE_TOOL_NAME,
+                            tool_call_id=runtime.tool_call_id,
+                        )
+                    ],
+                    "active_tool_profile_ids": [profile.profile_id],
+                }
+            )
+
+        configured = configure_builtin_tool(activate_tool_profile, "read")
+        configured.metadata = {
+            **(configured.metadata or {}),
+            "retryable": False,
+        }
+        return configured
+
+
+def project_tool_profiles() -> tuple[ToolProfile, ...]:
+    """Return the repository-owned business Tool Profile catalog."""
+
+    return (
+        ToolProfile(
+            profile_id="travel",
+            description="酒店、地点发现、周边搜索以及步行、骑行、公交和驾车路线规划。",
+            tool_names=(
+                "lodging_search",
+                "mcp_amap_maps_maps_geo",
+                "mcp_amap_maps_maps_bicycling",
+                "mcp_amap_maps_maps_direction_walking",
+                "mcp_amap_maps_maps_direction_driving",
+                "mcp_amap_maps_maps_direction_transit_integrated",
+                "mcp_amap_maps_maps_text_search",
+                "mcp_amap_maps_maps_around_search",
+            ),
+        ),
+        ToolProfile(
+            profile_id="visual-creation",
+            description="图片生成以及把已有图片转换为 3D 模型。",
+            tool_names=("image_generation", "image_to_3d"),
+        ),
+        ToolProfile(
+            profile_id="workspace-communications",
+            description="邮件、日历和联系人查询，以及日历事件创建。",
+            tool_names=(
+                "email_search",
+                "email_read",
+                "mcp_google_gmail_readonly_search_gmail_messages",
+                "mcp_google_gmail_readonly_get_gmail_messages_content_batch",
+                "calendar_search",
+                "calendar_create",
+                "contacts_search",
+            ),
+        ),
+    )
+
+
+def _string_values(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return ()
+    return tuple(item for item in value if isinstance(item, str) and item)
+
+
+__all__ = [
+    "ACTIVATE_TOOL_PROFILE_TOOL_NAME",
+    "ToolProfile",
+    "ToolProfileMiddleware",
+    "ToolProfileState",
+    "project_tool_profiles",
+]

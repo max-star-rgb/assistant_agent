@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Annotated, Any
 
 from deepagents.backends.protocol import BackendProtocol
@@ -33,10 +34,12 @@ from assistant_agent.tools.plugins.builtin.skill_loading.models import (
     LoadSkillRequest,
     LoadSkillResult,
 )
-from assistant_agent.tools.runtime import skill_reference_grants
-
-
-def create_load_skill_tool(*, backend: BackendProtocol) -> BaseTool:
+def create_load_skill_tool(
+    *,
+    backend: BackendProtocol,
+    loaded_state_key: str = "loaded_skill_ids",
+    reference_grants_state_key: str = "skill_reference_grants",
+) -> BaseTool:
     """Create the native Tool that loads one model-invocable Skill."""
 
     @tool(LOAD_SKILL_TOOL_NAME)
@@ -72,8 +75,8 @@ def create_load_skill_tool(*, backend: BackendProtocol) -> BaseTool:
                         tool_call_id=runtime.tool_call_id,
                     )
                 ],
-                "active_skill_ids": [skill_id],
-                "skill_reference_grants": {
+                loaded_state_key: [skill_id],
+                reference_grants_state_key: {
                     skill_id: list(artifact.get("reference_ids", ())),
                 },
             }
@@ -82,7 +85,11 @@ def create_load_skill_tool(*, backend: BackendProtocol) -> BaseTool:
     return configure_builtin_tool(load_skill, "read")
 
 
-def create_load_skill_reference_tool(*, backend: BackendProtocol) -> BaseTool:
+def create_load_skill_reference_tool(
+    *,
+    backend: BackendProtocol,
+    reference_grants_state_key: str = "skill_reference_grants",
+) -> BaseTool:
     """Create the native Tool that reads a reference granted by ``load_skill``."""
 
     @tool(LOAD_SKILL_REFERENCE_TOOL_NAME, response_format="content_and_artifact")
@@ -118,6 +125,7 @@ def create_load_skill_reference_tool(*, backend: BackendProtocol) -> BaseTool:
                     reference_id=reference_id,
                 ),
                 runtime.state,
+                reference_grants_state_key,
             ),
         )
 
@@ -175,6 +183,7 @@ def _execute_load_skill_reference(
     backend: BackendProtocol,
     input: LoadSkillReferenceRequest,
     state: Any,
+    reference_grants_state_key: str,
 ) -> ToolResult:
     metadata = skill_metadata_by_name(state, input.skill_id)
     if metadata is None:
@@ -183,7 +192,10 @@ def _execute_load_skill_reference(
             "skill_not_found",
             "未找到已注册的内部工作流。",
         )
-    allowed_reference_ids = skill_reference_grants(state).get(metadata["name"], [])
+    allowed_reference_ids = _reference_grants(
+        state,
+        reference_grants_state_key,
+    ).get(metadata["name"], [])
     if input.reference_id not in allowed_reference_ids:
         return _failure(
             LOAD_SKILL_REFERENCE_TOOL_NAME,
@@ -249,6 +261,28 @@ def _failure(tool_name: str, code: str, message: str) -> ToolResult:
             "error_code": code,
         },
     )
+
+
+def _reference_grants(
+    state: object,
+    state_key: str,
+) -> dict[str, list[str]]:
+    if not isinstance(state, Mapping):
+        return {}
+    raw = state.get(state_key)
+    if not isinstance(raw, Mapping):
+        return {}
+    return {
+        skill_id: [
+            reference_id
+            for reference_id in reference_ids
+            if isinstance(reference_id, str) and reference_id
+        ]
+        for skill_id, reference_ids in raw.items()
+        if isinstance(skill_id, str)
+        and skill_id
+        and isinstance(reference_ids, (list, tuple))
+    }
 
 
 __all__ = [

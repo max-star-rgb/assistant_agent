@@ -209,8 +209,8 @@ def test_production_composition_reuses_one_fast_agent_with_native_call_limits(mo
     monkeypatch.setattr(services, "build_planning_agent", recording_planning)
     owner = asyncio.run(_open_owner())
     try:
-        assert limits == [(3, 3)]
-        assert planning_limits == [(3, 3)]
+        assert limits == [(3, None)]
+        assert planning_limits == [(3, None)]
         assert planning_fast_agents == fast_agents
     finally:
         asyncio.run(owner.aclose())

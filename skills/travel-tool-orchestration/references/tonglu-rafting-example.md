@@ -6,6 +6,10 @@
 
 `解析“明天” → 最小澄清 → 可成行性门 → 漂流点选择 → 交通 → 住宿 → 景点 → 餐饮 → 最终方案`
 
+角色边界：Planning coordinator 先读取本 Skill 和本 reference，把澄清顺序、停止条件和输出要求写进完整的
+`task` description；它不激活 Tool Profile。执行 Agent 收到任务后，只有在首次需要酒店、地点或路线工具时才调用
+`activate_tool_profile(profile_id="travel")`。加载 Skill 与激活 Profile 是两个独立动作；天气工具无需激活 Profile。
+
 ## 1. 首轮只补最小信息
 
 先按用户时区把“明天”解析为绝对日期。日期已知，不再追问。
@@ -20,8 +24,10 @@
 
 取得最小信息后：
 
-1. 用 `mcp_amap_maps_maps_text_search` 识别桐庐实际漂流景区和明确入口，不能把“桐庐漂流”当成唯一 POI。
-2. 用 `mcp_amap_maps_maps_weather` 查询目标日期天气；结果不足时用 Provider-native 联网搜索核验权威气象来源。
+1. 执行 Agent 激活 `travel` Tool Profile，再用 `mcp_amap_maps_maps_text_search` 识别桐庐实际漂流景区和明确入口；
+   不能把“桐庐漂流”当成唯一 POI。
+2. 直接用独立可见的 `mcp_amap_maps_maps_weather` 查询目标日期天气；结果不足时用 Provider-native 联网搜索核验
+   权威气象来源。
 3. 通过运营主体或官方来源核验开漂、预约、票务、临时关闭，以及年龄、身高等限制。
 
 ### 不可成行或风险过高

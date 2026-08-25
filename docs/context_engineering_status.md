@@ -24,15 +24,19 @@ system/developer instructions、隐藏上下文、runtime/checkpoint、路由、
 含糊指示语不得把临时注入的 Memory 或 TrustedRuntimeFacts 当成用户正在指向的内容。
 实时 VIDEO 会话中的当前画面属于瞬时事实；每个新的指示性视觉问题都重新调用 `live_view_inspect`，不得把历史
 视觉 Tool observation 当作本轮当前画面证据。
+dynamic prompt 还明确区分两种视觉记忆：`visual_memory_search` 只检索当前 VIDEO 会话/thread 内的短期
+视觉时间线；父图自动召回的跨会话长期视觉文本以 `[长期视觉记忆]` 标记进入临时的相关历史记忆，不通过
+该 Tool 补查。
 
 dynamic prompt 的 L0 index 只呈现 Deep Agents `SkillsMiddleware` 从标准 `SKILL.md` frontmatter 发现的名称与简介。
 成功执行 `load_skill` 后，Tool 按 LangGraph 原生 state-update 契约返回包含完整 Skill 正文的标准 `ToolMessage` 与
-`Command(update=...)`，并把受信 `skill_id` 写入当前 fast agent 子图的 `active_skill_ids`；正文不重复追加到
-system prompt。独立 exposure middleware 只在 `AssistantFastAgent` 的原生 model-call hook 中根据受信
-`allowed-tools` 与当前 `active_skill_ids` 派生业务 Tool schema；未被 Skill 声明的独立 Tool 保持可见。planning coordinator 不注册
-Skill control 或业务 Tool，只通过 Deep Agents 的 `task` 调用同一个 fast Agent。专项 reference 再由
+`Command(update=...)`，并把受信 `skill_id` 写入当前角色的 `loaded_skill_ids`；正文不重复追加到 system prompt，
+也不授予 Tool。独立 `ToolProfileMiddleware` 只在 `AssistantFastAgent` 的原生 model-call hook 中根据当前
+`active_tool_profile_ids` 派生业务 Tool schema；未归属 profile 的独立 Tool 保持可见。planning coordinator 可读取
+Skill 以指导任务拆解，但不装配 profile 激活能力或业务 Tool；它通过 Deep Agents 的 `task` 调用同一个 fast Agent。专项 reference 再由
 `load_skill_reference` 按当前 state/checkpoint namespace 中的窄 grant 读取。checkpoint 只保存受信 Skill ID 和
-自动发现并授权的 reference ID，不复制 Skill 正文、Tool schema 或任意 Tool 名；这些状态不进入父图、后续 chat run
+自动发现并授权的 reference ID；fast 还保存当前 invocation 激活的 profile ID，不复制 Skill 正文、Tool schema 或
+任意 Tool 名；这些状态不进入父图、后续 chat run
 或 Memory Graph。项目不向模型暴露通用文件读取 Tool；Skill 正文与 reference 只能通过 ID-only 窄加载器读取。
 
 Skill L0 index 使用简短自然语言列表。父图冻结的 `memory_context` 与 `trusted_runtime_facts` 都不进入
@@ -48,13 +52,14 @@ Memory 每一行以引用文本呈现，并明确为可能过时或错误的背�
 模型可见临时消息使用“用户默认地点”中文字段，并明确该地点不是已观测用户物理位置。用户在当前请求中明确指定的任务地点可以
 覆盖本次任务参数，但不能改写可信事实的来源。最后一条用户消息始终是本轮真实请求。
 
-fast `create_agent` 使用官方 `ModelCallLimitMiddleware` 与 `ToolCallLimitMiddleware` 提供每次 invocation
-的 model/tool call 安全上限。只读 Tool retry、长对话
+fast `create_agent` 使用官方 `ModelCallLimitMiddleware` 提供每次 invocation 最多 12 次 model call 的安全上限，
+不设置跨 Tool 的总调用上限。只读 Tool retry、长对话
 summarization 与 planning 模式非 read Tool HITL 继续使用官方
-middleware；需要独立 run 上限的 Tool 由同一个 metadata-driven per-Tool limiter 分别计数，不是全 Tool global
-limiter；当前 live-view 声明每个 run 最多一次，fast agent 不识别具体 Tool 名。fast 模式自动放行，planning
+middleware；统一的 per-Tool limiter 对每个 Tool 最多执行 12 组不同规范化参数，同一参数每个 run 最多执行一次，
+Tool metadata 可声明更低的独立上限；当前 live-view 声明每个 run 最多一次，fast agent 不识别具体 Tool 名。
+fast 模式自动放行，planning
 task 内的 fast 子 Agent 对非 read 业务 Tool 在执行前 interrupt，并从原生 checkpoint approve/resume。
-planning coordinator 自身也使用官方 model/tool call limit 与 summarization。summarization 默认采用输入窗口 75% 触发、保留 15% 的
+planning coordinator 自身也使用相同的 model/per-Tool 参数级 limit 与 summarization。summarization 默认采用输入窗口 75% 触发、保留 15% 的
 token 阈值，两者可由现有环境变量覆盖。DeepSeek V4 Flash 使用其官方 tokenizer 与
 `encoding_dsv4.py` 对标准 messages 做调用前计数；结构化 user content 只在文本 encoder 的计数副本中
 提取 text block，原始多模态 message 与媒体引用保持不变。摘要读取被淘汰的完整消息前缀，不再应用默认
@@ -77,11 +82,14 @@ JSON 或 marker。父级 Memory 与 TrustedRuntimeFacts 仍由相同 middleware 
 临时 `HumanMessage`，不进入 system prompt、state messages 或摘要。
 
 task 调用时，Deep Agents 把模型生成的完整 description 作为子 Agent 唯一的 `HumanMessage`，并传递冻结的
-Memory/TrustedRuntimeFacts、execution mode 与 Skill state；父 conversation、Todo 和 structured response 被上游
-排除。子 Agent 每次 model call 再用同一 Memory/Trusted middleware 把冻结上下文放在 task description 前，随后由
-fast dynamic prompt、Skill exposure、summarization 与业务 Tool transcript 完成独立执行。完成后只有 structured
-response 或最后一条非空 AI 文本作为父 task `ToolMessage` content 返回；内部 transcript 不回灌父消息。多个 task
-并行返回时，planning state reducer只接受一致的冻结上下文，并合并 Skill/reference state。
+Memory/TrustedRuntimeFacts 与 execution mode。Planner 是否加载 Skill 仍由 LLM 自主决定；一旦加载，compiled worker
+边界把 `planner_loaded_skill_ids`/`planner_skill_reference_grants` 窄映射为 worker 的
+`loaded_skill_ids`/`skill_reference_grants`，使 worker 不再重复加载同一 Skill。父 conversation、Todo、Tool Profile、
+调用计数和 structured response 被排除。子 Agent 每次 model call 再用同一 Memory/Trusted middleware 把冻结上下文
+放在 task description 前，随后由 fast dynamic prompt、Skill/Profile 渐进加载、summarization 与业务 Tool transcript
+完成独立执行。完成后只把 structured response 或最后一条非空 AI 文本作为父 task `ToolMessage` content 返回；
+worker 的 Skill/Profile state 与内部 transcript 不回灌父消息。多个 task 并行返回时，planning state reducer 只接受
+一致的冻结上下文。
 
 Provider 联网来源属于产生该回复的 `AIMessage.response_metadata`，不会作为新上下文消息重新注入后续模型调用。
 终态入口只读取最新最终 AIMessage 的来源；中间 tool-call 或历史 AIMessage 的来源不聚合到当前答案。

@@ -248,7 +248,7 @@ class ProviderConfig:
     max_video_seconds: float = 60.0
     langgraph_checkpointer_backend: LangGraphCheckpointerBackend = "memory"
     langgraph_checkpoint_path: str | None = None
-    max_tool_iterations: int = 8
+    max_tool_iterations: int = 12
     durable_tasks_enabled: bool = False
 
     def __post_init__(self) -> None:
@@ -951,7 +951,7 @@ class ProviderConfig:
                 or source.get("MULTIMODAL_AGENT_CHECKPOINTER_BACKEND")
             ),
             langgraph_checkpoint_path=source.get("LANGGRAPH_CHECKPOINT_PATH"),
-            max_tool_iterations=_int_env(source.get("MAX_TOOL_ITERATIONS"), 8),
+            max_tool_iterations=_int_env(source.get("MAX_TOOL_ITERATIONS"), 12),
         )
         return config
 

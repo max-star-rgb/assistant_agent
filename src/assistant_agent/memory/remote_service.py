@@ -60,7 +60,6 @@ class RemoteMemoryServiceClient:
         self,
         *,
         user_id: str,
-        session_id: str | None,
         query: str,
         top_k: int,
     ) -> tuple[str, ...]:
@@ -70,7 +69,6 @@ class RemoteMemoryServiceClient:
                 path="/v1/memories/query",
                 body={
                     "user_id": user_id,
-                    "session_id": session_id,
                     "query": query,
                     "top_k": top_k,
                     "direct_answer": False,

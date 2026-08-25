@@ -378,17 +378,6 @@ def _evaluate_skill_replacement(
     assert replacement_descriptor is not None
     current_metadata, current_references = current_descriptor
     replacement_metadata, replacement_references = replacement_descriptor
-    tools_preserved = set(replacement_metadata["allowed_tools"]) == set(
-        current_metadata["allowed_tools"]
-    )
-    _check(
-        checks,
-        blocked,
-        "skill_governed_tools_preserved",
-        tools_preserved,
-        "Governed tools are unchanged.",
-        "skill_governed_tool_expansion",
-    )
     activation_preserved = replacement_metadata["name"] == current_metadata["name"]
     _check(
         checks,

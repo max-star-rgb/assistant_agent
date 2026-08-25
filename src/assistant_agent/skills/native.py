@@ -60,18 +60,12 @@ def native_skill_metadata(state: Mapping[str, Any]) -> tuple[SkillMetadata, ...]
         name = item.get("name")
         path = item.get("path")
         description = item.get("description")
-        allowed_tools = item.get("allowed_tools")
         if not all(isinstance(value, str) and value for value in (name, path, description)):
             continue
         if _SKILL_ID_PATTERN.fullmatch(name) is None:
             continue
         skill_path = PurePosixPath(path)
         if skill_path.name != "SKILL.md" or skill_path.parent.name != name:
-            continue
-        if not isinstance(allowed_tools, list) or not all(
-            isinstance(tool_name, str) and tool_name
-            for tool_name in allowed_tools
-        ):
             continue
         result.append(item)  # type: ignore[arg-type]
     return tuple(result)
