@@ -343,19 +343,36 @@ class DockerCodingSandboxBackend:
         return execution.model_copy(update={"cleanup_status": cleanup_status})
 
     async def aclose(self) -> bool:
-        for _ in range(2):
-            self._cleanup_debts = [
-                debt for debt in self._cleanup_debts if not debt.retry()
-            ]
+        for _ in range(3):
+            for _ in range(2):
+                self._cleanup_debts = [
+                    debt for debt in self._cleanup_debts if not debt.retry()
+                ]
+                if not self._cleanup_debts:
+                    break
+            inventory = self._owner_container_inventory()
+            if inventory is None:
+                return False
+            remove_failed = False
+            for reference in inventory:
+                remove_failed = (
+                    self._remove(reference) not in {"removed", "not_created"}
+                    or remove_failed
+                )
+            remaining = self._owner_container_inventory()
+            if remaining is None:
+                return False
+            if remove_failed or remaining:
+                continue
+            for _ in range(2):
+                self._cleanup_debts = [
+                    debt for debt in self._cleanup_debts if not debt.retry()
+                ]
+                if not self._cleanup_debts:
+                    break
             if not self._cleanup_debts:
-                break
-        inventory = self._owner_container_inventory()
-        if inventory is None:
-            return False
-        released = not self._cleanup_debts
-        for reference in inventory:
-            released = self._remove(reference) in {"removed", "not_created"} and released
-        return released
+                return self._owner_container_inventory() == ()
+        return False
 
     def _owner_container_inventory(self) -> tuple[str, ...] | None:
         listed = self._run((

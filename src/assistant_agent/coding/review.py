@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
+import inspect
 import json
 from dataclasses import dataclass
 from collections.abc import Mapping, Sequence
@@ -17,7 +19,7 @@ from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
 from langgraph.errors import GraphBubbleUp, NodeCancelledError
 from langgraph.runtime import Runtime
-from langgraph.types import Send
+from langgraph.types import Command, Send
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from assistant_agent.coding.models import (
@@ -144,6 +146,7 @@ class CodingReviewWorkerState(AgentState):
     """Narrow state delivered to one final snapshot review worker."""
 
     coding_repo_id: Required[str]
+    execution_attestation_digest: Required[str | None]
     workspace_ref: Required[str]
     base_commit: Required[str]
     analysis_snapshot: Required[CodingAnalysisSnapshot]
@@ -156,6 +159,7 @@ class CodingReviewGraphState(AgentState):
     """Ephemeral final-review state, separate from the mutation graph state."""
 
     coding_repo_id: Required[str]
+    execution_attestation_digest: Required[str | None]
     workspace_ref: Required[str]
     base_commit: Required[str]
     review_snapshot: Required[CodingAnalysisSnapshot]
@@ -166,6 +170,53 @@ class CodingReviewGraphState(AgentState):
     ]
     review_report: NotRequired[CodingReviewReport]
     review_status: NotRequired[Literal["clean", "findings", "unavailable"]]
+    attestation_error_code: NotRequired[str]
+
+
+def _guard_review_node(node: Any, current_digest: str | None) -> Any:
+    def mismatch(state: object, args: tuple[object, ...]) -> bool:
+        if not isinstance(state, Mapping):
+            return False
+        expected = state.get("execution_attestation_digest")
+        if isinstance(expected, str):
+            return expected != current_digest
+        for candidate in args:
+            context = getattr(candidate, "context", None)
+            profile = (
+                context.get("entry_profile")
+                if isinstance(context, Mapping)
+                else getattr(context, "entry_profile", None)
+            )
+            if profile == "evaluation":
+                return True
+        return False
+
+    def failure() -> Command:
+        return Command(
+            goto=END,
+            update={
+                "attestation_error_code": (
+                    "coding_eval_execution_attestation_mismatch"
+                )
+            },
+        )
+
+    if inspect.iscoroutinefunction(node):
+        @functools.wraps(node)
+        async def guarded_async(state: object, *args: object, **kwargs: object) -> object:
+            if mismatch(state, (*args, *kwargs.values())):
+                return failure()
+            return await node(state, *args, **kwargs)
+
+        return guarded_async
+
+    @functools.wraps(node)
+    def guarded_sync(state: object, *args: object, **kwargs: object) -> object:
+        if mismatch(state, (*args, *kwargs.values())):
+            return failure()
+        return node(state, *args, **kwargs)
+
+    return guarded_sync
 
 
 @dataclass(frozen=True)
@@ -332,6 +383,9 @@ def route_review_workers(state: Mapping[str, object]) -> list[Send] | str:
             {
                 "messages": _review_worker_messages(task, snapshot, review_input),
                 "coding_repo_id": state["coding_repo_id"],
+                "execution_attestation_digest": state.get(
+                    "execution_attestation_digest"
+                ),
                 "workspace_ref": review_input.workspace_ref,
                 "base_commit": review_input.base_commit,
                 "analysis_snapshot": snapshot,
@@ -412,6 +466,13 @@ async def review_workspace(
 def join_review(state: Mapping[str, object]) -> dict[str, object]:
     """Canonicalize the completed final-review workers without mutating the snapshot."""
 
+    if state.get("attestation_error_code") == (
+        "coding_eval_execution_attestation_mismatch"
+    ):
+        return {
+            "attestation_error_code": "coding_eval_execution_attestation_mismatch"
+        }
+
     review_input = CodingReviewInput.model_validate(state.get("review_input"))
     results = merge_review_results(
         (),
@@ -439,6 +500,7 @@ def create_coding_review_graph(
     workspace_service: CodingWorkspaceService | None = None,
     *,
     review_agent: Any | None = None,
+    execution_attestation_digest: str | None = None,
 ):
     """Compile a fresh, read-only three-worker final-review subgraph."""
 
@@ -481,14 +543,33 @@ def create_coding_review_graph(
             config=config,
         )
 
+    def prepare_review_tasks_node(
+        state: Mapping[str, object],
+        runtime: Runtime[AssistantRunContext],
+    ) -> dict[str, object]:
+        del runtime
+        return {
+            **prepare_review_tasks(state),
+            "execution_attestation_digest": state.get(
+                "execution_attestation_digest", execution_attestation_digest
+            ),
+        }
+
     builder = StateGraph(CodingReviewGraphState, context_schema=AssistantRunContext)
-    builder.add_node("prepare_review_tasks", prepare_review_tasks)
+    builder.add_node(
+        "prepare_review_tasks",
+        _guard_review_node(prepare_review_tasks_node, execution_attestation_digest),
+    )
     builder.add_node(
         "review_workspace",
-        review_workspace_node,
+        _guard_review_node(review_workspace_node, execution_attestation_digest),
         input_schema=CodingReviewWorkerState,
     )
-    builder.add_node("join_review", join_review, defer=True)
+    builder.add_node(
+        "join_review",
+        _guard_review_node(join_review, execution_attestation_digest),
+        defer=True,
+    )
     builder.add_edge(START, "prepare_review_tasks")
     builder.add_conditional_edges(
         "prepare_review_tasks",

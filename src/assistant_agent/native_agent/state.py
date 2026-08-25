@@ -124,6 +124,7 @@ class CodingAnalysisWorkerState(AgentState):
     """Narrow input state for one snapshot-bound coding analysis branch."""
 
     coding_repo_id: Required[str]
+    execution_attestation_digest: Required[str | None]
     workspace_ref: Required[str]
     base_commit: Required[str]
     analysis_snapshot: Required[CodingAnalysisSnapshot]

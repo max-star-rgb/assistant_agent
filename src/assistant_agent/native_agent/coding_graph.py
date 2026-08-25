@@ -133,38 +133,73 @@ class _MissingModelCodingReviewGraph:
         raise PermissionError("coding_review_requires_configured_model")
 
 
-def _coding_attestation_failure() -> Command:
+def _coding_attestation_failure(state: Mapping[str, object]) -> Command:
     return Command(
-        goto=END,
+        goto="summarize",
         update={
-            "status": "failed",
-            "terminal_status": "failed",
-            "error_code": "coding_execution_attestation_mismatch",
-            "error_message": "Coding execution attestation changed before node execution.",
+            "coding_result": _failed(
+                state, "coding_eval_execution_attestation_mismatch"
+            ),
         },
     )
 
 
-def _guard_coding_node(node: Any, current_digest: str | None) -> Any:
-    def mismatch(state: object) -> bool:
+def _guard_coding_node(
+    node: Any,
+    current_digest: str | None,
+    *,
+    allow_evaluation_bootstrap: bool = False,
+    allow_attestation_cleanup: bool = False,
+) -> Any:
+    def is_evaluation(args: tuple[object, ...], kwargs: Mapping[str, object]) -> bool:
+        candidates = (*args, *kwargs.values())
+        for candidate in candidates:
+            context = getattr(candidate, "context", None)
+            profile = (
+                context.get("entry_profile")
+                if isinstance(context, Mapping)
+                else getattr(context, "entry_profile", None)
+            )
+            if profile == "evaluation":
+                return True
+        return False
+
+    def mismatch(
+        state: object,
+        args: tuple[object, ...],
+        kwargs: Mapping[str, object],
+    ) -> bool:
         if not isinstance(state, Mapping):
             return False
         expected = state.get("execution_attestation_digest")
-        return isinstance(expected, str) and expected != current_digest
+        if isinstance(expected, str):
+            return expected != current_digest
+        return is_evaluation(args, kwargs) and not allow_evaluation_bootstrap
+
+    def is_attestation_cleanup(state: object) -> bool:
+        if not allow_attestation_cleanup or not isinstance(state, Mapping):
+            return False
+        result = state.get("coding_result")
+        error_code = (
+            result.get("error_code")
+            if isinstance(result, Mapping)
+            else getattr(result, "error_code", None)
+        )
+        return error_code == "coding_eval_execution_attestation_mismatch"
 
     if inspect.iscoroutinefunction(node):
         @functools.wraps(node)
         async def guarded_async(state: object, *args: object, **kwargs: object) -> object:
-            if mismatch(state):
-                return _coding_attestation_failure()
+            if mismatch(state, args, kwargs) and not is_attestation_cleanup(state):
+                return _coding_attestation_failure(state)
             return await node(state, *args, **kwargs)
 
         return guarded_async
 
     @functools.wraps(node)
     def guarded_sync(state: object, *args: object, **kwargs: object) -> object:
-        if mismatch(state):
-            return _coding_attestation_failure()
+        if mismatch(state, args, kwargs) and not is_attestation_cleanup(state):
+            return _coding_attestation_failure(state)
         return node(state, *args, **kwargs)
 
     return guarded_sync
@@ -251,7 +286,11 @@ def build_coding_graph(
         )
     if review_graph is None:
         review_graph = (
-            create_coding_review_graph(model, workspace_service)
+            create_coding_review_graph(
+                model,
+                workspace_service,
+                execution_attestation_digest=execution_attestation_digest,
+            )
             if model is not None
             else _MissingModelCodingReviewGraph()
         )
@@ -269,7 +308,7 @@ def build_coding_graph(
             return {
                 "coding_result": CodingTerminalResult(
                     status="failed",
-                    error_code="coding_execution_attestation_mismatch",
+                    error_code="coding_eval_execution_attestation_mismatch",
                 )
             }
         try:
@@ -1944,6 +1983,9 @@ def build_coding_graph(
             review_input = CodingReviewInput.model_validate(state.get("review_input"))
             projected = {
                 "coding_repo_id": state["coding_repo_id"],
+                "execution_attestation_digest": state[
+                    "execution_attestation_digest"
+                ],
                 "workspace_ref": review_input.workspace_ref,
                 "base_commit": review_input.base_commit,
                 "review_snapshot": snapshot,
@@ -1954,6 +1996,14 @@ def build_coding_graph(
                 config=config,
                 context=runtime.context,
             )
+            if output.get("attestation_error_code") == (
+                "coding_eval_execution_attestation_mismatch"
+            ):
+                return {
+                    "coding_result": _failed(
+                        state, "coding_eval_execution_attestation_mismatch"
+                    )
+                }
             tasks = tuple(
                 CodingReviewTask.model_validate(item)
                 for item in output.get("review_tasks", ())
@@ -2502,11 +2552,20 @@ def build_coding_graph(
             )
         builder.add_node(
             name,
-            _guard_coding_node(node, execution_attestation_digest),
+            _guard_coding_node(
+                node,
+                execution_attestation_digest,
+                allow_evaluation_bootstrap=name == "begin_coding_cycle",
+                allow_attestation_cleanup=name == "summarize",
+            ),
             **kwargs,
         )
 
-    def begin_attested_coding_cycle(state: CodingState) -> dict[str, object]:
+    def begin_attested_coding_cycle(
+        state: CodingState,
+        runtime: Runtime[AssistantRunContext],
+    ) -> dict[str, object]:
+        del runtime
         return begin_coding_cycle_node(
             state,
             execution_attestation_digest=execution_attestation_digest,
@@ -4154,6 +4213,9 @@ def route_analysis_workers(state: CodingState) -> list[Send] | str:
             {
                 "messages": _analysis_worker_messages(state, task, snapshot),
                 "coding_repo_id": state["coding_repo_id"],
+                "execution_attestation_digest": state[
+                    "execution_attestation_digest"
+                ],
                 "workspace_ref": state["workspace_ref"],
                 "base_commit": state["base_commit"],
                 "analysis_snapshot": snapshot,
