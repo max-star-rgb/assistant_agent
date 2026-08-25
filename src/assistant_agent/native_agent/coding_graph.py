@@ -151,6 +151,50 @@ def _coding_attestation_failure(state: Mapping[str, object]) -> dict[str, object
     }
 
 
+def _attestation_cleanup_released(
+    state: Mapping[str, object],
+    update: Mapping[str, object],
+) -> bool:
+    merged = {**state, **update}
+    successful = {None, "released", "removed", "not_created"}
+    approval_channels = (
+        "approval_status",
+        "dependency_approval_status",
+        "credential_approval_status",
+        "artifact_approval_status",
+        "review_decision_context",
+        "review_decision",
+        "merge_approval_status",
+    )
+    if any(merged.get(channel) is not None for channel in approval_channels):
+        return False
+
+    def inspect_value(value: object) -> bool:
+        if isinstance(value, BaseModel):
+            return inspect_value(value.model_dump(mode="python"))
+        if isinstance(value, Mapping):
+            for key, item in value.items():
+                if key == "attestation_cleanup_status":
+                    continue
+                if key == "cleanup_pending" and bool(item):
+                    return False
+                if (
+                    key.endswith("_release_status")
+                    or key.endswith("_cleanup_status")
+                ) and item not in successful:
+                    return False
+                if key.endswith("_debt") and item is not None:
+                    return False
+                if not inspect_value(item):
+                    return False
+            return True
+        if isinstance(value, (tuple, list)):
+            return all(inspect_value(item) for item in value)
+        return True
+
+    return inspect_value(merged)
+
+
 def _guard_coding_node(
     node: Any,
     current_digest: str | None,
@@ -219,8 +263,10 @@ def _guard_coding_node(
         cleaned_update = dict(cleaned)
         return {
             **cleaned_update,
-            "attestation_cleanup_status": cleaned_update.get(
-                "attestation_cleanup_status", "released"
+            "attestation_cleanup_status": (
+                "released"
+                if _attestation_cleanup_released(state, cleaned_update)
+                else "cleanup_pending"
             ),
         }
 
@@ -2504,16 +2550,27 @@ def build_coding_graph(
             workspace_service,
         )
         cleanup_pending = (
-            state.get("review_snapshot_release_status") == "cleanup_pending"
-            or terminal_release_status == "cleanup_pending"
+            terminal_release_status == "cleanup_pending"
         )
         result = state.get("coding_result") or _failed(state, "patch_invalid")
         terminal_repair_update = _terminal_review_repair_update(state, result)
         result = terminal_repair_update.pop("coding_result", result)
         return {
             "coding_result": result,
-            "validation_snapshot": None,
-            "review_snapshot": None,
+            "analysis_snapshot": (
+                state.get("analysis_snapshot") if cleanup_pending else None
+            ),
+            "validation_snapshot": (
+                state.get("validation_snapshot") if cleanup_pending else None
+            ),
+            "review_snapshot": (
+                state.get("review_snapshot") if cleanup_pending else None
+            ),
+            "analysis_snapshot_release_status": (
+                "cleanup_pending"
+                if terminal_release_status == "cleanup_pending"
+                else None
+            ),
             "review_snapshot_release_status": (
                 "cleanup_pending" if cleanup_pending else None
             ),
@@ -2629,10 +2686,17 @@ def build_coding_graph(
                 "review_snapshot_release_status": "cleanup_pending",
                 **terminal_channels,
             }
-        return {
+        cleaned_update = {
             **update,
-            "attestation_cleanup_status": "released",
             **terminal_channels,
+        }
+        return {
+            **cleaned_update,
+            "attestation_cleanup_status": (
+                "released"
+                if _attestation_cleanup_released(state, cleaned_update)
+                else "cleanup_pending"
+            ),
         }
 
     def add_coding_node(name: str, node: Any, **kwargs: Any) -> None:
