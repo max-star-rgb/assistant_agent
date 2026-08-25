@@ -11,7 +11,9 @@ import json
 import os
 from pathlib import Path
 import secrets
+import selectors
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -80,6 +82,8 @@ _MAX_ARTIFACT_BYTES = 1_048_576
 _MAX_DRIVER_EVIDENCE_BYTES = 16_384
 _MAX_MANIFEST_BYTES = 262_144
 _MANIFEST_REPOSITORY_PATH = "evals/system/ai_coding_behavior/cases.json"
+_TRUSTED_GIT_CANDIDATES = (Path("/usr/bin/git"), Path("/bin/git"))
+_MAX_GIT_STDERR_BYTES = 4_096
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _MANIFEST_PATH = Path(__file__).with_name("cases.json")
 _OUTPUT_ROOT = _REPO_ROOT / ".data" / "evals" / "system" / "ai_coding_behavior"
@@ -236,7 +240,7 @@ def _directory_identity(value: os.stat_result) -> tuple[int, int, int]:
 
 def _manifest_git_environment() -> dict[str, str]:
     return {
-        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "PATH": "/usr/bin:/bin",
         "HOME": "/nonexistent",
         "LANG": "C",
         "LC_ALL": "C",
@@ -247,23 +251,159 @@ def _manifest_git_environment() -> dict[str, str]:
     }
 
 
-def _manifest_git(*arguments: str) -> bytes:
+def _git_binary_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (value.st_dev, value.st_ino, value.st_mode, value.st_uid, value.st_size)
+
+
+def _resolve_trusted_git() -> tuple[Path, tuple[int, int, int, int, int]]:
+    for candidate in _TRUSTED_GIT_CANDIDATES:
+        try:
+            resolved = candidate.resolve(strict=True)
+            metadata = resolved.stat(follow_symlinks=False)
+        except OSError:
+            continue
+        if (
+            not resolved.is_absolute()
+            or resolved.parent not in {Path("/usr/bin"), Path("/bin")}
+            or not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != 0
+            or metadata.st_mode & 0o022
+            or not metadata.st_mode & stat.S_IXUSR
+            or not os.access(resolved, os.X_OK)
+        ):
+            continue
+        return resolved, _git_binary_identity(metadata)
+    raise CodingBehaviorRunnerConfigurationError(
+        "coding behavior suite requires a trusted system Git executable"
+    )
+
+
+def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
     try:
-        return subprocess.run(
-            ["git", "-C", str(_REPO_ROOT), *arguments],
-            check=True,
-            capture_output=True,
+        os.killpg(process.pid, signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        process.kill()
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=1)
+
+
+def _bounded_git_process(
+    executable: Path,
+    arguments: tuple[str, ...],
+    *,
+    stdout_limit: int,
+) -> bytes:
+    process: subprocess.Popen[bytes] | None = None
+    selector = selectors.DefaultSelector()
+    streams: tuple[object, ...] = ()
+    try:
+        process = subprocess.Popen(
+            [str(executable), "-C", str(_REPO_ROOT), *arguments],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             env=_manifest_git_environment(),
-            timeout=5,
-        ).stdout
-    except (OSError, subprocess.SubprocessError) as exc:
+            close_fds=True,
+            start_new_session=True,
+        )
+        if process.stdout is None or process.stderr is None:
+            raise CodingBehaviorRunnerConfigurationError(
+                "coding behavior suite Git output pipes are unavailable"
+            )
+        streams = (process.stdout, process.stderr)
+        selector.register(process.stdout, selectors.EVENT_READ, ("stdout", stdout_limit))
+        selector.register(
+            process.stderr,
+            selectors.EVENT_READ,
+            ("stderr", _MAX_GIT_STDERR_BYTES),
+        )
+        outputs = {"stdout": bytearray(), "stderr": bytearray()}
+        deadline = monotonic() + 5
+        while selector.get_map():
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise TimeoutError("trusted Git command exceeded its deadline")
+            events = selector.select(min(0.1, remaining))
+            if not events and process.poll() is not None:
+                events = [
+                    (key, selectors.EVENT_READ)
+                    for key in tuple(selector.get_map().values())
+                ]
+            for key, _ in events:
+                label, limit = key.data
+                chunk = os.read(key.fd, min(65_536, limit + 1 - len(outputs[label])))
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                outputs[label].extend(chunk)
+                if len(outputs[label]) > limit:
+                    raise CodingBehaviorRunnerConfigurationError(
+                        f"coding behavior suite Git {label} exceeds its bound"
+                    )
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise TimeoutError("trusted Git command exceeded its deadline")
+        returncode = process.wait(timeout=remaining)
+        if returncode != 0:
+            raise CodingBehaviorRunnerConfigurationError(
+                "coding behavior suite Git HEAD authority is unavailable"
+            )
+        return bytes(outputs["stdout"])
+    except (OSError, subprocess.SubprocessError, TimeoutError) as exc:
+        if process is not None and process.poll() is None:
+            _kill_process_group(process)
         raise CodingBehaviorRunnerConfigurationError(
             "coding behavior suite Git HEAD authority is unavailable"
+        ) from exc
+    except BaseException:
+        if process is not None and process.poll() is None:
+            _kill_process_group(process)
+        raise
+    finally:
+        selector.close()
+        for stream in streams:
+            stream.close()
+
+
+def _manifest_git(
+    *arguments: str,
+    stdout_limit: int,
+    git_capability: tuple[Path, tuple[int, int, int, int, int]],
+) -> bytes:
+    executable, expected_identity = git_capability
+    try:
+        if _git_binary_identity(executable.stat(follow_symlinks=False)) != expected_identity:
+            raise CodingBehaviorRunnerConfigurationError(
+                "trusted Git executable identity changed"
+            )
+        output = _bounded_git_process(
+            executable,
+            arguments,
+            stdout_limit=stdout_limit,
+        )
+        if _git_binary_identity(executable.stat(follow_symlinks=False)) != expected_identity:
+            raise CodingBehaviorRunnerConfigurationError(
+                "trusted Git executable identity changed"
+            )
+        return output
+    except OSError as exc:
+        raise CodingBehaviorRunnerConfigurationError(
+            "trusted Git executable identity is unavailable"
         ) from exc
 
 
 def _require_manifest_head_blob(payload: bytes) -> None:
-    head = _manifest_git("rev-parse", "--verify", "HEAD^{commit}").decode("ascii").strip()
+    git_capability = _resolve_trusted_git()
+    head = _manifest_git(
+        "rev-parse",
+        "--verify",
+        "HEAD^{commit}",
+        stdout_limit=128,
+        git_capability=git_capability,
+    ).decode("ascii").strip()
     if not __import__("re").fullmatch(r"[0-9a-f]{40,64}", head):
         raise CodingBehaviorRunnerConfigurationError(
             "coding behavior suite Git HEAD authority is invalid"
@@ -275,6 +415,8 @@ def _require_manifest_head_blob(payload: bytes) -> None:
         head,
         "--",
         _MANIFEST_REPOSITORY_PATH,
+        stdout_limit=512,
+        git_capability=git_capability,
     )
     prefix = b"100644 blob "
     suffix = b"\t" + _MANIFEST_REPOSITORY_PATH.encode("ascii") + b"\0"
@@ -287,7 +429,44 @@ def _require_manifest_head_blob(payload: bytes) -> None:
         raise CodingBehaviorRunnerConfigurationError(
             "coding behavior suite Git HEAD blob identity is invalid"
         )
-    if _manifest_git("cat-file", "blob", object_id) != payload:
+    object_type = _manifest_git(
+        "cat-file",
+        "-t",
+        object_id,
+        stdout_limit=16,
+        git_capability=git_capability,
+    )
+    if object_type != b"blob\n":
+        raise CodingBehaviorRunnerConfigurationError(
+            "coding behavior suite Git HEAD object is not a blob"
+        )
+    size_payload = _manifest_git(
+        "cat-file",
+        "-s",
+        object_id,
+        stdout_limit=32,
+        git_capability=git_capability,
+    ).strip()
+    if __import__("re").fullmatch(rb"(?:0|[1-9][0-9]*)", size_payload) is None:
+        raise CodingBehaviorRunnerConfigurationError(
+            "coding behavior suite Git HEAD blob size is invalid"
+        )
+    blob_size = int(size_payload)
+    if blob_size <= 0 or blob_size > _MAX_MANIFEST_BYTES:
+        raise CodingBehaviorRunnerConfigurationError(
+            "coding behavior suite Git HEAD blob exceeds its bound"
+        )
+    if blob_size != len(payload):
+        raise CodingBehaviorRunnerConfigurationError(
+            "coding behavior suite bytes do not match the exact Git HEAD blob"
+        )
+    if _manifest_git(
+        "cat-file",
+        "blob",
+        object_id,
+        stdout_limit=blob_size,
+        git_capability=git_capability,
+    ) != payload:
         raise CodingBehaviorRunnerConfigurationError(
             "coding behavior suite bytes do not match the exact Git HEAD blob"
         )
