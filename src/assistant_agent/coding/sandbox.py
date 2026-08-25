@@ -40,7 +40,7 @@ class CodingSandboxBackend(Protocol):
     def execute(self, request: CodingSandboxRequest) -> CodingSandboxResult:
         raise NotImplementedError
 
-    async def aclose(self) -> None:
+    async def aclose(self) -> bool:
         raise NotImplementedError
 
 
@@ -313,11 +313,13 @@ class DockerCodingSandboxBackend:
             f"label=assistant_agent.coding.owner={self._owner_id}",
         ), timeout=10.0)
         if listed is None or listed.returncode != 0:
-            return
+            return False
+        released = True
         for raw_reference in listed.stdout.splitlines():
             reference = raw_reference.strip()
             if _CONTAINER_REFERENCE.fullmatch(reference) is not None:
-                self._remove(reference)
+                released = self._remove(reference) in {"removed", "not_created"} and released
+        return released
 
     def _require_local_image(self, image: str) -> str | None:
         completed = self._run((

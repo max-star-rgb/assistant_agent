@@ -386,10 +386,22 @@ class CodingBehaviorCaseResult(_Contract):
     status: Literal["passed", "failed"]
     checks: tuple[CodingBehaviorCheckResult, ...]
     error: CodingBehaviorError | None = None
-    terminal_status: StrictStr | None = None
+    terminal_status: Literal["merged"] | None = None
     changed_paths: tuple[StrictStr, ...]
     elapsed_ms: StrictInt = Field(ge=0, le=3_600_000)
     cleanup_pending: StrictBool
+    failure_category: Literal[
+        "configuration",
+        "governance",
+        "permission",
+        "transport",
+        "cancelled",
+        "deadline",
+        "terminal",
+        "grader",
+        "internal",
+        "cleanup",
+    ] | None = None
 
     @field_validator("case_id")
     @classmethod
@@ -428,7 +440,7 @@ class CodingBehaviorCaseResult(_Contract):
         if not set(check_ids).issubset(self.case_binding.grader_ids):
             raise ValueError("checks contain an ID outside the bound grader inventory")
         if self.status == "passed":
-            if self.error is not None or self.cleanup_pending:
+            if self.error is not None or self.cleanup_pending or self.failure_category is not None:
                 raise ValueError("passed case cannot contain an error or cleanup debt")
             if any(check.status != "passed" for check in self.checks):
                 raise ValueError("passed case requires all checks to pass")

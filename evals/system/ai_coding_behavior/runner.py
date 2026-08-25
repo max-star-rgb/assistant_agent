@@ -11,13 +11,21 @@ import json
 import os
 from pathlib import Path
 import secrets
+import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 from time import monotonic
 from typing import Callable, Mapping
 
+import httpx
 from pydantic import ValidationError
 
+from assistant_agent.agent_server.attestation import (
+    AgentServerExecutionAttestation,
+    coding_registry_digest,
+)
 from assistant_agent.coding.config import (
     CodingCommandConfig,
     CodingConfig,
@@ -27,7 +35,6 @@ from assistant_agent.coding.models import CodingWorkspace
 from assistant_agent.coding.sandbox import DockerCodingSandboxBackend
 from assistant_agent.coding.validation import CodingValidationService
 from assistant_agent.coding.workspace import CodingWorkspaceService
-from assistant_agent.config import ProviderConfig
 from assistant_agent.evaluation.coding_agent_server import (
     CodingBehaviorAgentServerDriver,
     CodingBehaviorDriverResult,
@@ -60,10 +67,6 @@ from evals.system.ai_coding_behavior.graders import (
     grade_coding_behavior_case,
 )
 from evals.system.common.artifacts import create_run_dir, write_json
-from evals.system.common.preflight import (
-    SystemEvalConfigurationError,
-    validate_real_chat_config,
-)
 
 
 BASELINE_SUITE_ID = "baseline-v1"
@@ -89,6 +92,9 @@ class CodingBehaviorRealRunOptions:
     suite_id: str
     server_url: str
     sandbox_image: str
+    expected_chat_provider: str
+    expected_chat_adapter: str
+    expected_model_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +152,9 @@ def build_real_run_options(
     allow_real_provider: bool,
     allow_local_git_mutation: bool,
     sandbox_image: str | None = None,
+    expected_chat_provider: str | None = None,
+    expected_chat_adapter: str | None = None,
+    expected_model_id: str | None = None,
 ) -> CodingBehaviorRealRunOptions:
     if not allow_real_provider:
         raise CodingBehaviorRunnerConfigurationError(
@@ -174,10 +183,21 @@ def build_real_run_options(
         raise CodingBehaviorRunnerConfigurationError(
             "real mode requires a digest-pinned --sandbox-image"
         )
+    expected = tuple(
+        _safe_external_identifier(value)
+        for value in (
+            expected_chat_provider,
+            expected_chat_adapter,
+            expected_model_id,
+        )
+    )
     return CodingBehaviorRealRunOptions(
         suite_id=suite_id,
         server_url=server_url,
         sandbox_image=image,
+        expected_chat_provider=expected[0],
+        expected_chat_adapter=expected[1],
+        expected_model_id=expected[2],
     )
 
 
@@ -196,67 +216,115 @@ class IsolatedHeldOutValidationExecutor:
         if program is None:
             raise ValueError("held-out command is not in the trusted catalog")
         self._require_repository_binding(request)
-        repo_id = f"held-out-{sha256(request.command_id.encode()).hexdigest()[:16]}"
-        command = CodingCommandConfig(
-            command_id=request.command_id,
-            kind="test",
-            argv=("python", "-c", program),
-            timeout_seconds=request.timeout_seconds,
-            cpu_seconds=min(request.timeout_seconds, 120),
-            max_output_bytes=65_536,
-            max_disk_bytes=67_108_864,
-            max_files=4_096,
-        )
-        repository = CodingRepositoryConfig(
-            repo_id=repo_id,
-            path=request.repository.resolve(strict=True),
-            target_branch="main",
-            commands={request.command_id: command},
-            verification_sequence=(request.command_id,),
-            sandbox_enabled=True,
-            sandbox_image=self._sandbox_image,
-        )
-        validation_root = self._work_root / "held-out-validation"
-        config = CodingConfig(
-            enabled=True,
-            workspace_root=validation_root,
-            repositories={repo_id: repository},
-            max_changed_files=16,
-            max_patch_bytes=65_536,
-            max_file_bytes=1_048_576,
-        )
-        service = CodingValidationService(
-            CodingWorkspaceService(config),
-            sandbox_backend=self._sandbox,
-        )
-        workspace = CodingWorkspace(
-            workspace_ref=f"held-out-{sha256((request.command_id + request.expected_commit).encode()).hexdigest()}",
-            root=request.repository,
-            repo_id=repo_id,
-            base_commit=request.expected_commit,
-            expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
-        )
-        result = service.run(workspace, repository, format_round=0)
-        self._require_repository_binding(request)
-        if len(result.evidence) != 1:
-            raise ValueError("held-out validation returned an invalid evidence inventory")
-        evidence = result.evidence[0]
-        status = evidence.status
-        error_category = {
-            "passed": "none",
-            "timed_out": "timed_out",
-            "resource_exceeded": "resource_exceeded",
-        }.get(status, "output_limit" if evidence.truncated else "failed")
-        return HeldOutValidationResult(
-            status=status,
-            returncode=evidence.exit_code,
-            stdout_digest=sha256(evidence.stdout.encode("utf-8")).hexdigest(),
-            stderr_digest=sha256(evidence.stderr.encode("utf-8")).hexdigest(),
-            error_category=error_category,
-        )
+        snapshot_parent = self._work_root / "held-out-snapshots"
+        _prepare_owned_directory(snapshot_parent)
+        temporary = Path(tempfile.mkdtemp(prefix="snapshot-", dir=snapshot_parent))
+        snapshot = temporary / "repository"
+        snapshot_fd = -1
+        cleanup_pending = False
+        validation: HeldOutValidationResult | None = None
+        try:
+            snapshot_digest = _materialize_fd_snapshot(
+                source_fd=request.repository_fd,
+                destination=snapshot,
+                max_entries=4_096,
+                max_bytes=67_108_864,
+            )
+            snapshot_fd = os.open(
+                snapshot,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            )
+            if _logical_fd_digest(snapshot_fd, 4_096, 67_108_864) != snapshot_digest:
+                raise ValueError("held-out materialized snapshot changed")
+            snapshot_path = Path(f"/proc/self/fd/{snapshot_fd}")
+            repo_id = f"held-out-{sha256(request.command_id.encode()).hexdigest()[:16]}"
+            command = CodingCommandConfig(
+                command_id=request.command_id,
+                kind="test",
+                argv=("python", "-c", program),
+                timeout_seconds=request.timeout_seconds,
+                cpu_seconds=min(request.timeout_seconds, 120),
+                max_output_bytes=65_536,
+                max_disk_bytes=67_108_864,
+                max_files=4_096,
+            )
+            repository = CodingRepositoryConfig(
+                repo_id=repo_id,
+                path=snapshot_path,
+                target_branch="main",
+                commands={request.command_id: command},
+                verification_sequence=(request.command_id,),
+                sandbox_enabled=True,
+                sandbox_image=self._sandbox_image,
+            )
+            validation_root = self._work_root / "held-out-validation"
+            config = CodingConfig(
+                enabled=True,
+                workspace_root=validation_root,
+                repositories={repo_id: repository},
+                max_changed_files=16,
+                max_patch_bytes=65_536,
+                max_file_bytes=1_048_576,
+            )
+            result = CodingValidationService(
+                CodingWorkspaceService(config),
+                sandbox_backend=self._sandbox,
+            ).run(
+                CodingWorkspace(
+                    workspace_ref=f"held-out-{sha256((request.command_id + request.expected_commit).encode()).hexdigest()}",
+                    root=snapshot_path,
+                    repo_id=repo_id,
+                    base_commit=request.expected_commit,
+                    expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+                ),
+                repository,
+                format_round=0,
+            )
+            if _logical_fd_digest(snapshot_fd, 4_096, 67_108_864) != snapshot_digest:
+                raise ValueError("held-out materialized snapshot changed")
+            self._require_repository_binding(request)
+            if len(result.evidence) != 1:
+                raise ValueError("held-out validation returned an invalid evidence inventory")
+            evidence = result.evidence[0]
+            status = evidence.status
+            error_category = {
+                "passed": "none",
+                "timed_out": "timed_out",
+                "resource_exceeded": "resource_exceeded",
+            }.get(status, "output_limit" if evidence.truncated else "failed")
+            if evidence.cleanup_status not in {None, "removed", "not_created"}:
+                status = "failed"
+                error_category = "cleanup_pending"
+                cleanup_pending = True
+            validation = HeldOutValidationResult(
+                status=status,
+                returncode=evidence.exit_code,
+                stdout_digest=sha256(evidence.stdout.encode("utf-8")).hexdigest(),
+                stderr_digest=sha256(evidence.stderr.encode("utf-8")).hexdigest(),
+                error_category=error_category,
+            )
+        finally:
+            if snapshot_fd >= 0:
+                os.close(snapshot_fd)
+            try:
+                shutil.rmtree(temporary)
+            except OSError:
+                cleanup_pending = True
+        if cleanup_pending:
+            empty = sha256(b"").hexdigest()
+            return HeldOutValidationResult(
+                status="failed",
+                returncode=None,
+                stdout_digest=validation.stdout_digest if validation else empty,
+                stderr_digest=validation.stderr_digest if validation else empty,
+                error_category="cleanup_pending",
+            )
+        if validation is None:
+            raise ValueError("held-out validation did not return evidence")
+        return validation
 
-    def close(self) -> None:
-        asyncio.run(self._sandbox.aclose())
+    def close(self) -> bool:
+        return asyncio.run(self._sandbox.aclose())
 
     @staticmethod
     def _require_repository_binding(request: HeldOutValidationRequest) -> None:
@@ -265,7 +333,7 @@ class IsolatedHeldOutValidationExecutor:
             raise ValueError("held-out repository descriptor identity changed")
         completed = subprocess.run(
             ("git", "rev-parse", "HEAD", "HEAD^{tree}"),
-            cwd=request.repository,
+            cwd=f"/proc/self/fd/{request.repository_fd}",
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=10,
@@ -280,6 +348,250 @@ class IsolatedHeldOutValidationExecutor:
             or len(completed.stderr) > 65_536
         ):
             raise ValueError("held-out repository binding changed")
+        status = subprocess.run(
+            ("git", "status", "--porcelain=v1", "-z", "--untracked-files=all"),
+            cwd=f"/proc/self/fd/{request.repository_fd}",
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=10,
+            env=governed_git_environment(),
+            pass_fds=request.pass_fds,
+            check=False,
+        )
+        if (
+            status.returncode != 0
+            or status.stdout
+            or len(status.stderr) > 65_536
+        ):
+            raise ValueError("held-out repository working tree is not exact and clean")
+
+
+def _snapshot_copy_hook() -> None:
+    """Test seam after source inventory freeze and before descriptor copy."""
+
+
+def _materialize_fd_snapshot(
+    *,
+    source_fd: int,
+    destination: Path,
+    max_entries: int,
+    max_bytes: int,
+) -> str:
+    before_identity, before_logical = _fd_inventory(
+        source_fd, max_entries=max_entries, max_bytes=max_bytes
+    )
+    _snapshot_copy_hook()
+    destination.mkdir(mode=0o700, parents=False, exist_ok=False)
+    destination_fd = os.open(
+        destination,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+    )
+    try:
+        budget = {"entries": 0, "bytes": 0}
+        _copy_fd_tree(
+            source_fd,
+            destination_fd,
+            max_entries=max_entries,
+            max_bytes=max_bytes,
+            budget=budget,
+        )
+        after_identity, after_logical = _fd_inventory(
+            source_fd, max_entries=max_entries, max_bytes=max_bytes
+        )
+        _, materialized_logical = _fd_inventory(
+            destination_fd, max_entries=max_entries, max_bytes=max_bytes
+        )
+    finally:
+        os.close(destination_fd)
+    if (
+        before_identity != after_identity
+        or before_logical != after_logical
+        or before_logical != materialized_logical
+    ):
+        raise ValueError("held-out source or materialized snapshot changed")
+    return before_logical
+
+
+def _logical_fd_digest(directory_fd: int, max_entries: int, max_bytes: int) -> str:
+    return _fd_inventory(
+        directory_fd, max_entries=max_entries, max_bytes=max_bytes
+    )[1]
+
+
+def _fd_inventory(
+    directory_fd: int,
+    *,
+    max_entries: int,
+    max_bytes: int,
+) -> tuple[str, str]:
+    budget = {"entries": 0, "bytes": 0}
+    identity: list[tuple[object, ...]] = []
+    logical: list[tuple[object, ...]] = []
+
+    def visit(current_fd: int, prefix: str) -> None:
+        for name in sorted(os.listdir(current_fd)):
+            if name == ".git":
+                continue
+            if (
+                not name
+                or name in {".", ".."}
+                or any(
+                    character
+                    not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-"
+                    for character in name
+                )
+            ):
+                raise ValueError("held-out snapshot path is noncanonical")
+            budget["entries"] += 1
+            if budget["entries"] > max_entries:
+                raise ValueError("held-out snapshot entry budget exceeded")
+            metadata = os.stat(name, dir_fd=current_fd, follow_symlinks=False)
+            relative = f"{prefix}/{name}" if prefix else name
+            if stat.S_ISDIR(metadata.st_mode):
+                identity.append(
+                    (relative, "directory", metadata.st_dev, metadata.st_ino, metadata.st_mode)
+                )
+                logical.append((relative, "directory"))
+                child_fd = os.open(
+                    name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=current_fd,
+                )
+                try:
+                    visit(child_fd, relative)
+                finally:
+                    os.close(child_fd)
+                continue
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise ValueError("held-out snapshot requires regular single-link files")
+            budget["bytes"] += metadata.st_size
+            if budget["bytes"] > max_bytes:
+                raise ValueError("held-out snapshot byte budget exceeded")
+            file_fd = os.open(
+                name,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=current_fd,
+            )
+            digest = sha256()
+            try:
+                opened = os.fstat(file_fd)
+                if (
+                    opened.st_dev != metadata.st_dev
+                    or opened.st_ino != metadata.st_ino
+                    or opened.st_size != metadata.st_size
+                ):
+                    raise ValueError("held-out snapshot file identity changed")
+                remaining = metadata.st_size
+                while remaining:
+                    chunk = os.read(file_fd, min(65_536, remaining))
+                    if not chunk:
+                        raise ValueError("held-out snapshot file was truncated")
+                    digest.update(chunk)
+                    remaining -= len(chunk)
+                closed_over = os.fstat(file_fd)
+                if (
+                    closed_over.st_dev != opened.st_dev
+                    or closed_over.st_ino != opened.st_ino
+                    or closed_over.st_size != opened.st_size
+                    or closed_over.st_mtime_ns != opened.st_mtime_ns
+                ):
+                    raise ValueError("held-out snapshot file changed during read")
+            finally:
+                os.close(file_fd)
+            mode = stat.S_IMODE(metadata.st_mode)
+            content_digest = digest.hexdigest()
+            identity.append(
+                (
+                    relative,
+                    "regular",
+                    metadata.st_dev,
+                    metadata.st_ino,
+                    metadata.st_mode,
+                    metadata.st_size,
+                    metadata.st_mtime_ns,
+                    content_digest,
+                )
+            )
+            logical.append((relative, "regular", mode, metadata.st_size, content_digest))
+
+    visit(directory_fd, "")
+    encode = lambda value: json.dumps(  # noqa: E731 - local canonical encoder.
+        value, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return sha256(encode(identity)).hexdigest(), sha256(encode(logical)).hexdigest()
+
+
+def _copy_fd_tree(
+    source_fd: int,
+    destination_fd: int,
+    *,
+    max_entries: int,
+    max_bytes: int,
+    budget: dict[str, int],
+) -> None:
+    for name in sorted(os.listdir(source_fd)):
+        if name == ".git":
+            continue
+        metadata = os.stat(name, dir_fd=source_fd, follow_symlinks=False)
+        budget["entries"] += 1
+        if budget["entries"] > max_entries:
+            raise ValueError("held-out snapshot entry budget exceeded")
+        if stat.S_ISDIR(metadata.st_mode):
+            os.mkdir(name, mode=0o700, dir_fd=destination_fd)
+            source_child = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=source_fd,
+            )
+            destination_child = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=destination_fd,
+            )
+            try:
+                _copy_fd_tree(
+                    source_child,
+                    destination_child,
+                    max_entries=max_entries,
+                    max_bytes=max_bytes,
+                    budget=budget,
+                )
+            finally:
+                os.close(destination_child)
+                os.close(source_child)
+            continue
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise ValueError("held-out snapshot requires regular single-link files")
+        budget["bytes"] += metadata.st_size
+        if budget["bytes"] > max_bytes:
+            raise ValueError("held-out snapshot byte budget exceeded")
+        source_file = os.open(
+            name,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=source_fd,
+        )
+        destination_file = os.open(
+            name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            stat.S_IMODE(metadata.st_mode),
+            dir_fd=destination_fd,
+        )
+        try:
+            remaining = metadata.st_size
+            while remaining:
+                chunk = os.read(source_file, min(65_536, remaining))
+                if not chunk:
+                    raise ValueError("held-out snapshot file was truncated")
+                view = memoryview(chunk)
+                while view:
+                    written = os.write(destination_file, view)
+                    view = view[written:]
+                remaining -= len(chunk)
+            os.fchmod(destination_file, stat.S_IMODE(metadata.st_mode))
+            os.fsync(destination_file)
+        finally:
+            os.close(destination_file)
+            os.close(source_file)
 
 
 def run_coding_behavior_eval(
@@ -290,7 +602,10 @@ def run_coding_behavior_eval(
     allow_real_provider: bool = False,
     allow_local_git_mutation: bool = False,
     sandbox_image: str | None = None,
-    binding_acknowledger: Callable[[dict[str, object]], bool] | None = None,
+    expected_chat_provider: str | None = None,
+    expected_chat_adapter: str | None = None,
+    expected_model_id: str | None = None,
+    _test_confirmation_capability: object | None = None,
 ) -> CodingBehaviorDryRunReport | CodingBehaviorSuiteResult:
     suite = load_baseline_suite()
     if not real:
@@ -306,17 +621,14 @@ def run_coding_behavior_eval(
         allow_real_provider=allow_real_provider,
         allow_local_git_mutation=allow_local_git_mutation,
         sandbox_image=sandbox_image,
+        expected_chat_provider=expected_chat_provider,
+        expected_chat_adapter=expected_chat_adapter,
+        expected_model_id=expected_model_id,
     )
-    try:
-        provider = ProviderConfig.from_env()
-        validate_real_chat_config(provider)
-    except (ValueError, SystemEvalConfigurationError) as exc:
-        raise CodingBehaviorRunnerConfigurationError(str(exc)) from exc
     return _run_real_suite(
         suite,
         options=options,
-        provider=provider,
-        binding_acknowledger=binding_acknowledger or _terminal_binding_acknowledger,
+        test_confirmation_capability=_test_confirmation_capability,
     )
 
 
@@ -324,8 +636,7 @@ def _run_real_suite(
     suite: CodingBehaviorSuite,
     *,
     options: CodingBehaviorRealRunOptions,
-    provider: ProviderConfig,
-    binding_acknowledger: Callable[[dict[str, object]], bool],
+    test_confirmation_capability: object | None,
 ) -> CodingBehaviorSuiteResult:
     started = monotonic()
     _prepare_owned_directory(_OUTPUT_ROOT)
@@ -336,6 +647,8 @@ def _run_real_suite(
     released_fixture_tokens: set[str] = set()
     thread_cleanup_debts: list[tuple[str, object]] = []
     outer_cleanup_pending: set[str] = set()
+    attestation: AgentServerExecutionAttestation | None = None
+    case_failure_categories: dict[str, str] = {}
     identity = f"coding-eval-{secrets.token_hex(12)}"
     executor = IsolatedHeldOutValidationExecutor(
         work_root=_WORK_PARENT,
@@ -352,14 +665,37 @@ def _run_real_suite(
             )
             prepared.append(_PreparedCase(case, fixture, repository_id, repository))
         binding = _binding_projection(prepared, identity=identity)
-        binding_ready = binding_acknowledger(binding)
-        run_items = prepared if binding_ready else []
-        if not binding_ready:
+        confirmation_nonce = secrets.token_hex(16)
+        try:
+            attestation = _confirm_server_binding(
+                binding,
+                prepared=prepared,
+                identity=identity,
+                options=options,
+                confirmation_nonce=confirmation_nonce,
+                test_capability=test_confirmation_capability,
+            )
+        except (httpx.TransportError, httpx.TimeoutException):
+            binding_failure_category = "transport"
+        except Exception:
+            binding_failure_category = "configuration"
+        else:
+            binding_failure_category = None
+        run_items = prepared if attestation is not None else []
+        if attestation is None:
             for item in prepared:
                 case_results[item.case.case_id] = _failed_case(
                     item.case,
-                    "coding_eval_configuration_error",
-                    "Operator did not confirm the reloaded 8089 repository binding.",
+                    (
+                        "coding_eval_server_unavailable"
+                        if binding_failure_category == "transport"
+                        else "coding_eval_configuration_error"
+                    ),
+                    "Server execution attestation was not confirmed.",
+                    failure_category=binding_failure_category or "configuration",
+                )
+                case_failure_categories[item.case.case_id] = (
+                    binding_failure_category or "configuration"
                 )
         for item in run_items:
             outcome: DriverOutcome | None = None
@@ -385,12 +721,34 @@ def _run_real_suite(
                     store=store,
                     executor=executor,
                 )
+                if case_results[item.case.case_id].failure_category is not None:
+                    case_failure_categories[item.case.case_id] = (
+                        case_results[item.case.case_id].failure_category
+                    )
+            except (httpx.TransportError, ConnectionError, TimeoutError):
+                case_results[item.case.case_id] = _failed_case(
+                    item.case,
+                    "coding_eval_server_unavailable",
+                    "Evaluation transport failed.",
+                    failure_category="transport",
+                )
+                case_failure_categories[item.case.case_id] = "transport"
+            except PermissionError:
+                case_results[item.case.case_id] = _failed_case(
+                    item.case,
+                    "coding_eval_repository_not_bound",
+                    "Evaluation permission binding failed.",
+                    failure_category="permission",
+                )
+                case_failure_categories[item.case.case_id] = "permission"
             except Exception:
                 case_results[item.case.case_id] = _failed_case(
                     item.case,
-                    "coding_eval_grader_failed",
+                    "coding_eval_configuration_error",
                     "Evaluation orchestration failed.",
+                    failure_category="internal",
                 )
+                case_failure_categories[item.case.case_id] = "internal"
             finally:
                 if outcome is not None and outcome.cleanup_debt is not None:
                     cleanup_pending = not outcome.cleanup_debt.retry()
@@ -411,20 +769,38 @@ def _run_real_suite(
                         "Evaluation cleanup remains pending.",
                         cleanup_pending=True,
                         prior=case_results.get(item.case.case_id),
+                        failure_category="cleanup",
                     )
+                    case_failure_categories[item.case.case_id] = "cleanup"
     except FixtureCreationError as exc:
         matching = next(
             (case for case in suite.cases if case.case_id == exc.fixture.case_id),
             None,
         )
+        fixture_cleanup_pending = False
         if matching is not None:
             try:
                 store.cleanup(exc.fixture, matching)
             except Exception:
-                pass
-        raise CodingBehaviorRunnerConfigurationError(
-            "fixture creation failed with cleanup pending"
-        ) from exc
+                fixture_cleanup_pending = True
+            case_results[matching.case_id] = _failed_case(
+                matching,
+                (
+                    "coding_eval_cleanup_pending"
+                    if fixture_cleanup_pending
+                    else "coding_eval_configuration_error"
+                ),
+                "Fixture creation failed.",
+                cleanup_pending=fixture_cleanup_pending,
+                failure_category=(
+                    "cleanup" if fixture_cleanup_pending else "configuration"
+                ),
+            )
+            case_failure_categories[matching.case_id] = (
+                "cleanup" if fixture_cleanup_pending else "configuration"
+            )
+            if fixture_cleanup_pending:
+                outer_cleanup_pending.add(matching.case_id)
     finally:
         outer_cleanup_pending.update(
             _cleanup_owned_fixtures(
@@ -440,7 +816,8 @@ def _run_real_suite(
                 released = False
             if not released:
                 outer_cleanup_pending.add(case_id)
-        executor.close()
+        if not executor.close():
+            outer_cleanup_pending.update(case.case_id for case in suite.cases)
 
     for case in suite.cases:
         if case.case_id in outer_cleanup_pending:
@@ -450,7 +827,9 @@ def _run_real_suite(
                 "Evaluation cleanup remains pending.",
                 cleanup_pending=True,
                 prior=case_results.get(case.case_id),
+                failure_category="cleanup",
             )
+            case_failure_categories[case.case_id] = "cleanup"
 
     for case in suite.cases:
         case_results.setdefault(
@@ -459,6 +838,7 @@ def _run_real_suite(
                 case,
                 "coding_eval_configuration_error",
                 "Evaluation did not execute the complete suite.",
+                failure_category="configuration",
             ),
         )
     ordered = tuple(case_results[case.case_id] for case in suite.cases)
@@ -476,8 +856,8 @@ def _run_real_suite(
         root=_OUTPUT_ROOT,
         suite=suite,
         result=validated,
-        provider_id=provider.chat_provider,
-        model_id=provider.chat_model or provider.resolved_chat_provider().model,
+        attestation=attestation,
+        failure_categories=case_failure_categories,
     )
     return validated
 
@@ -518,6 +898,7 @@ def _case_result(
             "Native coding run failed.",
             elapsed_ms=driver.elapsed_ms,
             cleanup_pending=driver.cleanup_pending,
+            failure_category=driver.failure_category,
         )
     required = (
         driver.final_commit,
@@ -531,6 +912,7 @@ def _case_result(
             "coding_eval_terminal_mismatch",
             "Native terminal evidence is incomplete.",
             elapsed_ms=driver.elapsed_ms,
+            failure_category="terminal",
         )
     evidence_size = len(
         json.dumps(
@@ -564,22 +946,34 @@ def _case_result(
         store=store,
         validation_executor=executor,
     )
+    cleanup_failed = (
+        grade.command_evidence is not None
+        and grade.command_evidence.error_category == "cleanup_pending"
+    )
     return CodingBehaviorCaseResult(
         schema_version=SCHEMA_VERSION,
         case_id=case.case_id,
         fixture_id=case.fixture_id,
         case_binding=CodingBehaviorCaseBinding.from_case(case),
-        status=grade.status,
+        status="failed" if cleanup_failed else grade.status,
         checks=grade.checks,
         error=(
             None
-            if grade.status == "passed"
-            else _error("coding_eval_grader_failed", "A deterministic grader failed.")
+            if grade.status == "passed" and not cleanup_failed
+            else _error(
+                "coding_eval_cleanup_pending" if cleanup_failed else "coding_eval_grader_failed",
+                "Evaluation cleanup remains pending."
+                if cleanup_failed
+                else "A deterministic grader failed.",
+            )
         ),
         terminal_status=driver.terminal_status,
         changed_paths=grade.changed_paths,
         elapsed_ms=driver.elapsed_ms,
-        cleanup_pending=False,
+        cleanup_pending=cleanup_failed,
+        failure_category=(
+            "cleanup" if cleanup_failed else (None if grade.status == "passed" else "grader")
+        ),
     )
 
 
@@ -591,6 +985,7 @@ def _failed_case(
     elapsed_ms: int = 0,
     cleanup_pending: bool = False,
     prior: CodingBehaviorCaseResult | None = None,
+    failure_category: str = "internal",
 ) -> CodingBehaviorCaseResult:
     return CodingBehaviorCaseResult(
         schema_version=SCHEMA_VERSION,
@@ -604,6 +999,7 @@ def _failed_case(
         changed_paths=prior.changed_paths if prior is not None else (),
         elapsed_ms=prior.elapsed_ms if prior is not None else elapsed_ms,
         cleanup_pending=cleanup_pending,
+        failure_category=failure_category,  # type: ignore[arg-type]
     )
 
 
@@ -673,7 +1069,66 @@ def _binding_projection(
     }
 
 
-def _terminal_binding_acknowledger(binding: dict[str, object]) -> bool:
+_TEST_CONFIRMATION_ISSUER = object()
+
+
+class _TestConfirmationCapability:
+    __slots__ = ("attestation", "_issuer", "_consumed")
+
+    def __init__(
+        self, attestation: AgentServerExecutionAttestation, *, issuer: object
+    ) -> None:
+        if issuer is not _TEST_CONFIRMATION_ISSUER:
+            raise TypeError("test confirmation capability is store-issued only")
+        self.attestation = attestation
+        self._issuer = issuer
+        self._consumed = False
+
+    def consume(self) -> AgentServerExecutionAttestation:
+        if self._issuer is not _TEST_CONFIRMATION_ISSUER or self._consumed:
+            raise ValueError("test confirmation capability is invalid or consumed")
+        self._consumed = True
+        return self.attestation
+
+
+def _issue_test_confirmation_capability(
+    attestation: AgentServerExecutionAttestation,
+) -> _TestConfirmationCapability:
+    return _TestConfirmationCapability(attestation, issuer=_TEST_CONFIRMATION_ISSUER)
+
+
+def _confirm_server_binding(
+    binding: dict[str, object],
+    *,
+    prepared: list[_PreparedCase],
+    identity: str,
+    options: CodingBehaviorRealRunOptions,
+    confirmation_nonce: str,
+    test_capability: object | None,
+) -> AgentServerExecutionAttestation:
+    if test_capability is None:
+        _terminal_reload_confirmation(binding, confirmation_nonce)
+        attestation = _fetch_server_attestation(options.server_url, identity)
+    elif isinstance(test_capability, _TestConfirmationCapability):
+        attestation = test_capability.consume()
+    else:
+        raise CodingBehaviorRunnerConfigurationError(
+            "real mode rejects untrusted confirmation injection"
+        )
+    _require_expected_attestation(attestation, prepared=prepared, options=options)
+    if test_capability is None:
+        expected = _operator_ack_value(confirmation_nonce, attestation)
+        print(attestation.model_dump_json(indent=2), file=sys.stderr)
+        if input(f"Type {expected}: ") != expected:
+            raise CodingBehaviorRunnerConfigurationError(
+                "operator attestation acknowledgement did not match"
+            )
+    return attestation
+
+
+def _terminal_reload_confirmation(
+    binding: dict[str, object], confirmation_nonce: str
+) -> None:
     if not sys.stdin.isatty() or not sys.stderr.isatty():
         raise CodingBehaviorRunnerConfigurationError(
             "real mode requires an interactive operator for the 8089 binding reload"
@@ -682,10 +1137,87 @@ def _terminal_binding_acknowledger(binding: dict[str, object]) -> bool:
         json.dumps(binding, ensure_ascii=False, indent=2, sort_keys=True),
         file=sys.stderr,
     )
-    answer = input(
-        "Restart the existing 8089 server with this binding, then type BINDING READY: "
+    expected = f"RELOADED {confirmation_nonce}"
+    if input(f"Restart the existing 8089 server, then type {expected}: ") != expected:
+        raise CodingBehaviorRunnerConfigurationError(
+            "operator did not confirm the exact 8089 reload nonce"
+        )
+
+
+def _fetch_server_attestation(
+    server_url: str, identity: str
+) -> AgentServerExecutionAttestation:
+    response = httpx.get(
+        f"{server_url}/internal/evaluation/coding-attestation",
+        headers={"x-assistant-user": identity},
+        timeout=10.0,
+        trust_env=False,
     )
-    return answer == "BINDING READY"
+    response.raise_for_status()
+    if len(response.content) > 16_384:
+        raise CodingBehaviorRunnerConfigurationError(
+            "server attestation exceeded its input bound"
+        )
+    return AgentServerExecutionAttestation.model_validate_json(response.content)
+
+
+def _require_expected_attestation(
+    attestation: AgentServerExecutionAttestation,
+    *,
+    prepared: list[_PreparedCase],
+    options: CodingBehaviorRealRunOptions,
+) -> None:
+    repositories = {item.repository_id: item.repository for item in prepared}
+    registry_digest, repository_digests = coding_registry_digest(repositories)
+    if (
+        attestation.graph_id != "assistant-native-v3"
+        or attestation.provider_mode != "real"
+        or attestation.chat_provider != options.expected_chat_provider
+        or attestation.chat_adapter != options.expected_chat_adapter
+        or attestation.model_id != options.expected_model_id
+        or not attestation.coding_enabled
+        or attestation.coding_registry_digest != registry_digest
+        or attestation.repository_config_digests != repository_digests
+    ):
+        raise CodingBehaviorRunnerConfigurationError(
+            "server execution attestation does not match the exact operator expectation"
+        )
+
+
+def _operator_ack_value(
+    confirmation_nonce: str,
+    attestation: AgentServerExecutionAttestation,
+) -> str:
+    if len(confirmation_nonce) != 32 or any(
+        character not in "0123456789abcdef" for character in confirmation_nonce
+    ):
+        raise ValueError("confirmation nonce is invalid")
+    return (
+        f"ACK {confirmation_nonce} {attestation.process_boot_nonce} "
+        f"{attestation.coding_registry_digest}"
+    )
+
+
+def _safe_external_identifier(value: str | None) -> str:
+    raw = (value or "").strip()
+    try:
+        probe = AgentServerExecutionAttestation(
+            schema_version=1,
+            graph_id="assistant-native-v3",
+            provider_mode="real",
+            chat_provider=raw,
+            chat_adapter=raw,
+            model_id=raw,
+            coding_enabled=True,
+            coding_registry_digest="0" * 64,
+            repository_config_digests={},
+            process_boot_nonce="0" * 32,
+        )
+    except ValidationError as exc:
+        raise CodingBehaviorRunnerConfigurationError(
+            "real mode requires safe exact expected Provider/adapter/model identifiers"
+        ) from exc
+    return probe.model_id
 
 
 def write_result_artifact(
@@ -693,16 +1225,19 @@ def write_result_artifact(
     root: Path,
     suite: CodingBehaviorSuite,
     result: CodingBehaviorSuiteResult,
-    provider_id: str,
-    model_id: str,
+    attestation: AgentServerExecutionAttestation | None,
+    failure_categories: Mapping[str, str],
 ) -> Path:
     validated = validate_coding_behavior_suite_result(suite, result)
     payload = {
         "schema_version": SCHEMA_VERSION,
-        "provider_id": provider_id,
-        "model_id": model_id,
+        "server_attestation": (
+            attestation.model_dump(mode="json") if attestation is not None else None
+        ),
+        "failure_categories": dict(sorted(failure_categories.items())),
         "result": validated.model_dump(mode="json"),
     }
+    _require_redacted_artifact_value(payload)
     encoded = json.dumps(
         payload,
         ensure_ascii=False,
@@ -729,6 +1264,46 @@ def write_result_artifact(
     return destination
 
 
+def _require_redacted_artifact_value(value: object, *, key: str = "") -> None:
+    forbidden_keys = {
+        "messages",
+        "patch",
+        "prompt",
+        "raw_response",
+        "repository_path",
+        "source",
+        "stderr",
+        "stdout",
+        "thread_id",
+    }
+    if isinstance(value, dict):
+        for child_key, child in value.items():
+            if not isinstance(child_key, str) or child_key in forbidden_keys:
+                raise CodingBehaviorRunnerConfigurationError(
+                    "artifact contains a forbidden evidence field"
+                )
+            _require_redacted_artifact_value(child, key=child_key)
+        return
+    if isinstance(value, (list, tuple)):
+        for child in value:
+            _require_redacted_artifact_value(child, key=key)
+        return
+    if isinstance(value, str):
+        if (
+            len(value) > 2_000
+            or value != __import__("unicodedata").normalize("NFC", value)
+            or any(ord(character) < 32 for character in value)
+            or value.startswith(("/", "~", "file://"))
+            or any(
+                marker in value.lower()
+                for marker in ("api_key=", "authorization:", "bearer ", "sk-")
+            )
+        ):
+            raise CodingBehaviorRunnerConfigurationError(
+                f"artifact string is unsafe for field {key or '<root>'}"
+            )
+
+
 def _prepare_owned_directory(path: Path) -> None:
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     if path.is_symlink() or not path.is_dir():
@@ -748,6 +1323,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--suite-id")
     parser.add_argument("--server", default=FIXED_SERVER_URL)
     parser.add_argument("--sandbox-image")
+    parser.add_argument("--expected-chat-provider")
+    parser.add_argument("--expected-chat-adapter")
+    parser.add_argument("--expected-model-id")
     parser.add_argument("--allow-real-provider", action="store_true")
     parser.add_argument("--allow-local-git-mutation", action="store_true")
     return parser
@@ -763,6 +1341,9 @@ def main(argv: list[str] | None = None) -> int:
             sandbox_image=arguments.sandbox_image,
             allow_real_provider=arguments.allow_real_provider,
             allow_local_git_mutation=arguments.allow_local_git_mutation,
+            expected_chat_provider=arguments.expected_chat_provider,
+            expected_chat_adapter=arguments.expected_chat_adapter,
+            expected_model_id=arguments.expected_model_id,
         )
     except CodingBehaviorRunnerConfigurationError as exc:
         print(

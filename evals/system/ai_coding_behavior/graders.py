@@ -84,6 +84,7 @@ class CodingBehaviorCommandEvidence(BaseModel):
         "output_limit",
         "unconfigured",
         "executor_failed",
+        "cleanup_pending",
     ]
 
 
@@ -120,6 +121,7 @@ class HeldOutValidationResult(BaseModel):
     stderr_digest: str
     error_category: Literal[
         "none", "failed", "timed_out", "resource_exceeded", "output_limit"
+        , "cleanup_pending"
     ]
 
     @model_validator(mode="after")

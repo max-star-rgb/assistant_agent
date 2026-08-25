@@ -23,7 +23,10 @@ from httpx import AsyncClient
 from langchain_core.messages import AIMessage
 
 from assistant_agent.agent_server.client import SdkAgentServerClient
-from assistant_agent.agent_server.graph import close_native_assistant_graph
+from assistant_agent.agent_server.graph import (
+    close_native_assistant_graph,
+    get_native_assistant_execution_attestation,
+)
 from assistant_agent.agent_server.config import ASSISTANT_GRAPH_ID
 from assistant_agent.agent_server.media_protocol import (
     MediaProtocolError,
@@ -411,6 +414,29 @@ class _NativeAssistantTextStream:
 @app.get("/health/agent-server-adapter")
 async def adapter_health() -> dict[str, str]:
     return {"status": "ok", "execution_owner": "agent_server"}
+
+
+@app.get("/internal/evaluation/coding-attestation", include_in_schema=False)
+async def coding_evaluation_attestation(request: Request) -> dict[str, object]:
+    """Expose a non-secret fact projection of this exact server composition."""
+
+    client = request.client
+    user = request.scope.get("user")
+    permissions = set(getattr(user, "permissions", ()) or ())
+    if (
+        client is None
+        or client.host not in {"127.0.0.1", "::1"}
+        or user is None
+        or not getattr(user, "is_authenticated", False)
+        or "assistant:developer" not in permissions
+    ):
+        raise HTTPException(status_code=403, detail="coding attestation is unavailable")
+    await _await_native_graph_warmup(request.app)
+    try:
+        attestation = get_native_assistant_execution_attestation()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail="coding attestation is not ready") from exc
+    return attestation.model_dump(mode="json")
 
 
 @app.get("/artifacts/generated/{filename}")
