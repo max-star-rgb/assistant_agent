@@ -574,6 +574,10 @@ class CodingBehaviorAgentServerDriver:
                     current_run_id = None
                 if timed_out:
                     raise TimeoutError
+                if transport_failed:
+                    raise ConnectionError(
+                        "run create transport failed after cancellation confirmation"
+                    )
                 raise _UnknownRunOutcome("run attempt did not reach a terminal status")
             return run_id
 
@@ -660,7 +664,7 @@ class CodingBehaviorAgentServerDriver:
                 lambda: self.client.threads.create(
                     metadata=metadata,
                     thread_id=thread_id,
-                    if_exists="reject",
+                    if_exists="raise",
                     graph_id=ASSISTANT_GRAPH_ID,
                 )
             )
@@ -810,8 +814,15 @@ class CodingBehaviorAgentServerDriver:
         except (ConnectionError, OSError, TransportError):
             return await failed("coding_eval_server_unavailable", "transport")
         except HTTPStatusError as exc:
-            category = "permission" if exc.response.status_code in {401, 403} else "transport"
-            code = "coding_eval_repository_not_bound" if category == "permission" else "coding_eval_server_unavailable"
+            if exc.response.status_code in {401, 403}:
+                category = "permission"
+                code = "coding_eval_repository_not_bound"
+            elif exc.response.status_code == 409:
+                category = "configuration"
+                code = "coding_eval_configuration_error"
+            else:
+                category = "transport"
+                code = "coding_eval_server_unavailable"
             return await failed(code, category)
         except PermissionError:
             return await failed("coding_eval_repository_not_bound", "permission")
