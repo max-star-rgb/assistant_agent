@@ -19,7 +19,7 @@ from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
 from langgraph.errors import GraphBubbleUp, NodeCancelledError
 from langgraph.runtime import Runtime
-from langgraph.types import Command, Send
+from langgraph.types import Send
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from assistant_agent.coding.models import (
@@ -202,7 +202,7 @@ def _guard_review_node(
                 return True
         return False
 
-    def failure(state: object) -> Command:
+    def failure(state: object) -> dict[str, object]:
         task = state.get("review_task") if isinstance(state, Mapping) else None
         task_id = (
             task.get("task_id")
@@ -210,10 +210,7 @@ def _guard_review_node(
             else getattr(task, "task_id", None)
         )
         signal = f"review:{task_id}" if isinstance(task_id, str) else "review:graph"
-        return Command(
-            goto="join_review",
-            update={"attestation_mismatch_signals": [signal]},
-        )
+        return {"attestation_mismatch_signals": [signal]}
 
     def signal_fanin(state: object) -> bool:
         return (
@@ -385,6 +382,9 @@ def prepare_review_tasks(state: Mapping[str, object]) -> dict[str, object]:
 
 def route_review_workers(state: Mapping[str, object]) -> list[Send] | str:
     """Fan out each unfinished canonical task exactly once to the review worker."""
+
+    if state.get("attestation_mismatch_signals"):
+        return "join_review"
 
     snapshot = CodingAnalysisSnapshot.model_validate(state.get("review_snapshot"))
     review_input = CodingReviewInput.model_validate(state.get("review_input"))

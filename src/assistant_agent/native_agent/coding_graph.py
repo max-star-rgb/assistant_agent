@@ -133,7 +133,7 @@ class _MissingModelCodingReviewGraph:
         raise PermissionError("coding_review_requires_configured_model")
 
 
-def _coding_attestation_failure(state: Mapping[str, object]) -> Command:
+def _coding_attestation_failure(state: Mapping[str, object]) -> dict[str, object]:
     task = state.get("analysis_task")
     task_id = (
         task.get("task_id")
@@ -141,20 +141,12 @@ def _coding_attestation_failure(state: Mapping[str, object]) -> Command:
         else getattr(task, "task_id", None)
     )
     if isinstance(task_id, str):
-        return Command(
-            goto="join_analysis",
-            update={
-                "attestation_mismatch_signals": [f"analysis:{task_id}"]
-            },
+        return {"attestation_mismatch_signals": [f"analysis:{task_id}"]}
+    return {
+        "coding_result": _failed(
+            state, "coding_eval_execution_attestation_mismatch"
         )
-    return Command(
-        goto="summarize",
-        update={
-            "coding_result": _failed(
-                state, "coding_eval_execution_attestation_mismatch"
-            ),
-        },
-    )
+    }
 
 
 def _guard_coding_node(
