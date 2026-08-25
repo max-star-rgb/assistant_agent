@@ -25,7 +25,6 @@ from assistant_agent.native_agent.state import (
     FastAgentState,
     PlanningAgentState,
 )
-from assistant_agent.skills.loading import SkillCatalog
 from assistant_agent.tools.native_boundary import configure_builtin_tool
 from scripts import run_server
 
@@ -232,7 +231,6 @@ def test_planning_task_preserves_parent_memory_status() -> None:
     fast_agent = build_fast_agent(
         model,
         [memory_status_tool],
-        skill_catalog=SkillCatalog(),
     )
     graph = build_planning_agent(model, fast_agent)
 

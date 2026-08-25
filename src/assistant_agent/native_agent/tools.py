@@ -7,6 +7,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from deepagents.backends.protocol import BackendProtocol
 from langchain_core.tools import BaseTool
 
 from assistant_agent.config import ProviderConfig
@@ -15,7 +16,6 @@ from assistant_agent.mcp.config import (
     MCPServerConfig,
     resolve_mcp_server_env,
 )
-from assistant_agent.skills.loading import SkillCatalog
 from assistant_agent.tools.plugins.contracts import ToolPluginContext
 
 
@@ -40,7 +40,7 @@ def _create_builtin_tools(
     config: ProviderConfig,
     *,
     resources: NativeToolResources,
-    skill_catalog: SkillCatalog,
+    skills_backend: BackendProtocol,
 ) -> list[BaseTool]:
     """Build the trusted in-process inventory without Registry or discovery."""
 
@@ -58,7 +58,7 @@ def _create_builtin_tools(
         live_view_resolver=resources.live_view_resolver,
     )
     concrete_tools: list[BaseTool] = []
-    for plugin in _builtin_plugins(skill_catalog=skill_catalog):
+    for plugin in _builtin_plugins(skills_backend=skills_backend):
         built = plugin.build_tools(context)
         if not all(isinstance(tool, BaseTool) for tool in built):
             raise TypeError("built-in plugins must return LangChain BaseTool instances")
@@ -144,7 +144,7 @@ async def create_native_tool_inventory(
     resources: NativeToolResources,
     mcp_server_configs: Sequence[MCPServerConfig],
     mcp_client_factory: Callable[..., Any] | None = None,
-    skill_catalog: SkillCatalog,
+    skills_backend: BackendProtocol,
 ) -> list[BaseTool]:
     """Compose the one production inventory from built-ins and official MCP tools."""
 
@@ -152,7 +152,7 @@ async def create_native_tool_inventory(
         _create_builtin_tools,
         config,
         resources=resources,
-        skill_catalog=skill_catalog,
+        skills_backend=skills_backend,
     )
     mcp_tools = await _create_official_mcp_tools(
         mcp_server_configs,
@@ -167,7 +167,7 @@ async def create_native_tool_inventory(
 
 def _builtin_plugins(
     *,
-    skill_catalog: SkillCatalog,
+    skills_backend: BackendProtocol,
 ) -> tuple[Any, ...]:
     """Return an explicit list; no filesystem or configured-module discovery."""
 
@@ -182,9 +182,6 @@ def _builtin_plugins(
     )
     from assistant_agent.tools.plugins.builtin.image_to_3d.plugin import (
         ImageTo3DToolPlugin,
-    )
-    from assistant_agent.tools.plugins.builtin.local_file_access.plugin import (
-        LocalFileAccessPlugin,
     )
     from assistant_agent.tools.plugins.builtin.lodging.plugin import LodgingToolPlugin
     from assistant_agent.tools.plugins.builtin.media_inspection.plugin import (
@@ -206,8 +203,7 @@ def _builtin_plugins(
 
     return (
         EmailAccessPlugin(),
-        LocalFileAccessPlugin(),
-        SkillLoadingPlugin(skill_catalog=skill_catalog),
+        SkillLoadingPlugin(backend=skills_backend),
         LodgingToolPlugin(),
         PythonExecutionPlugin(),
         MediaInspectionPlugin(),

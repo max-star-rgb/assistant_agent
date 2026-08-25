@@ -1,3 +1,13 @@
+---
+name: visual-creation
+description: 用于根据文本生成图片，或把已有及刚生成的图片转换为 3D 模型；用户要求视觉创作时使用。
+allowed-tools:
+  - image_generation
+  - image_to_3d
+metadata:
+  assistant-agent-version: "1"
+---
+
 # 视觉内容生成
 
 根据用户目标选择图片生成或 3D 转换；不要为了展示能力而同时调用两者。

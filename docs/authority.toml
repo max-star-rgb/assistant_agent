@@ -107,12 +107,15 @@ source_globs = [
   "src/assistant_agent/native_agent/providers.py",
   "src/assistant_agent/native_agent/tool_exposure.py",
   "src/assistant_agent/native_agent/tools.py",
+  "src/assistant_agent/skills/**",
   "src/assistant_agent/tools/**",
+  "src/assistant_agent/improvement/evaluator.py",
   "src/assistant_agent/coding/tools.py",
   "src/assistant_agent/coding/policy.py",
   "src/assistant_agent/coding/patches.py",
   "src/assistant_agent/mcp/**",
   "src/assistant_agent/automation/durable_tasks/**",
+  "skills/**",
 ]
 thin_references = ["README.md", "scripts/README.md"]
 verification = [

@@ -14,6 +14,8 @@ import sys
 from tempfile import TemporaryDirectory
 from typing import Any, Callable
 
+from deepagents.middleware.skills import SkillMetadata
+
 from assistant_agent.improvement.models import (
     AllowlistedEvalResult,
     CandidateCheck,
@@ -22,9 +24,10 @@ from assistant_agent.improvement.models import (
     ImprovementEvidence,
     ImprovementOpportunity,
 )
-from assistant_agent.skills.loading import (
-    SkillDescriptor,
-    load_repo_skill_descriptors,
+from assistant_agent.skills.native import (
+    create_project_skills_backend,
+    list_skill_reference_ids,
+    load_project_skills_metadata,
 )
 from assistant_agent.improvement.proposer import ProposalResult
 from assistant_agent.improvement.paths import ImprovementTargetPathError, resolve_repo_skill_file
@@ -366,14 +369,18 @@ def _evaluate_skill_replacement(
         blocked,
         "skill_manifest_passed",
         manifest_valid,
-        "Replacement passes the existing Skill System v1 loader.",
+        "Replacement passes the native Agent Skills loader.",
         "skill_manifest_invalid",
     )
     if not manifest_valid:
         return None
     assert current_descriptor is not None
     assert replacement_descriptor is not None
-    tools_preserved = set(replacement_descriptor.governed_tools) == set(current_descriptor.governed_tools)
+    current_metadata, current_references = current_descriptor
+    replacement_metadata, replacement_references = replacement_descriptor
+    tools_preserved = set(replacement_metadata["allowed_tools"]) == set(
+        current_metadata["allowed_tools"]
+    )
     _check(
         checks,
         blocked,
@@ -382,45 +389,38 @@ def _evaluate_skill_replacement(
         "Governed tools are unchanged.",
         "skill_governed_tool_expansion",
     )
-    activation_preserved = (
-        replacement_descriptor.activation == current_descriptor.activation
-        and replacement_descriptor.disable_model_invocation
-        == current_descriptor.disable_model_invocation
-    )
+    activation_preserved = replacement_metadata["name"] == current_metadata["name"]
     _check(
         checks,
         blocked,
         "skill_activation_contract_preserved",
         activation_preserved,
-        "Skill activation contract is unchanged.",
+        "Native Skill identity is unchanged.",
         "skill_activation_contract_changed",
     )
-    references_preserved = (
-        replacement_descriptor.references == current_descriptor.references
-    )
+    references_preserved = replacement_references == current_references
     _check(
         checks,
         blocked,
         "skill_references_preserved",
         references_preserved,
-        "Skill reference declarations are unchanged.",
+        "Automatically discovered Skill references are unchanged.",
         "skill_references_changed",
     )
-    discovery_preserved = (
-        replacement_descriptor.discoverable == current_descriptor.discoverable
-        and replacement_descriptor.enabled == current_descriptor.enabled
+    discovery_preserved = replacement_metadata["path"].endswith(
+        f"/{replacement_metadata['name']}/SKILL.md"
     )
     _check(
         checks,
         blocked,
         "skill_discovery_contract_preserved",
         discovery_preserved,
-        "Skill discovery contract is unchanged.",
+        "Native Skill discovery path remains standard.",
         "skill_discovery_contract_changed",
     )
     purpose_preserved = _description_overlap(
-        current_descriptor.description,
-        replacement_descriptor.description,
+        current_metadata["description"],
+        replacement_metadata["description"],
     ) >= 0.25
     _check(
         checks,
@@ -463,16 +463,29 @@ def _evaluate_skill_replacement(
     return patch or None
 
 
-def _load_descriptor(repo_root: Path, skill_id: str) -> SkillDescriptor | None:
-    catalog = load_repo_skill_descriptors(repo_root)
-    return next((item for item in catalog.descriptors if item.name == skill_id), None)
+def _load_descriptor(
+    repo_root: Path,
+    skill_id: str,
+) -> tuple[SkillMetadata, tuple[str, ...]] | None:
+    backend = create_project_skills_backend(repo_root / "skills")
+    metadata = next(
+        (
+            item
+            for item in load_project_skills_metadata(backend)
+            if item["name"] == skill_id
+        ),
+        None,
+    )
+    if metadata is None:
+        return None
+    return metadata, tuple(list_skill_reference_ids(backend, metadata))
 
 
 def _load_replacement_descriptor(
     repo_root: Path,
     skill_id: str,
     content: str,
-) -> SkillDescriptor | None:
+) -> tuple[SkillMetadata, tuple[str, ...]] | None:
     with TemporaryDirectory(prefix="assistant-agent-skill-eval-") as directory:
         root = Path(directory)
         source_dir = repo_root / "skills" / skill_id

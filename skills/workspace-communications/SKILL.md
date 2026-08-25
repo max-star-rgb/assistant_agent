@@ -1,3 +1,18 @@
+---
+name: workspace-communications
+description: 用于检索或阅读邮件、查询或创建日历事件以及查找联系人；用户需要访问工作区信息时使用。
+allowed-tools:
+  - email_search
+  - email_read
+  - mcp_google_gmail_readonly_search_gmail_messages
+  - mcp_google_gmail_readonly_get_gmail_messages_content_batch
+  - calendar_search
+  - calendar_create
+  - contacts_search
+metadata:
+  assistant-agent-version: "1"
+---
+
 # 邮件、日历与联系人协作
 
 只在用户需要访问其工作区信息或明确执行日历操作时使用已暴露的对应工具。读取与写入是不同阶段：先取得足够事实，再执行用户已经授权的变更。

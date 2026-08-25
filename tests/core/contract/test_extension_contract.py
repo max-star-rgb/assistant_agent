@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
+from deepagents.backends import StateBackend
 from langchain_core.tools import BaseTool, StructuredTool
 import pytest
 
@@ -11,7 +12,6 @@ from assistant_agent.native_agent.tools import (
     NativeToolResources,
     create_native_tool_inventory,
 )
-from assistant_agent.skills.loading import SkillCatalog
 
 
 class _MCPClient:
@@ -34,7 +34,7 @@ def test_native_extensions_are_static_standard_tools() -> None:
             ProviderConfig(provider_mode="mock"),
             resources=NativeToolResources(),
             mcp_server_configs=[],
-            skill_catalog=SkillCatalog(descriptors=[]),
+            skills_backend=StateBackend(),
         )
     )
 
@@ -46,6 +46,10 @@ def test_native_extensions_are_static_standard_tools() -> None:
         tool.metadata["effect"] in {"read", "generate", "write", "dangerous"}
         for tool in tools
     )
+    assert "file_read" not in {tool.name for tool in tools}
+    assert {"load_skill", "load_skill_reference"} <= {
+        tool.name for tool in tools
+    }
 
 
 @pytest.mark.core_invariant("EXT-001")
@@ -64,7 +68,7 @@ def test_mcp_extension_uses_allowlist_and_namespace() -> None:
             resources=NativeToolResources(),
             mcp_server_configs=[config],
             mcp_client_factory=_MCPClient,
-            skill_catalog=SkillCatalog(descriptors=[]),
+            skills_backend=StateBackend(),
         )
     )
 

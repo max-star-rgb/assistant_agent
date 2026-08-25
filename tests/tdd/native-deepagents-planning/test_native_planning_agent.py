@@ -13,7 +13,6 @@ from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.fast_agent import build_fast_agent
 from assistant_agent.native_agent.planning_agent import build_planning_agent
 from assistant_agent.native_agent.providers import MockAssistantChatModel
-from assistant_agent.skills.loading import SkillCatalog
 from deepagents.middleware import SubAgentMiddleware
 
 
@@ -117,7 +116,7 @@ def test_planning_agent_is_official_model_tools_loop(monkeypatch) -> None:
 
     monkeypatch.setattr(planning_agent_module, "create_agent", recording_create_agent)
     model = MockAssistantChatModel()
-    fast_agent = build_fast_agent(model, [], skill_catalog=SkillCatalog())
+    fast_agent = build_fast_agent(model, [])
     graph = build_planning_agent(model, fast_agent)
     nodes = set(graph.get_graph().nodes)
 
@@ -131,7 +130,7 @@ def test_planning_agent_is_official_model_tools_loop(monkeypatch) -> None:
 
 def test_real_task_tool_runs_compiled_fast_subagents_in_parallel() -> None:
     model = _ParallelTaskModel()
-    fast_agent = build_fast_agent(model, [], skill_catalog=SkillCatalog())
+    fast_agent = build_fast_agent(model, [])
     graph = build_planning_agent(model, fast_agent)
 
     result = asyncio.run(

@@ -16,7 +16,6 @@ from assistant_agent.native_agent.context import (
 )
 from assistant_agent.native_agent.fast_agent import build_fast_agent
 from assistant_agent.native_agent.providers import MockAssistantChatModel
-from assistant_agent.skills.loading import SkillCatalog
 from assistant_agent.tools import native_boundary
 from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.native_boundary import (
@@ -189,7 +188,6 @@ def test_read_failure_retries_before_becoming_a_tool_message() -> None:
             tool_args={"value": "sentinel"},
         ),
         [configured],
-        skill_catalog=SkillCatalog(),
     )
     result = graph.invoke(
         {

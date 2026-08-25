@@ -1,6 +1,6 @@
 # LangGraph-native Assistant 运行与流式架构
 
-最后更新：2026-08-24
+最后更新：2026-08-25
 
 ## Authority contract
 
@@ -198,8 +198,9 @@ assistant UUID 保留并改绑 v3，Studio 需要在该 assistant 下创建新 t
 不阻止 Memory 等独立 Graph 使用自己的 thread 与版本身份。
 
 
-完整 Tool inventory 仍静态注册给 fast `create_agent` 的 `ToolNode`；每次 model call 的可见子集由原生 middleware
-从上述 Skill 激活状态与受信 manifest 派生。该过滤不创建第二套 Tool runtime，也不改变 ToolNode 对已注册 Tool
+完整 Tool inventory 仍静态注册给 fast `create_agent` 的 `ToolNode`；每次 model call 的可见子集由 Deep Agents
+`SkillsMiddleware` 发现的标准 `SKILL.md` 元数据、项目窄 exposure middleware 与上述 Skill 激活状态派生。
+`allowed-tools` 只治理明确声明的 Tool，未声明 Tool 保持独立可见。该过滤不创建第二套 Tool runtime，也不改变 ToolNode 对已注册 Tool
 的标准执行路径。
 
 回答生成后，主图通过官方 Agent Server SDK 查询同 thread 的 pending runs，只对带

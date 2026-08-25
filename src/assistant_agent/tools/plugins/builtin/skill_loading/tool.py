@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Annotated, Any
 
+from deepagents.backends.protocol import BackendProtocol
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, tool
 from langgraph.prebuilt import ToolRuntime
@@ -12,12 +12,11 @@ from langgraph.types import Command
 from pydantic import Field
 
 from assistant_agent.native_agent.context import AssistantRunContext
-from assistant_agent.skills.loading import (
-    SkillDescriptor,
-    default_repo_root,
-    load_repo_skill_descriptors,
-    read_registered_skill_reference,
-    render_skill_guidance,
+from assistant_agent.skills.native import (
+    list_skill_reference_ids,
+    read_skill_content,
+    read_skill_reference,
+    skill_metadata_by_name,
 )
 from assistant_agent.tools.ids import (
     LOAD_SKILL_REFERENCE_TOOL_NAME,
@@ -34,16 +33,11 @@ from assistant_agent.tools.plugins.builtin.skill_loading.models import (
     LoadSkillRequest,
     LoadSkillResult,
 )
-from assistant_agent.tools.runtime import ToolContext, tool_context
+from assistant_agent.tools.runtime import skill_reference_grants
 
 
-MAX_SKILL_REFERENCE_CHARS = 20_000
-
-
-def create_load_skill_tool(*, root: str | Path | None = None) -> BaseTool:
+def create_load_skill_tool(*, backend: BackendProtocol) -> BaseTool:
     """Create the native Tool that loads one model-invocable Skill."""
-
-    resolved_root = Path(root).resolve() if root is not None else default_repo_root()
 
     @tool(LOAD_SKILL_TOOL_NAME)
     def load_skill(
@@ -63,8 +57,9 @@ def create_load_skill_tool(*, root: str | Path | None = None) -> BaseTool:
         content, artifact = invoke_native_tool(
             LOAD_SKILL_TOOL_NAME,
             lambda: _execute_load_skill(
-                resolved_root,
+                backend,
                 LoadSkillRequest(skill_id=skill_id),
+                runtime.state,
             ),
         )
         return Command(
@@ -87,10 +82,8 @@ def create_load_skill_tool(*, root: str | Path | None = None) -> BaseTool:
     return configure_builtin_tool(load_skill, "read")
 
 
-def create_load_skill_reference_tool(*, root: str | Path | None = None) -> BaseTool:
+def create_load_skill_reference_tool(*, backend: BackendProtocol) -> BaseTool:
     """Create the native Tool that reads a reference granted by ``load_skill``."""
-
-    resolved_root = Path(root).resolve() if root is not None else default_repo_root()
 
     @tool(LOAD_SKILL_REFERENCE_TOOL_NAME, response_format="content_and_artifact")
     def load_skill_reference(
@@ -119,32 +112,43 @@ def create_load_skill_reference_tool(*, root: str | Path | None = None) -> BaseT
         return invoke_native_tool(
             LOAD_SKILL_REFERENCE_TOOL_NAME,
             lambda: _execute_load_skill_reference(
-                resolved_root,
+                backend,
                 LoadSkillReferenceRequest(
                     skill_id=skill_id,
                     reference_id=reference_id,
                 ),
-                tool_context(runtime),
+                runtime.state,
             ),
         )
 
     return configure_builtin_tool(load_skill_reference, "read")
 
 
-def _execute_load_skill(root: Path, input: LoadSkillRequest) -> ToolResult:
-    descriptor = _descriptor(root, input.skill_id, model_invocable=True)
-    if descriptor is None:
+def _execute_load_skill(
+    backend: BackendProtocol,
+    input: LoadSkillRequest,
+    state: Any,
+) -> ToolResult:
+    metadata = skill_metadata_by_name(state, input.skill_id)
+    if metadata is None:
         return _failure(
             LOAD_SKILL_TOOL_NAME,
             "skill_not_found",
             "未找到已注册的内部工作流。",
         )
-    content = render_skill_guidance(descriptor)
+    content = read_skill_content(backend, metadata)
+    if content is None:
+        return _failure(
+            LOAD_SKILL_TOOL_NAME,
+            "skill_unavailable",
+            "已注册的内部工作流当前不可读取。",
+        )
+    reference_ids = list_skill_reference_ids(backend, metadata)
     result = LoadSkillResult(
         status="succeeded",
-        skill_id=descriptor.name,
+        skill_id=metadata["name"],
         content=content,
-        reference_ids=list(descriptor.references),
+        reference_ids=reference_ids,
     )
     data = result.model_dump(mode="json")
     return ToolResult(
@@ -155,6 +159,7 @@ def _execute_load_skill(root: Path, input: LoadSkillRequest) -> ToolResult:
             "status": result.status,
             "summary": "内部工作流已加载。",
             "skill_id": result.skill_id,
+            "content": result.content,
             "reference_ids": result.reference_ids,
         },
         trace_summary={
@@ -167,35 +172,28 @@ def _execute_load_skill(root: Path, input: LoadSkillRequest) -> ToolResult:
 
 
 def _execute_load_skill_reference(
-    root: Path,
+    backend: BackendProtocol,
     input: LoadSkillReferenceRequest,
-    context: ToolContext,
+    state: Any,
 ) -> ToolResult:
-    descriptor = _descriptor(root, input.skill_id)
-    if descriptor is None:
+    metadata = skill_metadata_by_name(state, input.skill_id)
+    if metadata is None:
         return _failure(
             LOAD_SKILL_REFERENCE_TOOL_NAME,
             "skill_not_found",
             "未找到已注册的内部工作流。",
         )
-    allowed_reference_ids = context.skill_reference_grants.get(descriptor.name, [])
+    allowed_reference_ids = skill_reference_grants(state).get(metadata["name"], [])
     if input.reference_id not in allowed_reference_ids:
         return _failure(
             LOAD_SKILL_REFERENCE_TOOL_NAME,
             "skill_reference_not_loaded",
             "该 reference 未由本次运行中成功的 load_skill 返回。",
         )
-    if input.reference_id not in descriptor.references:
-        return _failure(
-            LOAD_SKILL_REFERENCE_TOOL_NAME,
-            "skill_reference_not_found",
-            "未找到已注册的 Skill reference。",
-        )
-    content = read_registered_skill_reference(
-        root,
-        descriptor,
+    content = read_skill_reference(
+        backend,
+        metadata,
         input.reference_id,
-        max_chars=MAX_SKILL_REFERENCE_CHARS,
     )
     if content is None:
         return _failure(
@@ -205,7 +203,7 @@ def _execute_load_skill_reference(
         )
     result = LoadSkillReferenceResult(
         status="succeeded",
-        skill_id=descriptor.name,
+        skill_id=metadata["name"],
         reference_id=input.reference_id,
         content=content,
     )
@@ -216,9 +214,10 @@ def _execute_load_skill_reference(
         data=data,
         model_observation={
             "status": result.status,
-            "summary": f"已加载 {descriptor.name} 的 reference：{input.reference_id}。",
+            "summary": f"已加载 {metadata['name']} 的 reference：{input.reference_id}。",
             "skill_id": result.skill_id,
             "reference_id": result.reference_id,
+            "content": result.content,
         },
         trace_summary={
             "status": result.status,
@@ -226,30 +225,6 @@ def _execute_load_skill_reference(
             "reference_id": result.reference_id,
             "content_chars": len(result.content),
         },
-    )
-
-
-def _descriptor(
-    root: Path,
-    skill_id: str,
-    *,
-    model_invocable: bool = False,
-) -> SkillDescriptor | None:
-    catalog = load_repo_skill_descriptors(root)
-    return next(
-        (
-            descriptor
-            for descriptor in catalog.descriptors
-            if descriptor.name == skill_id
-            and (
-                not model_invocable
-                or (
-                    descriptor.activation == "model"
-                    and not descriptor.disable_model_invocation
-                )
-            )
-        ),
-        None,
     )
 
 

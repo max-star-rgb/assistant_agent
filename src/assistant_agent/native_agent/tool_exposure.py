@@ -1,35 +1,29 @@
-"""Native middleware for deterministic Skill-governed Tool disclosure."""
+"""Native Agent Skills driven Tool disclosure."""
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 
+from deepagents.middleware.skills import SkillMetadata
 from langchain.agents.middleware import ModelRequest
-from langchain.agents.middleware.types import (
-    AgentMiddleware,
-    ModelResponse,
-)
+from langchain.agents.middleware.types import AgentMiddleware, ModelResponse
 from langchain_core.messages import AIMessage
 from langchain_core.tools import BaseTool
 
-from assistant_agent.skills.loading import SkillCatalog, SkillDescriptor
 
+class NativeSkillToolExposureMiddleware(AgentMiddleware):
+    """Expose repo-owned Tool schemas only after their native Skill is loaded."""
 
-class ProgressiveToolExposureMiddleware(AgentMiddleware):
-    """Project pre-registered Tool schemas from trusted loaded-Skill state."""
-
-    def __init__(self, catalog: SkillCatalog) -> None:
+    def __init__(self, skills: Sequence[SkillMetadata]) -> None:
         super().__init__()
-        descriptors = {
-            descriptor.name: descriptor
-            for descriptor in catalog.descriptors
-            if _model_invocable(descriptor)
+        self._allowed_tools_by_skill = {
+            skill["name"]: frozenset(skill["allowed_tools"])
+            for skill in skills
         }
-        self._descriptors = descriptors
         self._claimed_tool_names = frozenset(
             tool_name
-            for descriptor in descriptors.values()
-            for tool_name in descriptor.governed_tools
+            for allowed_tools in self._allowed_tools_by_skill.values()
+            for tool_name in allowed_tools
         )
 
     def wrap_model_call(
@@ -51,8 +45,7 @@ class ProgressiveToolExposureMiddleware(AgentMiddleware):
         granted_tool_names = {
             tool_name
             for skill_id in active_skill_ids
-            if (descriptor := self._descriptors.get(skill_id)) is not None
-            for tool_name in descriptor.governed_tools
+            for tool_name in self._allowed_tools_by_skill.get(skill_id, ())
         }
         visible_tools = [
             tool
@@ -64,24 +57,12 @@ class ProgressiveToolExposureMiddleware(AgentMiddleware):
         return request.override(tools=visible_tools)
 
 
-def discoverable_skill_descriptors(
-    catalog: SkillCatalog,
-) -> tuple[SkillDescriptor, ...]:
-    """Return the trusted L0 index entries available to model-driven loading."""
+def discoverable_skill_metadata(
+    skills: Sequence[SkillMetadata],
+) -> tuple[SkillMetadata, ...]:
+    """Return the validated native metadata advertised in the L0 index."""
 
-    return tuple(
-        descriptor
-        for descriptor in catalog.descriptors
-        if _model_invocable(descriptor) and descriptor.discoverable
-    )
-
-
-def _model_invocable(descriptor: SkillDescriptor) -> bool:
-    return (
-        descriptor.enabled
-        and descriptor.activation == "model"
-        and not descriptor.disable_model_invocation
-    )
+    return tuple(skills)
 
 
 def _string_values(value: object) -> tuple[str, ...]:
@@ -91,6 +72,6 @@ def _string_values(value: object) -> tuple[str, ...]:
 
 
 __all__ = [
-    "ProgressiveToolExposureMiddleware",
-    "discoverable_skill_descriptors",
+    "NativeSkillToolExposureMiddleware",
+    "discoverable_skill_metadata",
 ]

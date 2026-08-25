@@ -1,6 +1,6 @@
 # LangChain-native Tool 与扩展架构
 
-最后更新：2026-08-24
+最后更新：2026-08-25
 
 ## Authority contract
 
@@ -22,22 +22,27 @@
 discovery 或 Registry lookup。
 
 进程 composition 仍把完整静态 `BaseTool` inventory 注册给 `create_agent` / `ToolNode`，但完整注册不等于每次
-模型调用全部可见。`ProgressiveToolExposureMiddleware` 只使用原生 `wrap_model_call`，按受信 Skill manifest 和
-fast agent 子图当前执行的 state/checkpoint namespace 内 `active_skill_ids` 缩小 `ModelRequest.tools`：
-未加载 Skill 时，其 `governed_tools` schema 不发给
-模型；它不处理 `load_skill` 的 Tool 调用或结果。`load_skill` 自身只加载指导正文与 reference，并按 LangGraph
-原生 Tool state-update 契约直接返回包含标准 `ToolMessage` 的 `Command(update=...)`，由既有 `ToolNode` 把
-`active_skill_ids` 与窄 `skill_reference_grants` 写入 state；Tool observation/artifact 不返回 Tool 名或 capability
-grant。下一次模型调用时，独立 exposure middleware 才从 state 与 composition 注入的受信 catalog 机械派生可见
-Tool schema。Skill/reference channel 可在 planning agent 与 task 子 Agent 间通过标准 state reducer 合并，但不进入
-`AssistantRootGraph` 或 Memory Graph。Tool 名只从 `skill.toml` 重新解析，不接受模型或 Tool
-artifact 声明任意 grant；该可见性层不替代具体 Tool 的身份、授权、参数和副作用校验。fast 在 Skill 加载后获得对应
+模型调用全部可见。仓库 Skill 使用 Agent Skills 标准目录与 `SKILL.md` YAML frontmatter；Deep Agents
+`SkillsMiddleware` 通过只读虚拟根 `FilesystemBackend` 发现并投影 L0 元数据。项目不注册该 middleware 配套的通用
+`read_file`，也不注册原有 `file_read`。模型只能使用无路径参数的 `load_skill(skill_id)` 读取完整正文，再使用
+`load_skill_reference(skill_id, reference_id)` 读取本轮已授权的扁平 Markdown reference。
+
+`NativeSkillToolExposureMiddleware` 只使用原生 `wrap_model_call`，按受信 frontmatter 的 `allowed-tools` 和 fast agent
+子图当前 state/checkpoint namespace 内 `active_skill_ids` 缩小 `ModelRequest.tools`：未加载 Skill 时，被其声明的
+Tool schema 不发给模型。`load_skill` 按 LangGraph 原生 Tool state-update 契约返回包含完整 Skill 正文的标准
+`ToolMessage` 和 `Command(update=...)`，由既有 `ToolNode` 写入 `active_skill_ids` 与自动发现的窄
+`skill_reference_grants`。下一次模型调用时，exposure middleware 才从受信元数据快照机械派生可见 Tool schema。
+Skill/reference channel 可在 planning agent 与 task 子 Agent 间通过标准 state reducer 合并，但不进入
+`AssistantRootGraph` 或 Memory Graph。Tool 名只从本地 `SKILL.md` frontmatter 解析，不接受模型或 Tool artifact
+声明任意 grant；该可见性层不替代具体 Tool 的身份、授权、参数和副作用校验。未被任何 Skill 声明的 Tool 保持独立
+可见。fast 在 Skill 加载后获得对应
 业务 Tool schema。planning coordinator 是另一个官方 `create_agent`，其 Tool inventory 只来自
 `TodoListMiddleware.write_todos` 与 Deep Agents `SubAgentMiddleware.task`；它不注册 Skill control 或业务 Tool。
 `task` 是进入内置 `ToolNode` 的真实 `StructuredTool`，内部调用预编译 `AssistantFastAgent`。Supervisor 固定关闭
 Provider-native search，Skill 加载、业务联网与执行只发生在 task 子 Agent。
 
-成功的 `load_skill` 继续通过标准 `Command(update=...)` 写入受信 `active_skill_ids` 和 reference grant；成功
+成功的 `load_skill` 继续通过标准 `Command(update=...)` 写入受信 `active_skill_ids` 和 reference grant，并在其
+标准 `ToolMessage` 中返回完整 `SKILL.md` 正文；成功
 `load_skill_reference` 的标准 `ToolMessage` 表明本轮实际读取的 reference。task 子 Agent 复用同一个
 `AssistantFastAgent`，渐进暴露 middleware 仍按受信 Skill state决定业务 Tool schema；默认业务 Tool 仍按静态
 inventory 可见。Deep Agents 只通过标准 state update 把实际生成的 Skill/reference state 合并回 planning agent，
@@ -119,18 +124,19 @@ Tool 的 `artifact` 保留全部规范化 `ShoppingSearchResult`，`content` 按
 镜像、plugin-private runner 或 Registry。旧 `personal_assistant_tools` / `email_tools` 远端映射已删除，MCP
 能力直接使用官方 adapter 生成的标准 Tool。MCP tool discovery 属于 worker 进程 composition，只执行一次；schema、history、state 与
 run 复用同一个 compiled graph 和 Tool 集合，实际 MCP Tool 调用仍遵循官方按调用创建 session 的行为。
-production composition 在构造 inventory 前只加载一次 repo `SkillCatalog`，并把同一实例显式注入
-`SkillLoadingPlugin` 与 fast agent；planning coordinator 只引用已经编译的 fast agent，不再读取 Skill catalog。
-Skill loading plugin 不在 production inventory 构造时
-再次读盘。只有直接省略 catalog 的非 production fixture 保留 plugin 自行加载的兼容行为。
+production composition 创建一个指向仓库 `skills/` 的只读虚拟根 backend，并把同一 backend 显式注入
+`SkillLoadingPlugin` 与 Deep Agents `SkillsMiddleware`；planning coordinator 只引用已经编译的 fast agent。
+元数据通过上游 middleware 在构图阶段形成受信快照，正文和 reference 只在窄加载 Tool 实际调用时读取；不存在
+项目自建 `SkillCatalog`、`skill.toml` 或通用文件读取兼容路径。
 高德 `amap_maps` 的驾车、公交、骑行和步行路线调用通过官方 MCP adapter 的 `tool_interceptors`
 扩展点，在成功结果中追加由受信起终点坐标确定性生成的高德 HTTPS 路线规划链接；链接不包含 API Key，
 失败结果、非法坐标和其他 MCP Tool 保持原样。最终答复原样保留该 Markdown 链接；移动端可尝试调起
 高德 App，其他终端使用高德 H5 页面。
 
-Skill manifest 的 `governed_tools` 使用上述最终 namespace 名，因此 MCP Tool 与本地 Tool 使用同一渐进暴露机制。
-未被任何 Skill manifest 声明为 `governed_tools` 的 allowlisted MCP Tool 默认对模型可见；当前高德
-`maps_weather` 以只读 `mcp_amap_maps_maps_weather` 默认暴露，天气实时事实优先由该结构化 Tool 获取。
+Skill frontmatter 的 `allowed-tools` 使用上述最终 namespace 名，因此 MCP Tool 与本地 Tool 使用同一渐进暴露机制。
+未被任何 Skill 声明的 allowlisted MCP Tool 默认对模型可见。高德
+`mcp_amap_maps_maps_weather` 明确不归旅行 Skill 所有，保持独立暴露，使单独天气问题无需先加载旅行 Skill；旅行
+Skill 在活动可成行性判断中仍可直接使用这个独立只读 Tool。
 
 MCP 只有一份 `MCPServerConfig` 文件 schema：根对象包含 `servers` 列表，每个 server 只声明官方 adapter
 connection、显式 Tool allowlist、read-only 集合与 namespace。MCP 未启用时不读取配置；显式启用后，配置文件

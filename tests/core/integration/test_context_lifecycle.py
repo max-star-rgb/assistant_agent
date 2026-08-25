@@ -29,7 +29,6 @@ from assistant_agent.native_agent.runtime_facts import (
 )
 from assistant_agent.native_agent.state import PlanningAgentState
 from assistant_agent.native_agent.tool_call_limits import PerToolCallLimitMiddleware
-from assistant_agent.skills.loading import SkillCatalog
 
 
 def _tool_names(raw_tools: object) -> set[str]:
@@ -131,7 +130,7 @@ class _FastWriteModel(MockAssistantChatModel):
 def test_frozen_memory_is_transient_context_before_the_current_request() -> None:
     model = _CaptureMessagesModel()
     model.observed_messages = []
-    graph = build_fast_agent(model, [], skill_catalog=SkillCatalog())
+    graph = build_fast_agent(model, [])
     result = graph.invoke(
         {
             "messages": [HumanMessage(content="request-sentinel")],
@@ -156,7 +155,7 @@ def test_frozen_memory_is_transient_context_before_the_current_request() -> None
 def test_planning_and_task_receive_one_transient_frozen_runtime_context() -> None:
     model = _CapturePlanningMessagesModel()
     model.observed_calls = []
-    fast = build_fast_agent(model, [], skill_catalog=SkillCatalog())
+    fast = build_fast_agent(model, [])
     graph = build_planning_agent(model, fast)
     facts = capture_trusted_runtime_facts_node(
         {},
@@ -248,6 +247,10 @@ def test_create_agent_owns_native_limits_summary_retry_hitl_and_per_tool_limit(
     assert any("HumanInTheLoopMiddleware" in node for node in nodes)
     assert any(isinstance(item, HumanInTheLoopMiddleware) for item in captured)
     assert any(isinstance(item, ToolRetryMiddleware) for item in captured)
+    assert "SkillsMiddleware" in {type(item).__name__ for item in captured}
+    assert "NativeSkillToolExposureMiddleware" in {
+        type(item).__name__ for item in captured
+    }
 
 
 @pytest.mark.core_invariant("CTX-001")
@@ -263,8 +266,7 @@ def test_planning_task_write_interrupts_and_resume_does_not_replay() -> None:
         write_probe, name="write_probe", metadata={"effect": "write"}
     )
     model = _PlanningWriteModel()
-    catalog = SkillCatalog()
-    fast = build_fast_agent(model, [write_tool], skill_catalog=catalog)
+    fast = build_fast_agent(model, [write_tool])
     planning = build_planning_agent(model, fast)
     builder = StateGraph(PlanningAgentState, context_schema=AssistantRunContext)
     builder.add_node("planning", planning)

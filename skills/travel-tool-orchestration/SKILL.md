@@ -1,3 +1,19 @@
+---
+name: travel-tool-orchestration
+description: 用于酒店比较、目的地通勤、路线导航、景点、餐饮和按天行程决策；宽泛旅行或住宿规划时使用。
+allowed-tools:
+  - lodging_search
+  - mcp_amap_maps_maps_geo
+  - mcp_amap_maps_maps_bicycling
+  - mcp_amap_maps_maps_direction_walking
+  - mcp_amap_maps_maps_direction_driving
+  - mcp_amap_maps_maps_direction_transit_integrated
+  - mcp_amap_maps_maps_text_search
+  - mcp_amap_maps_maps_around_search
+metadata:
+  assistant-agent-version: "10"
+---
+
 # 旅行决策与行程编排
 
 把宽泛的出行意图逐步变成可执行方案。先判断能否成行，再确认会改变查询结果的偏好；只交付有来源的事实和链接。

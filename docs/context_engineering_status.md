@@ -1,6 +1,6 @@
 # LangChain-native Context Engineering
 
-最后更新：2026-08-24
+最后更新：2026-08-25
 
 ## Authority contract
 
@@ -25,16 +25,15 @@ system/developer instructions、隐藏上下文、runtime/checkpoint、路由、
 实时 VIDEO 会话中的当前画面属于瞬时事实；每个新的指示性视觉问题都重新调用 `live_view_inspect`，不得把历史
 视觉 Tool observation 当作本轮当前画面证据。
 
-dynamic prompt 的 L0 index 只用于发现可加载 Skill。成功执行 `load_skill` 后，Tool 自身按 LangGraph 原生
-state-update 契约返回包含标准 `ToolMessage` 的 `Command(update=...)`，把受信 `skill_id` 写入当前 fast agent
-子图的 `active_skill_ids`；每次后续 model call 都以该 ID 从 composition 注入的受信 catalog 重新取得并把完整
-Skill 正文追加到 system prompt。`load_skill` 的模型观察与 artifact 只返回指导、Skill/reference 标识和加载状态，
-不返回 Tool capability。独立 exposure middleware 只在 `AssistantFastAgent` 的原生 model-call hook 中
-根据 manifest 的 `governed_tools` 与当前 `active_skill_ids` 派生业务 Tool schema；planning coordinator 不注册
+dynamic prompt 的 L0 index 只呈现 Deep Agents `SkillsMiddleware` 从标准 `SKILL.md` frontmatter 发现的名称与简介。
+成功执行 `load_skill` 后，Tool 按 LangGraph 原生 state-update 契约返回包含完整 Skill 正文的标准 `ToolMessage` 与
+`Command(update=...)`，并把受信 `skill_id` 写入当前 fast agent 子图的 `active_skill_ids`；正文不重复追加到
+system prompt。独立 exposure middleware 只在 `AssistantFastAgent` 的原生 model-call hook 中根据受信
+`allowed-tools` 与当前 `active_skill_ids` 派生业务 Tool schema；未被 Skill 声明的独立 Tool 保持可见。planning coordinator 不注册
 Skill control 或业务 Tool，只通过 Deep Agents 的 `task` 调用同一个 fast Agent。专项 reference 再由
 `load_skill_reference` 按当前 state/checkpoint namespace 中的窄 grant 读取。checkpoint 只保存受信 Skill ID 和
-注册的 reference ID，不复制
-Skill 正文、Tool schema 或任意 Tool 名；这些状态不进入父图、后续 chat run 或 Memory Graph。
+自动发现并授权的 reference ID，不复制 Skill 正文、Tool schema 或任意 Tool 名；这些状态不进入父图、后续 chat run
+或 Memory Graph。项目不向模型暴露通用文件读取 Tool；Skill 正文与 reference 只能通过 ID-only 窄加载器读取。
 
 Skill L0 index 使用简短自然语言列表。父图冻结的 `memory_context` 与 `trusted_runtime_facts` 都不进入
 system prompt：位于 summarization 内层的 model-call middleware 在最新真实 `HumanMessage` 前把两者合并投影为
