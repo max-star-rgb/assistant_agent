@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
+import unicodedata
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import MappingProxyType
 from typing import Literal
@@ -515,6 +516,193 @@ class CodingReviewReport(BaseModel):
             if self.review_tasks != tuple(CODING_REVIEW_TASK_SPECS):
                 raise ValueError("current review report task inventory is invalid")
         return self
+
+
+MAX_CODING_REVIEW_REPAIR_ATTEMPTS = 2
+MAX_CODING_REVIEW_REPAIR_FINDINGS = 12
+MAX_CODING_REVIEW_REPAIR_RESPONSE_CHARS = 4_000
+MAX_CODING_REVIEW_REPAIR_RESPONSE_UTF8_BYTES = 8_000
+
+
+class CodingReviewRepairFindingSummary(BaseModel):
+    """Bounded, display-only projection of one frozen review finding."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    finding_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    task_id: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
+    severity: str = Field(min_length=1, max_length=16)
+    category: str = Field(min_length=1, max_length=64)
+    title: str = Field(min_length=1, max_length=300)
+    path: str = Field(default="", max_length=512)
+    line: int = Field(ge=1)
+    remediation: str = Field(min_length=1, max_length=600)
+
+    @field_validator("path")
+    @classmethod
+    def _safe_optional_path(cls, value: str) -> str:
+        if value:
+            _validate_relative_policy_path(value, label="review repair finding path")
+        return value
+
+
+class CodingReviewRepairContext(BaseModel):
+    """Digest-bound, immutable input for one review repair proposal."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    previous_history_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    created_at: datetime
+    attempt: int = Field(ge=1, le=MAX_CODING_REVIEW_REPAIR_ATTEMPTS)
+    workspace_ref: str = Field(min_length=16, max_length=128)
+    base_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    generation: int = Field(ge=1)
+    snapshot_ref: str = Field(min_length=16, max_length=256)
+    snapshot_materialization_schema_version: CodingAnalysisSnapshotSchemaVersion
+    snapshot_created_at: datetime
+    snapshot_expires_at: datetime
+    tree_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    patch_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    report_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    validation_evidence_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    workspace_diff_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_dirty_paths: tuple[str, ...] = ()
+    response: str = Field(min_length=1, max_length=MAX_CODING_REVIEW_REPAIR_RESPONSE_CHARS)
+    response_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    findings_summary: tuple[CodingReviewRepairFindingSummary, ...] = Field(
+        max_length=MAX_CODING_REVIEW_REPAIR_FINDINGS
+    )
+    findings_projection_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    context_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("response", mode="before")
+    @classmethod
+    def _normalize_response(cls, value: str) -> str:
+        if not isinstance(value, str):
+            raise TypeError("review repair response must be a string")
+        normalized = unicodedata.normalize("NFC", value.strip())
+        if not normalized:
+            raise ValueError("review repair response must not be empty")
+        if len(normalized.encode("utf-8")) > MAX_CODING_REVIEW_REPAIR_RESPONSE_UTF8_BYTES:
+            raise ValueError("review repair response UTF-8 byte limit exceeded")
+        return normalized
+
+    @field_validator("findings_summary", mode="before")
+    @classmethod
+    def _tuple_summary(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @field_validator("source_dirty_paths", mode="before")
+    @classmethod
+    def _tuple_source_dirty_paths(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @field_validator("source_dirty_paths")
+    @classmethod
+    def _canonical_source_dirty_paths(
+        cls,
+        value: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("review repair source dirty paths must be unique")
+        for path in value:
+            _validate_relative_policy_path(
+                path,
+                label="review repair source dirty path",
+            )
+        return tuple(sorted(value))
+
+    @model_validator(mode="after")
+    def _canonical_bindings_match(self) -> "CodingReviewRepairContext":
+        if self.created_at.utcoffset() != timedelta(0):
+            raise ValueError("review repair created_at must be aware UTC")
+        _validate_review_snapshot_timestamps(
+            self.snapshot_created_at,
+            self.snapshot_expires_at,
+        )
+        expected_response = hashlib.sha256(
+            json.dumps(
+                self.response,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        if self.response_digest != expected_response:
+            raise ValueError("review repair response digest is invalid")
+        expected_projection = _canonical_digest(
+            [item.model_dump(mode="json") for item in self.findings_summary]
+        )
+        if self.findings_projection_digest != expected_projection:
+            raise ValueError("review repair findings projection digest is invalid")
+        expected_context = _canonical_digest(
+            self.model_dump(mode="json", exclude={"context_digest"})
+        )
+        if self.context_digest != expected_context:
+            raise ValueError("review repair context digest is invalid")
+        return self
+
+
+class CodingReviewRepairAttempt(BaseModel):
+    """Immutable audit record for one review repair attempt."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    previous_history_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    attempt: int = Field(ge=1, le=MAX_CODING_REVIEW_REPAIR_ATTEMPTS)
+    report_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    validation_evidence_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    workspace_diff_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_dirty_paths: tuple[str, ...] = ()
+    response_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    finding_ids: tuple[str, ...] = Field(max_length=MAX_CODING_REVIEW_REPAIR_FINDINGS)
+    context_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    created_at: datetime
+    outcome: Literal["pending", "redraft", "proposed", "exhausted", "terminal"]
+
+    @field_validator("finding_ids", mode="before")
+    @classmethod
+    def _tuple_finding_ids(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @field_validator("finding_ids")
+    @classmethod
+    def _valid_finding_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("review repair finding ids must be unique")
+        if any(not _is_lower_hex_digest(item) for item in value):
+            raise ValueError("review repair finding id is invalid")
+        return value
+
+    @field_validator("source_dirty_paths", mode="before")
+    @classmethod
+    def _tuple_source_dirty_paths(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @field_validator("source_dirty_paths")
+    @classmethod
+    def _canonical_source_dirty_paths(
+        cls,
+        value: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("review repair source dirty paths must be unique")
+        for path in value:
+            _validate_relative_policy_path(
+                path,
+                label="review repair source dirty path",
+            )
+        return tuple(sorted(value))
+
+    @field_validator("created_at")
+    @classmethod
+    def _aware_utc_timestamp(cls, value: datetime) -> datetime:
+        if value.utcoffset() != timedelta(0):
+            raise ValueError("review repair created_at must be aware UTC")
+        return value
+
+
+def _is_lower_hex_digest(value: str) -> bool:
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
 def _validate_review_snapshot_timestamps(
@@ -1322,6 +1510,9 @@ __all__ = [
     "CodingRepairApprovalDecision",
     "CodingRepairAttempt",
     "CodingRepairFailureEvidence",
+    "CodingReviewRepairAttempt",
+    "CodingReviewRepairContext",
+    "CodingReviewRepairFindingSummary",
     "CodingDiffResult",
     "CodingListEntry",
     "CodingListResult",

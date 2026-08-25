@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from langchain.agents import create_agent
@@ -20,7 +21,7 @@ from langgraph.errors import NodeError
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 from langgraph.types import Command, Overwrite, RetryPolicy, Send, interrupt
-from pydantic import BaseModel
+from pydantic import BaseModel, JsonValue
 
 from assistant_agent.coding.analysis import (
     ANALYSIS_TASK_IDS,
@@ -36,10 +37,13 @@ from assistant_agent.coding.models import (
     CodingAnalysisResult,
     CodingAnalysisTask,
     CodingApprovalDecision,
+    CodingCommandEvidence,
     CodingMergeApprovalDecision,
     CodingPatchValidation,
     CodingReviewInput,
     CodingReviewReport,
+    CodingReviewRepairAttempt,
+    CodingReviewRepairContext,
     CodingReviewerResult,
     CodingReviewTask,
     CodingRepairAttempt,
@@ -59,6 +63,17 @@ from assistant_agent.coding.review import (
     build_legacy_review_tasks,
     canonicalize_review_report,
     create_coding_review_graph,
+)
+from assistant_agent.coding.review_repair import (
+    MAX_CODING_REVIEW_REPAIR_ATTEMPTS,
+    build_review_repair_context,
+    canonicalize_review_repair_report,
+    normalize_review_response,
+    review_response_digest,
+    review_repair_history_digest,
+    validate_review_repair_checkpoint,
+    validate_review_repair_history,
+    validate_review_repair_source,
 )
 from assistant_agent.coding.dependencies import (
     build_dependency_plan,
@@ -365,11 +380,133 @@ def build_coding_graph(
     ) -> dict[str, object]:
         if state.get("coding_result") is not None:
             return {}
-        _resolve_workspace(state, runtime, config, workspace_service)
+        workspace = _resolve_workspace(state, runtime, config, workspace_service)
         call_state = dict(state)
         call_messages = list(state.get("messages", ()))
         analysis_context_added = False
-        if state.get("repair_status") == "active":
+        review_repair_projection_added = False
+        review_repair_redraft_added = False
+        review_repair_live_release_status: Literal[
+            "released", "cleanup_pending"
+        ] | None = None
+        if (
+            state.get("review_repair_status") == "active"
+            and state.get("review_repair_projection") is not None
+        ):
+            try:
+                review_repair_context = _review_repair_context_from_state(state)
+                review_repair_history = validate_review_repair_history(
+                    state.get("review_repair_history", ())
+                )
+                review_repair_count = state.get("review_repair_count", 0)
+                if (
+                    type(review_repair_count) is not int
+                    or review_repair_count != review_repair_context.attempt
+                    or len(review_repair_history) != review_repair_count
+                    or not _review_repair_attempt_matches_context(
+                        review_repair_history[-1],
+                        review_repair_context,
+                    )
+                    or not state.get("review_repair_context_consumed", False)
+                    or state.get("review_repair_projection")
+                    != _review_repair_projection(review_repair_context)
+                ):
+                    raise ValueError("coding_review_repair_binding_mismatch")
+                live_matches, review_repair_live_release_status = (
+                    _review_repair_live_workspace_matches(
+                        state,
+                        workspace,
+                        runtime,
+                        config,
+                        workspace_service,
+                    )
+                )
+                if not live_matches:
+                    raise ValueError("coding_review_repair_binding_mismatch")
+            except (CodingWorkspaceError, TypeError, ValueError):
+                failed_update: dict[str, object] = {
+                    "coding_result": _failed(
+                        state,
+                        "coding_review_repair_binding_mismatch",
+                    )
+                }
+                if review_repair_live_release_status == "cleanup_pending":
+                    failed_update["review_snapshot_release_status"] = (
+                        "cleanup_pending"
+                    )
+                return failed_update
+            projection = state["review_repair_projection"]
+            call_messages.append(
+                HumanMessage(
+                    content=str(projection["content"]),
+                    id=str(projection["message_id"]),
+                )
+            )
+            review_repair_projection_added = True
+        elif (
+            state.get("review_repair_status") == "active"
+            and state.get("review_repair_redraft_response") is not None
+        ):
+            try:
+                review_repair_context = _review_repair_context_from_state(state)
+                review_repair_history = validate_review_repair_history(
+                    state.get("review_repair_history", ())
+                )
+                redraft_response = normalize_review_response(
+                    state.get("review_repair_redraft_response")
+                )
+                if (
+                    not state.get("review_repair_context_consumed", False)
+                    or state.get("review_repair_projection") is not None
+                    or review_repair_history[-1].outcome != "redraft"
+                    or not _review_repair_attempt_matches_context(
+                        review_repair_history[-1],
+                        review_repair_context,
+                    )
+                ):
+                    raise ValueError("coding_review_repair_binding_mismatch")
+                if state.get(
+                    "review_repair_redraft_live_check_digest"
+                ) != _review_repair_redraft_live_check_digest(
+                    review_repair_context,
+                    redraft_response,
+                ):
+                    raise ValueError(
+                        "coding_review_repair_binding_mismatch"
+                    )
+            except (CodingWorkspaceError, TypeError, ValueError):
+                failed_update = {
+                    "coding_result": _failed(
+                        state,
+                        "coding_review_repair_binding_mismatch",
+                    )
+                }
+                if review_repair_live_release_status == "cleanup_pending":
+                    failed_update["review_snapshot_release_status"] = (
+                        "cleanup_pending"
+                    )
+                return failed_update
+            call_messages.append(
+                HumanMessage(
+                    content=redraft_response,
+                    id=(
+                        f"coding-review-repair-redraft-{review_repair_context.attempt}-"
+                        f"{review_response_digest(redraft_response)}"
+                    ),
+                )
+            )
+            review_repair_redraft_added = True
+        elif (
+            state.get("review_repair_status") == "active"
+            and not state.get("review_repair_context_consumed", False)
+        ):
+            return {
+                "coding_result": _failed(
+                    state,
+                    "coding_review_repair_binding_mismatch",
+                )
+            }
+        elif state.get("repair_status") == "active":
             repair_model_calls = int(state.get("repair_model_calls", 0))
             if repair_model_calls < 1 or repair_model_calls > MAX_REPAIR_ROUNDS:
                 return {
@@ -439,6 +576,19 @@ def build_coding_graph(
         }
         if analysis_context_added:
             update["analysis_context_consumed"] = True
+        if review_repair_projection_added:
+            update["review_repair_projection"] = None
+            update["review_snapshot_release_status"] = _merged_cleanup_status(
+                state,
+                review_repair_live_release_status,
+            )
+        if review_repair_redraft_added:
+            update["review_repair_redraft_response"] = None
+            update["review_repair_redraft_live_check_digest"] = None
+            update["review_snapshot_release_status"] = _merged_cleanup_status(
+                state,
+                review_repair_live_release_status,
+            )
         return update
 
     def validate_proposal_node(
@@ -494,6 +644,18 @@ def build_coding_graph(
             "approval_status": "pending",
             **_reset_review_state(),
         }
+        if state.get("review_repair_status") == "active":
+            try:
+                update["review_repair_history"] = (
+                    _replace_latest_review_repair_outcome(state, "proposed")
+                )
+            except (TypeError, ValueError):
+                return {
+                    "coding_result": _failed(
+                        state,
+                        "coding_review_repair_binding_mismatch",
+                    )
+                }
         if state.get("repair_status") != "active":
             update.update(approval_origin="model", format_round=0)
             return update
@@ -615,6 +777,229 @@ def build_coding_graph(
             }
         return {"repair_model_calls": repair_model_calls + 1}
 
+    def consume_review_repair_budget_node(
+        state: CodingState,
+        runtime: Runtime[AssistantRunContext],
+        config: RunnableConfig,
+    ) -> Command[Literal["consume_review_repair_context", "summarize"]]:
+        """Persist one review-repair attempt before any model invocation."""
+
+        if state.get("coding_result") is not None:
+            return Command(goto="summarize")
+        live_release_status: Literal["released", "cleanup_pending"] | None = None
+        try:
+            _validate_review_repair_checkpoint_state(state)
+            workspace = _resolve_workspace(state, runtime, config, workspace_service)
+            live_matches, live_release_status = _review_repair_live_workspace_matches(
+                state,
+                workspace,
+                runtime,
+                config,
+                workspace_service,
+            )
+            if not live_matches:
+                raise ValueError("coding_review_repair_binding_mismatch")
+            count = state.get("review_repair_count", 0)
+            if type(count) is not int or not 0 <= count <= MAX_CODING_REVIEW_REPAIR_ATTEMPTS:
+                raise ValueError("coding_review_repair_count_invalid")
+            history = validate_review_repair_history(
+                state.get("review_repair_history", ())
+            )
+            if state.get("review_repair_status") != "pending":
+                raise ValueError("coding_review_repair_binding_mismatch")
+            if count >= MAX_CODING_REVIEW_REPAIR_ATTEMPTS:
+                if len(history) != count:
+                    raise ValueError("coding_review_repair_history_count_mismatch")
+                return Command(
+                    update={
+                        "review_repair_status": "exhausted",
+                        "review_repair_context": None,
+                        "review_repair_context_consumed": False,
+                        "review_repair_projection": None,
+                        "review_snapshot_release_status": _merged_cleanup_status(
+                            state,
+                            live_release_status,
+                        ),
+                        "coding_result": _failed(
+                            state,
+                            "coding_review_repair_exhausted",
+                        ),
+                    },
+                    goto="summarize",
+                )
+            context = _review_repair_context_from_state(state)
+            if (
+                context.attempt != count + 1
+                or len(history) != count + 1
+                or not _review_repair_attempt_matches_context(history[-1], context)
+            ):
+                raise ValueError("coding_review_repair_binding_mismatch")
+        except (CodingWorkspaceError, TypeError, ValueError):
+            error_update: dict[str, object] = {
+                "coding_result": _failed(
+                    state,
+                    "coding_review_repair_binding_mismatch",
+                )
+            }
+            if live_release_status == "cleanup_pending":
+                error_update["review_snapshot_release_status"] = "cleanup_pending"
+            return Command(
+                update=error_update,
+                goto="summarize",
+            )
+        return Command(
+            update={
+                "review_repair_count": count + 1,
+                "review_repair_status": "active",
+                "review_snapshot_release_status": _merged_cleanup_status(
+                    state,
+                    live_release_status,
+                ),
+            },
+            goto="consume_review_repair_context",
+        )
+
+    def consume_review_repair_context_node(
+        state: CodingState,
+        runtime: Runtime[AssistantRunContext],
+        config: RunnableConfig,
+    ) -> Command[Literal["inspect_and_draft", "summarize"]]:
+        """Freeze one replay-stable projection before the inspect agent runs."""
+
+        if state.get("coding_result") is not None:
+            return Command(goto="summarize")
+        live_release_status: Literal["released", "cleanup_pending"] | None = None
+        try:
+            _validate_review_repair_checkpoint_state(state)
+            workspace = _resolve_workspace(state, runtime, config, workspace_service)
+            live_matches, live_release_status = _review_repair_live_workspace_matches(
+                state,
+                workspace,
+                runtime,
+                config,
+                workspace_service,
+            )
+            if not live_matches:
+                raise ValueError("coding_review_repair_binding_mismatch")
+            count = state.get("review_repair_count", 0)
+            context = _review_repair_context_from_state(state)
+            history = validate_review_repair_history(
+                state.get("review_repair_history", ())
+            )
+            if (
+                state.get("review_repair_status") != "active"
+                or type(count) is not int
+                or count != context.attempt
+                or len(history) != count
+                or not _review_repair_attempt_matches_context(history[-1], context)
+                or history[-1].outcome != "pending"
+            ):
+                raise ValueError("coding_review_repair_binding_mismatch")
+            projection = _review_repair_projection(context)
+            current_projection = state.get("review_repair_projection")
+            consumed = state.get("review_repair_context_consumed", False)
+            if consumed and current_projection != projection:
+                raise ValueError("coding_review_repair_binding_mismatch")
+            if not consumed and current_projection is not None:
+                raise ValueError("coding_review_repair_binding_mismatch")
+        except (CodingWorkspaceError, TypeError, ValueError):
+            error_update: dict[str, object] = {
+                "coding_result": _failed(
+                    state,
+                    "coding_review_repair_binding_mismatch",
+                )
+            }
+            if live_release_status == "cleanup_pending":
+                error_update["review_snapshot_release_status"] = "cleanup_pending"
+            return Command(
+                update=error_update,
+                goto="summarize",
+            )
+        return Command(
+            update={
+                "review_repair_context_consumed": True,
+                "review_repair_projection": projection,
+                "review_snapshot_release_status": _merged_cleanup_status(
+                    state,
+                    live_release_status,
+                ),
+            },
+            goto="inspect_and_draft",
+        )
+
+    def checkpoint_review_repair_redraft_node(
+        state: CodingState,
+        runtime: Runtime[AssistantRunContext],
+        config: RunnableConfig,
+    ) -> Command[Literal["inspect_and_draft", "summarize"]]:
+        """Persist redraft live-check cleanup ownership before model invocation."""
+
+        if state.get("coding_result") is not None:
+            return Command(goto="summarize")
+        live_release_status: Literal["released", "cleanup_pending"] | None = None
+        try:
+            _validate_review_repair_checkpoint_state(state)
+            context = _review_repair_context_from_state(state)
+            history = validate_review_repair_history(
+                state.get("review_repair_history", ())
+            )
+            redraft_response = normalize_review_response(
+                state.get("review_repair_redraft_response")
+            )
+            if (
+                state.get("review_repair_status") != "active"
+                or not state.get("review_repair_context_consumed", False)
+                or state.get("review_repair_projection") is not None
+                or history[-1].outcome != "redraft"
+                or not _review_repair_attempt_matches_context(history[-1], context)
+            ):
+                raise ValueError("coding_review_repair_binding_mismatch")
+            live_check_digest = _review_repair_redraft_live_check_digest(
+                context,
+                redraft_response,
+            )
+            current_digest = state.get(
+                "review_repair_redraft_live_check_digest"
+            )
+            if current_digest is not None:
+                if current_digest != live_check_digest:
+                    raise ValueError("coding_review_repair_binding_mismatch")
+                return Command(update={}, goto="inspect_and_draft")
+            workspace = _resolve_workspace(state, runtime, config, workspace_service)
+            live_matches, live_release_status = (
+                _review_repair_live_workspace_matches(
+                    state,
+                    workspace,
+                    runtime,
+                    config,
+                    workspace_service,
+                )
+            )
+            if not live_matches:
+                raise ValueError("coding_review_repair_binding_mismatch")
+        except (CodingWorkspaceError, TypeError, ValueError):
+            error_update: dict[str, object] = {
+                "coding_result": _failed(
+                    state,
+                    "coding_review_repair_binding_mismatch",
+                )
+            }
+            if live_release_status == "cleanup_pending":
+                error_update["review_snapshot_release_status"] = (
+                    _merged_cleanup_status(state, live_release_status)
+                )
+            return Command(update=error_update, goto="summarize")
+        return Command(
+            update={
+                "review_repair_redraft_live_check_digest": live_check_digest,
+                "review_snapshot_release_status": _merged_cleanup_status(
+                    state,
+                    live_release_status,
+                ),
+            },
+            goto="inspect_and_draft",
+        )
+
     def approval_node(
         state: CodingState,
         runtime: Runtime[AssistantRunContext],
@@ -622,6 +1007,7 @@ def build_coding_graph(
     ) -> Command[
         Literal[
             "consume_repair_budget",
+            "checkpoint_review_repair_redraft",
             "inspect_and_draft",
             "apply_patch",
             "summarize",
@@ -807,6 +1193,47 @@ def build_coding_graph(
                     goto="summarize",
                 )
             active_repair = state.get("repair_status") == "active"
+            active_review_repair = (
+                state.get("review_repair_status") == "active"
+                and not active_repair
+            )
+            if active_review_repair:
+                try:
+                    redraft_response = normalize_review_response(decision.response)
+                    redraft_history = _replace_latest_review_repair_outcome(
+                        state,
+                        "redraft",
+                    )
+                except (TypeError, ValueError):
+                    return Command(
+                        update={"coding_result": _failed(state, "invalid_tool_input")},
+                        goto="summarize",
+                    )
+                return Command(
+                    update={
+                        "draft_artifact": None,
+                        "proposal": None,
+                        "validation": None,
+                        "approval_status": None,
+                        "approval_origin": None,
+                        "applied_result": None,
+                        "dependency_plan": None,
+                        "dependency_approval_status": None,
+                        "credential_request": None,
+                        "credential_approval_status": None,
+                        "artifact_ingress_plan": None,
+                        "artifact_approval_status": None,
+                        "validation_snapshot": None,
+                        "validation_binding_digest": None,
+                        "last_verification_status": None,
+                        "repair_approval_context": None,
+                        "review_repair_projection": None,
+                        "review_repair_redraft_response": redraft_response,
+                        "review_repair_redraft_live_check_digest": None,
+                        "review_repair_history": redraft_history,
+                    },
+                    goto="checkpoint_review_repair_redraft",
+                )
             return Command(
                 update={
                     "messages": [HumanMessage(content=decision.response.strip())],
@@ -844,15 +1271,52 @@ def build_coding_graph(
         if validation is None or state.get("approval_status") != "approved":
             return {"coding_result": _failed(state, "approval_required")}
         try:
+            _validate_review_repair_checkpoint_state(state)
             workspace = _resolve_workspace(state, runtime, config, workspace_service)
             if workspace.workspace_ref != state.get("workspace_ref"):
                 raise CodingWorkspaceError("workspace_identity_mismatch")
+            authorization = _unconsumed_patch_authorization(state)
+            if authorization is None:
+                raise CodingWorkspaceError("approval_required")
+            proposal, validation = authorization
+            if proposal.base_commit != workspace.base_commit:
+                raise CodingWorkspaceError("base_commit_changed")
+            source_dirty_paths: tuple[str, ...] = ()
+            if int(state.get("review_repair_count", 0)) > 0:
+                repair_context = _review_repair_context_from_state(state)
+                source_dirty_paths = _canonical_changed_path_inventory(
+                    repair_context.source_dirty_paths
+                )
+                proposal_paths = _canonical_changed_path_inventory(
+                    proposal.changed_paths
+                )
+                live_paths = _canonical_changed_path_inventory(
+                    workspace_service.changed_paths(workspace)
+                )
+                safe_pre_apply_paths = {
+                    *source_dirty_paths,
+                    *proposal_paths,
+                }
+                if not set(live_paths).issubset(safe_pre_apply_paths):
+                    raise CodingWorkspaceError("patch_apply_path_mismatch")
             applied = workspace_service.apply_validated_patch(workspace, validation)
+            approved_changed_paths: object = list(applied.changed_paths)
+            if int(state.get("review_repair_count", 0)) > 0:
+                allowed_paths = {
+                    *source_dirty_paths,
+                    *proposal.changed_paths,
+                }
+                actual_changed_paths = _canonical_changed_path_inventory(
+                    workspace_service.changed_paths(workspace)
+                )
+                if not set(actual_changed_paths).issubset(allowed_paths):
+                    raise CodingWorkspaceError("patch_apply_path_mismatch")
+                approved_changed_paths = Overwrite(list(actual_changed_paths))
         except CodingWorkspaceError as exc:
             return {"coding_result": _failed(state, exc.code)}
         return {
             "applied_result": applied,
-            "approved_changed_paths": list(applied.changed_paths),
+            "approved_changed_paths": approved_changed_paths,
             "format_round": (
                 int(state.get("format_round", 0)) + 1
                 if state.get("approval_origin") == "formatter"
@@ -1468,8 +1932,20 @@ def build_coding_graph(
         state: CodingState,
         runtime: Runtime[AssistantRunContext],
         config: RunnableConfig,
-    ) -> Command[Literal["create_commit", "summarize"]]:
+    ) -> Command[
+        Literal[
+            "consume_review_repair_budget",
+            "create_commit",
+            "summarize",
+        ]
+    ]:
+        review_repair_context: CodingReviewRepairContext | None = None
+        review_repair_history: tuple[CodingReviewRepairAttempt, ...] = ()
+        fresh_snapshot: CodingAnalysisSnapshot | None = None
+        source_dirty_paths: tuple[str, ...] = ()
+        release_status: Literal["released", "cleanup_pending"] | None = None
         try:
+            _validate_review_repair_checkpoint_state(state)
             workspace = _resolve_workspace(state, runtime, config, workspace_service)
             if state.get("review_decision") is not None:
                 raise ValueError("coding_review_decision_stale")
@@ -1507,6 +1983,7 @@ def build_coding_graph(
             }
         )
         try:
+            _validate_review_repair_checkpoint_state(state)
             workspace = _resolve_workspace(state, runtime, config, workspace_service)
             decision_context = _review_binding_context(state)
             allow_legacy_schema_omission = (
@@ -1520,9 +1997,10 @@ def build_coding_graph(
                 allow_legacy_schema_omission=allow_legacy_schema_omission,
             ):
                 raise ValueError("coding_review_binding_mismatch")
-            decision = _validate_review_decision(
+            decision, response = _validate_review_decision(
                 raw,
                 decision_context,
+                review_status=state.get("review_status"),
                 allow_legacy_schema_omission=allow_legacy_schema_omission,
             )
             snapshot = CodingAnalysisSnapshot.model_validate(state.get("review_snapshot"))
@@ -1539,38 +2017,117 @@ def build_coding_graph(
                     completed=True,
                 ),
             ):
-                try:
-                    workspace_service.release_analysis_snapshot(
-                        fresh_snapshot,
-                        identity=authenticated_user_identity(runtime),
-                        thread_id=_thread_id(config),
-                        workspace=workspace,
-                    )
-                except CodingWorkspaceError:
-                    pass
+                release_status = _release_snapshot_leases(
+                    workspace_service,
+                    (fresh_snapshot,),
+                    identity=authenticated_user_identity(runtime),
+                    thread_id=_thread_id(config),
+                    workspace=workspace,
+                )
                 raise ValueError("coding_review_binding_mismatch")
-            if decision == "reject" or not state.get("integration_required"):
-                workspace_service.release_analysis_snapshot(
-                    fresh_snapshot,
+            if decision == "respond":
+                source_dirty_paths = _canonical_changed_path_inventory(
+                    workspace_service.changed_paths(workspace)
+                )
+                count = state.get("review_repair_count", 0)
+                if (
+                    type(count) is not int
+                    or not 0 <= count <= MAX_CODING_REVIEW_REPAIR_ATTEMPTS
+                ):
+                    raise ValueError("coding_review_repair_count_invalid")
+                review_repair_history = validate_review_repair_history(
+                    state.get("review_repair_history", ())
+                )
+                if len(review_repair_history) != count:
+                    raise ValueError("coding_review_repair_history_count_mismatch")
+                if count < MAX_CODING_REVIEW_REPAIR_ATTEMPTS:
+                    review_repair_context = build_review_repair_context(
+                        state.get("review_report"),
+                        review_repair_count=count,
+                        response=response,
+                        history=review_repair_history,
+                        source_dirty_paths=source_dirty_paths,
+                    )
+                    review_repair_history = (
+                        *review_repair_history,
+                        _pending_review_repair_attempt(review_repair_context),
+                    )
+            if (
+                decision in {"reject", "respond"}
+                or not state.get("integration_required")
+            ):
+                snapshots_to_release: tuple[object, ...] = (fresh_snapshot,)
+                if decision == "respond":
+                    snapshots_to_release = (
+                        fresh_snapshot,
+                        state.get("validation_snapshot"),
+                        state.get("review_snapshot"),
+                    )
+                release_status = _release_snapshot_leases(
+                    workspace_service,
+                    snapshots_to_release,
                     identity=authenticated_user_identity(runtime),
                     thread_id=_thread_id(config),
                     workspace=workspace,
                 )
         except (CodingWorkspaceError, ValueError, TypeError):
+            if fresh_snapshot is not None and release_status is None:
+                release_status = _release_snapshot_leases(
+                    workspace_service,
+                    (fresh_snapshot,),
+                    identity=authenticated_user_identity(runtime),
+                    thread_id=_thread_id(config),
+                    workspace=workspace,
+                )
+            error_update: dict[str, object] = {
+                "coding_result": _failed(
+                    state,
+                    "coding_review_binding_mismatch",
+                )
+            }
+            if release_status == "cleanup_pending":
+                error_update["review_snapshot_release_status"] = release_status
             return Command(
-                update={
-                    "coding_result": _failed(
-                        state,
-                        "coding_review_binding_mismatch",
-                    )
-                },
+                update=error_update,
                 goto="summarize",
             )
+        if decision == "respond":
+            audit_update = _review_repair_audit_update(
+                state,
+                decision_context=decision_context,
+                decision=decision,
+                response=response,
+                context=review_repair_context,
+            )
+            return Command(
+                update={
+                    **_reset_review_repair_cycle_state(
+                        snapshot_release_status=release_status or "cleanup_pending"
+                    ),
+                    "review_repair_count": int(
+                        state.get("review_repair_count", 0)
+                    ),
+                    "review_repair_status": "pending",
+                    "review_repair_context": review_repair_context,
+                    "review_repair_context_consumed": False,
+                    "review_repair_projection": None,
+                    "review_repair_history": list(review_repair_history),
+                    **audit_update,
+                },
+                goto="consume_review_repair_budget",
+            )
         if decision == "reject":
+            audit_update = _review_repair_audit_update(
+                state,
+                decision_context=decision_context,
+                decision=decision,
+                response=None,
+                context=None,
+            )
             return Command(
                 update={
                     "review_decision": "rejected",
-                    "review_snapshot_release_status": "released",
+                    "review_snapshot_release_status": release_status or "active",
                     "coding_result": CodingTerminalResult(
                         status="rejected",
                         workspace_ref=state.get("workspace_ref"),
@@ -1584,15 +2141,27 @@ def build_coding_graph(
                         ),
                         **_repair_terminal_fields(state),
                     ),
+                    **audit_update,
                 },
                 goto="summarize",
             )
         approval_update: dict[str, object] = {
             "review_decision": "approved",
             "review_snapshot_release_status": (
-                "active" if state.get("integration_required") else "released"
+                "active"
+                if state.get("integration_required")
+                else release_status or "active"
             ),
         }
+        approval_update.update(
+            _review_repair_audit_update(
+                state,
+                decision_context=decision_context,
+                decision=decision,
+                response=None,
+                context=None,
+            )
+        )
         if state.get("integration_required"):
             return Command(update=approval_update, goto="create_commit")
         applied = state.get("applied_result")
@@ -1770,22 +2339,31 @@ def build_coding_graph(
         runtime: Runtime[AssistantRunContext],
         config: RunnableConfig,
     ) -> dict[str, object]:
-        _release_terminal_coding_snapshots(
+        terminal_release_status = _release_terminal_coding_snapshots(
             state,
             runtime,
             config,
             workspace_service,
         )
+        cleanup_pending = (
+            state.get("review_snapshot_release_status") == "cleanup_pending"
+            or terminal_release_status == "cleanup_pending"
+        )
         result = state.get("coding_result") or _failed(state, "patch_invalid")
+        terminal_repair_update = _terminal_review_repair_update(state, result)
+        result = terminal_repair_update.pop("coding_result", result)
         return {
             "coding_result": result,
             "validation_snapshot": None,
             "review_snapshot": None,
-            "review_snapshot_release_status": None,
+            "review_snapshot_release_status": (
+                "cleanup_pending" if cleanup_pending else None
+            ),
             "review_input": None,
             "review_tasks": (),
             "review_results": Overwrite([]),
             "review_decision_context": None,
+            **terminal_repair_update,
             "messages": [
                 AIMessage(
                     content=(
@@ -1899,6 +2477,18 @@ def build_coding_graph(
     builder.add_node("prepare_review_snapshot", prepare_review_snapshot_node)
     builder.add_node("run_code_review", run_code_review_node)
     builder.add_node("coding_review_decision", coding_review_decision_node)
+    builder.add_node(
+        "consume_review_repair_budget",
+        consume_review_repair_budget_node,
+    )
+    builder.add_node(
+        "consume_review_repair_context",
+        consume_review_repair_context_node,
+    )
+    builder.add_node(
+        "checkpoint_review_repair_redraft",
+        checkpoint_review_repair_redraft_node,
+    )
     builder.add_node("create_commit", create_commit_node)
     builder.add_node("prepare_merge", prepare_merge_node)
     builder.add_node("merge_approval", merge_approval_node)
@@ -2030,6 +2620,18 @@ def begin_coding_cycle_node(state: CodingState) -> dict[str, object]:
         "review_validation_digest": None,
         "review_decision_context": None,
         "review_decision": None,
+        "review_repair_count": 0,
+        "review_repair_status": None,
+        "review_repair_context": None,
+        "review_repair_context_consumed": False,
+        "review_repair_projection": None,
+        "review_repair_history": [],
+        "review_repair_audit_report": None,
+        "review_repair_audit_evidence": (),
+        "review_repair_decision_summary": None,
+        "review_repair_terminal_report": None,
+        "review_repair_terminal_evidence": (),
+        "review_repair_terminal_decision_summary": None,
         "integration_required": False,
         "commit_result": None,
         "merge_preview": None,
@@ -2046,6 +2648,7 @@ def begin_coding_cycle_node(state: CodingState) -> dict[str, object]:
 
 
 def _resolve_workspace(state, runtime, config, service):
+    _validate_review_repair_checkpoint_state(state)
     identity = authenticated_user_identity(runtime)
     thread_id = _thread_id(config)
     repo_id = str(state.get("coding_repo_id", "")).strip()
@@ -2094,6 +2697,14 @@ def _has_checkpointed_cycle_state(state: CodingState) -> bool:
         or state.get("analysis_results")
         or state.get("analysis_snapshot_release_status") is not None
         or state.get("analysis_context_consumed", False)
+        or state.get("review_repair_count", 0) != 0
+        or state.get("review_repair_status") is not None
+        or state.get("review_repair_context") is not None
+        or state.get("review_repair_context_consumed", False)
+        or state.get("review_repair_projection") is not None
+        or state.get("review_repair_redraft_response") is not None
+        or state.get("review_repair_redraft_live_check_digest") is not None
+        or state.get("review_repair_history")
     ):
         return True
     return any(
@@ -2190,12 +2801,17 @@ def _release_terminal_coding_snapshots(
     runtime: Runtime[AssistantRunContext],
     config: RunnableConfig,
     service: CodingWorkspaceService,
-) -> None:
+) -> Literal["released", "cleanup_pending"] | None:
+    raw_snapshots = tuple(
+        state.get(key) for key in ("validation_snapshot", "review_snapshot")
+    )
+    if not any(snapshot is not None for snapshot in raw_snapshots):
+        return None
     identity = authenticated_user_identity(runtime)
     thread_id = _thread_id(config)
     workspace_ref = str(state.get("workspace_ref", "")).strip()
     if not identity or not thread_id or not workspace_ref:
-        return
+        return "cleanup_pending"
     try:
         workspace = service.get(
             workspace_ref,
@@ -2203,28 +2819,14 @@ def _release_terminal_coding_snapshots(
             thread_id=thread_id,
         )
     except CodingWorkspaceError:
-        return
-    released_refs: set[str] = set()
-    for key in ("validation_snapshot", "review_snapshot"):
-        raw_snapshot = state.get(key)
-        if raw_snapshot is None:
-            continue
-        try:
-            snapshot = CodingAnalysisSnapshot.model_validate(raw_snapshot)
-        except (TypeError, ValueError):
-            continue
-        if snapshot.snapshot_ref in released_refs:
-            continue
-        released_refs.add(snapshot.snapshot_ref)
-        try:
-            service.release_analysis_snapshot(
-                snapshot,
-                identity=identity,
-                thread_id=thread_id,
-                workspace=workspace,
-            )
-        except CodingWorkspaceError:
-            pass
+        return "cleanup_pending"
+    return _release_snapshot_leases(
+        service,
+        raw_snapshots,
+        identity=identity,
+        thread_id=thread_id,
+        workspace=workspace,
+    )
 
 
 def _reset_review_state() -> dict[str, object]:
@@ -2243,6 +2845,84 @@ def _reset_review_state() -> dict[str, object]:
         "review_decision_context": None,
         "review_decision": None,
     }
+
+
+def _reset_review_repair_cycle_state(
+    *,
+    snapshot_release_status: Literal["released", "cleanup_pending"],
+) -> dict[str, object]:
+    """Invalidate every authorization derived from the reviewed patch."""
+
+    return {
+        "draft_artifact": None,
+        "proposal": None,
+        "validation": None,
+        "approval_status": None,
+        "approval_origin": None,
+        "applied_result": None,
+        "dependency_plan": None,
+        "dependency_approval_status": None,
+        "credential_request": None,
+        "credential_approval_status": None,
+        "artifact_ingress_plan": None,
+        "artifact_approval_status": None,
+        "format_round": 0,
+        "verification_evidence": Overwrite([]),
+        "validation_snapshot": None,
+        "validation_binding_digest": None,
+        "last_verification_status": None,
+        **_reset_review_state(),
+        "review_snapshot_release_status": snapshot_release_status,
+        "integration_required": False,
+        "commit_result": None,
+        "merge_preview": None,
+        "merge_result": None,
+        "repair_round": 0,
+        "repair_status": None,
+        "repair_failure_evidence": None,
+        "repair_history": Overwrite([]),
+        "repair_model_calls": 0,
+        "repair_proposal_digests": Overwrite([]),
+        "repair_approval_context": None,
+        "review_repair_redraft_response": None,
+        "review_repair_redraft_live_check_digest": None,
+        "coding_result": None,
+    }
+
+
+def _release_snapshot_leases(
+    service: CodingWorkspaceService,
+    snapshots: tuple[object, ...],
+    *,
+    identity: str,
+    thread_id: str,
+    workspace: object,
+) -> Literal["released", "cleanup_pending"]:
+    """Release each snapshot ref once without replacing the caller's outcome."""
+
+    cleanup_pending = False
+    released_refs: set[str] = set()
+    for raw_snapshot in snapshots:
+        if raw_snapshot is None:
+            continue
+        try:
+            snapshot = CodingAnalysisSnapshot.model_validate(raw_snapshot)
+        except (TypeError, ValueError):
+            cleanup_pending = True
+            continue
+        if snapshot.snapshot_ref in released_refs:
+            continue
+        released_refs.add(snapshot.snapshot_ref)
+        try:
+            service.release_analysis_snapshot(
+                snapshot,
+                identity=identity,
+                thread_id=thread_id,
+                workspace=workspace,
+            )
+        except CodingWorkspaceError:
+            cleanup_pending = True
+    return "cleanup_pending" if cleanup_pending else "released"
 
 
 MAX_REVIEW_HITL_FINDINGS = 12
@@ -2302,6 +2982,12 @@ def _review_binding_context(
         state,
         completed=True,
     )
+    review_repair_count = state.get("review_repair_count", 0)
+    if type(review_repair_count) is not int:
+        raise ValueError("coding_review_repair_binding_mismatch")
+    repair_history_digest = review_repair_history_digest(
+        state.get("review_repair_history", ())
+    )
     if (
         snapshot.materialization_schema_version != expected_schema_version
         or review_input.snapshot_materialization_schema_version
@@ -2337,6 +3023,8 @@ def _review_binding_context(
         "patch_digest": review_input.patch_digest,
         "validation_digest": validation_digest,
         "report_digest": canonical_report.report_digest,
+        "review_repair_count": review_repair_count,
+        "review_repair_history_digest": repair_history_digest,
     }
 
 
@@ -2405,20 +3093,813 @@ def _validate_review_decision(
     raw: object,
     decision_context: Mapping[str, object],
     *,
+    review_status: object,
     allow_legacy_schema_omission: bool = False,
-) -> Literal["approve", "reject"]:
+) -> tuple[Literal["approve", "reject", "respond"], str | None]:
     if not isinstance(raw, Mapping):
         raise ValueError("coding_review_binding_mismatch")
-    if raw.get("decision") not in {"approve", "reject"}:
+    decision = raw.get("decision")
+    if decision not in {"approve", "reject", "respond"}:
         raise ValueError("coding_review_binding_mismatch")
-    raw_context = {key: value for key, value in raw.items() if key != "decision"}
+    response: str | None = None
+    excluded = {"decision"}
+    if decision == "respond":
+        if review_status != "findings":
+            raise ValueError("coding_review_binding_mismatch")
+        response = normalize_review_response(raw.get("response"))
+        excluded.add("response")
+    raw_context = {key: value for key, value in raw.items() if key not in excluded}
     if not _review_decision_context_matches(
         raw_context,
         decision_context,
         allow_legacy_schema_omission=allow_legacy_schema_omission,
     ):
         raise ValueError("coding_review_binding_mismatch")
-    return raw["decision"]
+    return decision, response
+
+
+def _pending_review_repair_attempt(
+    context: CodingReviewRepairContext,
+) -> CodingReviewRepairAttempt:
+    return CodingReviewRepairAttempt(
+        previous_history_digest=context.previous_history_digest,
+        attempt=context.attempt,
+        report_digest=context.report_digest,
+        validation_evidence_digest=context.validation_evidence_digest,
+        workspace_diff_digest=context.workspace_diff_digest,
+        source_dirty_paths=context.source_dirty_paths,
+        response_digest=context.response_digest,
+        finding_ids=tuple(
+            finding.finding_id for finding in context.findings_summary
+        ),
+        context_digest=context.context_digest,
+        created_at=context.created_at,
+        outcome="pending",
+    )
+
+
+def _review_repair_attempt_matches_context(
+    attempt: CodingReviewRepairAttempt,
+    context: CodingReviewRepairContext,
+) -> bool:
+    return (
+        attempt.previous_history_digest == context.previous_history_digest
+        and attempt.created_at == context.created_at
+        and attempt.attempt == context.attempt
+        and attempt.report_digest == context.report_digest
+        and attempt.validation_evidence_digest
+        == context.validation_evidence_digest
+        and attempt.workspace_diff_digest == context.workspace_diff_digest
+        and attempt.source_dirty_paths == context.source_dirty_paths
+        and attempt.response_digest == context.response_digest
+        and attempt.finding_ids
+        == tuple(finding.finding_id for finding in context.findings_summary)
+        and attempt.context_digest == context.context_digest
+    )
+
+
+def _render_review_repair_context(context: CodingReviewRepairContext) -> str:
+    return json.dumps(
+        {
+            "coding_review_repair": context.model_dump(mode="json"),
+            "instruction": (
+                "Address only the frozen review findings. Confirm current workspace "
+                "content with read tools before proposing one incremental patch."
+            ),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _review_repair_projection(
+    context: CodingReviewRepairContext,
+) -> dict[str, JsonValue]:
+    return {
+        "message_id": (
+            f"coding-review-repair-{context.attempt}-"
+            f"{context.report_digest[:16]}-{context.response_digest}"
+        ),
+        "content": _render_review_repair_context(context),
+        "context_digest": context.context_digest,
+    }
+
+
+def _review_repair_context_from_state(
+    state: CodingState,
+) -> CodingReviewRepairContext:
+    """Strictly reconstruct a frozen repair context from checkpoint data."""
+
+    raw = state.get("review_repair_context")
+    payload = (
+        raw.model_dump(mode="python", round_trip=True)
+        if isinstance(raw, CodingReviewRepairContext)
+        else raw
+    )
+    return CodingReviewRepairContext.model_validate(payload)
+
+
+def _canonical_review_repair_evidence(
+    value: object,
+) -> tuple[CodingCommandEvidence, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, (tuple, list)):
+        raise ValueError("coding_review_repair_binding_mismatch")
+    evidence: list[CodingCommandEvidence] = []
+    for item in value:
+        payload = (
+            item.model_dump(mode="python", round_trip=True)
+            if isinstance(item, CodingCommandEvidence)
+            else item
+        )
+        evidence.append(CodingCommandEvidence.model_validate(payload))
+    return tuple(evidence)
+
+
+def _review_repair_audit_report_from_state(
+    state: CodingState,
+) -> CodingReviewReport:
+    report = canonicalize_review_repair_report(
+        state.get("review_repair_audit_report")
+    )
+    if (
+        report.workspace_ref != state.get("workspace_ref")
+        or report.base_commit != state.get("base_commit")
+        or report.generation != state.get("coding_cycle_generation")
+    ):
+        raise ValueError("coding_review_repair_binding_mismatch")
+    return report
+
+
+def _review_repair_live_workspace_matches(
+    state: CodingState,
+    workspace: object,
+    runtime: Runtime[AssistantRunContext],
+    config: RunnableConfig,
+    service: CodingWorkspaceService,
+) -> tuple[bool, Literal["released", "cleanup_pending"]]:
+    """Recompute live bytes/diff identity before a repair side effect."""
+
+    context = state.get("review_repair_context")
+    if context is not None:
+        normalized_context = _review_repair_context_from_state(state)
+        report = canonicalize_review_repair_report(
+            state.get("review_repair_audit_report")
+        )
+        validate_review_repair_source(
+            normalized_context,
+            report,
+            workspace_ref=state.get("workspace_ref"),
+            base_commit=state.get("base_commit"),
+            generation=state.get("coding_cycle_generation"),
+            source_dirty_paths=(
+                state.get("review_repair_decision_summary") or {}
+            ).get("source_dirty_paths", ()),
+        )
+        expected = CodingAnalysisSnapshot(
+            materialization_schema_version=(
+                normalized_context.snapshot_materialization_schema_version
+            ),
+            snapshot_ref=normalized_context.snapshot_ref,
+            workspace_ref=normalized_context.workspace_ref,
+            base_commit=normalized_context.base_commit,
+            tree_digest=normalized_context.tree_digest,
+            workspace_diff_digest=normalized_context.workspace_diff_digest,
+            created_at=normalized_context.snapshot_created_at,
+            expires_at=normalized_context.snapshot_expires_at,
+        )
+        expected_schema = normalized_context.snapshot_materialization_schema_version
+    else:
+        report = _review_repair_audit_report_from_state(state)
+        if report.status != "findings":
+            raise ValueError("coding_review_repair_binding_mismatch")
+        expected = CodingAnalysisSnapshot(
+            materialization_schema_version=(
+                report.snapshot_materialization_schema_version
+            ),
+            snapshot_ref=str(report.snapshot_ref),
+            workspace_ref=report.workspace_ref,
+            base_commit=report.base_commit,
+            tree_digest=str(report.tree_digest),
+            workspace_diff_digest=report.workspace_diff_digest,
+            created_at=report.snapshot_created_at,
+            expires_at=report.snapshot_expires_at,
+        )
+        expected_schema = report.snapshot_materialization_schema_version
+
+    identity = authenticated_user_identity(runtime)
+    thread_id = _thread_id(config)
+    current = service.create_analysis_snapshot(
+        workspace,
+        identity=identity,
+        thread_id=thread_id,
+    )
+    matches = _review_snapshot_content_matches(
+        expected,
+        current,
+        expected_schema_version=expected_schema,
+    )
+    release_status = _release_snapshot_leases(
+        service,
+        (current,),
+        identity=identity,
+        thread_id=thread_id,
+        workspace=workspace,
+    )
+    return matches, release_status
+
+
+def _merged_cleanup_status(
+    state: CodingState,
+    current: Literal["released", "cleanup_pending"] | None,
+) -> Literal["released", "cleanup_pending"] | None:
+    if (
+        state.get("review_snapshot_release_status") == "cleanup_pending"
+        or current == "cleanup_pending"
+    ):
+        return "cleanup_pending"
+    return current
+
+
+def _replace_latest_review_repair_outcome(
+    state: CodingState,
+    outcome: Literal["redraft", "proposed", "exhausted", "terminal"],
+) -> list[CodingReviewRepairAttempt]:
+    history = validate_review_repair_history(
+        state.get("review_repair_history", ())
+    )
+    if not history:
+        raise ValueError("coding_review_repair_binding_mismatch")
+    latest = history[-1]
+    allowed = {
+        "redraft": {"proposed", "redraft"},
+        "proposed": {"pending", "redraft", "proposed"},
+        "exhausted": {"pending", "redraft", "proposed", "exhausted"},
+        "terminal": {"pending", "redraft", "proposed", "terminal"},
+    }
+    if latest.outcome not in allowed[outcome]:
+        raise ValueError("coding_review_repair_binding_mismatch")
+    updated = latest.model_copy(update={"outcome": outcome})
+    normalized = validate_review_repair_history((*history[:-1], updated))
+    return list(normalized)
+
+
+def _review_repair_audit_update(
+    state: CodingState,
+    *,
+    decision_context: Mapping[str, object],
+    decision: Literal["approve", "reject", "respond"],
+    response: str | None,
+    context: CodingReviewRepairContext | None,
+) -> dict[str, object]:
+    """Freeze the decision source without replacing an active source anchor."""
+
+    report = canonicalize_review_repair_report(state.get("review_report"))
+    evidence = _canonical_review_repair_evidence(
+        state.get("verification_evidence", ())
+    )
+    history = validate_review_repair_history(
+        state.get("review_repair_history", ())
+    )
+    summary: dict[str, JsonValue] = {
+        "decision": decision,
+        "report_digest": report.report_digest,
+        "decision_context_digest": _canonical_digest(dict(decision_context)),
+        "review_repair_count": int(state.get("review_repair_count", 0)),
+        "review_repair_history_digest": review_repair_history_digest(history),
+        "workspace_ref": report.workspace_ref,
+        "base_commit": report.base_commit,
+        "generation": report.generation,
+        "snapshot_ref": report.snapshot_ref,
+        "tree_digest": report.tree_digest,
+        "workspace_diff_digest": report.workspace_diff_digest,
+        "patch_digest": report.patch_digest,
+        "validation_evidence_digest": report.validation_evidence_digest,
+    }
+    if response is not None:
+        summary["response_digest"] = review_response_digest(response)
+    if context is not None:
+        summary["context_digest"] = context.context_digest
+        summary["source_dirty_paths"] = list(context.source_dirty_paths)
+
+    if decision == "respond":
+        return {
+            "review_repair_audit_report": report,
+            "review_repair_audit_evidence": evidence,
+            "review_repair_decision_summary": summary,
+            "review_repair_terminal_report": None,
+            "review_repair_terminal_evidence": (),
+            "review_repair_terminal_decision_summary": None,
+        }
+    if int(state.get("review_repair_count", 0)) == 0:
+        return {}
+    return {
+        "review_repair_terminal_report": report,
+        "review_repair_terminal_evidence": evidence,
+        "review_repair_terminal_decision_summary": summary,
+    }
+
+
+def _terminal_review_repair_update(
+    state: CodingState,
+    result: CodingTerminalResult,
+) -> dict[str, object]:
+    """Close repair history and retain bounded final review audit evidence."""
+
+    if not state.get("review_repair_history"):
+        return {}
+    try:
+        desired_outcome: Literal["exhausted", "terminal"] = (
+            "exhausted"
+            if (
+                state.get("review_repair_status") == "exhausted"
+                or result.error_code == "coding_review_repair_exhausted"
+            )
+            else "terminal"
+        )
+        history = _replace_latest_review_repair_outcome(state, desired_outcome)
+        raw_report = (
+            state.get("review_report")
+            or state.get("review_repair_terminal_report")
+            or state.get("review_repair_audit_report")
+        )
+        report = canonicalize_review_repair_report(raw_report)
+        raw_evidence = state.get("verification_evidence", ())
+        if not raw_evidence:
+            raw_evidence = (
+                state.get("review_repair_terminal_evidence", ())
+                or state.get("review_repair_audit_evidence", ())
+            )
+        evidence = _canonical_review_repair_evidence(raw_evidence)
+        summary = (
+            state.get("review_repair_terminal_decision_summary")
+            or state.get("review_repair_decision_summary")
+        )
+        if not isinstance(summary, Mapping):
+            raise ValueError("coding_review_repair_binding_mismatch")
+        summary = dict(summary)
+        if summary.get("report_digest") != report.report_digest:
+            raise ValueError("coding_review_repair_binding_mismatch")
+        preserve_public_audit = desired_outcome == "exhausted"
+        public_report = (
+            report
+            if preserve_public_audit or state.get("review_report") is not None
+            else None
+        )
+        public_evidence = (
+            evidence
+            if preserve_public_audit
+            else _canonical_review_repair_evidence(
+                state.get("verification_evidence", ())
+            )
+        )
+        if preserve_public_audit and not result.verification_evidence and evidence:
+            result = result.model_copy(update={"verification_evidence": evidence})
+    except (TypeError, ValueError):
+        result = _failed(state, "coding_review_repair_binding_mismatch")
+        history = []
+        report = None
+        evidence = ()
+        summary = None
+        public_report = None
+        public_evidence = ()
+    return {
+        "coding_result": result,
+        "review_repair_status": None,
+        "review_repair_context": None,
+        "review_repair_context_consumed": False,
+        "review_repair_projection": None,
+        "review_repair_redraft_response": None,
+        "review_repair_redraft_live_check_digest": None,
+        "review_repair_history": history,
+        "review_repair_audit_report": report,
+        "review_repair_audit_evidence": evidence,
+        "review_repair_decision_summary": summary,
+        "review_repair_terminal_report": None,
+        "review_repair_terminal_evidence": (),
+        "review_repair_terminal_decision_summary": None,
+        "review_report": public_report,
+        "review_status": (
+            public_report.status
+            if isinstance(public_report, CodingReviewReport)
+            else None
+        ),
+        "review_validation_digest": (
+            public_report.validation_evidence_digest
+            if isinstance(public_report, CodingReviewReport)
+            else None
+        ),
+        "verification_evidence": Overwrite(list(public_evidence)),
+    }
+
+
+def _review_channel_present(state: CodingState) -> bool:
+    return bool(
+        state.get("review_required")
+        or state.get("review_tasks")
+        or state.get("review_results")
+        or any(
+            state.get(field) is not None
+            for field in (
+                "review_generation",
+                "review_snapshot",
+                "review_snapshot_schema_version",
+                "review_input",
+                "review_report",
+                "review_status",
+                "review_validation_digest",
+                "review_decision_context",
+                "review_decision",
+            )
+        )
+    )
+
+
+def _integration_channel_present(state: CodingState) -> bool:
+    return bool(
+        state.get("integration_required")
+        or any(
+            state.get(field) is not None
+            for field in ("commit_result", "merge_preview", "merge_result")
+        )
+    )
+
+
+def _patch_channel_present(state: CodingState) -> bool:
+    return any(
+        state.get(field) is not None
+        for field in (
+            "draft_artifact",
+            "proposal",
+            "validation",
+            "approval_status",
+            "approval_origin",
+            "applied_result",
+            "dependency_plan",
+            "dependency_approval_status",
+            "credential_request",
+            "credential_approval_status",
+            "artifact_ingress_plan",
+            "artifact_approval_status",
+            "validation_snapshot",
+            "validation_binding_digest",
+            "repair_approval_context",
+        )
+    )
+
+
+def _is_terminal_review_repair_state(state: CodingState) -> bool:
+    """Recognize only a fully closed, auditable repair checkpoint."""
+
+    if (
+        state.get("coding_result") is None
+        or state.get("review_repair_status") is not None
+        or state.get("review_repair_context") is not None
+        or state.get("review_repair_context_consumed", False)
+        or state.get("review_repair_projection") is not None
+        or state.get("review_repair_redraft_response") is not None
+        or state.get("review_repair_redraft_live_check_digest") is not None
+    ):
+        return False
+    count = state.get("review_repair_count", 0)
+    if type(count) is not int or count < 1:
+        return False
+    try:
+        history = validate_review_repair_history(
+            state.get("review_repair_history", ())
+        )
+        if len(history) != count or history[-1].outcome not in {
+            "terminal",
+            "exhausted",
+        }:
+            return False
+        result_raw = state.get("coding_result")
+        result_payload = (
+            result_raw.model_dump(mode="python", round_trip=True)
+            if isinstance(result_raw, CodingTerminalResult)
+            else result_raw
+        )
+        CodingTerminalResult.model_validate(result_payload)
+        report = canonicalize_review_repair_report(
+            state.get("review_repair_audit_report")
+        )
+        _canonical_review_repair_evidence(
+            state.get("review_repair_audit_evidence", ())
+        )
+        summary = state.get("review_repair_decision_summary")
+        if (
+            report.workspace_ref != state.get("workspace_ref")
+            or report.base_commit != state.get("base_commit")
+            or not isinstance(summary, Mapping)
+            or summary.get("report_digest") != report.report_digest
+        ):
+            return False
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _canonical_changed_path_inventory(value: object) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, (tuple, list)):
+        raise CodingWorkspaceError("patch_apply_path_mismatch")
+    paths: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise CodingWorkspaceError("patch_apply_path_mismatch")
+        parts = item.split("/")
+        if (
+            not item
+            or item != item.strip()
+            or item.startswith("/")
+            or any(part in {"", ".", "..", ".git"} for part in parts)
+            or any(character in item for character in ("\\", "\x00", "\n", "\r"))
+            or item in paths
+        ):
+            raise CodingWorkspaceError("patch_apply_path_mismatch")
+        paths.append(item)
+    return tuple(sorted(paths))
+
+
+def _unconsumed_patch_authorization(
+    state: CodingState,
+) -> tuple[object, CodingPatchValidation] | None:
+    approval_status = state.get("approval_status")
+    if approval_status not in {"pending", "approved"}:
+        return None
+    if state.get("applied_result") is not None:
+        if approval_status == "pending":
+            raise CodingWorkspaceError("approval_digest_mismatch")
+        return None
+    try:
+        raw_validation = state.get("validation")
+        validation_payload = (
+            raw_validation.model_dump()
+            if isinstance(raw_validation, BaseModel)
+            else raw_validation
+        )
+        validation = CodingPatchValidation.model_validate(validation_payload)
+        raw_proposal = state.get("proposal")
+        proposal_payload = (
+            raw_proposal.model_dump()
+            if isinstance(raw_proposal, BaseModel)
+            else raw_proposal
+        )
+        proposal = type(validation.proposal).model_validate(proposal_payload)
+    except (TypeError, ValueError) as exc:
+        raise CodingWorkspaceError("approval_digest_mismatch") from exc
+    if (
+        validation.proposal != proposal
+        or not proposal.changed_paths
+        or hashlib.sha256(proposal.patch.encode("utf-8")).hexdigest()
+        != proposal.patch_digest
+    ):
+        raise CodingWorkspaceError("approval_digest_mismatch")
+    _canonical_changed_path_inventory(proposal.changed_paths)
+    return proposal, validation
+
+
+def _review_repair_redraft_live_check_digest(
+    context: CodingReviewRepairContext,
+    response: str,
+) -> str:
+    payload = {
+        "context_digest": context.context_digest,
+        "phase": "review_repair_redraft_live_check_v1",
+        "response_digest": review_response_digest(response),
+    }
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _validate_review_repair_checkpoint_state(state: CodingState) -> None:
+    """Reject impossible repair and approval channel combinations."""
+
+    if _is_terminal_review_repair_state(state):
+        return
+    try:
+        _, status, context, _ = validate_review_repair_checkpoint(
+            review_repair_count=state.get("review_repair_count", 0),
+            review_repair_status=state.get("review_repair_status"),
+            review_repair_context=state.get("review_repair_context"),
+            review_repair_context_consumed=state.get(
+                "review_repair_context_consumed",
+                False,
+            ),
+            review_repair_projection=state.get("review_repair_projection"),
+            history=state.get("review_repair_history", ()),
+        )
+    except (TypeError, ValueError) as exc:
+        raise CodingWorkspaceError(
+            "coding_review_repair_binding_mismatch"
+        ) from exc
+
+    if context is not None:
+        try:
+            summary = state.get("review_repair_decision_summary")
+            validate_review_repair_source(
+                context,
+                state.get("review_repair_audit_report"),
+                workspace_ref=state.get("workspace_ref"),
+                base_commit=state.get("base_commit"),
+                generation=state.get("coding_cycle_generation"),
+                source_dirty_paths=(summary or {}).get(
+                    "source_dirty_paths",
+                    (),
+                ),
+            )
+            if (
+                not isinstance(summary, Mapping)
+                or summary.get("decision") != "respond"
+                or summary.get("context_digest") != context.context_digest
+                or summary.get("report_digest") != context.report_digest
+            ):
+                raise ValueError("coding_review_repair_binding_mismatch")
+        except (TypeError, ValueError) as exc:
+            raise CodingWorkspaceError(
+                "coding_review_repair_binding_mismatch"
+            ) from exc
+
+    try:
+        patch_approval_active = _unconsumed_patch_authorization(state) is not None
+    except CodingWorkspaceError as exc:
+        if status is not None:
+            raise CodingWorkspaceError(
+                "coding_review_repair_binding_mismatch"
+            ) from exc
+        raise
+    review_approval_active = bool(
+        state.get("review_required")
+        and state.get("review_report") is not None
+        and state.get("review_decision") is None
+    )
+    merge_approval_active = bool(
+        state.get("merge_preview") is not None
+        and state.get("merge_result") is None
+    )
+    if sum(
+        (patch_approval_active, review_approval_active, merge_approval_active)
+    ) > 1:
+        code = (
+            "coding_review_repair_binding_mismatch"
+            if status is not None
+            else "coding_review_binding_mismatch"
+        )
+        raise CodingWorkspaceError(code)
+
+    review_channel_present = _review_channel_present(state)
+    integration_channel_present = _integration_channel_present(state)
+    if status is not None and patch_approval_active and (
+        review_channel_present or integration_channel_present
+    ):
+        raise CodingWorkspaceError("coding_review_repair_binding_mismatch")
+    patch_channel_present = _patch_channel_present(state)
+    redraft_response = state.get("review_repair_redraft_response")
+    redraft_live_check_digest = state.get(
+        "review_repair_redraft_live_check_digest"
+    )
+    if status != "active" and redraft_live_check_digest is not None:
+        raise CodingWorkspaceError("coding_review_repair_binding_mismatch")
+
+    projection_pending = (
+        status == "active"
+        and (
+            not state.get("review_repair_context_consumed", False)
+            or state.get("review_repair_projection") is not None
+        )
+    )
+    if status in {"pending", "exhausted"} or projection_pending:
+        forbidden_present = any(
+            state.get(field) is not None
+            for field in (
+                "draft_artifact",
+                "proposal",
+                "validation",
+                "approval_status",
+                "approval_origin",
+                "applied_result",
+                "dependency_plan",
+                "dependency_approval_status",
+                "credential_request",
+                "credential_approval_status",
+                "artifact_ingress_plan",
+                "artifact_approval_status",
+                "validation_snapshot",
+                "validation_binding_digest",
+                "review_decision_context",
+                "commit_result",
+                "merge_preview",
+                "merge_result",
+                "repair_approval_context",
+            )
+        )
+        if (
+            forbidden_present
+            or redraft_response is not None
+            or redraft_live_check_digest is not None
+            or review_channel_present
+            or integration_channel_present
+        ):
+            raise CodingWorkspaceError(
+                "coding_review_repair_binding_mismatch"
+            )
+    elif status == "active":
+        history = validate_review_repair_history(
+            state.get("review_repair_history", ())
+        )
+        applied_present = state.get("applied_result") is not None
+        latest_outcome = history[-1].outcome
+        if redraft_response is not None:
+            try:
+                normalized_redraft_response = normalize_review_response(
+                    redraft_response
+                )
+                expected_live_check_digest = (
+                    _review_repair_redraft_live_check_digest(
+                        _review_repair_context_from_state(state),
+                        normalized_redraft_response,
+                    )
+                )
+            except (TypeError, ValueError) as exc:
+                raise CodingWorkspaceError(
+                    "coding_review_repair_binding_mismatch"
+                ) from exc
+            if (
+                normalized_redraft_response != redraft_response
+                or latest_outcome != "redraft"
+                or not state.get("review_repair_context_consumed", False)
+                or state.get("review_repair_projection") is not None
+                or patch_channel_present
+                or review_channel_present
+                or integration_channel_present
+                or (
+                    redraft_live_check_digest is not None
+                    and redraft_live_check_digest != expected_live_check_digest
+                )
+            ):
+                raise CodingWorkspaceError(
+                    "coding_review_repair_binding_mismatch"
+                )
+            return
+        if redraft_live_check_digest is not None:
+            raise CodingWorkspaceError("coding_review_repair_binding_mismatch")
+        if latest_outcome == "redraft":
+            redraft_draft_only = (
+                state.get("draft_artifact") is not None
+                and all(
+                    state.get(field) is None
+                    for field in (
+                        "proposal",
+                        "validation",
+                        "approval_status",
+                        "approval_origin",
+                        "applied_result",
+                        "dependency_plan",
+                        "dependency_approval_status",
+                        "credential_request",
+                        "credential_approval_status",
+                        "artifact_ingress_plan",
+                        "artifact_approval_status",
+                        "validation_snapshot",
+                        "validation_binding_digest",
+                        "repair_approval_context",
+                    )
+                )
+            )
+            if (
+                review_channel_present
+                or integration_channel_present
+                or patch_approval_active
+                or applied_present
+                or (patch_channel_present and not redraft_draft_only)
+            ):
+                raise CodingWorkspaceError(
+                    "coding_review_repair_binding_mismatch"
+                )
+            return
+        if (
+            (review_channel_present or integration_channel_present)
+            and not applied_present
+        ):
+            raise CodingWorkspaceError("coding_review_repair_binding_mismatch")
+        if patch_approval_active and latest_outcome != "proposed":
+            raise CodingWorkspaceError("coding_review_repair_binding_mismatch")
+        if (
+            patch_channel_present
+            and not patch_approval_active
+            and not applied_present
+            and state.get("draft_artifact") is None
+        ):
+            raise CodingWorkspaceError("coding_review_repair_binding_mismatch")
 
 
 def _validate_review_checkpoint(
@@ -2708,17 +4189,17 @@ def _failed(
     repair_status: Literal["passed", "exhausted", "no_progress"] | None = None,
 ) -> CodingTerminalResult:
     validation = state.get("validation")
-    proposal = validation.proposal if validation is not None else None
+    proposal = getattr(validation, "proposal", None)
     preview = state.get("merge_preview")
     committed = state.get("commit_result")
     return CodingTerminalResult(
         status="failed",
         workspace_ref=state.get("workspace_ref"),
         base_commit=state.get("base_commit"),
-        patch_digest=(proposal.patch_digest if proposal is not None else None),
+        patch_digest=getattr(proposal, "patch_digest", None),
         changed_paths=(
             _approved_changed_paths(state)
-            or (proposal.changed_paths if proposal is not None else ())
+            or tuple(getattr(proposal, "changed_paths", ()))
         ),
         error_code=code,
         verification_status=(
@@ -2732,16 +4213,16 @@ def _failed(
         ),
         repair_history=_repair_history(state),
         source_commit=(
-            preview.source_commit
+            getattr(preview, "source_commit", None)
             if preview is not None
-            else committed.source_commit if committed is not None else None
+            else getattr(committed, "source_commit", None)
         ),
         expected_target_head=(
-            preview.expected_target_head if preview is not None else None
+            getattr(preview, "expected_target_head", None)
         ),
-        result_commit=(preview.result_commit if preview is not None else None),
+        result_commit=getattr(preview, "result_commit", None),
         merge_preview_digest=(
-            preview.merge_preview_digest if preview is not None else None
+            getattr(preview, "merge_preview_digest", None)
         ),
     )
 

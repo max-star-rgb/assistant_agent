@@ -28,6 +28,8 @@ from assistant_agent.coding.models import (
     CodingPatchValidation,
     CodingReviewInput,
     CodingReviewReport,
+    CodingReviewRepairAttempt,
+    CodingReviewRepairContext,
     CodingReviewerResult,
     CodingReviewTask,
     CodingRepairApprovalContext,
@@ -183,7 +185,7 @@ class CodingState(AgentState):
         Literal["legacy_v1", "immutable_manifest_v2"] | None
     ]
     review_snapshot_release_status: NotRequired[
-        Literal["active", "released"] | None
+        Literal["active", "released", "cleanup_pending"] | None
     ]
     review_input: NotRequired[CodingReviewInput | None]
     review_tasks: NotRequired[tuple[CodingReviewTask, ...]]
@@ -195,6 +197,24 @@ class CodingState(AgentState):
     review_validation_digest: NotRequired[str | None]
     review_decision_context: NotRequired[dict[str, JsonValue] | None]
     review_decision: NotRequired[Literal["approved", "rejected"] | None]
+    review_repair_count: NotRequired[int]
+    review_repair_status: NotRequired[
+        Literal["pending", "active", "exhausted"] | None
+    ]
+    review_repair_context: NotRequired[CodingReviewRepairContext | None]
+    review_repair_context_consumed: NotRequired[bool]
+    review_repair_projection: NotRequired[dict[str, JsonValue] | None]
+    review_repair_redraft_response: NotRequired[str | None]
+    review_repair_redraft_live_check_digest: NotRequired[str | None]
+    review_repair_history: NotRequired[list[CodingReviewRepairAttempt]]
+    review_repair_audit_report: NotRequired[CodingReviewReport | None]
+    review_repair_audit_evidence: NotRequired[tuple[CodingCommandEvidence, ...]]
+    review_repair_decision_summary: NotRequired[dict[str, JsonValue] | None]
+    review_repair_terminal_report: NotRequired[CodingReviewReport | None]
+    review_repair_terminal_evidence: NotRequired[tuple[CodingCommandEvidence, ...]]
+    review_repair_terminal_decision_summary: NotRequired[
+        dict[str, JsonValue] | None
+    ]
     integration_required: NotRequired[bool]
     commit_result: NotRequired[CodingCommitResult | None]
     merge_preview: NotRequired[CodingMergePreview | None]

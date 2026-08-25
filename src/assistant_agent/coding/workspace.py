@@ -1341,6 +1341,25 @@ class CodingWorkspaceService:
         )
         return CodingStatusResult(entries=tuple(output.splitlines()))
 
+    def changed_paths(self, workspace: CodingWorkspace) -> tuple[str, ...]:
+        output = self._run_git_bytes(
+            workspace.root,
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            error_code="workspace_git_failed",
+        )
+        paths: set[str] = set()
+        for record in (item for item in output.split(b"\x00") if item):
+            if len(record) < 4 or b"R" in record[:2] or b"C" in record[:2]:
+                raise CodingWorkspaceError("workspace_status_invalid")
+            try:
+                paths.add(record[3:].decode("utf-8"))
+            except UnicodeDecodeError as exc:
+                raise CodingWorkspaceError("workspace_status_invalid") from exc
+        return tuple(sorted(paths))
+
     def diff(self, workspace: CodingWorkspace) -> CodingDiffResult:
         output = self._run_git(
             workspace.root,

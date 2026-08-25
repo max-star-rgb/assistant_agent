@@ -129,6 +129,11 @@ def test_parent_graph_has_native_fast_planning_and_coding_branches(monkeypatch) 
             "coding_review_decision",
         }
         assert review_gate_nodes.issubset(coding_nodes)
+        review_repair_nodes = {
+            "consume_review_repair_budget",
+            "consume_review_repair_context",
+        }
+        assert review_repair_nodes.issubset(coding_nodes)
         assert {
             ("run_validation", "prepare_review_snapshot"),
             ("prepare_review_snapshot", "run_code_review"),
@@ -136,6 +141,21 @@ def test_parent_graph_has_native_fast_planning_and_coding_branches(monkeypatch) 
             ("coding_review_decision", "create_commit"),
             ("coding_review_decision", "summarize"),
         }.issubset(coding_edges)
+        assert {
+            target
+            for source, target in coding_edges
+            if source == "coding_review_decision"
+        } == {"consume_review_repair_budget", "create_commit", "summarize"}
+        assert {
+            target
+            for source, target in coding_edges
+            if source == "consume_review_repair_budget"
+        } == {"consume_review_repair_context", "summarize"}
+        assert {
+            target
+            for source, target in coding_edges
+            if source == "consume_review_repair_context"
+        } == {"inspect_and_draft", "summarize"}
         repair_lane_nodes = {
             "run_validation",
             "prepare_repair",
