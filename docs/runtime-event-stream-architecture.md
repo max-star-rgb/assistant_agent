@@ -285,8 +285,10 @@ Stage 5D 的 review repair checkpoint 必须绑定完整、可重建且不可变
 
 在消费 repair budget、消费 repair context 和向 inspect model 投影上下文前，Runtime 必须从 live workspace 重新 materialize immutable snapshot，并与冻结的 tree/workspace-diff/content identity 对照；仅检查 checkpoint state 或路径清单不足以授权 model call 或 budget side effect。临时复核 lease 在比较后释放，cleanup 失败只记录 `cleanup_pending`，不得替换原业务结论。`legacy_v1` 兼容只允许既有的 schema materialization 差异，不放宽 content identity。
 
-repair patch apply 前，live dirty paths 必须是上一轮 approved inventory 的子集，因此允许某个先前路径已经恢复到 base 后成为 ghost inventory；任何 live 新增未授权路径仍必须在 apply side effect 前拒绝。apply 后的实际 dirty paths 必须收敛为“上一轮 inventory 与当前 approved proposal paths”并集的子集，并以 live inventory 覆盖 checkpoint。
+review `respond` 接受时必须在 fresh snapshot 内容身份复核成功后，从同一 live workspace 取得 canonical source dirty-path inventory；该 inventory 写入 repair context、attempt、context/history digest 与 decision audit，并由 source validator 复核，不能从可累积、可伪造的 `approved_changed_paths` reducer state 取得。repair patch apply 前必须重新取得 live dirty paths，且只允许其属于“canonical source inventory 与当前 approved proposal paths”的并集；因此真实 source snapshot 已经消失的 ghost path 不会阻塞修复，而 checkpoint 同时伪造 path inventory 和 live 新路径仍在 apply side effect 前 fail closed。apply 后 actual dirty paths 继续以同一安全并集为上界收敛，并覆盖 checkpoint inventory。
 
 repair validator 按阶段校验 authorization channel：pending 和 projection checkpoint 不允许残留 current review、integration 或 patch approval channel；未 apply 的 active proposal 只允许与 latest `proposed` history 一致的唯一 patch authorization；已 apply 后才允许完整、由既有 review/integration validator 继续认证的 current review 或 integration channel。单个孤立字段、伪造 approval 或跨阶段混合状态一律 fail closed；明确合法的 consumed canonical projection checkpoint 必须可重放。
+
+Stage 5D repair 中既有 patch-approval HITL 的 `respond` 必须原子进入显式 `redraft` phase：清除 draft/proposal/validation、approval status/context/digest/origin 及全部下游 patch authorization marker，只保留规范化、有界且一次性投影的 user feedback 与 active canonical repair lineage。下一次 inspect 可合法消费该 feedback，产生的新 proposal 仍必须重新进入完整 patch approval；`redraft` phase 中任何孤立 approval marker 继续 fail closed。
 
 所有含 review repair history 的 terminal 都必须把 latest attempt 终结为 `terminal` 或 `exhausted`，并原子清除 active status、context 和 projection。`exhausted` 还必须保留最终 canonical review report、decision summary 与 validation evidence 供审计，并在 terminal cleanup 中释放不再需要的 snapshot lease；非 exhausted 终态不得把旧 source report 重新投影成当前 public review report。

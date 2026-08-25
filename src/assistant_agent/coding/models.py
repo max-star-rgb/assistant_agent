@@ -566,6 +566,7 @@ class CodingReviewRepairContext(BaseModel):
     report_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     validation_evidence_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     workspace_diff_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_dirty_paths: tuple[str, ...] = ()
     response: str = Field(min_length=1, max_length=MAX_CODING_REVIEW_REPAIR_RESPONSE_CHARS)
     response_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     findings_summary: tuple[CodingReviewRepairFindingSummary, ...] = Field(
@@ -590,6 +591,26 @@ class CodingReviewRepairContext(BaseModel):
     @classmethod
     def _tuple_summary(cls, value: object) -> object:
         return tuple(value) if isinstance(value, list) else value
+
+    @field_validator("source_dirty_paths", mode="before")
+    @classmethod
+    def _tuple_source_dirty_paths(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @field_validator("source_dirty_paths")
+    @classmethod
+    def _canonical_source_dirty_paths(
+        cls,
+        value: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("review repair source dirty paths must be unique")
+        for path in value:
+            _validate_relative_policy_path(
+                path,
+                label="review repair source dirty path",
+            )
+        return tuple(sorted(value))
 
     @model_validator(mode="after")
     def _canonical_bindings_match(self) -> "CodingReviewRepairContext":
@@ -631,11 +652,12 @@ class CodingReviewRepairAttempt(BaseModel):
     report_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     validation_evidence_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     workspace_diff_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_dirty_paths: tuple[str, ...] = ()
     response_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     finding_ids: tuple[str, ...] = Field(max_length=MAX_CODING_REVIEW_REPAIR_FINDINGS)
     context_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     created_at: datetime
-    outcome: Literal["pending", "proposed", "exhausted", "terminal"]
+    outcome: Literal["pending", "redraft", "proposed", "exhausted", "terminal"]
 
     @field_validator("finding_ids", mode="before")
     @classmethod
@@ -650,6 +672,26 @@ class CodingReviewRepairAttempt(BaseModel):
         if any(not _is_lower_hex_digest(item) for item in value):
             raise ValueError("review repair finding id is invalid")
         return value
+
+    @field_validator("source_dirty_paths", mode="before")
+    @classmethod
+    def _tuple_source_dirty_paths(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+    @field_validator("source_dirty_paths")
+    @classmethod
+    def _canonical_source_dirty_paths(
+        cls,
+        value: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("review repair source dirty paths must be unique")
+        for path in value:
+            _validate_relative_policy_path(
+                path,
+                label="review repair source dirty path",
+            )
+        return tuple(sorted(value))
 
     @field_validator("created_at")
     @classmethod

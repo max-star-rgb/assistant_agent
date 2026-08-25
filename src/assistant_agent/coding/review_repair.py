@@ -42,6 +42,7 @@ def build_review_repair_context(
     review_repair_count: int,
     response: object,
     history: Sequence[CodingReviewRepairAttempt] = (),
+    source_dirty_paths: object = (),
 ) -> CodingReviewRepairContext:
     """Bind one proposed repair to the final review report and budget state."""
 
@@ -69,6 +70,9 @@ def build_review_repair_context(
         raise ValueError("coding_review_repair_binding_mismatch")
     tree_digest = _required_digest(canonical_report, "tree_digest")
     patch_digest = _required_digest(canonical_report, "patch_digest")
+    normalized_source_dirty_paths = _canonical_source_dirty_paths(
+        source_dirty_paths
+    )
     findings_summary = _findings_summary(canonical_report.findings)
     findings_projection_digest = _model_canonical_digest(
         [item.model_dump(mode="json") for item in findings_summary]
@@ -93,6 +97,7 @@ def build_review_repair_context(
         report_digest=report_digest,
         validation_evidence_digest=validation_evidence_digest,
         workspace_diff_digest=workspace_diff_digest,
+        source_dirty_paths=normalized_source_dirty_paths,
         response=normalized_response,
         response_digest=review_response_digest(normalized_response),
         findings_summary=findings_summary,
@@ -135,11 +140,15 @@ def validate_review_repair_source(
     workspace_ref: object,
     base_commit: object,
     generation: object,
+    source_dirty_paths: object = (),
 ) -> CodingReviewRepairContext:
     """Bind a repair context to its complete canonical decision source."""
 
     normalized_context = _canonicalize_review_repair_context(context)
     canonical_report = canonicalize_review_repair_report(report)
+    normalized_source_dirty_paths = _canonical_source_dirty_paths(
+        source_dirty_paths
+    )
     if canonical_report.status != "findings" or (
         normalized_context.workspace_ref != workspace_ref
         or normalized_context.base_commit != base_commit
@@ -161,6 +170,7 @@ def validate_review_repair_source(
         or normalized_context.validation_evidence_digest
         != canonical_report.validation_evidence_digest
         or normalized_context.report_digest != canonical_report.report_digest
+        or normalized_context.source_dirty_paths != normalized_source_dirty_paths
         or normalized_context.findings_summary
         != _findings_summary(canonical_report.findings)
     ):
@@ -256,7 +266,8 @@ def validate_review_repair_checkpoint(
             if (
                 review_repair_context is not None
                 or len(normalized_history) != review_repair_count
-                or normalized_history[-1].outcome not in {"pending", "proposed"}
+                or normalized_history[-1].outcome
+                not in {"pending", "redraft", "proposed"}
             ):
                 raise ValueError("coding_review_repair_binding_mismatch")
             return review_repair_count, status, None, normalized_history
@@ -277,7 +288,8 @@ def validate_review_repair_checkpoint(
             or context.attempt != review_repair_count
             or len(normalized_history) != review_repair_count
             or not _attempt_matches_context(normalized_history[-1], context)
-            or normalized_history[-1].outcome not in {"pending", "proposed"}
+            or normalized_history[-1].outcome
+            not in {"pending", "redraft", "proposed"}
             or (
                 not review_repair_context_consumed
                 and review_repair_projection is not None
@@ -316,6 +328,7 @@ def _attempt_matches_context(
         and attempt.validation_evidence_digest
         == context.validation_evidence_digest
         and attempt.workspace_diff_digest == context.workspace_diff_digest
+        and attempt.source_dirty_paths == context.source_dirty_paths
         and attempt.response_digest == context.response_digest
         and attempt.finding_ids
         == tuple(finding.finding_id for finding in context.findings_summary)
@@ -355,6 +368,27 @@ def _required_digest(report: object, field: str) -> str:
     ):
         raise ValueError("coding_review_repair_binding_mismatch")
     return value
+
+
+def _canonical_source_dirty_paths(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (tuple, list)):
+        raise ValueError("coding_review_repair_binding_mismatch")
+    paths: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError("coding_review_repair_binding_mismatch")
+        parts = item.split("/")
+        if (
+            not item
+            or item != item.strip()
+            or item.startswith("/")
+            or any(part in {"", ".", "..", ".git"} for part in parts)
+            or any(character in item for character in ("\\", "\x00", "\n", "\r"))
+            or item in paths
+        ):
+            raise ValueError("coding_review_repair_binding_mismatch")
+        paths.append(item)
+    return tuple(sorted(paths))
 
 
 def _findings_summary(findings: object) -> tuple[CodingReviewRepairFindingSummary, ...]:
