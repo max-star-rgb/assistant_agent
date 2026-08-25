@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from hashlib import sha256
 import json
 import re
@@ -88,6 +88,85 @@ class CodingBehaviorDriverResult:
     review_tree_digest: str | None = None
     integration_tree_digest: str | None = None
     cleanup_pending: bool = False
+
+
+_DEBT_ISSUER = object()
+
+
+class ThreadCleanupDebt:
+    """Opaque, process-local capability for retrying one exact thread cleanup."""
+
+    __slots__ = (
+        "_client",
+        "_thread_id",
+        "_thread_digest",
+        "_identity_digest",
+        "_released",
+    )
+
+    def __init__(
+        self,
+        *,
+        client: CodingBehaviorAgentServerClient,
+        thread_id: str,
+        identity: str,
+        issuer: object,
+    ) -> None:
+        if issuer is not _DEBT_ISSUER:
+            raise TypeError("thread cleanup debt is store-issued only")
+        self._client = client
+        self._thread_id = thread_id
+        self._thread_digest = _digest(thread_id)
+        self._identity_digest = _digest(identity)
+        self._released = False
+
+    async def aretry(self) -> bool:
+        if self._released:
+            return True
+        self._released = await _delete_and_confirm_thread(
+            self._client,
+            self._thread_id,
+        )
+        return self._released
+
+    def retry(self) -> bool:
+        return asyncio.run(self.aretry())
+
+    def __reduce__(self) -> object:
+        raise TypeError("thread cleanup debt is not serializable")
+
+    def __repr__(self) -> str:
+        return (
+            "ThreadCleanupDebt(thread_digest="
+            f"{self._thread_digest!r}, identity_digest={self._identity_digest!r}, "
+            f"released={self._released!r})"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DriverOutcome:
+    """Public redacted result plus an optional non-serializable cleanup capability."""
+
+    result: CodingBehaviorDriverResult
+    _cleanup_debt: ThreadCleanupDebt | None = None
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.result, name)
+
+    @property
+    def cleanup_debt(self) -> ThreadCleanupDebt | None:
+        return self._cleanup_debt
+
+    def model_dump(self) -> dict[str, object]:
+        return {"result": asdict(self.result)}
+
+    def __repr__(self) -> str:
+        return (
+            "DriverOutcome(status="
+            f"{self.result.status!r}, error_code={self.result.error_code!r}, "
+            f"thread_digest={self.result.thread_digest!r}, "
+            f"cleanup_pending={self.result.cleanup_pending!r})"
+        )
 
 
 class _UnknownRunOutcome(RuntimeError):
@@ -238,14 +317,14 @@ class CodingBehaviorAgentServerDriver:
         self.max_interrupts = max_interrupts
         self.clock = clock or monotonic
 
-    def run(self, *, case: CodingBehaviorCase, policy: FixtureApprovalPolicy) -> CodingBehaviorDriverResult:
+    def run(self, *, case: CodingBehaviorCase, policy: FixtureApprovalPolicy) -> DriverOutcome:
         """Run from a synchronous CLI or runner boundary."""
 
         return asyncio.run(self.arun(case=case, policy=policy))
 
     async def arun(
         self, *, case: CodingBehaviorCase, policy: FixtureApprovalPolicy
-    ) -> CodingBehaviorDriverResult:
+    ) -> DriverOutcome:
         started = self.clock()
         deadline = started + case.max_runtime_seconds
         thread_id = ""
@@ -261,8 +340,8 @@ class CodingBehaviorAgentServerDriver:
         def elapsed_ms() -> int:
             return max(0, min(3_600_000, int((self.clock() - started) * 1000)))
 
-        def preflight_failed(code: str, category: str) -> CodingBehaviorDriverResult:
-            return CodingBehaviorDriverResult(
+        def preflight_failed(code: str, category: str) -> DriverOutcome:
+            return DriverOutcome(CodingBehaviorDriverResult(
                 status="failed",
                 terminal_status=None,
                 error_code=code,
@@ -273,7 +352,7 @@ class CodingBehaviorAgentServerDriver:
                 interrupt_count=0,
                 transitions=(),
                 elapsed_ms=elapsed_ms(),
-            )
+            ))
 
         if case != policy.case:
             return preflight_failed("coding_eval_case_invalid", "governance")
@@ -284,9 +363,31 @@ class CodingBehaviorAgentServerDriver:
                 raise TimeoutError
             return await asyncio.wait_for(factory(), timeout=remaining)
 
+        async def release(result: CodingBehaviorDriverResult) -> DriverOutcome:
+            if not thread_id:
+                return DriverOutcome(result)
+            if await _delete_and_confirm_thread(self.client, thread_id):
+                return DriverOutcome(replace(result, cleanup_pending=False))
+            failed_result = replace(
+                result,
+                status="failed",
+                error_code="coding_eval_cleanup_pending",
+                failure_category="cancelled",
+                cleanup_pending=True,
+            )
+            return DriverOutcome(
+                failed_result,
+                ThreadCleanupDebt(
+                    client=self.client,
+                    thread_id=thread_id,
+                    identity=policy.identity,
+                    issuer=_DEBT_ISSUER,
+                ),
+            )
+
         async def failed(
             code: str, category: str, *, cleanup_pending: bool = False
-        ) -> CodingBehaviorDriverResult:
+        ) -> DriverOutcome:
             nonlocal current_run_id
             if current_run_id and thread_id:
                 try:
@@ -311,7 +412,7 @@ class CodingBehaviorAgentServerDriver:
                     category = "cancelled"
                     cleanup_pending = True
                 current_run_id = None
-            return CodingBehaviorDriverResult(
+            result = CodingBehaviorDriverResult(
                 status="failed", terminal_status=None, error_code=code,
                 failure_category=category,  # type: ignore[arg-type]
                 thread_digest=_digest(thread_id) if thread_id else _digest("uncreated"),
@@ -320,6 +421,7 @@ class CodingBehaviorAgentServerDriver:
                 transitions=tuple(transitions), elapsed_ms=elapsed_ms(),
                 cleanup_pending=cleanup_pending,
             )
+            return await release(result)
 
         async def list_runs(
             awaiter: Callable[[Callable[[], Any]], Any],
@@ -389,6 +491,7 @@ class CodingBehaviorAgentServerDriver:
             response_id: str | None,
             *,
             timed_out: bool,
+            transport_failed: bool,
         ) -> str:
             nonlocal current_run_id
             async def cleanup_await(factory: Callable[[], Any]) -> Any:
@@ -457,6 +560,8 @@ class CodingBehaviorAgentServerDriver:
                 current_run_id = None
                 if not new_ids and timed_out:
                     raise TimeoutError
+                if not new_ids and transport_failed:
+                    raise ConnectionError("run create transport failed before discovery")
                 raise _UnknownRunOutcome(
                     "exclusive thread produced a non-unique run attempt"
                 )
@@ -478,6 +583,7 @@ class CodingBehaviorAgentServerDriver:
             callback_ids: list[str] = []
             response_id: str | None = None
             timed_out = False
+            transport_failed = False
             attempt_id = str(uuid4())
             request = dict(kwargs)
             request_metadata = dict(request.pop("metadata", {}) or {})
@@ -520,12 +626,13 @@ class CodingBehaviorAgentServerDriver:
             except TimeoutError:
                 timed_out = True
             except (ConnectionError, OSError, TransportError):
-                pass
+                transport_failed = True
             value = await reconcile_attempt(
                 baseline,
                 callback_ids,
                 response_id,
                 timed_out=timed_out,
+                transport_failed=transport_failed,
             )
             current_run_id = value
             terminal_run = await asyncio.wait_for(
@@ -548,15 +655,17 @@ class CodingBehaviorAgentServerDriver:
                 {"coding_eval_identity": policy.identity, "coding_eval_repo_id": policy.repository_id, "coding_eval_case_id": case.case_id},
                 expected_graph_id=ASSISTANT_GRAPH_ID,
             )
+            thread_id = str(uuid4())
             thread = await bounded(
                 lambda: self.client.threads.create(
                     metadata=metadata,
+                    thread_id=thread_id,
+                    if_exists="reject",
                     graph_id=ASSISTANT_GRAPH_ID,
                 )
             )
             require_thread_graph_identity(thread, expected_graph_id=ASSISTANT_GRAPH_ID)
-            thread_id = str(thread.get("thread_id", ""))
-            if not thread_id or not _thread_binding_matches(
+            if thread.get("thread_id") != thread_id or not _thread_binding_matches(
                 thread,
                 identity=policy.identity,
                 repository_id=policy.repository_id,
@@ -620,7 +729,7 @@ class CodingBehaviorAgentServerDriver:
                     if terminal.get("base_commit") != policy.fixture.base_commit:
                         return await failed("coding_eval_repository_not_bound", "permission")
                     transitions.append(_transition(len(transitions) + 1, "terminal", state))
-                    return CodingBehaviorDriverResult(
+                    return await release(CodingBehaviorDriverResult(
                         status="completed", terminal_status=terminal_status, error_code=None, failure_category="none",
                         thread_digest=_digest(thread_id), run_digests=tuple(_digest(value) for value in run_ids),
                         interrupt_kinds=tuple(kinds), interrupt_count=len(kinds), transitions=tuple(transitions), elapsed_ms=elapsed_ms(),
@@ -628,7 +737,7 @@ class CodingBehaviorAgentServerDriver:
                         validation_tree_digest=_nested_object_id(values, "validation_snapshot", "tree_digest"),
                         review_tree_digest=_nested_object_id(values, "review_report", "tree_digest"),
                         integration_tree_digest=_nested_object_id(values, "merge_result", "result_tree"),
-                    )
+                    ))
                 interrupt_id, payload = interrupt
                 try:
                     payload_digest = _payload_digest(payload)
@@ -688,9 +797,8 @@ class CodingBehaviorAgentServerDriver:
                 )
         except _RunCleanupPending:
             return await failed(
-                "coding_eval_cleanup_pending",
-                "cancelled",
-                cleanup_pending=True,
+                "coding_eval_unknown_run_outcome",
+                "governance",
             )
         except _UnknownRunOutcome:
             return await failed(
@@ -709,6 +817,31 @@ class CodingBehaviorAgentServerDriver:
             return await failed("coding_eval_repository_not_bound", "permission")
         except Exception:
             return await failed("coding_eval_terminal_mismatch", "terminal")
+
+async def _delete_and_confirm_thread(
+    client: CodingBehaviorAgentServerClient,
+    thread_id: str,
+) -> bool:
+    try:
+        await asyncio.wait_for(client.threads.delete(thread_id), timeout=5.0)
+    except KeyError:
+        return True
+    except HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return True
+        return False
+    except Exception:
+        return False
+    try:
+        await asyncio.wait_for(client.threads.get(thread_id), timeout=5.0)
+    except KeyError:
+        return True
+    except HTTPStatusError as exc:
+        return exc.response.status_code == 404
+    except Exception:
+        return False
+    return False
+
 
 def _thread_owner(thread: Mapping[str, Any]) -> object:
     metadata = thread.get("metadata")
@@ -809,6 +942,7 @@ def _nested_object_id(values: Mapping[str, Any], object_key: str, field: str) ->
 
 __all__ = [
     "CodingBehaviorAgentServerClient", "CodingBehaviorAgentServerDriver",
-    "CodingBehaviorDriverResult", "CodingBehaviorTransitionEvidence", "FixtureApprovalPolicy",
+    "CodingBehaviorDriverResult", "CodingBehaviorTransitionEvidence", "DriverOutcome",
+    "ThreadCleanupDebt", "FixtureApprovalPolicy",
     "FixtureCapability", "FixtureStore",
 ]
