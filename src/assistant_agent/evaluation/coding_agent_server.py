@@ -931,8 +931,10 @@ def _checkpoint_id(state: Mapping[str, Any]) -> str:
 
 
 def _payload_digest(payload: Mapping[str, Any]) -> str:
+    _require_canonical_payload_value(payload, depth=0)
     encoded = json.dumps(
         payload,
+        allow_nan=False,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -940,6 +942,37 @@ def _payload_digest(payload: Mapping[str, Any]) -> str:
     if len(encoded) > _MAX_EVIDENCE_BYTES * 4:
         raise ValueError("interrupt payload exceeds its input budget")
     return sha256(encoded).hexdigest()
+
+
+def _require_canonical_payload_value(value: object, *, depth: int) -> None:
+    if depth > 8:
+        raise ValueError("interrupt payload exceeds its nesting budget")
+    if value is None or type(value) in {bool, int}:
+        return
+    if isinstance(value, str):
+        if (
+            len(value) > _MAX_EVIDENCE_BYTES * 4
+            or len(value.encode("utf-8")) > _MAX_EVIDENCE_BYTES * 4
+            or any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in value)
+        ):
+            raise ValueError("interrupt payload contains an unsafe string")
+        return
+    if isinstance(value, Mapping):
+        if len(value) > 128:
+            raise ValueError("interrupt payload exceeds its mapping budget")
+        for child_key, child_value in value.items():
+            if not isinstance(child_key, str):
+                raise TypeError("interrupt payload keys must be strings")
+            _require_canonical_payload_value(child_key, depth=depth + 1)
+            _require_canonical_payload_value(child_value, depth=depth + 1)
+        return
+    if isinstance(value, (list, tuple)):
+        if len(value) > 128:
+            raise ValueError("interrupt payload exceeds its sequence budget")
+        for child in value:
+            _require_canonical_payload_value(child, depth=depth + 1)
+        return
+    raise TypeError("interrupt payload contains a noncanonical JSON value")
 
 
 def _interrupt_kind(payload: Mapping[str, Any]) -> str | None:

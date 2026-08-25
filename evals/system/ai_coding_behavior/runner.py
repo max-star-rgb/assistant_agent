@@ -78,6 +78,7 @@ _SANDBOX_IMAGE_PATTERN = (
 )
 _MAX_ARTIFACT_BYTES = 1_048_576
 _MAX_DRIVER_EVIDENCE_BYTES = 16_384
+_MAX_MANIFEST_BYTES = 262_144
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _MANIFEST_PATH = Path(__file__).with_name("cases.json")
 _OUTPUT_ROOT = _REPO_ROOT / ".data" / "evals" / "system" / "ai_coding_behavior"
@@ -131,14 +132,41 @@ _HELD_OUT_PROGRAMS: Mapping[str, str] = {
 def load_baseline_suite(path: Path = _MANIFEST_PATH) -> CodingBehaviorSuite:
     """Load only the tracked, exact baseline suite."""
 
-    try:
-        suite = CodingBehaviorSuite.model_validate_json(
-            path.read_text(encoding="utf-8")
+    if path != _MANIFEST_PATH:
+        raise CodingBehaviorRunnerConfigurationError(
+            "coding behavior suite must use the tracked manifest"
         )
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
+        )
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_size <= 0
+            or metadata.st_size > _MAX_MANIFEST_BYTES
+        ):
+            raise CodingBehaviorRunnerConfigurationError(
+                "coding behavior suite manifest is not a bounded regular file"
+            )
+        payload = os.read(descriptor, _MAX_MANIFEST_BYTES + 1)
+        if len(payload) != metadata.st_size:
+            raise CodingBehaviorRunnerConfigurationError(
+                "coding behavior suite manifest changed while loading"
+            )
+        suite = CodingBehaviorSuite.model_validate_json(payload)
+    except CodingBehaviorRunnerConfigurationError:
+        raise
     except (OSError, ValidationError) as exc:
         raise CodingBehaviorRunnerConfigurationError(
             "coding behavior suite is invalid"
         ) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
     if suite.suite_id != BASELINE_SUITE_ID:
         raise CodingBehaviorRunnerConfigurationError(
             f"system eval requires exact suite {BASELINE_SUITE_ID}"
@@ -1779,7 +1807,11 @@ def _require_redacted_artifact_value(value: object, *, key: str = "") -> None:
     }
     if isinstance(value, dict):
         for child_key, child in value.items():
-            if not isinstance(child_key, str) or child_key in forbidden_keys:
+            if (
+                not isinstance(child_key, str)
+                or child_key in forbidden_keys
+                or _artifact_key_is_secret_like(child_key)
+            ):
                 raise CodingBehaviorRunnerConfigurationError(
                     "artifact contains a forbidden evidence field"
                 )
@@ -1792,8 +1824,12 @@ def _require_redacted_artifact_value(value: object, *, key: str = "") -> None:
     if isinstance(value, str):
         if (
             len(value) > 2_000
+            or len(value.encode("utf-8")) > 8_000
             or value != __import__("unicodedata").normalize("NFC", value)
-            or any(ord(character) < 32 for character in value)
+            or any(
+                __import__("unicodedata").category(character) in {"Cc", "Cf"}
+                for character in value
+            )
             or value.startswith(("/", "~", "file://"))
             or any(
                 marker in value.lower()
@@ -1803,6 +1839,33 @@ def _require_redacted_artifact_value(value: object, *, key: str = "") -> None:
             raise CodingBehaviorRunnerConfigurationError(
                 f"artifact string is unsafe for field {key or '<root>'}"
             )
+
+
+def _artifact_key_is_secret_like(value: str) -> bool:
+    unicodedata = __import__("unicodedata")
+    if (
+        not value
+        or len(value) > 128
+        or unicodedata.normalize("NFC", value) != value
+        or any(unicodedata.category(character) in {"Cc", "Cf"} for character in value)
+    ):
+        return True
+    compact = "".join(character for character in value.casefold() if character.isalnum())
+    return any(
+        marker in compact
+        for marker in (
+            "apikey",
+            "accesstoken",
+            "refreshtoken",
+            "authorization",
+            "password",
+            "passwd",
+            "secret",
+            "credential",
+            "privatekey",
+            "sessioncookie",
+        )
+    )
 
 
 def _prepare_owned_directory(path: Path) -> None:

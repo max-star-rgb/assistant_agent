@@ -306,6 +306,8 @@ thin_references = [
 ]
 verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python scripts/run_system_calendar_create_eval.py --dry-run",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python scripts/run_system_ai_coding_behavior_eval.py --dry-run --suite-id baseline-v1",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/ai-coding-behavior-eval",
   "python -m compileall -q src/assistant_agent/evaluation evals/system",
 ]
 exclusive_literals = []

@@ -313,6 +313,13 @@ thread metadata 仍按 auth owner 限制，run 与 Store 沿用同一 principal�
 
 ## `/agent-service/v1`
 
+Stage 5E behavior eval 使用同一 custom app 的 authenticated
+`/internal/evaluation/coding-attestation` 只读端点取得实际进程 composition。该端点只接受 loopback developer
+principal，返回非 secret、严格有界的 graph/provider/model、boot nonce、coding registry 与 repository config
+digest；它不创建 thread/run，不审批 interrupt，也不暴露 repository path 或 Provider secret。评测 runner 将其
+canonical digest 冻结进 evaluation checkpoint 并在 case 前后重新采样；attestation 只证明 Server composition，
+不拥有 CodingGraph 决策语义或替代 checkpoint guard。
+
 custom route 只负责：
 
 - 解析、校验 vendor frame；

@@ -91,6 +91,14 @@ def coding_repository_config_digest(repository: CodingRepositoryConfig) -> str:
     ).hexdigest()
 
 
+def execution_attestation_digest(
+    attestation: AgentServerExecutionAttestation,
+) -> str:
+    """Return the stable composition digest without coupling callers to serialization."""
+
+    return attestation.canonical_digest()
+
+
 def coding_registry_digest(
     repositories: Mapping[str, CodingRepositoryConfig],
 ) -> tuple[str, dict[str, str]]:
@@ -129,4 +137,5 @@ __all__ = [
     "build_execution_attestation",
     "coding_registry_digest",
     "coding_repository_config_digest",
+    "execution_attestation_digest",
 ]

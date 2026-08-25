@@ -30,6 +30,7 @@ from assistant_agent.coding.workspace import CodingWorkspaceService
 from assistant_agent.agent_server.attestation import (
     AgentServerExecutionAttestation,
     build_execution_attestation,
+    execution_attestation_digest,
 )
 from assistant_agent.config import ProviderConfig
 from assistant_agent.context.token_counter import create_context_token_counter
@@ -177,7 +178,9 @@ class AgentServerExecutionOwner:
             integration_service=coding_integration_service,
             model_call_limit=config.max_tool_iterations,
             tool_call_limit=config.max_tool_iterations,
-            execution_attestation_digest=execution_attestation.canonical_digest(),
+            execution_attestation_digest=execution_attestation_digest(
+                execution_attestation
+            ),
         )
         graph = build_assistant_root_graph(
             memory_backend=memory_backend,
