@@ -20,8 +20,8 @@ from assistant_agent.evaluation.coding_behavior import (
 )
 
 
-_WORK_ROOT_SUFFIX = (".data", "evals", "system", "ai_coding_behavior", "work")
 _MAX_GIT_OUTPUT_BYTES = 65_536
+_DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,11 +43,69 @@ class CodingBehaviorFixture:
     capability_token: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class _OwnedFixture:
     fixture: CodingBehaviorFixture
+    repository_name: str
     repository_device: int
     repository_inode: int
+    tombstone_name: str | None = None
+
+
+class FixtureLease:
+    """Short-lived descriptor lease for one exact root/repository incarnation."""
+
+    __slots__ = ("_store", "_record", "root_fd", "repository_fd", "_closed")
+
+    def __init__(
+        self,
+        store: "CodingBehaviorFixtureStore",
+        record: _OwnedFixture,
+        root_fd: int,
+        repository_fd: int,
+    ) -> None:
+        self._store = store
+        self._record = record
+        self.root_fd = root_fd
+        self.repository_fd = repository_fd
+        self._closed = False
+
+    @property
+    def repository(self) -> Path:
+        return Path(f"/proc/self/fd/{self.repository_fd}")
+
+    @property
+    def repository_inode(self) -> int:
+        return self._record.repository_inode
+
+    @property
+    def pass_fds(self) -> tuple[int, ...]:
+        return (self.repository_fd,)
+
+    def validate(self) -> None:
+        if self._closed:
+            raise ValueError("fixture lease is closed")
+        self._store._validate_lease(self)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        os.close(self.repository_fd)
+        os.close(self.root_fd)
+
+    def __enter__(self) -> "FixtureLease":
+        self.validate()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except OSError:
+            pass
 
 
 def _definition(files: Mapping[str, str], forbidden: tuple[str, ...]) -> _FixtureDefinition:
@@ -130,14 +188,17 @@ def governed_git_environment() -> dict[str, str]:
     }
 
 
-def _run_git(repository: Path, *arguments: str) -> bytes:
+def _run_git_descriptor(repository_fd: int, *arguments: str) -> bytes:
+    repository = f"/proc/self/fd/{repository_fd}"
     try:
         completed = subprocess.run(
-            ("git", "-C", str(repository), *arguments),
+            ("git", *arguments),
+            cwd=repository,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=10,
             env=governed_git_environment(),
+            pass_fds=(repository_fd,),
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -174,19 +235,41 @@ def _contains_symlink(path: Path) -> bool:
 
 
 class CodingBehaviorFixtureStore:
-    """Own fixture repositories beneath the one evaluation work-root suffix."""
+    """Own an fd-anchored management root beneath a caller-owned safe parent."""
 
-    def __init__(self, work_root: Path) -> None:
-        candidate = Path(work_root)
-        if tuple(candidate.parts[-len(_WORK_ROOT_SUFFIX) :]) != _WORK_ROOT_SUFFIX:
-            raise ValueError("fixture work root must use the trusted evaluation suffix")
-        if _contains_symlink(candidate):
-            raise ValueError("fixture work root cannot traverse a symlink")
-        candidate.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if candidate.is_symlink():
-            raise ValueError("fixture work root cannot be a symlink")
-        self.root = candidate.resolve(strict=True)
-        root_stat = self.root.stat()
+    def __init__(self, safe_parent: Path) -> None:
+        candidate = Path(safe_parent)
+        if not candidate.is_dir() or candidate.is_symlink():
+            raise ValueError("fixture store requires an existing safe parent")
+        if not shutil.rmtree.avoids_symlink_attacks:
+            raise ValueError("fixture store requires fd-safe cleanup support")
+        try:
+            self._parent_fd = os.open(candidate, _DIRECTORY_FLAGS)
+        except OSError as exc:
+            raise ValueError("fixture store requires an existing safe parent") from exc
+        parent_stat = os.fstat(self._parent_fd)
+        self._parent_device = parent_stat.st_dev
+        self._parent_inode = parent_stat.st_ino
+        self.parent = candidate.resolve(strict=True)
+        created = Path(
+            tempfile.mkdtemp(
+                prefix="ai-coding-behavior-",
+                dir=f"/proc/self/fd/{self._parent_fd}",
+            )
+        )
+        self._root_name = created.name
+        try:
+            self._root_fd = os.open(
+                self._root_name,
+                _DIRECTORY_FLAGS,
+                dir_fd=self._parent_fd,
+            )
+        except OSError:
+            shutil.rmtree(self._root_name, dir_fd=self._parent_fd)
+            os.close(self._parent_fd)
+            raise
+        self.root = self.parent / self._root_name
+        root_stat = os.fstat(self._root_fd)
         self._root_device = root_stat.st_dev
         self._root_inode = root_stat.st_ino
         self._store_nonce = secrets.token_bytes(32)
@@ -199,24 +282,41 @@ class CodingBehaviorFixtureStore:
         definition = TRUSTED_FIXTURE_CATALOG.get(fixture_id)
         if definition is None:
             raise ValueError("fixture_id is not a trusted fixture")
-        repository = Path(tempfile.mkdtemp(prefix=f"{fixture_id}-", dir=self.root))
+        self._verify_root_identity()
+        created = Path(
+            tempfile.mkdtemp(
+                prefix=f"{fixture_id}-",
+                dir=f"/proc/self/fd/{self._root_fd}",
+            )
+        )
+        repository_name = created.name
+        repository = self.root / repository_name
+        repository_fd = os.open(
+            repository_name,
+            _DIRECTORY_FLAGS,
+            dir_fd=self._root_fd,
+        )
         try:
             for relative, content in definition.files.items():
-                path = repository.joinpath(*_validate_static_path(relative).parts)
+                path = Path(f"/proc/self/fd/{repository_fd}").joinpath(
+                    *_validate_static_path(relative).parts
+                )
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(content, encoding="utf-8", newline="\n")
-            _run_git(repository, "init", "-b", "main")
-            _run_git(repository, "config", "user.name", "Assistant Agent Eval")
-            _run_git(repository, "config", "user.email", "eval@invalid.local")
-            _run_git(repository, "config", "core.hooksPath", os.devnull)
-            _run_git(repository, "add", "--all")
-            _run_git(repository, "commit", "-m", "fixture baseline")
-            base_commit = _run_git(repository, "rev-parse", "HEAD").decode().strip()
-            base_tree = _run_git(repository, "rev-parse", "HEAD^{tree}").decode().strip()
+            _run_git_descriptor(repository_fd, "init", "-b", "main")
+            _run_git_descriptor(repository_fd, "config", "user.name", "Assistant Agent Eval")
+            _run_git_descriptor(repository_fd, "config", "user.email", "eval@invalid.local")
+            _run_git_descriptor(repository_fd, "config", "core.hooksPath", os.devnull)
+            _run_git_descriptor(repository_fd, "add", "--all")
+            _run_git_descriptor(repository_fd, "commit", "-m", "fixture baseline")
+            base_commit = _run_git_descriptor(repository_fd, "rev-parse", "HEAD").decode().strip()
+            base_tree = _run_git_descriptor(repository_fd, "rev-parse", "HEAD^{tree}").decode().strip()
             forbidden = tuple(
                 (
                     path,
-                    sha256(_run_git(repository, "ls-tree", "HEAD", "--", path)).hexdigest(),
+                    sha256(
+                        _run_git_descriptor(repository_fd, "ls-tree", "HEAD", "--", path)
+                    ).hexdigest(),
                 )
                 for path in definition.forbidden_paths
             )
@@ -226,7 +326,7 @@ class CodingBehaviorFixtureStore:
             fixture = CodingBehaviorFixture(
                 case_id=case.case_id,
                 fixture_id=fixture_id,
-                repository=repository.resolve(strict=True),
+                repository=repository,
                 base_commit=base_commit,
                 base_tree_digest=base_tree,
                 forbidden_entry_digests=forbidden,
@@ -234,22 +334,60 @@ class CodingBehaviorFixtureStore:
                 case_binding_digest=CodingBehaviorCaseBinding.from_case(case).manifest_digest,
                 capability_token=capability_token,
             )
-            repository_stat = fixture.repository.stat()
+            repository_stat = os.fstat(repository_fd)
             self._owned[capability_token] = _OwnedFixture(
                 fixture=fixture,
+                repository_name=repository_name,
                 repository_device=repository_stat.st_dev,
                 repository_inode=repository_stat.st_ino,
             )
             return fixture
         except BaseException:
-            self._remove_owned_repository(repository)
+            shutil.rmtree(repository_name, dir_fd=self._root_fd)
             raise
+        finally:
+            os.close(repository_fd)
 
     def resolve(
         self,
         fixture: CodingBehaviorFixture,
         case: CodingBehaviorCase,
-    ) -> CodingBehaviorFixture:
+    ) -> FixtureLease:
+        record = self._resolve_record(fixture, case)
+        root_fd = -1
+        repository_fd = -1
+        try:
+            root_fd = os.open(
+                self._root_name,
+                _DIRECTORY_FLAGS,
+                dir_fd=self._parent_fd,
+            )
+            repository_fd = os.open(
+                record.repository_name,
+                _DIRECTORY_FLAGS,
+                dir_fd=root_fd,
+            )
+            lease = FixtureLease(self, record, root_fd, repository_fd)
+            lease.validate()
+            return lease
+        except OSError as exc:
+            if repository_fd >= 0:
+                os.close(repository_fd)
+            if root_fd >= 0:
+                os.close(root_fd)
+            raise ValueError("fixture lease incarnation changed") from exc
+        except BaseException:
+            if repository_fd >= 0:
+                os.close(repository_fd)
+            if root_fd >= 0:
+                os.close(root_fd)
+            raise
+
+    def _resolve_record(
+        self,
+        fixture: CodingBehaviorFixture,
+        case: CodingBehaviorCase,
+    ) -> _OwnedFixture:
         self._verify_root_identity()
         owned = self._owned.get(fixture.capability_token)
         if owned is None or owned.fixture != fixture:
@@ -261,59 +399,113 @@ class CodingBehaviorFixtureStore:
             or fixture.case_binding_digest != expected_binding.manifest_digest
         ):
             raise ValueError("fixture capability case binding mismatch")
-        try:
-            repository_stat = fixture.repository.stat()
-            fixture.repository.resolve(strict=True).relative_to(self.root)
-        except (OSError, ValueError) as exc:
-            raise ValueError("fixture capability repository is unavailable") from exc
-        if (
-            fixture.repository.is_symlink()
-            or fixture.repository.parent != self.root
-            or repository_stat.st_dev != owned.repository_device
-            or repository_stat.st_ino != owned.repository_inode
-        ):
-            raise ValueError("fixture capability repository identity mismatch")
-        return fixture
+        if owned.tombstone_name is not None:
+            raise ValueError("fixture capability cleanup pending")
+        return owned
 
     def cleanup(
         self,
         fixture: CodingBehaviorFixture,
         case: CodingBehaviorCase,
     ) -> None:
-        self.resolve(fixture, case)
+        self._verify_root_identity()
+        owned = self._owned.get(fixture.capability_token)
+        if owned is None or owned.fixture != fixture:
+            raise ValueError("fixture capability is not issued by this store")
+        expected_binding = CodingBehaviorCaseBinding.from_case(case)
+        if fixture.case_binding_digest != expected_binding.manifest_digest:
+            raise ValueError("fixture capability case binding mismatch")
+        if owned.tombstone_name is None:
+            lease = self.resolve(fixture, case)
+            lease.close()
+            tombstone = f".cleanup-{fixture.capability_token}"
+            try:
+                os.rename(
+                    owned.repository_name,
+                    tombstone,
+                    src_dir_fd=self._root_fd,
+                    dst_dir_fd=self._root_fd,
+                )
+            except OSError as exc:
+                raise ValueError("fixture cleanup pending") from exc
+            owned.tombstone_name = tombstone
+        assert owned.tombstone_name is not None
+        tombstone_fd = -1
+        try:
+            tombstone_fd = os.open(
+                owned.tombstone_name,
+                _DIRECTORY_FLAGS,
+                dir_fd=self._root_fd,
+            )
+            tombstone_stat = os.fstat(tombstone_fd)
+            if (
+                tombstone_stat.st_dev != owned.repository_device
+                or tombstone_stat.st_ino != owned.repository_inode
+            ):
+                raise ValueError("fixture cleanup pending")
+            os.close(tombstone_fd)
+            tombstone_fd = -1
+            shutil.rmtree(owned.tombstone_name, dir_fd=self._root_fd)
+        except (OSError, ValueError) as exc:
+            raise ValueError("fixture cleanup pending") from exc
+        finally:
+            if tombstone_fd >= 0:
+                os.close(tombstone_fd)
         self._owned.pop(fixture.capability_token, None)
-        self._remove_owned_repository(fixture.repository)
 
     def _verify_root_identity(self) -> None:
         try:
-            root_stat = self.root.stat()
+            parent_stat = os.fstat(self._parent_fd)
+            root_stat = os.fstat(self._root_fd)
+            namespace_root_fd = os.open(
+                self._root_name,
+                _DIRECTORY_FLAGS,
+                dir_fd=self._parent_fd,
+            )
+            namespace_root_stat = os.fstat(namespace_root_fd)
+            os.close(namespace_root_fd)
         except OSError as exc:
             raise ValueError("fixture store root identity changed") from exc
         if (
-            self.root.is_symlink()
+            parent_stat.st_dev != self._parent_device
+            or parent_stat.st_ino != self._parent_inode
             or root_stat.st_dev != self._root_device
             or root_stat.st_ino != self._root_inode
+            or namespace_root_stat.st_dev != self._root_device
+            or namespace_root_stat.st_ino != self._root_inode
         ):
             raise ValueError("fixture store root identity changed")
 
-    def _remove_owned_repository(self, repository: Path) -> None:
-        candidate = Path(repository)
-        if candidate.is_symlink():
-            raise ValueError("refusing to clean a symlink fixture repository")
+    def _validate_lease(self, lease: FixtureLease) -> None:
+        self._verify_root_identity()
+        record = lease._record
         try:
-            resolved = candidate.resolve(strict=False)
-            resolved.relative_to(self.root)
-        except ValueError as exc:
-            raise ValueError("refusing to clean a repository outside fixture root") from exc
-        if resolved == self.root or resolved.parent != self.root:
-            raise ValueError("refusing to clean a repository outside fixture root")
-        if resolved.exists():
-            shutil.rmtree(resolved)
+            lease_root_stat = os.fstat(lease.root_fd)
+            lease_repository_stat = os.fstat(lease.repository_fd)
+            namespace_repository_fd = os.open(
+                record.repository_name,
+                _DIRECTORY_FLAGS,
+                dir_fd=lease.root_fd,
+            )
+            namespace_repository_stat = os.fstat(namespace_repository_fd)
+            os.close(namespace_repository_fd)
+        except OSError as exc:
+            raise ValueError("fixture lease incarnation changed") from exc
+        if (
+            lease_root_stat.st_dev != self._root_device
+            or lease_root_stat.st_ino != self._root_inode
+            or lease_repository_stat.st_dev != record.repository_device
+            or lease_repository_stat.st_ino != record.repository_inode
+            or namespace_repository_stat.st_dev != record.repository_device
+            or namespace_repository_stat.st_ino != record.repository_inode
+        ):
+            raise ValueError("fixture lease incarnation changed")
 
 
 __all__ = [
     "CodingBehaviorFixture",
     "CodingBehaviorFixtureStore",
+    "FixtureLease",
     "TRUSTED_FIXTURE_CATALOG",
     "governed_git_environment",
 ]
