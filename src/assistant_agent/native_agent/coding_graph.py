@@ -465,13 +465,29 @@ def build_coding_graph(
                     )
                 ):
                     raise ValueError("coding_review_repair_binding_mismatch")
-            except (TypeError, ValueError):
-                return {
+                live_matches, review_repair_live_release_status = (
+                    _review_repair_live_workspace_matches(
+                        state,
+                        workspace,
+                        runtime,
+                        config,
+                        workspace_service,
+                    )
+                )
+                if not live_matches:
+                    raise ValueError("coding_review_repair_binding_mismatch")
+            except (CodingWorkspaceError, TypeError, ValueError):
+                failed_update = {
                     "coding_result": _failed(
                         state,
                         "coding_review_repair_binding_mismatch",
                     )
                 }
+                if review_repair_live_release_status == "cleanup_pending":
+                    failed_update["review_snapshot_release_status"] = (
+                        "cleanup_pending"
+                    )
+                return failed_update
             call_messages.append(
                 HumanMessage(
                     content=redraft_response,
