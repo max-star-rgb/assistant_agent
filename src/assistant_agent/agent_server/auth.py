@@ -200,36 +200,62 @@ async def authorize_thread_search(
 async def authorize_run_create(
     ctx: Auth.types.AuthContext,
     value: Auth.types.on.threads.create_run.value,
-) -> Auth.types.FilterType:
+) -> Auth.types.FilterType | bool:
     metadata = value.setdefault("metadata", {})
     metadata["owner"] = str(ctx.user.identity)
     if str(value.get("assistant_id")) == MEMORY_GRAPH_ID:
         return {"owner": str(ctx.user.identity)}
     context = value.setdefault("context", {})
-    token = context.pop(_EVALUATION_TOKEN_KEY, None)
-    repository_id = context.pop("evaluation_repository_id", None)
-    case_id = context.pop("evaluation_case_id", None)
-    context.pop("evaluation_execution_attestation_digest", None)
-    requested_evaluation = context.get("entry_profile") == "evaluation"
-    trusted = False
-    if requested_evaluation and isinstance(token, str) and isinstance(repository_id, str) and isinstance(case_id, str):
+    if not isinstance(context, dict):
+        return False
+    evaluation_fields = {
+        _EVALUATION_TOKEN_KEY,
+        "evaluation_repository_id",
+        "evaluation_case_id",
+        "evaluation_execution_attestation_digest",
+    }
+    requested_evaluation = context.get("entry_profile") == "evaluation" or bool(
+        evaluation_fields.intersection(context)
+    )
+    if requested_evaluation:
+        if set(context) != {
+            "entry_profile",
+            "assistant_execution_mode",
+            _EVALUATION_TOKEN_KEY,
+            "evaluation_repository_id",
+            "evaluation_case_id",
+        } or context.get("entry_profile") != "evaluation" or context.get(
+            "assistant_execution_mode"
+        ) != "coding":
+            return False
+        token = context.get(_EVALUATION_TOKEN_KEY)
+        repository_id = context.get("evaluation_repository_id")
+        case_id = context.get("evaluation_case_id")
+        if not (
+            isinstance(token, str)
+            and isinstance(repository_id, str)
+            and isinstance(case_id, str)
+        ):
+            return False
         try:
             digest = execution_attestation_digest(
                 get_native_assistant_execution_attestation()
             )
         except RuntimeError:
-            digest = ""
-        trusted = verify_evaluation_context_token(
+            return False
+        if not verify_evaluation_context_token(
             token,
             identity=str(ctx.user.identity),
             repository_id=repository_id,
             case_id=case_id,
             attestation_digest=digest,
+        ):
+            return False
+        context.clear()
+        context.update(
+            entry_profile="evaluation",
+            assistant_execution_mode="coding",
         )
-        if trusted:
-            context["entry_profile"] = "evaluation"
-    if requested_evaluation and not trusted:
-        context["entry_profile"] = "agent_server"
     return {
         "owner": str(ctx.user.identity),
         THREAD_GRAPH_METADATA_KEY: ASSISTANT_GRAPH_ID,
