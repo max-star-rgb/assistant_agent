@@ -26,6 +26,7 @@ _MAX_CLEANUP_ENTRIES = 4096
 _MAX_CLEANUP_FILES = 2048
 _MAX_CLEANUP_DEPTH = 32
 _MAX_CLEANUP_BYTES = 64 * 1024 * 1024
+_MAX_FIXTURE_SLOTS = 32
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +55,8 @@ class _OwnedFixture:
     repository_device: int
     repository_inode: int
     cleanup_identity_drift: bool = False
+    state: Literal["initializing", "active", "cleanup_pending"] = "initializing"
+    cleanup_inventory: tuple["_CleanupInventoryEntry", ...] | None = None
 
 
 class _CleanupIdentityDrift(RuntimeError):
@@ -65,6 +68,25 @@ class _CleanupBudget:
     entries: int = 0
     files: int = 0
     bytes: int = 0
+
+
+@dataclass(frozen=True, order=True, slots=True)
+class _CleanupInventoryEntry:
+    relative_path: str
+    entry_type: Literal["directory", "regular"]
+    device: int
+    inode: int
+    mode: int
+    link_count: int
+    size: int
+
+
+class FixtureCreationError(ValueError):
+    """Initialization failed after a bounded cleanup capability was registered."""
+
+    def __init__(self, fixture: CodingBehaviorFixture) -> None:
+        super().__init__("fixture initialization failed with cleanup pending")
+        self.fixture = fixture
 
 
 def _cleanup_mutation_hook(parent_fd: int, name: str) -> None:
@@ -298,9 +320,12 @@ class CodingBehaviorFixtureStore:
         fixture_id = case.fixture_id
         if case.case_id in self._issued_case_ids:
             raise ValueError("fixture store permits one bounded sentinel per case")
+        if len(self._issued_case_ids) >= _MAX_FIXTURE_SLOTS:
+            raise ValueError("fixture store slot budget exceeded")
         definition = TRUSTED_FIXTURE_CATALOG.get(fixture_id)
         if definition is None:
             raise ValueError("fixture_id is not a trusted fixture")
+        self._issued_case_ids.add(case.case_id)
         self._verify_root_identity()
         created = Path(
             tempfile.mkdtemp(
@@ -315,6 +340,29 @@ class CodingBehaviorFixtureStore:
             _DIRECTORY_FLAGS,
             dir_fd=self._root_fd,
         )
+        capability_token = sha256(
+            self._store_nonce + secrets.token_bytes(32)
+        ).hexdigest()
+        case_binding_digest = CodingBehaviorCaseBinding.from_case(case).manifest_digest
+        provisional = CodingBehaviorFixture(
+            case_id=case.case_id,
+            fixture_id=fixture_id,
+            repository=repository,
+            base_commit="0" * 40,
+            base_tree_digest="0" * 40,
+            forbidden_entry_digests=(),
+            held_out_command_id=fixture_id,
+            case_binding_digest=case_binding_digest,
+            capability_token=capability_token,
+        )
+        repository_stat = os.fstat(repository_fd)
+        owned = _OwnedFixture(
+            fixture=provisional,
+            repository_name=repository_name,
+            repository_device=repository_stat.st_dev,
+            repository_inode=repository_stat.st_ino,
+        )
+        self._owned[capability_token] = owned
         try:
             for relative, content in definition.files.items():
                 path = Path(f"/proc/self/fd/{repository_fd}").joinpath(
@@ -339,9 +387,6 @@ class CodingBehaviorFixtureStore:
                 )
                 for path in definition.forbidden_paths
             )
-            capability_token = sha256(
-                self._store_nonce + secrets.token_bytes(32)
-            ).hexdigest()
             fixture = CodingBehaviorFixture(
                 case_id=case.case_id,
                 fixture_id=fixture_id,
@@ -350,20 +395,15 @@ class CodingBehaviorFixtureStore:
                 base_tree_digest=base_tree,
                 forbidden_entry_digests=forbidden,
                 held_out_command_id=fixture_id,
-                case_binding_digest=CodingBehaviorCaseBinding.from_case(case).manifest_digest,
+                case_binding_digest=case_binding_digest,
                 capability_token=capability_token,
             )
-            repository_stat = os.fstat(repository_fd)
-            self._owned[capability_token] = _OwnedFixture(
-                fixture=fixture,
-                repository_name=repository_name,
-                repository_device=repository_stat.st_dev,
-                repository_inode=repository_stat.st_ino,
-            )
-            self._issued_case_ids.add(case.case_id)
+            owned.fixture = fixture
+            owned.state = "active"
             return fixture
-        except BaseException:
-            raise
+        except Exception as exc:
+            owned.state = "cleanup_pending"
+            raise FixtureCreationError(provisional) from exc
         finally:
             os.close(repository_fd)
 
@@ -373,6 +413,11 @@ class CodingBehaviorFixtureStore:
         case: CodingBehaviorCase,
     ) -> FixtureLease:
         record = self._resolve_record(fixture, case)
+        if record.state != "active":
+            raise ValueError("fixture capability cleanup pending")
+        return self._issue_lease(record)
+
+    def _issue_lease(self, record: _OwnedFixture) -> FixtureLease:
         root_fd = -1
         repository_fd = -1
         try:
@@ -401,6 +446,16 @@ class CodingBehaviorFixtureStore:
             if root_fd >= 0:
                 os.close(root_fd)
             raise
+
+    def pending_fixtures(self) -> tuple[CodingBehaviorFixture, ...]:
+        return tuple(
+            record.fixture
+            for record in sorted(
+                self._owned.values(),
+                key=lambda value: value.fixture.case_id,
+            )
+            if record.state == "cleanup_pending"
+        )
 
     def _resolve_record(
         self,
@@ -437,19 +492,51 @@ class CodingBehaviorFixtureStore:
             raise ValueError("fixture cleanup pending")
         lease: FixtureLease | None = None
         try:
-            lease = self.resolve(fixture, case)
+            if owned.state == "initializing":
+                raise ValueError("fixture cleanup pending")
+            lease = self._issue_lease(owned)
             _cleanup_mutation_hook(self._root_fd, owned.repository_name)
             lease.validate()
             chain = ((self._root_fd, owned.repository_name, owned.repository_device, owned.repository_inode),)
-            budget = _CleanupBudget()
-            self._preflight_scrub(lease.repository_fd, chain, 0, budget)
+            current_inventory = self._build_cleanup_inventory(
+                lease.repository_fd,
+                chain,
+                owned.repository_device,
+            )
+            if owned.cleanup_inventory is None:
+                owned.cleanup_inventory = current_inventory
+            else:
+                self._require_inventory_match(
+                    owned.cleanup_inventory,
+                    current_inventory,
+                    allow_zero_size=True,
+                )
             lease.validate()
-            self._scrub_regular_content(lease.repository_fd, chain)
+            self._scrub_regular_content(
+                lease.repository_fd,
+                chain,
+                owned.cleanup_inventory,
+                "",
+                owned.repository_device,
+            )
             lease.validate()
+            final_inventory = self._build_cleanup_inventory(
+                lease.repository_fd,
+                chain,
+                owned.repository_device,
+            )
+            self._require_inventory_match(
+                owned.cleanup_inventory,
+                final_inventory,
+                allow_zero_size=True,
+                require_regular_zero=True,
+            )
         except _CleanupIdentityDrift as exc:
             owned.cleanup_identity_drift = True
+            owned.state = "cleanup_pending"
             raise ValueError("fixture cleanup pending") from exc
         except (OSError, ValueError) as exc:
+            owned.state = "cleanup_pending"
             raise ValueError("fixture cleanup pending") from exc
         finally:
             if lease is not None:
@@ -474,19 +561,39 @@ class CodingBehaviorFixtureStore:
             if current.st_dev != expected_device or current.st_ino != expected_inode:
                 raise _CleanupIdentityDrift
 
-    def _preflight_scrub(
+    def _build_cleanup_inventory(
         self,
         directory_fd: int,
         chain: tuple[tuple[int, str, int, int], ...],
+        repository_device: int,
+    ) -> tuple[_CleanupInventoryEntry, ...]:
+        budget = _CleanupBudget()
+        entries: list[_CleanupInventoryEntry] = []
+        self._collect_cleanup_inventory(
+            directory_fd, chain, repository_device, "", 0, budget, entries
+        )
+        return tuple(sorted(entries))
+
+    def _collect_cleanup_inventory(
+        self,
+        directory_fd: int,
+        chain: tuple[tuple[int, str, int, int], ...],
+        repository_device: int,
+        relative_parent: str,
         depth: int,
         budget: _CleanupBudget,
+        entries: list[_CleanupInventoryEntry],
     ) -> None:
         self._validate_cleanup_chain(chain)
         if depth > _MAX_CLEANUP_DEPTH:
             raise ValueError("fixture cleanup budget exceeded")
-        for name in tuple(os.listdir(directory_fd)):
-            if not name or name in {".", ".."} or "/" in name or "\x00" in name:
-                raise ValueError("fixture cleanup pending")
+        for name in sorted(os.listdir(directory_fd)):
+            if (
+                not name
+                or name in {".", ".."}
+                or any(character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-" for character in name)
+            ):
+                raise ValueError("fixture cleanup inventory path is noncanonical")
             budget.entries += 1
             if budget.entries > _MAX_CLEANUP_ENTRIES:
                 raise ValueError("fixture cleanup budget exceeded")
@@ -495,58 +602,142 @@ class CodingBehaviorFixtureStore:
                 entry = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
             except OSError as exc:
                 raise _CleanupIdentityDrift from exc
+            if entry.st_dev != repository_device:
+                raise ValueError("fixture cleanup entry crossed repository device")
+            relative_path = f"{relative_parent}/{name}" if relative_parent else name
             if stat.S_ISDIR(entry.st_mode):
-                try:
-                    child_fd = os.open(name, _DIRECTORY_FLAGS, dir_fd=directory_fd)
-                except OSError as exc:
-                    raise _CleanupIdentityDrift from exc
-                try:
-                    opened = os.fstat(child_fd)
-                    if opened.st_dev != entry.st_dev or opened.st_ino != entry.st_ino:
-                        raise _CleanupIdentityDrift
-                    child_chain = chain + ((directory_fd, name, entry.st_dev, entry.st_ino),)
-                    self._preflight_scrub(child_fd, child_chain, depth + 1, budget)
-                finally:
-                    os.close(child_fd)
+                entry_type: Literal["directory", "regular"] = "directory"
             elif stat.S_ISREG(entry.st_mode):
+                if entry.st_nlink != 1:
+                    raise ValueError("fixture cleanup regular file must have one link")
+                entry_type = "regular"
                 budget.files += 1
                 budget.bytes += entry.st_size
                 if budget.files > _MAX_CLEANUP_FILES or budget.bytes > _MAX_CLEANUP_BYTES:
                     raise ValueError("fixture cleanup budget exceeded")
             else:
                 raise ValueError("fixture cleanup requires a symlink-free regular tree")
-
-    def _scrub_regular_content(
-        self,
-        directory_fd: int,
-        chain: tuple[tuple[int, str, int, int], ...],
-    ) -> None:
-        self._validate_cleanup_chain(chain)
-        for name in tuple(os.listdir(directory_fd)):
-            self._validate_cleanup_chain(chain)
-            try:
-                entry = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-            except OSError as exc:
-                raise _CleanupIdentityDrift from exc
-            if stat.S_ISDIR(entry.st_mode):
+            inventory_entry = _CleanupInventoryEntry(
+                relative_path=relative_path,
+                entry_type=entry_type,
+                device=entry.st_dev,
+                inode=entry.st_ino,
+                mode=entry.st_mode,
+                link_count=entry.st_nlink,
+                size=entry.st_size,
+            )
+            entries.append(inventory_entry)
+            if entry_type == "directory":
                 try:
                     child_fd = os.open(name, _DIRECTORY_FLAGS, dir_fd=directory_fd)
                 except OSError as exc:
                     raise _CleanupIdentityDrift from exc
                 try:
                     opened = os.fstat(child_fd)
-                    if opened.st_dev != entry.st_dev or opened.st_ino != entry.st_ino:
-                        raise _CleanupIdentityDrift
+                    self._require_entry_identity(inventory_entry, opened, allow_zero_size=False)
+                    child_chain = chain + ((directory_fd, name, entry.st_dev, entry.st_ino),)
+                    self._collect_cleanup_inventory(
+                        child_fd, child_chain, repository_device, relative_path, depth + 1, budget, entries
+                    )
+                finally:
+                    os.close(child_fd)
+
+
+    @staticmethod
+    def _require_entry_identity(
+        expected: _CleanupInventoryEntry,
+        actual: os.stat_result,
+        *,
+        allow_zero_size: bool,
+    ) -> None:
+        if (
+            actual.st_dev != expected.device
+            or actual.st_ino != expected.inode
+            or actual.st_mode != expected.mode
+            or actual.st_nlink != expected.link_count
+            or (actual.st_size != expected.size and not (allow_zero_size and actual.st_size == 0))
+        ):
+            raise _CleanupIdentityDrift
+
+
+    @staticmethod
+    def _require_inventory_match(
+        expected: tuple[_CleanupInventoryEntry, ...],
+        actual: tuple[_CleanupInventoryEntry, ...],
+        *,
+        allow_zero_size: bool,
+        require_regular_zero: bool = False,
+    ) -> None:
+        if len(expected) != len(actual):
+            raise _CleanupIdentityDrift
+        for wanted, observed in zip(expected, actual, strict=True):
+            if (
+                wanted.relative_path != observed.relative_path
+                or wanted.entry_type != observed.entry_type
+                or wanted.device != observed.device
+                or wanted.inode != observed.inode
+                or wanted.mode != observed.mode
+                or wanted.link_count != observed.link_count
+            ):
+                raise _CleanupIdentityDrift
+            if wanted.entry_type == "regular":
+                if require_regular_zero and observed.size != 0:
+                    raise ValueError("fixture cleanup regular content remains")
+                if not allow_zero_size and observed.size != wanted.size:
+                    raise _CleanupIdentityDrift
+                if allow_zero_size and observed.size not in {wanted.size, 0}:
+                    raise _CleanupIdentityDrift
+            elif observed.size != wanted.size:
+                raise _CleanupIdentityDrift
+
+    def _scrub_regular_content(
+        self,
+        directory_fd: int,
+        chain: tuple[tuple[int, str, int, int], ...],
+        inventory: tuple[_CleanupInventoryEntry, ...],
+        relative_parent: str,
+        repository_device: int,
+    ) -> None:
+        self._validate_cleanup_chain(chain)
+        prefix = f"{relative_parent}/" if relative_parent else ""
+        children = tuple(
+            entry
+            for entry in inventory
+            if entry.relative_path.startswith(prefix)
+            and "/" not in entry.relative_path[len(prefix):]
+        )
+        current_names = tuple(sorted(os.listdir(directory_fd)))
+        if current_names != tuple(entry.relative_path[len(prefix):] for entry in children):
+            raise _CleanupIdentityDrift
+        for expected in children:
+            name = expected.relative_path[len(prefix):]
+            self._validate_cleanup_chain(chain)
+            try:
+                current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            except OSError as exc:
+                raise _CleanupIdentityDrift from exc
+            self._require_entry_identity(expected, current, allow_zero_size=True)
+            if current.st_dev != repository_device:
+                raise _CleanupIdentityDrift
+            if expected.entry_type == "directory":
+                try:
+                    child_fd = os.open(name, _DIRECTORY_FLAGS, dir_fd=directory_fd)
+                except OSError as exc:
+                    raise _CleanupIdentityDrift from exc
+                try:
+                    opened = os.fstat(child_fd)
+                    self._require_entry_identity(expected, opened, allow_zero_size=False)
                     _cleanup_mutation_hook(directory_fd, name)
                     self._validate_cleanup_chain(chain)
                     current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-                    if current.st_dev != entry.st_dev or current.st_ino != entry.st_ino:
-                        raise _CleanupIdentityDrift
-                    child_chain = chain + ((directory_fd, name, entry.st_dev, entry.st_ino),)
-                    self._scrub_regular_content(child_fd, child_chain)
+                    self._require_entry_identity(expected, current, allow_zero_size=False)
+                    child_chain = chain + ((directory_fd, name, expected.device, expected.inode),)
+                    self._scrub_regular_content(
+                        child_fd, child_chain, inventory, expected.relative_path, repository_device
+                    )
                 finally:
                     os.close(child_fd)
-            elif stat.S_ISREG(entry.st_mode):
+            else:
                 try:
                     original_fd = os.open(
                         name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory_fd
@@ -554,38 +745,50 @@ class CodingBehaviorFixtureStore:
                 except OSError as exc:
                     raise _CleanupIdentityDrift from exc
                 writer_fd = -1
+                original_mode = stat.S_IMODE(expected.mode)
                 try:
                     opened = os.fstat(original_fd)
-                    if opened.st_dev != entry.st_dev or opened.st_ino != entry.st_ino:
+                    self._require_entry_identity(expected, opened, allow_zero_size=True)
+                    if opened.st_nlink != 1 or opened.st_dev != repository_device:
                         raise _CleanupIdentityDrift
                     _cleanup_mutation_hook(directory_fd, name)
                     self._validate_cleanup_chain(chain)
                     current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-                    if current.st_dev != entry.st_dev or current.st_ino != entry.st_ino:
+                    self._require_entry_identity(expected, current, allow_zero_size=True)
+                    if current.st_nlink != 1:
                         raise _CleanupIdentityDrift
-                    os.fchmod(original_fd, stat.S_IMODE(opened.st_mode) | stat.S_IWUSR)
+                    os.fchmod(original_fd, original_mode | stat.S_IWUSR)
                     writer_fd = os.open(
                         f"/proc/self/fd/{original_fd}", os.O_WRONLY | os.O_CLOEXEC
                     )
                     writer_stat = os.fstat(writer_fd)
-                    if writer_stat.st_dev != entry.st_dev or writer_stat.st_ino != entry.st_ino:
+                    if (
+                        writer_stat.st_dev != expected.device
+                        or writer_stat.st_ino != expected.inode
+                        or writer_stat.st_nlink != 1
+                    ):
                         raise _CleanupIdentityDrift
                     os.ftruncate(writer_fd, 0)
                     os.fsync(writer_fd)
+                    os.fchmod(original_fd, original_mode)
                     self._validate_cleanup_chain(chain)
-                    after = os.stat(
-                        name,
-                        dir_fd=directory_fd,
-                        follow_symlinks=False,
-                    )
-                    if after.st_dev != entry.st_dev or after.st_ino != entry.st_ino:
+                    after = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                    if (
+                        after.st_dev != expected.device
+                        or after.st_ino != expected.inode
+                        or after.st_mode != expected.mode
+                        or after.st_nlink != 1
+                        or after.st_size != 0
+                    ):
                         raise _CleanupIdentityDrift
                 finally:
+                    try:
+                        os.fchmod(original_fd, original_mode)
+                    except OSError:
+                        pass
                     if writer_fd >= 0:
                         os.close(writer_fd)
                     os.close(original_fd)
-            else:
-                raise ValueError("fixture cleanup requires a symlink-free regular tree")
 
     def _verify_root_identity(self) -> None:
         try:
@@ -639,6 +842,7 @@ class CodingBehaviorFixtureStore:
 __all__ = [
     "CodingBehaviorFixture",
     "CodingBehaviorFixtureStore",
+    "FixtureCreationError",
     "FixtureLease",
     "TRUSTED_FIXTURE_CATALOG",
     "governed_git_environment",
