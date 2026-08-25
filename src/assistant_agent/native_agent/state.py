@@ -44,6 +44,38 @@ ExecutionMode = Literal["fast", "planning", "coding"]
 MemoryStatus = Literal["ready", "empty", "degraded"]
 AnalysisSnapshotReleaseStatus = Literal["active", "released", "cleanup_pending"]
 
+_ATTESTATION_MISMATCH_SIGNALS = frozenset(
+    {
+        "analysis:structure_context",
+        "analysis:change_test_impact",
+        "analysis:safety_governance",
+        "review:correctness_regression",
+        "review:security_governance",
+        "review:tests_validation",
+        "review:correctness",
+        "review:security",
+        "review:regression",
+        "review:graph",
+    }
+)
+
+
+def merge_attestation_mismatch_signals(
+    current: Sequence[str] | None,
+    update: Sequence[str] | None,
+) -> list[str]:
+    values = [*(current or ()), *(update or ())]
+    if len(values) > 16 or any(
+        not isinstance(value, str)
+        or value not in _ATTESTATION_MISMATCH_SIGNALS
+        for value in values
+    ):
+        raise ValueError("coding attestation mismatch signals are invalid")
+    merged = sorted(set(values))
+    if len(merged) > 8:
+        raise ValueError("coding attestation mismatch signals exceed their bound")
+    return merged
+
 
 class AssistantRootInput(BaseModel):
     """Strict public input for a new native assistant run."""
@@ -125,6 +157,9 @@ class CodingAnalysisWorkerState(AgentState):
 
     coding_repo_id: Required[str]
     execution_attestation_digest: Required[str | None]
+    attestation_mismatch_signals: NotRequired[
+        Annotated[list[str], merge_attestation_mismatch_signals]
+    ]
     workspace_ref: Required[str]
     base_commit: Required[str]
     analysis_snapshot: Required[CodingAnalysisSnapshot]
@@ -137,6 +172,9 @@ class CodingState(AgentState):
 
     coding_cycle_generation: NotRequired[int]
     execution_attestation_digest: NotRequired[str | None]
+    attestation_mismatch_signals: NotRequired[
+        Annotated[list[str], merge_attestation_mismatch_signals]
+    ]
     memory_context: NotRequired[tuple[str, ...]]
     memory_status: NotRequired[MemoryStatus]
     execution_mode: NotRequired[ExecutionMode]

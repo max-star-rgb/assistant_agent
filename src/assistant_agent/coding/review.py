@@ -33,6 +33,7 @@ from assistant_agent.coding.models import (
     CodingReviewTask,
     CodingReviewerResult,
 )
+from assistant_agent.native_agent.state import merge_attestation_mismatch_signals
 from assistant_agent.coding.tools import build_coding_analysis_tools
 from assistant_agent.coding.workspace import CodingWorkspaceError, CodingWorkspaceService
 from assistant_agent.native_agent.context import AssistantRunContext
@@ -147,6 +148,9 @@ class CodingReviewWorkerState(AgentState):
 
     coding_repo_id: Required[str]
     execution_attestation_digest: Required[str | None]
+    attestation_mismatch_signals: NotRequired[
+        Annotated[list[str], merge_attestation_mismatch_signals]
+    ]
     workspace_ref: Required[str]
     base_commit: Required[str]
     analysis_snapshot: Required[CodingAnalysisSnapshot]
@@ -160,6 +164,9 @@ class CodingReviewGraphState(AgentState):
 
     coding_repo_id: Required[str]
     execution_attestation_digest: Required[str | None]
+    attestation_mismatch_signals: NotRequired[
+        Annotated[list[str], merge_attestation_mismatch_signals]
+    ]
     workspace_ref: Required[str]
     base_commit: Required[str]
     review_snapshot: Required[CodingAnalysisSnapshot]
@@ -170,10 +177,14 @@ class CodingReviewGraphState(AgentState):
     ]
     review_report: NotRequired[CodingReviewReport]
     review_status: NotRequired[Literal["clean", "findings", "unavailable"]]
-    attestation_error_code: NotRequired[str]
 
 
-def _guard_review_node(node: Any, current_digest: str | None) -> Any:
+def _guard_review_node(
+    node: Any,
+    current_digest: str | None,
+    *,
+    allow_signal_fanin: bool = False,
+) -> Any:
     def mismatch(state: object, args: tuple[object, ...]) -> bool:
         if not isinstance(state, Mapping):
             return False
@@ -191,29 +202,39 @@ def _guard_review_node(node: Any, current_digest: str | None) -> Any:
                 return True
         return False
 
-    def failure() -> Command:
+    def failure(state: object) -> Command:
+        task = state.get("review_task") if isinstance(state, Mapping) else None
+        task_id = (
+            task.get("task_id")
+            if isinstance(task, Mapping)
+            else getattr(task, "task_id", None)
+        )
+        signal = f"review:{task_id}" if isinstance(task_id, str) else "review:graph"
         return Command(
-            goto=END,
-            update={
-                "attestation_error_code": (
-                    "coding_eval_execution_attestation_mismatch"
-                )
-            },
+            goto="join_review",
+            update={"attestation_mismatch_signals": [signal]},
+        )
+
+    def signal_fanin(state: object) -> bool:
+        return (
+            allow_signal_fanin
+            and isinstance(state, Mapping)
+            and bool(state.get("attestation_mismatch_signals"))
         )
 
     if inspect.iscoroutinefunction(node):
         @functools.wraps(node)
         async def guarded_async(state: object, *args: object, **kwargs: object) -> object:
-            if mismatch(state, (*args, *kwargs.values())):
-                return failure()
+            if mismatch(state, (*args, *kwargs.values())) and not signal_fanin(state):
+                return failure(state)
             return await node(state, *args, **kwargs)
 
         return guarded_async
 
     @functools.wraps(node)
     def guarded_sync(state: object, *args: object, **kwargs: object) -> object:
-        if mismatch(state, (*args, *kwargs.values())):
-            return failure()
+        if mismatch(state, (*args, *kwargs.values())) and not signal_fanin(state):
+            return failure(state)
         return node(state, *args, **kwargs)
 
     return guarded_sync
@@ -386,6 +407,7 @@ def route_review_workers(state: Mapping[str, object]) -> list[Send] | str:
                 "execution_attestation_digest": state.get(
                     "execution_attestation_digest"
                 ),
+                "attestation_mismatch_signals": [],
                 "workspace_ref": review_input.workspace_ref,
                 "base_commit": review_input.base_commit,
                 "analysis_snapshot": snapshot,
@@ -466,11 +488,11 @@ async def review_workspace(
 def join_review(state: Mapping[str, object]) -> dict[str, object]:
     """Canonicalize the completed final-review workers without mutating the snapshot."""
 
-    if state.get("attestation_error_code") == (
-        "coding_eval_execution_attestation_mismatch"
-    ):
+    if state.get("attestation_mismatch_signals"):
         return {
-            "attestation_error_code": "coding_eval_execution_attestation_mismatch"
+            "attestation_mismatch_signals": list(
+                state["attestation_mismatch_signals"]
+            )
         }
 
     review_input = CodingReviewInput.model_validate(state.get("review_input"))
@@ -553,6 +575,7 @@ def create_coding_review_graph(
             "execution_attestation_digest": state.get(
                 "execution_attestation_digest", execution_attestation_digest
             ),
+            "attestation_mismatch_signals": [],
         }
 
     builder = StateGraph(CodingReviewGraphState, context_schema=AssistantRunContext)
@@ -567,7 +590,11 @@ def create_coding_review_graph(
     )
     builder.add_node(
         "join_review",
-        _guard_review_node(join_review, execution_attestation_digest),
+        _guard_review_node(
+            join_review,
+            execution_attestation_digest,
+            allow_signal_fanin=True,
+        ),
         defer=True,
     )
     builder.add_edge(START, "prepare_review_tasks")

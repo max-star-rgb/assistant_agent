@@ -134,6 +134,19 @@ class _MissingModelCodingReviewGraph:
 
 
 def _coding_attestation_failure(state: Mapping[str, object]) -> Command:
+    task = state.get("analysis_task")
+    task_id = (
+        task.get("task_id")
+        if isinstance(task, Mapping)
+        else getattr(task, "task_id", None)
+    )
+    if isinstance(task_id, str):
+        return Command(
+            goto="join_analysis",
+            update={
+                "attestation_mismatch_signals": [f"analysis:{task_id}"]
+            },
+        )
     return Command(
         goto="summarize",
         update={
@@ -150,6 +163,7 @@ def _guard_coding_node(
     *,
     allow_evaluation_bootstrap: bool = False,
     allow_attestation_cleanup: bool = False,
+    allow_signal_fanin: bool = False,
 ) -> Any:
     def is_evaluation(args: tuple[object, ...], kwargs: Mapping[str, object]) -> bool:
         candidates = (*args, *kwargs.values())
@@ -187,10 +201,21 @@ def _guard_coding_node(
         )
         return error_code == "coding_eval_execution_attestation_mismatch"
 
+    def is_signal_fanin(state: object) -> bool:
+        return (
+            allow_signal_fanin
+            and isinstance(state, Mapping)
+            and bool(state.get("attestation_mismatch_signals"))
+        )
+
     if inspect.iscoroutinefunction(node):
         @functools.wraps(node)
         async def guarded_async(state: object, *args: object, **kwargs: object) -> object:
-            if mismatch(state, args, kwargs) and not is_attestation_cleanup(state):
+            if (
+                mismatch(state, args, kwargs)
+                and not is_attestation_cleanup(state)
+                and not is_signal_fanin(state)
+            ):
                 return _coding_attestation_failure(state)
             return await node(state, *args, **kwargs)
 
@@ -198,7 +223,11 @@ def _guard_coding_node(
 
     @functools.wraps(node)
     def guarded_sync(state: object, *args: object, **kwargs: object) -> object:
-        if mismatch(state, args, kwargs) and not is_attestation_cleanup(state):
+        if (
+            mismatch(state, args, kwargs)
+            and not is_attestation_cleanup(state)
+            and not is_signal_fanin(state)
+        ):
             return _coding_attestation_failure(state)
         return node(state, *args, **kwargs)
 
@@ -431,6 +460,12 @@ def build_coding_graph(
         runtime: Runtime[AssistantRunContext],
         config: RunnableConfig,
     ) -> dict[str, object]:
+        if state.get("attestation_mismatch_signals"):
+            return {
+                "coding_result": _failed(
+                    state, "coding_eval_execution_attestation_mismatch"
+                )
+            }
         workspace = _resolve_workspace(state, runtime, config, workspace_service)
         snapshot = CodingAnalysisSnapshot.model_validate(state["analysis_snapshot"])
         status, results = join_analysis_results(
@@ -1986,6 +2021,7 @@ def build_coding_graph(
                 "execution_attestation_digest": state[
                     "execution_attestation_digest"
                 ],
+                "attestation_mismatch_signals": [],
                 "workspace_ref": review_input.workspace_ref,
                 "base_commit": review_input.base_commit,
                 "review_snapshot": snapshot,
@@ -1996,9 +2032,7 @@ def build_coding_graph(
                 config=config,
                 context=runtime.context,
             )
-            if output.get("attestation_error_code") == (
-                "coding_eval_execution_attestation_mismatch"
-            ):
+            if output.get("attestation_mismatch_signals"):
                 return {
                     "coding_result": _failed(
                         state, "coding_eval_execution_attestation_mismatch"
@@ -2557,6 +2591,7 @@ def build_coding_graph(
                 execution_attestation_digest,
                 allow_evaluation_bootstrap=name == "begin_coding_cycle",
                 allow_attestation_cleanup=name == "summarize",
+                allow_signal_fanin=name == "join_analysis",
             ),
             **kwargs,
         )
@@ -2712,7 +2747,8 @@ def begin_coding_cycle_node(
 
     return {
         "coding_cycle_generation": int(state.get("coding_cycle_generation") or 0) + 1,
-        "execution_attestation_digest": execution_attestation_digest,
+            "execution_attestation_digest": execution_attestation_digest,
+            "attestation_mismatch_signals": Overwrite([]),
         "workspace_ref": None,
         "base_commit": None,
         "analysis_snapshot": None,
@@ -4216,6 +4252,7 @@ def route_analysis_workers(state: CodingState) -> list[Send] | str:
                 "execution_attestation_digest": state[
                     "execution_attestation_digest"
                 ],
+                "attestation_mismatch_signals": [],
                 "workspace_ref": state["workspace_ref"],
                 "base_commit": state["base_commit"],
                 "analysis_snapshot": snapshot,
