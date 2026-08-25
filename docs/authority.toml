@@ -85,6 +85,8 @@ source_globs = [
   "src/assistant_agent/native_agent/coding_phase.py",
   "src/assistant_agent/coding/analysis.py",
   "src/assistant_agent/coding/models.py",
+  "src/assistant_agent/coding/review.py",
+  "src/assistant_agent/coding/review_repair.py",
 ]
 thin_references = ["README.md", "docs/agent-server-architecture.md"]
 verification = [
@@ -299,6 +301,7 @@ read_when = [
 source_globs = [
   "evals/system/**",
   "src/assistant_agent/evaluation/**",
+  "scripts/run_system_ai_coding_behavior_eval.py",
 ]
 thin_references = [
   "docs/observability-harness.md",

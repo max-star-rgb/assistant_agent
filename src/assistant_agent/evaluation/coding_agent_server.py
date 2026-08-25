@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass, replace
 from hashlib import sha256
 import json
 import re
+import unicodedata
 from time import monotonic
 from typing import Any, Literal, Protocol
 from uuid import uuid4
@@ -27,6 +28,13 @@ _HEX_40_64 = re.compile(r"^[0-9a-f]{40,64}$")
 _HEX_64 = re.compile(r"^[0-9a-f]{64}$")
 _MAX_TRANSITIONS = 16
 _MAX_EVIDENCE_BYTES = 16_384
+_MAX_PAYLOAD_DEPTH = 8
+_MAX_PAYLOAD_NODES = 512
+_MAX_PAYLOAD_MAPPING_ENTRIES = 256
+_MAX_PAYLOAD_SEQUENCE_ITEMS = 256
+_MAX_PAYLOAD_KEY_BYTES = 256
+_MAX_PAYLOAD_KEY_BYTES_TOTAL = 16_384
+_MAX_PAYLOAD_SCALAR_BYTES = 49_152
 
 
 class _Threads(Protocol):
@@ -945,34 +953,72 @@ def _payload_digest(payload: Mapping[str, Any]) -> str:
 
 
 def _require_canonical_payload_value(value: object, *, depth: int) -> None:
-    if depth > 8:
-        raise ValueError("interrupt payload exceeds its nesting budget")
-    if value is None or type(value) in {bool, int}:
-        return
-    if isinstance(value, str):
-        if (
-            len(value) > _MAX_EVIDENCE_BYTES * 4
-            or len(value.encode("utf-8")) > _MAX_EVIDENCE_BYTES * 4
-            or any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in value)
-        ):
-            raise ValueError("interrupt payload contains an unsafe string")
-        return
-    if isinstance(value, Mapping):
-        if len(value) > 128:
-            raise ValueError("interrupt payload exceeds its mapping budget")
-        for child_key, child_value in value.items():
-            if not isinstance(child_key, str):
-                raise TypeError("interrupt payload keys must be strings")
-            _require_canonical_payload_value(child_key, depth=depth + 1)
-            _require_canonical_payload_value(child_value, depth=depth + 1)
-        return
-    if isinstance(value, (list, tuple)):
-        if len(value) > 128:
-            raise ValueError("interrupt payload exceeds its sequence budget")
-        for child in value:
-            _require_canonical_payload_value(child, depth=depth + 1)
-        return
-    raise TypeError("interrupt payload contains a noncanonical JSON value")
+    stack: list[tuple[object, int]] = [(value, depth)]
+    seen_containers: set[int] = set()
+    nodes = 0
+    mapping_entries = 0
+    sequence_items = 0
+    key_bytes_total = 0
+    scalar_bytes_total = 0
+    while stack:
+        current, current_depth = stack.pop()
+        nodes += 1
+        if nodes > _MAX_PAYLOAD_NODES:
+            raise ValueError("interrupt payload exceeds its node budget")
+        if current_depth > _MAX_PAYLOAD_DEPTH:
+            raise ValueError("interrupt payload exceeds its nesting budget")
+        if current is None or type(current) is bool:
+            scalar_bytes_total += 4 if current is None else (4 if current else 5)
+        elif type(current) is int:
+            if current.bit_length() > 16_384:
+                raise ValueError("interrupt payload integer exceeds its byte budget")
+            scalar_bytes_total += len(str(current).encode("ascii"))
+        elif isinstance(current, str):
+            scalar_bytes_total += len(_canonical_payload_string(current, label="value"))
+        elif type(current) is dict:
+            identity = id(current)
+            if identity in seen_containers:
+                raise ValueError("interrupt payload contains a cycle or alias")
+            seen_containers.add(identity)
+            mapping_entries += len(current)
+            if len(current) > 128 or mapping_entries > _MAX_PAYLOAD_MAPPING_ENTRIES:
+                raise ValueError("interrupt payload exceeds its mapping budget")
+            for child_key, child_value in current.items():
+                if not isinstance(child_key, str):
+                    raise TypeError("interrupt payload keys must be strings")
+                key_bytes = _canonical_payload_string(child_key, label="key")
+                if len(key_bytes) > _MAX_PAYLOAD_KEY_BYTES:
+                    raise ValueError("interrupt payload key exceeds its byte budget")
+                key_bytes_total += len(key_bytes)
+                if key_bytes_total > _MAX_PAYLOAD_KEY_BYTES_TOTAL:
+                    raise ValueError("interrupt payload keys exceed their aggregate budget")
+                stack.append((child_value, current_depth + 1))
+        elif type(current) in {list, tuple}:
+            identity = id(current)
+            if identity in seen_containers:
+                raise ValueError("interrupt payload contains a cycle or alias")
+            seen_containers.add(identity)
+            sequence_items += len(current)
+            if len(current) > 128 or sequence_items > _MAX_PAYLOAD_SEQUENCE_ITEMS:
+                raise ValueError("interrupt payload exceeds its sequence budget")
+            stack.extend((child, current_depth + 1) for child in current)
+        else:
+            raise TypeError("interrupt payload contains a noncanonical JSON value")
+        if scalar_bytes_total > _MAX_PAYLOAD_SCALAR_BYTES:
+            raise ValueError("interrupt payload exceeds its aggregate scalar byte budget")
+
+
+def _canonical_payload_string(value: str, *, label: str) -> bytes:
+    if len(value) > _MAX_EVIDENCE_BYTES * 4:
+        raise ValueError(f"interrupt payload {label} exceeds its character budget")
+    encoded = value.encode("utf-8")
+    if (
+        len(encoded) > _MAX_EVIDENCE_BYTES * 4
+        or unicodedata.normalize("NFC", value) != value
+        or any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in value)
+    ):
+        raise ValueError(f"interrupt payload contains an unsafe {label}")
+    return encoded
 
 
 def _interrupt_kind(payload: Mapping[str, Any]) -> str | None:

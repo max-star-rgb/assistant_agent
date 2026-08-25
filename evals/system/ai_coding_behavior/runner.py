@@ -79,6 +79,7 @@ _SANDBOX_IMAGE_PATTERN = (
 _MAX_ARTIFACT_BYTES = 1_048_576
 _MAX_DRIVER_EVIDENCE_BYTES = 16_384
 _MAX_MANIFEST_BYTES = 262_144
+_MANIFEST_REPOSITORY_PATH = "evals/system/ai_coding_behavior/cases.json"
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _MANIFEST_PATH = Path(__file__).with_name("cases.json")
 _OUTPUT_ROOT = _REPO_ROOT / ".data" / "evals" / "system" / "ai_coding_behavior"
@@ -136,11 +137,35 @@ def load_baseline_suite(path: Path = _MANIFEST_PATH) -> CodingBehaviorSuite:
         raise CodingBehaviorRunnerConfigurationError(
             "coding behavior suite must use the tracked manifest"
         )
+    parent_descriptor = -1
     descriptor = -1
     try:
+        parent = path.parent
+        if (
+            parent.resolve(strict=True) != parent
+            or _REPO_ROOT.resolve(strict=True) != _REPO_ROOT
+            or path.relative_to(_REPO_ROOT).as_posix() != _MANIFEST_REPOSITORY_PATH
+        ):
+            raise CodingBehaviorRunnerConfigurationError(
+                "coding behavior suite requires a canonical checkout parent"
+            )
+        parent_descriptor = os.open(
+            parent,
+            os.O_RDONLY
+            | os.O_DIRECTORY
+            | os.O_CLOEXEC
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        parent_before = os.fstat(parent_descriptor)
+        path_before = os.stat(
+            path.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
         descriptor = os.open(
-            path,
+            path.name,
             os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_descriptor,
         )
         metadata = os.fstat(descriptor)
         if (
@@ -152,8 +177,33 @@ def load_baseline_suite(path: Path = _MANIFEST_PATH) -> CodingBehaviorSuite:
             raise CodingBehaviorRunnerConfigurationError(
                 "coding behavior suite manifest is not a bounded regular file"
             )
-        payload = os.read(descriptor, _MAX_MANIFEST_BYTES + 1)
+        payload_parts: list[bytes] = []
+        remaining = metadata.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(65_536, remaining))
+            if not chunk:
+                break
+            payload_parts.append(chunk)
+            remaining -= len(chunk)
+        payload = b"".join(payload_parts)
         if len(payload) != metadata.st_size:
+            raise CodingBehaviorRunnerConfigurationError(
+                "coding behavior suite manifest changed while loading"
+            )
+        _require_manifest_head_blob(payload)
+        metadata_after = os.fstat(descriptor)
+        path_after = os.stat(
+            path.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        parent_after = os.fstat(parent_descriptor)
+        if (
+            _stat_identity(path_before) != _stat_identity(metadata)
+            or _stat_identity(metadata) != _stat_identity(metadata_after)
+            or _stat_identity(metadata_after) != _stat_identity(path_after)
+            or _directory_identity(parent_before) != _directory_identity(parent_after)
+        ):
             raise CodingBehaviorRunnerConfigurationError(
                 "coding behavior suite manifest changed while loading"
             )
@@ -167,11 +217,80 @@ def load_baseline_suite(path: Path = _MANIFEST_PATH) -> CodingBehaviorSuite:
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+        if parent_descriptor >= 0:
+            os.close(parent_descriptor)
     if suite.suite_id != BASELINE_SUITE_ID:
         raise CodingBehaviorRunnerConfigurationError(
             f"system eval requires exact suite {BASELINE_SUITE_ID}"
         )
     return suite
+
+
+def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int]:
+    return (value.st_dev, value.st_ino, value.st_mode, value.st_size)
+
+
+def _directory_identity(value: os.stat_result) -> tuple[int, int, int]:
+    return (value.st_dev, value.st_ino, value.st_mode)
+
+
+def _manifest_git_environment() -> dict[str, str]:
+    return {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": "/nonexistent",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+
+
+def _manifest_git(*arguments: str) -> bytes:
+    try:
+        return subprocess.run(
+            ["git", "-C", str(_REPO_ROOT), *arguments],
+            check=True,
+            capture_output=True,
+            env=_manifest_git_environment(),
+            timeout=5,
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise CodingBehaviorRunnerConfigurationError(
+            "coding behavior suite Git HEAD authority is unavailable"
+        ) from exc
+
+
+def _require_manifest_head_blob(payload: bytes) -> None:
+    head = _manifest_git("rev-parse", "--verify", "HEAD^{commit}").decode("ascii").strip()
+    if not __import__("re").fullmatch(r"[0-9a-f]{40,64}", head):
+        raise CodingBehaviorRunnerConfigurationError(
+            "coding behavior suite Git HEAD authority is invalid"
+        )
+    entry = _manifest_git(
+        "ls-tree",
+        "--full-tree",
+        "-z",
+        head,
+        "--",
+        _MANIFEST_REPOSITORY_PATH,
+    )
+    prefix = b"100644 blob "
+    suffix = b"\t" + _MANIFEST_REPOSITORY_PATH.encode("ascii") + b"\0"
+    if not entry.startswith(prefix) or not entry.endswith(suffix) or entry.count(b"\0") != 1:
+        raise CodingBehaviorRunnerConfigurationError(
+            "coding behavior suite is not an exact Git HEAD blob"
+        )
+    object_id = entry[len(prefix) : -len(suffix)].decode("ascii")
+    if not __import__("re").fullmatch(r"[0-9a-f]{40,64}", object_id):
+        raise CodingBehaviorRunnerConfigurationError(
+            "coding behavior suite Git HEAD blob identity is invalid"
+        )
+    if _manifest_git("cat-file", "blob", object_id) != payload:
+        raise CodingBehaviorRunnerConfigurationError(
+            "coding behavior suite bytes do not match the exact Git HEAD blob"
+        )
 
 
 def build_real_run_options(
