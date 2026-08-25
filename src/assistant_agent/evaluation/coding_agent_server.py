@@ -6,7 +6,6 @@ import asyncio
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
-import inspect
 import json
 import re
 from time import monotonic
@@ -34,13 +33,15 @@ class _Threads(Protocol):
     async def create(self, **kwargs: Any) -> Mapping[str, Any]: ...
     async def get(self, thread_id: str) -> Mapping[str, Any]: ...
     async def get_state(self, thread_id: str, *, subgraphs: bool = False) -> Mapping[str, Any]: ...
+    async def delete(self, thread_id: str) -> None: ...
 
 
 class _Runs(Protocol):
-    async def create(self, thread_id: str, assistant_id: str, *, run_id: str, **kwargs: Any) -> Mapping[str, Any]: ...
+    async def create(self, thread_id: str, assistant_id: str, **kwargs: Any) -> Mapping[str, Any]: ...
     async def join(self, thread_id: str, run_id: str) -> object: ...
     async def cancel(self, thread_id: str, run_id: str, **kwargs: Any) -> None: ...
     async def get(self, thread_id: str, run_id: str) -> Mapping[str, Any]: ...
+    async def list(self, thread_id: str, **kwargs: Any) -> Sequence[Mapping[str, Any]]: ...
 
 
 class CodingBehaviorAgentServerClient(Protocol):
@@ -86,6 +87,15 @@ class CodingBehaviorDriverResult:
     validation_tree_digest: str | None = None
     review_tree_digest: str | None = None
     integration_tree_digest: str | None = None
+    cleanup_pending: bool = False
+
+
+class _UnknownRunOutcome(RuntimeError):
+    pass
+
+
+class _RunCleanupPending(RuntimeError):
+    pass
 
 
 def _digest(value: str) -> str:
@@ -267,17 +277,6 @@ class CodingBehaviorAgentServerDriver:
 
         if case != policy.case:
             return preflight_failed("coding_eval_case_invalid", "governance")
-        try:
-            supports_client_run_id = "run_id" in inspect.signature(
-                self.client.runs.create
-            ).parameters
-        except (TypeError, ValueError):
-            supports_client_run_id = False
-        if not supports_client_run_id:
-            return preflight_failed(
-                "coding_eval_configuration_error",
-                "configuration",
-            )
 
         async def bounded(factory: Callable[[], Any]) -> Any:
             remaining = deadline - self.clock()
@@ -285,7 +284,9 @@ class CodingBehaviorAgentServerDriver:
                 raise TimeoutError
             return await asyncio.wait_for(factory(), timeout=remaining)
 
-        async def failed(code: str, category: str) -> CodingBehaviorDriverResult:
+        async def failed(
+            code: str, category: str, *, cleanup_pending: bool = False
+        ) -> CodingBehaviorDriverResult:
             nonlocal current_run_id
             if current_run_id and thread_id:
                 try:
@@ -308,6 +309,7 @@ class CodingBehaviorAgentServerDriver:
                         raise ValueError("cancelled run did not reach a terminal status")
                 except Exception:
                     category = "cancelled"
+                    cleanup_pending = True
                 current_run_id = None
             return CodingBehaviorDriverResult(
                 status="failed", terminal_status=None, error_code=code,
@@ -316,34 +318,229 @@ class CodingBehaviorAgentServerDriver:
                 run_digests=tuple(_digest(value) for value in run_ids),
                 interrupt_kinds=tuple(kinds), interrupt_count=len(kinds),
                 transitions=tuple(transitions), elapsed_ms=elapsed_ms(),
+                cleanup_pending=cleanup_pending,
             )
+
+        async def list_runs(
+            awaiter: Callable[[Callable[[], Any]], Any],
+        ) -> dict[str, str]:
+            raw = await awaiter(
+                lambda: self.client.runs.list(
+                    thread_id,
+                    limit=100,
+                    offset=0,
+                    select=["run_id", "status"],
+                )
+            )
+            if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+                raise ValueError("run inventory is invalid")
+            if len(raw) >= 100:
+                raise ValueError("exclusive thread run inventory exceeded its budget")
+            inventory: dict[str, str] = {}
+            for item in raw:
+                run = _mapping(item, label="run inventory item")
+                run_id = run.get("run_id")
+                status = run.get("status")
+                if (
+                    not isinstance(run_id, str)
+                    or not run_id
+                    or run_id in inventory
+                    or status
+                    not in {
+                        "pending",
+                        "running",
+                        "error",
+                        "success",
+                        "timeout",
+                        "interrupted",
+                    }
+                ):
+                    raise ValueError("run inventory item is invalid")
+                inventory[run_id] = status
+            return inventory
+
+        async def cancel_and_confirm(run_ids_to_cancel: Sequence[str]) -> None:
+            for run_id in run_ids_to_cancel:
+                await asyncio.wait_for(
+                    self.client.runs.cancel(
+                        thread_id,
+                        run_id,
+                        wait=True,
+                        action="interrupt",
+                    ),
+                    timeout=5.0,
+                )
+                run = await asyncio.wait_for(
+                    self.client.runs.get(thread_id, run_id),
+                    timeout=5.0,
+                )
+                if run.get("run_id") != run_id or run.get("status") in {
+                    "pending",
+                    "running",
+                    None,
+                }:
+                    raise _RunCleanupPending(
+                        "cancelled run remained active or unverifiable"
+                    )
+
+        async def reconcile_attempt(
+            baseline: set[str],
+            callback_ids: Sequence[str],
+            response_id: str | None,
+            *,
+            timed_out: bool,
+        ) -> str:
+            nonlocal current_run_id
+            async def cleanup_await(factory: Callable[[], Any]) -> Any:
+                return await asyncio.wait_for(factory(), timeout=5.0)
+
+            try:
+                inventory = await list_runs(cleanup_await)
+            except Exception as exc:
+                known = tuple(
+                    sorted(
+                        {
+                            value
+                            for value in (*callback_ids, response_id)
+                            if isinstance(value, str) and value
+                        }
+                    )
+                )
+                cleanup_succeeded = False
+                try:
+                    await cancel_and_confirm(known)
+                    await asyncio.wait_for(
+                        self.client.threads.delete(thread_id), timeout=5.0
+                    )
+                    cleanup_succeeded = True
+                except Exception:
+                    pass
+                if cleanup_succeeded:
+                    raise _UnknownRunOutcome(
+                        "exclusive thread inventory failed but thread cleanup completed"
+                    ) from exc
+                raise _RunCleanupPending(
+                    "exclusive thread run inventory could not be reconciled"
+                ) from exc
+            new_ids = tuple(sorted(set(inventory).difference(baseline)))
+            if any(not value for value in callback_ids):
+                active = tuple(
+                    run_id
+                    for run_id in new_ids
+                    if inventory[run_id] in {"pending", "running"}
+                )
+                await cancel_and_confirm(active)
+                current_run_id = None
+                raise _UnknownRunOutcome("run callback identity was malformed")
+            claimed = {
+                value
+                for value in (*callback_ids, response_id)
+                if isinstance(value, str) and value
+            }
+            if claimed and not claimed.issubset(new_ids):
+                active = tuple(
+                    run_id
+                    for run_id in new_ids
+                    if inventory[run_id] in {"pending", "running"}
+                )
+                await cancel_and_confirm(active)
+                if current_run_id in active:
+                    current_run_id = None
+                raise _UnknownRunOutcome("run callback/response identity mismatch")
+            if len(new_ids) != 1:
+                active = tuple(
+                    run_id
+                    for run_id in new_ids
+                    if inventory[run_id] in {"pending", "running"}
+                )
+                await cancel_and_confirm(active)
+                current_run_id = None
+                if not new_ids and timed_out:
+                    raise TimeoutError
+                raise _UnknownRunOutcome(
+                    "exclusive thread produced a non-unique run attempt"
+                )
+            run_id = new_ids[0]
+            if run_id in run_ids:
+                raise _UnknownRunOutcome("server reused a prior run identity")
+            if inventory[run_id] in {"pending", "running"}:
+                await cancel_and_confirm((run_id,))
+                if current_run_id == run_id:
+                    current_run_id = None
+                if timed_out:
+                    raise TimeoutError
+                raise _UnknownRunOutcome("run attempt did not reach a terminal status")
+            return run_id
 
         async def start_run(**kwargs: Any) -> None:
             nonlocal current_run_id
-            value = str(uuid4())
-            current_run_id = value
-            run_ids.append(value)
-            run = await bounded(
-                lambda: self.client.runs.create(
-                    thread_id,
-                    ASSISTANT_GRAPH_ID,
-                    run_id=value,
-                    multitask_strategy="reject",
-                    **kwargs,
+            baseline = set(await list_runs(bounded))
+            callback_ids: list[str] = []
+            response_id: str | None = None
+            timed_out = False
+            attempt_id = str(uuid4())
+            request = dict(kwargs)
+            request_metadata = dict(request.pop("metadata", {}) or {})
+            request_metadata["coding_eval_attempt_id"] = attempt_id
+
+            def created(metadata: Mapping[str, Any]) -> None:
+                run_id = metadata.get("run_id")
+                callback_thread_id = metadata.get("thread_id")
+                if (
+                    not isinstance(run_id, str)
+                    or not run_id
+                    or callback_thread_id not in {None, thread_id}
+                ):
+                    callback_ids.append("")
+                    return
+                callback_ids.append(run_id)
+
+            try:
+                run = await bounded(
+                    lambda: self.client.runs.create(
+                        thread_id,
+                        ASSISTANT_GRAPH_ID,
+                        metadata=request_metadata,
+                        multitask_strategy="reject",
+                        on_run_created=created,
+                        **request,
+                    )
                 )
+                response_value = _mapping(run, label="run").get("run_id")
+                response_id = (
+                    response_value if isinstance(response_value, str) else None
+                )
+                current_run_id = response_id or next(
+                    (value for value in callback_ids if value), None
+                )
+                if current_run_id is not None:
+                    await bounded(
+                        lambda: self.client.runs.join(thread_id, current_run_id)
+                    )
+            except TimeoutError:
+                timed_out = True
+            except (ConnectionError, OSError, TransportError):
+                pass
+            value = await reconcile_attempt(
+                baseline,
+                callback_ids,
+                response_id,
+                timed_out=timed_out,
             )
-            if _mapping(run, label="run").get("run_id") != value:
-                raise ValueError("run identity does not match the predeclared ID")
-            await bounded(lambda: self.client.runs.join(thread_id, value))
-            terminal_run = await bounded(
-                lambda: self.client.runs.get(thread_id, value)
+            current_run_id = value
+            terminal_run = await asyncio.wait_for(
+                self.client.runs.get(thread_id, value), timeout=5.0
             )
+            terminal_metadata = terminal_run.get("metadata")
             if terminal_run.get("run_id") != value or terminal_run.get("status") in {
                 "pending",
                 "running",
                 None,
-            }:
-                raise ValueError("joined run did not reach a terminal status")
+            } or not isinstance(terminal_metadata, Mapping) or terminal_metadata.get(
+                "coding_eval_attempt_id"
+            ) != attempt_id:
+                raise _UnknownRunOutcome("reconciled run is not terminal")
+            run_ids.append(value)
             current_run_id = None
 
         try:
@@ -448,14 +645,11 @@ class CodingBehaviorAgentServerDriver:
                 consumed_checkpoint_ids.add(checkpoint_id)
                 kind = _interrupt_kind(payload)
                 if kind is None:
-                    current_run_id = str(uuid4())
-                    run_ids.append(current_run_id)
                     try:
-                        await self._reject(
-                            thread_id,
-                            run_id=current_run_id,
+                        await start_run(
+                            command={"resume": {"decision": "reject"}},
                             checkpoint_id=checkpoint_id,
-                            bounded=bounded,
+                            context={"entry_profile": "evaluation", "assistant_execution_mode": "coding"},
                         )
                     except Exception:
                         return await failed(
@@ -472,14 +666,11 @@ class CodingBehaviorAgentServerDriver:
                 try:
                     response = policy.response(kind, payload)
                 except ValueError:
-                    current_run_id = str(uuid4())
-                    run_ids.append(current_run_id)
                     try:
-                        await self._reject(
-                            thread_id,
-                            run_id=current_run_id,
+                        await start_run(
+                            command={"resume": {"decision": "reject"}},
                             checkpoint_id=checkpoint_id,
-                            bounded=bounded,
+                            context={"entry_profile": "evaluation", "assistant_execution_mode": "coding"},
                         )
                     except Exception:
                         return await failed(
@@ -495,6 +686,17 @@ class CodingBehaviorAgentServerDriver:
                     checkpoint_id=checkpoint_id,
                     context={"entry_profile": "evaluation", "assistant_execution_mode": "coding"},
                 )
+        except _RunCleanupPending:
+            return await failed(
+                "coding_eval_cleanup_pending",
+                "cancelled",
+                cleanup_pending=True,
+            )
+        except _UnknownRunOutcome:
+            return await failed(
+                "coding_eval_unknown_run_outcome",
+                "governance",
+            )
         except TimeoutError:
             return await failed("coding_eval_deadline_exceeded", "deadline")
         except (ConnectionError, OSError, TransportError):
@@ -507,37 +709,6 @@ class CodingBehaviorAgentServerDriver:
             return await failed("coding_eval_repository_not_bound", "permission")
         except Exception:
             return await failed("coding_eval_terminal_mismatch", "terminal")
-
-    async def _reject(
-        self,
-        thread_id: str,
-        *,
-        run_id: str,
-        checkpoint_id: str,
-        bounded: Callable[[Callable[[], Any]], Any],
-    ) -> None:
-        run = await bounded(
-            lambda: self.client.runs.create(
-                thread_id,
-                ASSISTANT_GRAPH_ID,
-                run_id=run_id,
-                command={"resume": {"decision": "reject"}},
-                checkpoint_id=checkpoint_id,
-                context={"entry_profile": "evaluation", "assistant_execution_mode": "coding"},
-                multitask_strategy="reject",
-            )
-        )
-        if _mapping(run, label="reject run").get("run_id") != run_id:
-            raise ValueError("reject run identity does not match the predeclared ID")
-        await bounded(lambda: self.client.runs.join(thread_id, run_id))
-        terminal_run = await bounded(lambda: self.client.runs.get(thread_id, run_id))
-        if terminal_run.get("run_id") != run_id or terminal_run.get("status") in {
-            "pending",
-            "running",
-            None,
-        }:
-            raise ValueError("reject run did not reach a terminal status")
-
 
 def _thread_owner(thread: Mapping[str, Any]) -> object:
     metadata = thread.get("metadata")
