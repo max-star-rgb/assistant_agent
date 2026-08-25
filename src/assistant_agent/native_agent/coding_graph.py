@@ -144,6 +144,7 @@ def build_coding_graph(
     analysis_agent: Any | None = None,
     review_graph: Any | None = None,
     checkpointer: Any | None = None,
+    execution_attestation_digest: str | None = None,
 ):
     """Build the deterministic inspect, approve, and apply sequence."""
 
@@ -223,6 +224,15 @@ def build_coding_graph(
     ) -> dict[str, object]:
         if state.get("coding_result") is not None:
             return {}
+        if execution_attestation_digest is not None and state.get(
+            "execution_attestation_digest"
+        ) != execution_attestation_digest:
+            return {
+                "coding_result": CodingTerminalResult(
+                    status="failed",
+                    error_code="coding_execution_attestation_mismatch",
+                )
+            }
         try:
             workspace = _resolve_workspace(state, runtime, config, workspace_service)
         except CodingWorkspaceError as exc:
@@ -2444,7 +2454,13 @@ def build_coding_graph(
         return "summarize" if state.get("coding_result") is not None else "merge_approval"
 
     builder = StateGraph(CodingState, context_schema=AssistantRunContext)
-    builder.add_node("begin_coding_cycle", begin_coding_cycle_node)
+    def begin_attested_coding_cycle(state: CodingState) -> dict[str, object]:
+        return begin_coding_cycle_node(
+            state,
+            execution_attestation_digest=execution_attestation_digest,
+        )
+
+    builder.add_node("begin_coding_cycle", begin_attested_coding_cycle)
     builder.add_node("resolve_workspace", resolve_workspace_node)
     builder.add_node("prepare_analysis", prepare_analysis_node)
     builder.add_node(
@@ -2576,11 +2592,16 @@ def build_coding_graph(
     return builder.compile(name="AssistantCodingGraph", checkpointer=checkpointer)
 
 
-def begin_coding_cycle_node(state: CodingState) -> dict[str, object]:
+def begin_coding_cycle_node(
+    state: CodingState,
+    *,
+    execution_attestation_digest: str | None = None,
+) -> dict[str, object]:
     """Start a plain-input cycle and atomically discard prior local state."""
 
     return {
         "coding_cycle_generation": int(state.get("coding_cycle_generation") or 0) + 1,
+        "execution_attestation_digest": execution_attestation_digest,
         "workspace_ref": None,
         "base_commit": None,
         "analysis_snapshot": None,

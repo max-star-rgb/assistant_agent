@@ -135,6 +135,7 @@ class CodingState(AgentState):
     """Sequential coding channels kept out of fast and planning branches."""
 
     coding_cycle_generation: NotRequired[int]
+    execution_attestation_digest: NotRequired[str | None]
     memory_context: NotRequired[tuple[str, ...]]
     memory_status: NotRequired[MemoryStatus]
     execution_mode: NotRequired[ExecutionMode]

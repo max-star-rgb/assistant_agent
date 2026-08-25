@@ -307,6 +307,7 @@ class CodingBehaviorAgentServerDriver:
         identity: str | None = None,
         max_interrupts: int = 3,
         clock: Callable[[], float] | None = None,
+        expected_execution_attestation_digest: str | None = None,
     ) -> None:
         if max_interrupts < 0 or max_interrupts > _MAX_TRANSITIONS:
             raise ValueError("interrupt budget is invalid")
@@ -316,6 +317,11 @@ class CodingBehaviorAgentServerDriver:
         )
         self.max_interrupts = max_interrupts
         self.clock = clock or monotonic
+        if expected_execution_attestation_digest is not None and not _HEX_64.fullmatch(
+            expected_execution_attestation_digest
+        ):
+            raise ValueError("execution attestation digest is invalid")
+        self.expected_execution_attestation_digest = expected_execution_attestation_digest
 
     def run(self, *, case: CodingBehaviorCase, policy: FixtureApprovalPolicy) -> DriverOutcome:
         """Run from a synchronous CLI or runner boundary."""
@@ -699,6 +705,14 @@ class CodingBehaviorAgentServerDriver:
                 require_current_checkpoint_graph(state)
                 values = _mapping(state.get("values"), label="checkpoint values")
                 current_workspace_ref = values.get("workspace_ref")
+                if (
+                    self.expected_execution_attestation_digest is not None
+                    and values.get("execution_attestation_digest")
+                    != self.expected_execution_attestation_digest
+                ):
+                    return await failed(
+                        "coding_eval_configuration_error", "configuration"
+                    )
                 if (
                     values.get("execution_mode") != "coding"
                     or values.get("coding_repo_id") != policy.repository_id

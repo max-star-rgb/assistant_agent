@@ -74,6 +74,15 @@ class AgentServerExecutionAttestation(BaseModel):
             raise ValueError("attestation boot nonce is invalid")
         return value
 
+    def canonical_digest(self) -> str:
+        return sha256(
+            json.dumps(
+                self.model_dump(mode="json"),
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
 
 def coding_repository_config_digest(repository: CodingRepositoryConfig) -> str:
     payload = repository.model_dump(mode="json")

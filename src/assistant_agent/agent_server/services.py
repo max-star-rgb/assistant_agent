@@ -177,6 +177,7 @@ class AgentServerExecutionOwner:
             integration_service=coding_integration_service,
             model_call_limit=config.max_tool_iterations,
             tool_call_limit=config.max_tool_iterations,
+            execution_attestation_digest=execution_attestation.canonical_digest(),
         )
         graph = build_assistant_root_graph(
             memory_backend=memory_backend,

@@ -446,8 +446,26 @@ class CodingBehaviorCaseResult(_Contract):
                 raise ValueError("passed case requires all checks to pass")
             if check_ids != self.case_binding.grader_ids:
                 raise ValueError("passed case requires the complete grader inventory")
-        elif self.error is None:
-            raise ValueError("failed case requires an error")
+        else:
+            if self.error is None:
+                raise ValueError("failed case requires an error")
+            if self.failure_category is None:
+                raise ValueError("failed case requires a failure category")
+        cleanup_code = (
+            self.error is not None
+            and self.error.code == "coding_eval_cleanup_pending"
+        )
+        cleanup_category = self.failure_category == "cleanup"
+        if self.cleanup_pending or cleanup_code or cleanup_category:
+            if not (
+                self.status == "failed"
+                and self.cleanup_pending
+                and cleanup_code
+                and cleanup_category
+            ):
+                raise ValueError(
+                    "cleanup debt requires failed status, cleanup category, and exact cleanup error"
+                )
         return self
 
 

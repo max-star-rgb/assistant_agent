@@ -20,6 +20,7 @@ from time import monotonic
 from typing import Callable, Mapping
 
 import httpx
+import hmac
 from pydantic import ValidationError
 
 from assistant_agent.agent_server.attestation import (
@@ -210,6 +211,8 @@ class IsolatedHeldOutValidationExecutor:
         self._sandbox = DockerCodingSandboxBackend(
             owner_id=f"coding-eval-{secrets.token_hex(8)}"
         )
+        self._snapshot_secret = secrets.token_bytes(32)
+        self._cleanup_debts: list[_SnapshotCleanupDebt] = []
 
     def execute(self, request: HeldOutValidationRequest) -> HeldOutValidationResult:
         program = _HELD_OUT_PROGRAMS.get(request.command_id)
@@ -224,9 +227,12 @@ class IsolatedHeldOutValidationExecutor:
         cleanup_pending = False
         validation: HeldOutValidationResult | None = None
         try:
-            snapshot_digest = _materialize_fd_snapshot(
-                source_fd=request.repository_fd,
+            snapshot_binding = _materialize_git_tree_snapshot(
+                repository_fd=request.repository_fd,
+                expected_commit=request.expected_commit,
+                expected_tree=request.expected_tree_digest,
                 destination=snapshot,
+                secret=self._snapshot_secret,
                 max_entries=4_096,
                 max_bytes=67_108_864,
             )
@@ -234,7 +240,13 @@ class IsolatedHeldOutValidationExecutor:
                 snapshot,
                 os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
             )
-            if _logical_fd_digest(snapshot_fd, 4_096, 67_108_864) != snapshot_digest:
+            if not _snapshot_binding_matches(
+                snapshot_fd,
+                snapshot_binding,
+                secret=self._snapshot_secret,
+                max_entries=4_096,
+                max_bytes=67_108_864,
+            ):
                 raise ValueError("held-out materialized snapshot changed")
             snapshot_path = Path(f"/proc/self/fd/{snapshot_fd}")
             repo_id = f"held-out-{sha256(request.command_id.encode()).hexdigest()[:16]}"
@@ -280,8 +292,21 @@ class IsolatedHeldOutValidationExecutor:
                 repository,
                 format_round=0,
             )
-            if _logical_fd_digest(snapshot_fd, 4_096, 67_108_864) != snapshot_digest:
+            if not _snapshot_binding_matches(
+                snapshot_fd,
+                snapshot_binding,
+                secret=self._snapshot_secret,
+                max_entries=4_096,
+                max_bytes=67_108_864,
+            ):
                 raise ValueError("held-out materialized snapshot changed")
+            if _git_tree_manifest_digest(
+                request.repository_fd,
+                expected_commit=request.expected_commit,
+                max_entries=4_096,
+                max_bytes=67_108_864,
+            ) != snapshot_binding.manifest_digest:
+                raise ValueError("held-out source Git tree inventory changed")
             self._require_repository_binding(request)
             if len(result.evidence) != 1:
                 raise ValueError("held-out validation returned an invalid evidence inventory")
@@ -306,9 +331,9 @@ class IsolatedHeldOutValidationExecutor:
         finally:
             if snapshot_fd >= 0:
                 os.close(snapshot_fd)
-            try:
-                shutil.rmtree(temporary)
-            except OSError:
+            debt = _SnapshotCleanupDebt.issue(temporary)
+            if not debt.retry():
+                self._cleanup_debts.append(debt)
                 cleanup_pending = True
         if cleanup_pending:
             empty = sha256(b"").hexdigest()
@@ -324,7 +349,14 @@ class IsolatedHeldOutValidationExecutor:
         return validation
 
     def close(self) -> bool:
-        return asyncio.run(self._sandbox.aclose())
+        for _ in range(2):
+            self._cleanup_debts = [
+                debt for debt in self._cleanup_debts if not debt.retry()
+            ]
+            if not self._cleanup_debts:
+                break
+        sandbox_released = asyncio.run(self._sandbox.aclose())
+        return not self._cleanup_debts and sandbox_released
 
     @staticmethod
     def _require_repository_binding(request: HeldOutValidationRequest) -> None:
@@ -368,6 +400,356 @@ class IsolatedHeldOutValidationExecutor:
 
 def _snapshot_copy_hook() -> None:
     """Test seam after source inventory freeze and before descriptor copy."""
+
+
+@dataclass(frozen=True, slots=True)
+class MaterializedGitTreeSnapshot:
+    manifest_digest: str
+    materialized_digest: str
+    manifest_mac: str
+
+
+@dataclass(slots=True)
+class _FixtureCleanupDebt:
+    _store: CodingBehaviorFixtureStore
+    _fixture: CodingBehaviorFixture
+    _case: CodingBehaviorCase
+    _released: bool = False
+
+    def retry(self) -> bool:
+        if self._released:
+            return True
+        try:
+            self._store.cleanup(self._fixture, self._case)
+        except Exception:
+            return False
+        self._released = True
+        return True
+
+    def __reduce__(self) -> object:
+        raise TypeError("fixture cleanup debt is not serializable")
+
+
+class _SnapshotCleanupDebt:
+    __slots__ = ("_path", "_device", "_inode", "_released")
+
+    def __init__(self, path: Path, device: int, inode: int) -> None:
+        self._path = path
+        self._device = device
+        self._inode = inode
+        self._released = False
+
+    @classmethod
+    def issue(cls, path: Path) -> "_SnapshotCleanupDebt":
+        metadata = path.lstat()
+        if not stat.S_ISDIR(metadata.st_mode) or path.is_symlink():
+            raise ValueError("snapshot cleanup capability requires an exact directory")
+        return cls(path, metadata.st_dev, metadata.st_ino)
+
+    def retry(self) -> bool:
+        if self._released:
+            return True
+        try:
+            metadata = self._path.lstat()
+        except FileNotFoundError:
+            self._released = True
+            return True
+        except OSError:
+            return False
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or self._path.is_symlink()
+            or metadata.st_dev != self._device
+            or metadata.st_ino != self._inode
+        ):
+            return False
+        try:
+            shutil.rmtree(self._path)
+        except OSError:
+            return False
+        self._released = not self._path.exists()
+        return self._released
+
+    def __reduce__(self) -> object:
+        raise TypeError("snapshot cleanup debt is not serializable")
+
+
+def _materialize_git_tree_snapshot(
+    *,
+    repository_fd: int,
+    expected_commit: str,
+    expected_tree: str,
+    destination: Path,
+    secret: bytes,
+    max_entries: int,
+    max_bytes: int,
+) -> MaterializedGitTreeSnapshot:
+    if len(secret) < 32:
+        raise ValueError("snapshot MAC secret is too short")
+    actual = _git_fd_bytes(
+        repository_fd,
+        ("rev-parse", "HEAD", "HEAD^{tree}"),
+        max_output=256,
+    ).decode("ascii").splitlines()
+    if actual != [expected_commit, expected_tree]:
+        raise ValueError("held-out final Git tree binding changed")
+    raw_inventory = _git_fd_bytes(
+        repository_fd,
+        ("ls-tree", "-rz", "--full-tree", "-r", expected_commit),
+        max_output=max(65_536, max_entries * 320),
+    )
+    records = tuple(item for item in raw_inventory.split(b"\0") if item)
+    if not records or len(records) > max_entries:
+        raise ValueError("held-out Git tree inventory exceeded its bound")
+    destination.mkdir(mode=0o700, parents=False, exist_ok=False)
+    destination_fd = os.open(
+        destination,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+    )
+    manifest: list[tuple[str, str, str, int, str]] = []
+    total_bytes = 0
+    try:
+        for record in records:
+            try:
+                header, raw_path = record.split(b"\t", 1)
+                raw_mode, raw_type, raw_oid = header.split(b" ", 2)
+                mode = raw_mode.decode("ascii")
+                object_type = raw_type.decode("ascii")
+                object_id = raw_oid.decode("ascii")
+                path = raw_path.decode("utf-8")
+            except (UnicodeDecodeError, ValueError) as exc:
+                raise ValueError("held-out Git tree inventory is invalid") from exc
+            if (
+                object_type != "blob"
+                or mode not in {"100644", "100755"}
+                or len(object_id) not in {40, 64}
+                or any(character not in "0123456789abcdef" for character in object_id)
+            ):
+                raise ValueError("held-out Git tree contains an unsupported object")
+            _canonical_snapshot_path(path)
+            size_raw = _git_fd_bytes(
+                repository_fd,
+                ("cat-file", "-s", object_id),
+                max_output=32,
+            ).decode("ascii").strip()
+            if not size_raw.isdigit():
+                raise ValueError("held-out Git blob size is invalid")
+            size = int(size_raw)
+            total_bytes += size
+            if total_bytes > max_bytes:
+                raise ValueError("held-out Git tree byte budget exceeded")
+            content = _git_fd_bytes(
+                repository_fd,
+                ("cat-file", "blob", object_id),
+                max_output=size,
+            )
+            if len(content) != size:
+                raise ValueError("held-out Git blob size changed")
+            _write_snapshot_blob(
+                destination_fd,
+                path,
+                content,
+                executable=mode == "100755",
+            )
+            manifest.append((path, mode, object_id, size, sha256(content).hexdigest()))
+        materialized_digest = _logical_fd_digest(
+            destination_fd, max_entries, max_bytes
+        )
+    finally:
+        os.close(destination_fd)
+    manifest_digest = sha256(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    manifest_mac = hmac.new(
+        secret,
+        f"coding-held-out-snapshot-v1\0{manifest_digest}\0{materialized_digest}".encode(
+            "ascii"
+        ),
+        sha256,
+    ).hexdigest()
+    return MaterializedGitTreeSnapshot(
+        manifest_digest=manifest_digest,
+        materialized_digest=materialized_digest,
+        manifest_mac=manifest_mac,
+    )
+
+
+def _snapshot_binding_matches(
+    snapshot_fd: int,
+    binding: MaterializedGitTreeSnapshot,
+    *,
+    secret: bytes,
+    max_entries: int,
+    max_bytes: int,
+) -> bool:
+    materialized = _logical_fd_digest(snapshot_fd, max_entries, max_bytes)
+    expected_mac = hmac.new(
+        secret,
+        f"coding-held-out-snapshot-v1\0{binding.manifest_digest}\0{materialized}".encode(
+            "ascii"
+        ),
+        sha256,
+    ).hexdigest()
+    return hmac.compare_digest(materialized, binding.materialized_digest) and hmac.compare_digest(
+        expected_mac, binding.manifest_mac
+    )
+
+
+def _git_tree_manifest_digest(
+    repository_fd: int,
+    *,
+    expected_commit: str,
+    max_entries: int,
+    max_bytes: int,
+) -> str:
+    raw_inventory = _git_fd_bytes(
+        repository_fd,
+        ("ls-tree", "-rz", "--full-tree", "-r", expected_commit),
+        max_output=max(65_536, max_entries * 320),
+    )
+    records = tuple(item for item in raw_inventory.split(b"\0") if item)
+    if not records or len(records) > max_entries:
+        raise ValueError("held-out Git tree inventory exceeded its bound")
+    manifest: list[tuple[str, str, str, int, str]] = []
+    total_bytes = 0
+    for record in records:
+        try:
+            header, raw_path = record.split(b"\t", 1)
+            raw_mode, raw_type, raw_oid = header.split(b" ", 2)
+            mode = raw_mode.decode("ascii")
+            object_type = raw_type.decode("ascii")
+            object_id = raw_oid.decode("ascii")
+            path = raw_path.decode("utf-8")
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise ValueError("held-out Git tree inventory is invalid") from exc
+        if object_type != "blob" or mode not in {"100644", "100755"}:
+            raise ValueError("held-out Git tree contains an unsupported object")
+        _canonical_snapshot_path(path)
+        content = _git_fd_bytes(
+            repository_fd,
+            ("cat-file", "blob", object_id),
+            max_output=max_bytes - total_bytes,
+        )
+        total_bytes += len(content)
+        if total_bytes > max_bytes:
+            raise ValueError("held-out Git tree byte budget exceeded")
+        manifest.append((path, mode, object_id, len(content), sha256(content).hexdigest()))
+    return sha256(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _artifact_identifier_digest(domain: bytes, value: str) -> str:
+    return sha256(domain + b"\0" + value.encode("utf-8")).hexdigest()
+
+
+def _artifact_attestation_projection(
+    attestation: AgentServerExecutionAttestation,
+) -> dict[str, object]:
+    return {
+        "schema_version": attestation.schema_version,
+        "graph_id": attestation.graph_id,
+        "provider_mode": attestation.provider_mode,
+        "chat_provider": attestation.chat_provider,
+        "chat_adapter": attestation.chat_adapter,
+        "model_id": attestation.model_id,
+        "coding_enabled": attestation.coding_enabled,
+        "coding_registry_digest": attestation.coding_registry_digest,
+        "process_boot_digest": _artifact_identifier_digest(
+            b"ai-coding-eval-boot-v1", attestation.process_boot_nonce
+        ),
+        "repository_binding_digests": sorted(
+            _artifact_identifier_digest(
+                b"ai-coding-eval-repository-v1",
+                f"{repository_id}\0{config_digest}",
+            )
+            for repository_id, config_digest in attestation.repository_config_digests.items()
+        ),
+        "attestation_digest": attestation.canonical_digest(),
+    }
+
+
+def _git_fd_bytes(
+    repository_fd: int, arguments: tuple[str, ...], *, max_output: int
+) -> bytes:
+    completed = subprocess.run(
+        ("git", *arguments),
+        cwd=f"/proc/self/fd/{repository_fd}",
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        timeout=10,
+        env=governed_git_environment(),
+        pass_fds=(repository_fd,),
+        check=False,
+    )
+    if (
+        completed.returncode != 0
+        or len(completed.stdout) > max_output
+        or len(completed.stderr) > 65_536
+    ):
+        raise ValueError("held-out Git object materialization failed")
+    return completed.stdout
+
+
+def _canonical_snapshot_path(value: str) -> tuple[str, ...]:
+    parts = tuple(value.split("/"))
+    if (
+        not parts
+        or value.startswith("/")
+        or any(
+            not part
+            or part in {".", "..", ".git"}
+            or any(
+                character
+                not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-"
+                for character in part
+            )
+            for part in parts
+        )
+    ):
+        raise ValueError("held-out Git tree path is noncanonical")
+    return parts
+
+
+def _write_snapshot_blob(
+    root_fd: int,
+    path: str,
+    content: bytes,
+    *,
+    executable: bool,
+) -> None:
+    parts = _canonical_snapshot_path(path)
+    directory_fd = os.dup(root_fd)
+    try:
+        for part in parts[:-1]:
+            try:
+                os.mkdir(part, mode=0o700, dir_fd=directory_fd)
+            except FileExistsError:
+                pass
+            child_fd = os.open(
+                part,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=directory_fd,
+            )
+            os.close(directory_fd)
+            directory_fd = child_fd
+        file_fd = os.open(
+            parts[-1],
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o755 if executable else 0o644,
+            dir_fd=directory_fd,
+        )
+        try:
+            view = memoryview(content)
+            while view:
+                count = os.write(file_fd, view)
+                view = view[count:]
+            os.fchmod(file_fd, 0o755 if executable else 0o644)
+            os.fsync(file_fd)
+        finally:
+            os.close(file_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def _materialize_fd_snapshot(
@@ -644,11 +1026,10 @@ def _run_real_suite(
     store = CodingBehaviorFixtureStore(_WORK_PARENT)
     prepared: list[_PreparedCase] = []
     case_results: dict[str, CodingBehaviorCaseResult] = {}
-    released_fixture_tokens: set[str] = set()
+    fixture_cleanup_debts: list[tuple[str, _FixtureCleanupDebt]] = []
     thread_cleanup_debts: list[tuple[str, object]] = []
     outer_cleanup_pending: set[str] = set()
     attestation: AgentServerExecutionAttestation | None = None
-    case_failure_categories: dict[str, str] = {}
     identity = f"coding-eval-{secrets.token_hex(12)}"
     executor = IsolatedHeldOutValidationExecutor(
         work_root=_WORK_PARENT,
@@ -657,6 +1038,9 @@ def _run_real_suite(
     try:
         for case in suite.cases:
             fixture = store.create(case)
+            fixture_cleanup_debts.append(
+                (case.case_id, _FixtureCleanupDebt(store, fixture, case))
+            )
             repository_id = f"eval-{sha256((identity + case.case_id).encode()).hexdigest()[:24]}"
             repository = _server_repository(
                 fixture,
@@ -694,13 +1078,25 @@ def _run_real_suite(
                     "Server execution attestation was not confirmed.",
                     failure_category=binding_failure_category or "configuration",
                 )
-                case_failure_categories[item.case.case_id] = (
-                    binding_failure_category or "configuration"
-                )
         for item in run_items:
             outcome: DriverOutcome | None = None
             cleanup_pending = False
             try:
+                expected_attestation = attestation
+                attestation = None
+                pre_attestation = _sample_server_attestation(
+                    options.server_url,
+                    identity,
+                    test_confirmation_capability,
+                )
+                _require_expected_attestation(
+                    pre_attestation, prepared=prepared, options=options
+                )
+                if pre_attestation != expected_attestation:
+                    raise CodingBehaviorRunnerConfigurationError(
+                        "server execution attestation changed before case"
+                    )
+                attestation = pre_attestation
                 policy = FixtureApprovalPolicy(
                     store=store,
                     case=item.case,
@@ -713,7 +1109,24 @@ def _run_real_suite(
                     server_url=options.server_url,
                     identity=identity,
                     max_interrupts=len(item.case.required_interrupts),
+                    expected_execution_attestation_digest=(
+                        pre_attestation.canonical_digest()
+                    ),
                 ).run(case=item.case, policy=policy)
+                attestation = None
+                post_attestation = _sample_server_attestation(
+                    options.server_url,
+                    identity,
+                    test_confirmation_capability,
+                )
+                _require_expected_attestation(
+                    post_attestation, prepared=prepared, options=options
+                )
+                if post_attestation != pre_attestation:
+                    raise CodingBehaviorRunnerConfigurationError(
+                        "server execution attestation changed during case"
+                    )
+                attestation = post_attestation
                 case_results[item.case.case_id] = _case_result(
                     item.case,
                     item.fixture,
@@ -721,10 +1134,6 @@ def _run_real_suite(
                     store=store,
                     executor=executor,
                 )
-                if case_results[item.case.case_id].failure_category is not None:
-                    case_failure_categories[item.case.case_id] = (
-                        case_results[item.case.case_id].failure_category
-                    )
             except (httpx.TransportError, ConnectionError, TimeoutError):
                 case_results[item.case.case_id] = _failed_case(
                     item.case,
@@ -732,7 +1141,6 @@ def _run_real_suite(
                     "Evaluation transport failed.",
                     failure_category="transport",
                 )
-                case_failure_categories[item.case.case_id] = "transport"
             except PermissionError:
                 case_results[item.case.case_id] = _failed_case(
                     item.case,
@@ -740,7 +1148,13 @@ def _run_real_suite(
                     "Evaluation permission binding failed.",
                     failure_category="permission",
                 )
-                case_failure_categories[item.case.case_id] = "permission"
+            except CodingBehaviorRunnerConfigurationError:
+                case_results[item.case.case_id] = _failed_case(
+                    item.case,
+                    "coding_eval_configuration_error",
+                    "Evaluation execution attestation changed.",
+                    failure_category="configuration",
+                )
             except Exception:
                 case_results[item.case.case_id] = _failed_case(
                     item.case,
@@ -748,7 +1162,6 @@ def _run_real_suite(
                     "Evaluation orchestration failed.",
                     failure_category="internal",
                 )
-                case_failure_categories[item.case.case_id] = "internal"
             finally:
                 if outcome is not None and outcome.cleanup_debt is not None:
                     cleanup_pending = not outcome.cleanup_debt.retry()
@@ -756,12 +1169,12 @@ def _run_real_suite(
                         thread_cleanup_debts.append(
                             (item.case.case_id, outcome.cleanup_debt)
                         )
-                try:
-                    store.cleanup(item.fixture, item.case)
-                except Exception:
-                    cleanup_pending = True
-                else:
-                    released_fixture_tokens.add(item.fixture.capability_token)
+                fixture_debt = next(
+                    debt
+                    for case_id, debt in fixture_cleanup_debts
+                    if case_id == item.case.case_id
+                )
+                cleanup_pending = not fixture_debt.retry() or cleanup_pending
                 if cleanup_pending:
                     case_results[item.case.case_id] = _failed_case(
                         item.case,
@@ -771,7 +1184,6 @@ def _run_real_suite(
                         prior=case_results.get(item.case.case_id),
                         failure_category="cleanup",
                     )
-                    case_failure_categories[item.case.case_id] = "cleanup"
     except FixtureCreationError as exc:
         matching = next(
             (case for case in suite.cases if case.case_id == exc.fixture.case_id),
@@ -779,10 +1191,9 @@ def _run_real_suite(
         )
         fixture_cleanup_pending = False
         if matching is not None:
-            try:
-                store.cleanup(exc.fixture, matching)
-            except Exception:
-                fixture_cleanup_pending = True
+            debt = _FixtureCleanupDebt(store, exc.fixture, matching)
+            fixture_cleanup_debts.append((matching.case_id, debt))
+            fixture_cleanup_pending = not debt.retry()
             case_results[matching.case_id] = _failed_case(
                 matching,
                 (
@@ -796,24 +1207,27 @@ def _run_real_suite(
                     "cleanup" if fixture_cleanup_pending else "configuration"
                 ),
             )
-            case_failure_categories[matching.case_id] = (
-                "cleanup" if fixture_cleanup_pending else "configuration"
-            )
             if fixture_cleanup_pending:
                 outer_cleanup_pending.add(matching.case_id)
     finally:
-        outer_cleanup_pending.update(
-            _cleanup_owned_fixtures(
-                store,
-                prepared,
-                released_fixture_tokens,
-            )
-        )
+        for _ in range(2):
+            fixture_cleanup_debts = [
+                (case_id, debt)
+                for case_id, debt in fixture_cleanup_debts
+                if not debt.retry()
+            ]
+            if not fixture_cleanup_debts:
+                break
+        outer_cleanup_pending.update(case_id for case_id, _ in fixture_cleanup_debts)
         for case_id, debt in thread_cleanup_debts:
-            try:
-                released = debt.retry()
-            except Exception:
-                released = False
+            released = False
+            for _ in range(2):
+                try:
+                    released = debt.retry()
+                except Exception:
+                    released = False
+                if released:
+                    break
             if not released:
                 outer_cleanup_pending.add(case_id)
         if not executor.close():
@@ -829,7 +1243,6 @@ def _run_real_suite(
                 prior=case_results.get(case.case_id),
                 failure_category="cleanup",
             )
-            case_failure_categories[case.case_id] = "cleanup"
 
     for case in suite.cases:
         case_results.setdefault(
@@ -857,30 +1270,8 @@ def _run_real_suite(
         suite=suite,
         result=validated,
         attestation=attestation,
-        failure_categories=case_failure_categories,
     )
     return validated
-
-
-def _cleanup_owned_fixtures(
-    store: object,
-    prepared: list[object],
-    released_fixture_tokens: set[str],
-) -> set[str]:
-    """Consume every capability created by this run, including active fixtures."""
-
-    pending: set[str] = set()
-    for item in prepared:
-        token = item.fixture.capability_token
-        if token in released_fixture_tokens:
-            continue
-        try:
-            store.cleanup(item.fixture, item.case)
-        except Exception:
-            pending.add(item.case.case_id)
-        else:
-            released_fixture_tokens.add(token)
-    return pending
 
 
 def _case_result(
@@ -1090,6 +1481,11 @@ class _TestConfirmationCapability:
         self._consumed = True
         return self.attestation
 
+    def sample(self) -> AgentServerExecutionAttestation:
+        if self._issuer is not _TEST_CONFIRMATION_ISSUER or not self._consumed:
+            raise ValueError("test confirmation capability is not active")
+        return self.attestation
+
 
 def _issue_test_confirmation_capability(
     attestation: AgentServerExecutionAttestation,
@@ -1124,6 +1520,20 @@ def _confirm_server_binding(
                 "operator attestation acknowledgement did not match"
             )
     return attestation
+
+
+def _sample_server_attestation(
+    server_url: str,
+    identity: str,
+    test_capability: object | None,
+) -> AgentServerExecutionAttestation:
+    if test_capability is None:
+        return _fetch_server_attestation(server_url, identity)
+    if isinstance(test_capability, _TestConfirmationCapability):
+        return test_capability.sample()
+    raise CodingBehaviorRunnerConfigurationError(
+        "real mode rejects untrusted attestation sampling"
+    )
 
 
 def _terminal_reload_confirmation(
@@ -1226,13 +1636,23 @@ def write_result_artifact(
     suite: CodingBehaviorSuite,
     result: CodingBehaviorSuiteResult,
     attestation: AgentServerExecutionAttestation | None,
-    failure_categories: Mapping[str, str],
 ) -> Path:
     validated = validate_coding_behavior_suite_result(suite, result)
+    failure_categories = {
+        case.case_id: case.failure_category
+        for case in validated.cases
+        if case.status == "failed"
+    }
+    if any(category is None for category in failure_categories.values()):
+        raise CodingBehaviorRunnerConfigurationError(
+            "validated failed cases require failure categories"
+        )
     payload = {
         "schema_version": SCHEMA_VERSION,
         "server_attestation": (
-            attestation.model_dump(mode="json") if attestation is not None else None
+            _artifact_attestation_projection(attestation)
+            if attestation is not None
+            else None
         ),
         "failure_categories": dict(sorted(failure_categories.items())),
         "result": validated.model_dump(mode="json"),
