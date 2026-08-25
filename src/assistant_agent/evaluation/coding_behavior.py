@@ -474,6 +474,36 @@ class CodingBehaviorSuiteResult(_Contract):
         return self
 
 
+def validate_coding_behavior_case_result(
+    case: CodingBehaviorCase,
+    result: CodingBehaviorCaseResult,
+) -> CodingBehaviorCaseResult:
+    """Validate a result against the actual validated case authority.
+
+    Runners must use this boundary rather than accepting a result's self-declared
+    binding as proof of the required grader inventory.
+    """
+
+    expected_binding = CodingBehaviorCaseBinding.from_case(case)
+    if result.case_binding != expected_binding:
+        raise ValueError("case result binding does not match the actual validated case")
+    return result
+
+
+def validate_coding_behavior_suite_result(
+    suite: CodingBehaviorSuite,
+    result: CodingBehaviorSuiteResult,
+) -> CodingBehaviorSuiteResult:
+    """Validate a result against the actual validated suite authority."""
+
+    expected_binding = CodingBehaviorSuiteBinding.from_suite(suite)
+    if result.suite_binding != expected_binding:
+        raise ValueError("suite result binding does not match the actual validated suite")
+    for case, case_result in zip(suite.cases, result.cases, strict=True):
+        validate_coding_behavior_case_result(case, case_result)
+    return result
+
+
 class CodingBehaviorDryRunCase(_Contract):
     schema_version: Literal[1]
     case_id: StrictStr
@@ -542,4 +572,6 @@ __all__ = [
     "TRUSTED_FIXTURE_IDS",
     "TRUSTED_GRADER_IDS",
     "build_coding_behavior_dry_run",
+    "validate_coding_behavior_case_result",
+    "validate_coding_behavior_suite_result",
 ]
