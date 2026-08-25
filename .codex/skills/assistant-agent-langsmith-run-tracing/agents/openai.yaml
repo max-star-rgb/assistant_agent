@@ -1,6 +1,0 @@
-interface:
-  display_name: "Assistant Agent LangSmith Run Tracing"
-  short_description: "Exact run lookup and compact trace expansion"
-  default_prompt: "Use $assistant-agent-langsmith-run-tracing to locate this exact LangSmith run and return the evidence at the depth requested."
-policy:
-  allow_implicit_invocation: true

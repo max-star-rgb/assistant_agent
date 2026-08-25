@@ -108,7 +108,7 @@ manifest 只用于 coding agent 选择工程文档，不进入产品 Runtime，�
   `docs/authority.toml`。新增、删除或重命名 authority 时，同步更新 manifest、文首 contract card；仅当
   人类导航需要时再更新 README，不在 `AGENTS.md` 复制领域路由表。
 - 普通开发默认不读 `docs/development/**`、`docs/superpowers/**`、`docs/interview/**`，除非用户点名或任务明确属于历史 runbook、历史设计记录或面试资料。
-- 当用户基于真实测试、真实通话、真实 run/trace 或机器日志提问“为什么失败/为什么这样表现”，或提供 `assistant.turn: <trace_id>` 时，先按 `docs/observability-diagnosis-runbook.md` 读取对应机器事实，必要时再用 `docs/observability-harness.md` 核对观测契约，然后结合用户片段和源码回答。
+- 当用户提供精确 LangSmith `run_id` / `trace_id` 要求定位、打开、追踪或讨论，基于真实测试、真实通话、真实 run/trace 或机器日志提问“为什么失败/为什么这样表现”，或提供 `assistant.turn: <trace_id>` 时，先按 `docs/observability-diagnosis-runbook.md` 读取对应机器事实，必要时再用 `docs/observability-harness.md` 核对观测契约，然后结合用户片段和源码回答。
 - 执行中先读相关代码和文档，保持 scope 小；搜索优先用 `rg` / `rg --files`，手工编辑默认用 `apply_patch`。
 - 修改当前 authority、`AGENTS.md` 文档路由、`docs/authority.toml` 或 authority validator 后，完成前运行
   `/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/check_documentation_authority.py --repo-root .`；

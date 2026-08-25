@@ -13,22 +13,30 @@
 
 ## 1. 查询模式与诊断顺序
 
-### 1.1 精确 run_id 快速定位
+### 1.1 精确 run_id 快速定位与按需追踪
 
-当用户只要求定位、打开或确认某条 LangSmith 记录，并提供了合法 UUID 形式的
-`run_id` 时，先走快速路径：
+当用户提供合法 UUID 形式的 LangSmith `run_id`，并要求定位、打开、确认、追踪或按执行顺序讨论时，
+先走快速路径：
 
 1. 使用当前已配置的 LangSmith client 按 UUID 直接 retrieve run，不先扫描仓库、检索本地日志、
    查询 project 列表或做时间范围搜索。
-2. 命中后立即返回 root name、status、开始/结束时间、总耗时和 LangSmith 直达 URL；定位请求
-   到此结束。
-3. 只有用户明确要求诊断、解释或展开执行轨迹时，才加载 child runs 并核对 node、LLM、Tool、
-   latency 与 Feedback。
-4. 只有直接 retrieve 未命中、无权限或请求对象不是 LangSmith run ID 时，才进入下节的完整
-   诊断与证据降级流程。
+2. 凭据只从本地安全配置加载。若调用 shell 未继承配置、但唯一的 8089 dev service 已配置 LangSmith，
+   应按是否实际持有 LangSmith 配置识别 Python worker，不得按监听列表顺序猜测父进程，也不得输出配置值。
+3. 命中后立即形成 root name、status、开始/结束时间、总耗时和 LangSmith 直达 URL；用户只要求
+   定位、打开或确认时，到此结束。
+4. 用户明确要求“追踪”“执行顺序”“展开”或“然后讨论”时，按 retrieve 返回的 `trace_id` 加载
+   child runs。一次 SDK 分页迭代属于一次逻辑查询；必须在同一进程中使用本次返回对象完成时间线、
+   LLM/Tool 计数和错误摘要聚合，禁止为了补统计再次请求 LangSmith。
+5. 追踪结果只保留关键 root/node/LLM/Tool、父子或并行关系、status、latency 与 Feedback，不原样输出
+   全部 middleware spans。此阶段只报告机器事实；用户尚未询问原因时，不提前猜测根因。
+6. 只有用户明确要求诊断、解释失败或根因时，才进入下节的完整诊断；只有直接 retrieve 未命中、
+   无权限或请求对象不是 LangSmith run ID 时，才进入下节的证据降级流程。
 
-快速定位不读取或输出 prompt、message content、Provider payload 或 Tool 原始结果；凭据仅从本地
-安全配置加载，不得在命令、输出或报告中展开 API key。
+“追踪”不能缩减为只返回 root；“定位”也不应预先加载完整 child tree。追踪时应分别报告 root terminal
+与内部 child error，不得因某个 child error 自动把成功 root 表述为失败。
+
+快速定位与追踪都不读取或输出 prompt、message content、Provider payload、Tool 参数或 Tool 原始结果；
+凭据不得出现在命令、输出或报告中。
 
 ### 1.2 完整诊断与证据降级
 

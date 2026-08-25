@@ -249,6 +249,7 @@ exclusive_allowlist = []
 id = "observability-diagnosis"
 authority = "docs/observability-diagnosis-runbook.md"
 read_when = [
+  "用户提供精确 LangSmith run_id 或 trace_id，要求定位、打开、追踪或讨论",
   "诊断真实测试、真实通话、真实 run、trace 或机器日志",
   "用户提供 assistant.turn trace_id 或询问一次运行为何失败",
 ]
