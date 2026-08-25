@@ -7,12 +7,17 @@ from hashlib import sha256
 import os
 from pathlib import Path, PurePosixPath
 import shutil
+import secrets
 import subprocess
 import tempfile
 from types import MappingProxyType
 from typing import Mapping
 
-from assistant_agent.evaluation.coding_behavior import TRUSTED_FIXTURE_IDS
+from assistant_agent.evaluation.coding_behavior import (
+    TRUSTED_FIXTURE_IDS,
+    CodingBehaviorCase,
+    CodingBehaviorCaseBinding,
+)
 
 
 _WORK_ROOT_SUFFIX = (".data", "evals", "system", "ai_coding_behavior", "work")
@@ -27,12 +32,22 @@ class _FixtureDefinition:
 
 @dataclass(frozen=True, slots=True)
 class CodingBehaviorFixture:
+    case_id: str
     fixture_id: str
     repository: Path
     base_commit: str
     base_tree_digest: str
     forbidden_entry_digests: tuple[tuple[str, str], ...]
     held_out_command_id: str
+    case_binding_digest: str
+    capability_token: str
+
+
+@dataclass(frozen=True, slots=True)
+class _OwnedFixture:
+    fixture: CodingBehaviorFixture
+    repository_device: int
+    repository_inode: int
 
 
 def _definition(files: Mapping[str, str], forbidden: tuple[str, ...]) -> _FixtureDefinition:
@@ -171,8 +186,16 @@ class CodingBehaviorFixtureStore:
         if candidate.is_symlink():
             raise ValueError("fixture work root cannot be a symlink")
         self.root = candidate.resolve(strict=True)
+        root_stat = self.root.stat()
+        self._root_device = root_stat.st_dev
+        self._root_inode = root_stat.st_ino
+        self._store_nonce = secrets.token_bytes(32)
+        self._owned: dict[str, _OwnedFixture] = {}
 
-    def create(self, fixture_id: str) -> CodingBehaviorFixture:
+    def create(self, case: CodingBehaviorCase) -> CodingBehaviorFixture:
+        if not isinstance(case, CodingBehaviorCase):
+            raise ValueError("fixture creation requires a trusted fixture case")
+        fixture_id = case.fixture_id
         definition = TRUSTED_FIXTURE_CATALOG.get(fixture_id)
         if definition is None:
             raise ValueError("fixture_id is not a trusted fixture")
@@ -197,20 +220,81 @@ class CodingBehaviorFixtureStore:
                 )
                 for path in definition.forbidden_paths
             )
-            return CodingBehaviorFixture(
+            capability_token = sha256(
+                self._store_nonce + secrets.token_bytes(32)
+            ).hexdigest()
+            fixture = CodingBehaviorFixture(
+                case_id=case.case_id,
                 fixture_id=fixture_id,
                 repository=repository.resolve(strict=True),
                 base_commit=base_commit,
                 base_tree_digest=base_tree,
                 forbidden_entry_digests=forbidden,
                 held_out_command_id=fixture_id,
+                case_binding_digest=CodingBehaviorCaseBinding.from_case(case).manifest_digest,
+                capability_token=capability_token,
             )
+            repository_stat = fixture.repository.stat()
+            self._owned[capability_token] = _OwnedFixture(
+                fixture=fixture,
+                repository_device=repository_stat.st_dev,
+                repository_inode=repository_stat.st_ino,
+            )
+            return fixture
         except BaseException:
             self._remove_owned_repository(repository)
             raise
 
-    def cleanup(self, fixture: CodingBehaviorFixture) -> None:
+    def resolve(
+        self,
+        fixture: CodingBehaviorFixture,
+        case: CodingBehaviorCase,
+    ) -> CodingBehaviorFixture:
+        self._verify_root_identity()
+        owned = self._owned.get(fixture.capability_token)
+        if owned is None or owned.fixture != fixture:
+            raise ValueError("fixture capability is not issued by this store")
+        expected_binding = CodingBehaviorCaseBinding.from_case(case)
+        if (
+            fixture.case_id != case.case_id
+            or fixture.fixture_id != case.fixture_id
+            or fixture.case_binding_digest != expected_binding.manifest_digest
+        ):
+            raise ValueError("fixture capability case binding mismatch")
+        try:
+            repository_stat = fixture.repository.stat()
+            fixture.repository.resolve(strict=True).relative_to(self.root)
+        except (OSError, ValueError) as exc:
+            raise ValueError("fixture capability repository is unavailable") from exc
+        if (
+            fixture.repository.is_symlink()
+            or fixture.repository.parent != self.root
+            or repository_stat.st_dev != owned.repository_device
+            or repository_stat.st_ino != owned.repository_inode
+        ):
+            raise ValueError("fixture capability repository identity mismatch")
+        return fixture
+
+    def cleanup(
+        self,
+        fixture: CodingBehaviorFixture,
+        case: CodingBehaviorCase,
+    ) -> None:
+        self.resolve(fixture, case)
+        self._owned.pop(fixture.capability_token, None)
         self._remove_owned_repository(fixture.repository)
+
+    def _verify_root_identity(self) -> None:
+        try:
+            root_stat = self.root.stat()
+        except OSError as exc:
+            raise ValueError("fixture store root identity changed") from exc
+        if (
+            self.root.is_symlink()
+            or root_stat.st_dev != self._root_device
+            or root_stat.st_ino != self._root_inode
+        ):
+            raise ValueError("fixture store root identity changed")
 
     def _remove_owned_repository(self, repository: Path) -> None:
         candidate = Path(repository)
