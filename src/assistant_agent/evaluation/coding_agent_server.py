@@ -693,9 +693,7 @@ class CodingBehaviorAgentServerDriver:
             thread_metadata = _mapping(thread.get("metadata"), label="thread metadata")
             evaluation_context_token = thread_metadata.get("coding_eval_context_token")
             if not isinstance(evaluation_context_token, str):
-                if self.expected_execution_attestation_digest is not None:
-                    return await failed("coding_eval_repository_not_bound", "permission")
-                evaluation_context_token = "unattested-driver-test-context"
+                return await failed("coding_eval_repository_not_bound", "permission")
             evaluation_context = {
                 "entry_profile": "evaluation",
                 "assistant_execution_mode": "coding",
@@ -902,7 +900,19 @@ def _thread_binding_matches(
     case_id: str,
 ) -> bool:
     metadata = thread.get("metadata")
-    return isinstance(metadata, Mapping) and metadata == {
+    if not isinstance(metadata, Mapping) or set(metadata) != {
+        THREAD_GRAPH_METADATA_KEY,
+        "owner",
+        "coding_eval_identity",
+        "coding_eval_repo_id",
+        "coding_eval_case_id",
+        "coding_eval_context_token",
+    }:
+        return False
+    token = metadata.get("coding_eval_context_token")
+    return isinstance(token, str) and _HEX_64.fullmatch(token) is not None and {
+        key: value for key, value in metadata.items() if key != "coding_eval_context_token"
+    } == {
         THREAD_GRAPH_METADATA_KEY: ASSISTANT_GRAPH_ID,
         "owner": identity,
         "coding_eval_identity": identity,
