@@ -222,6 +222,7 @@ class CodingState(AgentState):
     review_repair_context_consumed: NotRequired[bool]
     review_repair_projection: NotRequired[dict[str, JsonValue] | None]
     review_repair_redraft_response: NotRequired[str | None]
+    review_repair_redraft_live_check_digest: NotRequired[str | None]
     review_repair_history: NotRequired[list[CodingReviewRepairAttempt]]
     review_repair_audit_report: NotRequired[CodingReviewReport | None]
     review_repair_audit_evidence: NotRequired[tuple[CodingCommandEvidence, ...]]

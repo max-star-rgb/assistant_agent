@@ -465,17 +465,15 @@ def build_coding_graph(
                     )
                 ):
                     raise ValueError("coding_review_repair_binding_mismatch")
-                live_matches, review_repair_live_release_status = (
-                    _review_repair_live_workspace_matches(
-                        state,
-                        workspace,
-                        runtime,
-                        config,
-                        workspace_service,
+                if state.get(
+                    "review_repair_redraft_live_check_digest"
+                ) != _review_repair_redraft_live_check_digest(
+                    review_repair_context,
+                    redraft_response,
+                ):
+                    raise ValueError(
+                        "coding_review_repair_binding_mismatch"
                     )
-                )
-                if not live_matches:
-                    raise ValueError("coding_review_repair_binding_mismatch")
             except (CodingWorkspaceError, TypeError, ValueError):
                 failed_update = {
                     "coding_result": _failed(
@@ -586,6 +584,7 @@ def build_coding_graph(
             )
         if review_repair_redraft_added:
             update["review_repair_redraft_response"] = None
+            update["review_repair_redraft_live_check_digest"] = None
             update["review_snapshot_release_status"] = _merged_cleanup_status(
                 state,
                 review_repair_live_release_status,
@@ -928,6 +927,79 @@ def build_coding_graph(
             goto="inspect_and_draft",
         )
 
+    def checkpoint_review_repair_redraft_node(
+        state: CodingState,
+        runtime: Runtime[AssistantRunContext],
+        config: RunnableConfig,
+    ) -> Command[Literal["inspect_and_draft", "summarize"]]:
+        """Persist redraft live-check cleanup ownership before model invocation."""
+
+        if state.get("coding_result") is not None:
+            return Command(goto="summarize")
+        live_release_status: Literal["released", "cleanup_pending"] | None = None
+        try:
+            _validate_review_repair_checkpoint_state(state)
+            context = _review_repair_context_from_state(state)
+            history = validate_review_repair_history(
+                state.get("review_repair_history", ())
+            )
+            redraft_response = normalize_review_response(
+                state.get("review_repair_redraft_response")
+            )
+            if (
+                state.get("review_repair_status") != "active"
+                or not state.get("review_repair_context_consumed", False)
+                or state.get("review_repair_projection") is not None
+                or history[-1].outcome != "redraft"
+                or not _review_repair_attempt_matches_context(history[-1], context)
+            ):
+                raise ValueError("coding_review_repair_binding_mismatch")
+            live_check_digest = _review_repair_redraft_live_check_digest(
+                context,
+                redraft_response,
+            )
+            current_digest = state.get(
+                "review_repair_redraft_live_check_digest"
+            )
+            if current_digest is not None:
+                if current_digest != live_check_digest:
+                    raise ValueError("coding_review_repair_binding_mismatch")
+                return Command(update={}, goto="inspect_and_draft")
+            workspace = _resolve_workspace(state, runtime, config, workspace_service)
+            live_matches, live_release_status = (
+                _review_repair_live_workspace_matches(
+                    state,
+                    workspace,
+                    runtime,
+                    config,
+                    workspace_service,
+                )
+            )
+            if not live_matches:
+                raise ValueError("coding_review_repair_binding_mismatch")
+        except (CodingWorkspaceError, TypeError, ValueError):
+            error_update: dict[str, object] = {
+                "coding_result": _failed(
+                    state,
+                    "coding_review_repair_binding_mismatch",
+                )
+            }
+            if live_release_status == "cleanup_pending":
+                error_update["review_snapshot_release_status"] = (
+                    _merged_cleanup_status(state, live_release_status)
+                )
+            return Command(update=error_update, goto="summarize")
+        return Command(
+            update={
+                "review_repair_redraft_live_check_digest": live_check_digest,
+                "review_snapshot_release_status": _merged_cleanup_status(
+                    state,
+                    live_release_status,
+                ),
+            },
+            goto="inspect_and_draft",
+        )
+
     def approval_node(
         state: CodingState,
         runtime: Runtime[AssistantRunContext],
@@ -935,6 +1007,7 @@ def build_coding_graph(
     ) -> Command[
         Literal[
             "consume_repair_budget",
+            "checkpoint_review_repair_redraft",
             "inspect_and_draft",
             "apply_patch",
             "summarize",
@@ -1156,9 +1229,10 @@ def build_coding_graph(
                         "repair_approval_context": None,
                         "review_repair_projection": None,
                         "review_repair_redraft_response": redraft_response,
+                        "review_repair_redraft_live_check_digest": None,
                         "review_repair_history": redraft_history,
                     },
-                    goto="inspect_and_draft",
+                    goto="checkpoint_review_repair_redraft",
                 )
             return Command(
                 update={
@@ -2411,6 +2485,10 @@ def build_coding_graph(
         "consume_review_repair_context",
         consume_review_repair_context_node,
     )
+    builder.add_node(
+        "checkpoint_review_repair_redraft",
+        checkpoint_review_repair_redraft_node,
+    )
     builder.add_node("create_commit", create_commit_node)
     builder.add_node("prepare_merge", prepare_merge_node)
     builder.add_node("merge_approval", merge_approval_node)
@@ -2625,6 +2703,7 @@ def _has_checkpointed_cycle_state(state: CodingState) -> bool:
         or state.get("review_repair_context_consumed", False)
         or state.get("review_repair_projection") is not None
         or state.get("review_repair_redraft_response") is not None
+        or state.get("review_repair_redraft_live_check_digest") is not None
         or state.get("review_repair_history")
     ):
         return True
@@ -2806,6 +2885,7 @@ def _reset_review_repair_cycle_state(
         "repair_proposal_digests": Overwrite([]),
         "repair_approval_context": None,
         "review_repair_redraft_response": None,
+        "review_repair_redraft_live_check_digest": None,
         "coding_result": None,
     }
 
@@ -3392,6 +3472,7 @@ def _terminal_review_repair_update(
         "review_repair_context_consumed": False,
         "review_repair_projection": None,
         "review_repair_redraft_response": None,
+        "review_repair_redraft_live_check_digest": None,
         "review_repair_history": history,
         "review_repair_audit_report": report,
         "review_repair_audit_evidence": evidence,
@@ -3479,6 +3560,7 @@ def _is_terminal_review_repair_state(state: CodingState) -> bool:
         or state.get("review_repair_context_consumed", False)
         or state.get("review_repair_projection") is not None
         or state.get("review_repair_redraft_response") is not None
+        or state.get("review_repair_redraft_live_check_digest") is not None
     ):
         return False
     count = state.get("review_repair_count", 0)
@@ -3580,6 +3662,25 @@ def _unconsumed_patch_authorization(
     return proposal, validation
 
 
+def _review_repair_redraft_live_check_digest(
+    context: CodingReviewRepairContext,
+    response: str,
+) -> str:
+    payload = {
+        "context_digest": context.context_digest,
+        "phase": "review_repair_redraft_live_check_v1",
+        "response_digest": review_response_digest(response),
+    }
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def _validate_review_repair_checkpoint_state(state: CodingState) -> None:
     """Reject impossible repair and approval channel combinations."""
 
@@ -3663,6 +3764,11 @@ def _validate_review_repair_checkpoint_state(state: CodingState) -> None:
         raise CodingWorkspaceError("coding_review_repair_binding_mismatch")
     patch_channel_present = _patch_channel_present(state)
     redraft_response = state.get("review_repair_redraft_response")
+    redraft_live_check_digest = state.get(
+        "review_repair_redraft_live_check_digest"
+    )
+    if status != "active" and redraft_live_check_digest is not None:
+        raise CodingWorkspaceError("coding_review_repair_binding_mismatch")
 
     projection_pending = (
         status == "active"
@@ -3699,6 +3805,7 @@ def _validate_review_repair_checkpoint_state(state: CodingState) -> None:
         if (
             forbidden_present
             or redraft_response is not None
+            or redraft_live_check_digest is not None
             or review_channel_present
             or integration_channel_present
         ):
@@ -3716,6 +3823,12 @@ def _validate_review_repair_checkpoint_state(state: CodingState) -> None:
                 normalized_redraft_response = normalize_review_response(
                     redraft_response
                 )
+                expected_live_check_digest = (
+                    _review_repair_redraft_live_check_digest(
+                        _review_repair_context_from_state(state),
+                        normalized_redraft_response,
+                    )
+                )
             except (TypeError, ValueError) as exc:
                 raise CodingWorkspaceError(
                     "coding_review_repair_binding_mismatch"
@@ -3728,11 +3841,17 @@ def _validate_review_repair_checkpoint_state(state: CodingState) -> None:
                 or patch_channel_present
                 or review_channel_present
                 or integration_channel_present
+                or (
+                    redraft_live_check_digest is not None
+                    and redraft_live_check_digest != expected_live_check_digest
+                )
             ):
                 raise CodingWorkspaceError(
                     "coding_review_repair_binding_mismatch"
                 )
             return
+        if redraft_live_check_digest is not None:
+            raise CodingWorkspaceError("coding_review_repair_binding_mismatch")
         if latest_outcome == "redraft":
             redraft_draft_only = (
                 state.get("draft_artifact") is not None
