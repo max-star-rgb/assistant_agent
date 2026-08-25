@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
@@ -11,7 +12,7 @@ from time import monotonic
 from typing import Any, Literal, Protocol
 
 from httpx import HTTPStatusError, TransportError
-from langgraph_sdk import get_sync_client
+from langgraph_sdk import get_client
 
 from assistant_agent.agent_server.client import (
     THREAD_GRAPH_METADATA_KEY,
@@ -28,14 +29,15 @@ _MAX_EVIDENCE_BYTES = 16_384
 
 
 class _Threads(Protocol):
-    def create(self, **kwargs: Any) -> Mapping[str, Any]: ...
-    def get(self, thread_id: str) -> Mapping[str, Any]: ...
-    def get_state(self, thread_id: str, *, subgraphs: bool = False) -> Mapping[str, Any]: ...
+    async def create(self, **kwargs: Any) -> Mapping[str, Any]: ...
+    async def get(self, thread_id: str) -> Mapping[str, Any]: ...
+    async def get_state(self, thread_id: str, *, subgraphs: bool = False) -> Mapping[str, Any]: ...
 
 
 class _Runs(Protocol):
-    def wait(self, thread_id: str, assistant_id: str, **kwargs: Any) -> object: ...
-    def cancel(self, thread_id: str, run_id: str, **kwargs: Any) -> None: ...
+    async def create(self, thread_id: str, assistant_id: str, **kwargs: Any) -> Mapping[str, Any]: ...
+    async def join(self, thread_id: str, run_id: str) -> object: ...
+    async def cancel(self, thread_id: str, run_id: str, **kwargs: Any) -> None: ...
 
 
 class CodingBehaviorAgentServerClient(Protocol):
@@ -161,7 +163,7 @@ class FixtureApprovalPolicy:
                 "patch_digest", "validation_digest", "report_digest", "review_repair_count", "review_repair_history_digest",
                 "review_status", "finding_count", "findings_summary",
             }
-            if set(payload) != required or payload.get("action") != "coding_review_decision" or payload.get("review_status") not in {"passed", "findings", "unavailable"}:
+            if set(payload) != required or payload.get("action") != "coding_review_decision" or payload.get("review_status") not in {"clean", "findings"}:
                 raise ValueError("review interrupt schema is invalid")
             findings = payload.get("findings_summary")
             if (
@@ -216,7 +218,7 @@ class CodingBehaviorAgentServerDriver:
     ) -> None:
         if max_interrupts < 0 or max_interrupts > _MAX_TRANSITIONS:
             raise ValueError("interrupt budget is invalid")
-        self.client = client or get_sync_client(
+        self.client = client or get_client(
             url=server_url,
             headers={"x-assistant-user": identity} if identity else None,
         )
@@ -224,24 +226,50 @@ class CodingBehaviorAgentServerDriver:
         self.clock = clock or monotonic
 
     def run(self, *, case: CodingBehaviorCase, policy: FixtureApprovalPolicy) -> CodingBehaviorDriverResult:
+        """Run from a synchronous CLI or runner boundary."""
+
+        return asyncio.run(self.arun(case=case, policy=policy))
+
+    async def arun(
+        self, *, case: CodingBehaviorCase, policy: FixtureApprovalPolicy
+    ) -> CodingBehaviorDriverResult:
         started = self.clock()
+        deadline = started + case.max_runtime_seconds
         thread_id = ""
         current_run_id: str | None = None
         run_ids: list[str] = []
         kinds: list[str] = []
         seen_interrupt_ids: set[str] = set()
+        seen_payload_digests: set[str] = set()
+        consumed_checkpoint_ids: set[str] = set()
         transitions: list[CodingBehaviorTransitionEvidence] = []
+        workspace_ref: str | None = None
 
         def elapsed_ms() -> int:
             return max(0, min(3_600_000, int((self.clock() - started) * 1000)))
 
-        def failed(code: str, category: str) -> CodingBehaviorDriverResult:
+        async def bounded(factory: Callable[[], Any]) -> Any:
+            remaining = deadline - self.clock()
+            if remaining <= 0:
+                raise TimeoutError
+            return await asyncio.wait_for(factory(), timeout=remaining)
+
+        async def failed(code: str, category: str) -> CodingBehaviorDriverResult:
             nonlocal current_run_id
             if current_run_id and thread_id:
                 try:
-                    self.client.runs.cancel(thread_id, current_run_id, wait=True, action="interrupt")
+                    await asyncio.wait_for(
+                        self.client.runs.cancel(
+                            thread_id,
+                            current_run_id,
+                            wait=True,
+                            action="interrupt",
+                        ),
+                        timeout=5.0,
+                    )
                 except Exception:
-                    category = "cancelled" if category == "transport" else category
+                    category = "cancelled"
+                current_run_id = None
             return CodingBehaviorDriverResult(
                 status="failed", terminal_status=None, error_code=code,
                 failure_category=category,  # type: ignore[arg-type]
@@ -251,57 +279,100 @@ class CodingBehaviorAgentServerDriver:
                 transitions=tuple(transitions), elapsed_ms=elapsed_ms(),
             )
 
-        def created(metadata: Mapping[str, Any]) -> None:
+        async def start_run(**kwargs: Any) -> None:
             nonlocal current_run_id
-            value = metadata.get("run_id")
-            if not isinstance(value, str) or not value:
+            run = await bounded(
+                lambda: self.client.runs.create(
+                    thread_id,
+                    ASSISTANT_GRAPH_ID,
+                    multitask_strategy="reject",
+                    **kwargs,
+                )
+            )
+            value = _mapping(run, label="run").get("run_id")
+            if not isinstance(value, str) or not value or value in run_ids:
                 raise ValueError("run identity is missing")
             current_run_id = value
             run_ids.append(value)
+            await bounded(lambda: self.client.runs.join(thread_id, value))
+            current_run_id = None
 
         try:
             metadata = bind_thread_graph_identity(
                 {"coding_eval_identity": policy.identity, "coding_eval_repo_id": policy.repository_id, "coding_eval_case_id": case.case_id},
                 expected_graph_id=ASSISTANT_GRAPH_ID,
             )
-            thread = self.client.threads.create(metadata=metadata, graph_id=ASSISTANT_GRAPH_ID)
+            thread = await bounded(
+                lambda: self.client.threads.create(
+                    metadata=metadata,
+                    graph_id=ASSISTANT_GRAPH_ID,
+                )
+            )
             require_thread_graph_identity(thread, expected_graph_id=ASSISTANT_GRAPH_ID)
             thread_id = str(thread.get("thread_id", ""))
-            if not thread_id or _thread_owner(thread) != policy.identity:
-                return failed("coding_eval_repository_not_bound", "permission")
-            self.client.runs.wait(
-                thread_id, ASSISTANT_GRAPH_ID,
+            if not thread_id or not _thread_binding_matches(
+                thread,
+                identity=policy.identity,
+                repository_id=policy.repository_id,
+                case_id=case.case_id,
+            ):
+                return await failed("coding_eval_repository_not_bound", "permission")
+            await start_run(
                 input={"messages": [{"role": "user", "content": case.request}], "execution_mode": "coding", "coding_repo_id": policy.repository_id},
                 context={"entry_profile": "evaluation", "assistant_execution_mode": "coding"},
-                metadata={"coding_eval_case_id": case.case_id}, multitask_strategy="reject",
-                on_run_created=created,
+                metadata={"coding_eval_case_id": case.case_id},
             )
             while True:
-                if elapsed_ms() > case.max_runtime_seconds * 1000:
-                    return failed("coding_eval_deadline_exceeded", "deadline")
-                thread = self.client.threads.get(thread_id)
-                if _thread_owner(thread) != policy.identity or thread.get("thread_id") != thread_id:
-                    return failed("coding_eval_repository_not_bound", "permission")
+                if self.clock() >= deadline:
+                    return await failed("coding_eval_deadline_exceeded", "deadline")
+                thread = await bounded(lambda: self.client.threads.get(thread_id))
+                if thread.get("thread_id") != thread_id or not _thread_binding_matches(
+                    thread,
+                    identity=policy.identity,
+                    repository_id=policy.repository_id,
+                    case_id=case.case_id,
+                ):
+                    return await failed("coding_eval_repository_not_bound", "permission")
                 require_thread_graph_identity(thread, expected_graph_id=ASSISTANT_GRAPH_ID)
-                state = self.client.threads.get_state(thread_id, subgraphs=True)
+                state = await bounded(
+                    lambda: self.client.threads.get_state(thread_id, subgraphs=True)
+                )
                 require_current_checkpoint_graph(state)
                 values = _mapping(state.get("values"), label="checkpoint values")
-                if values.get("execution_mode") not in {None, "coding"} or values.get("coding_repo_id") != policy.repository_id:
-                    return failed("coding_eval_repository_not_bound", "permission")
-                if values.get("base_commit") not in {None, policy.fixture.base_commit}:
-                    return failed("coding_eval_repository_not_bound", "permission")
-                if _state_thread_id(state) != thread_id or _state_owner(state) not in {None, policy.identity}:
-                    return failed("coding_eval_repository_not_bound", "permission")
-                interrupt = _single_interrupt(state)
+                current_workspace_ref = values.get("workspace_ref")
+                if (
+                    values.get("execution_mode") != "coding"
+                    or values.get("coding_repo_id") != policy.repository_id
+                    or values.get("base_commit") != policy.fixture.base_commit
+                    or not isinstance(current_workspace_ref, str)
+                    or not current_workspace_ref
+                    or _state_thread_id(state) != thread_id
+                    or _state_owner(state) != policy.identity
+                ):
+                    return await failed("coding_eval_repository_not_bound", "permission")
+                if workspace_ref is None:
+                    workspace_ref = current_workspace_ref
+                elif current_workspace_ref != workspace_ref:
+                    return await failed("coding_eval_repository_not_bound", "permission")
+                try:
+                    checkpoint_id = _checkpoint_id(state)
+                except (TypeError, ValueError):
+                    return await failed("coding_eval_unknown_interrupt", "governance")
+                if checkpoint_id in consumed_checkpoint_ids:
+                    return await failed("coding_eval_unknown_interrupt", "governance")
+                try:
+                    interrupt = _single_interrupt(state)
+                except (TypeError, ValueError):
+                    return await failed("coding_eval_unknown_interrupt", "governance")
                 if interrupt is None:
                     terminal = _model_mapping(values.get("coding_result"))
                     terminal_status = terminal.get("status")
                     if not isinstance(terminal_status, str):
-                        return failed("coding_eval_terminal_mismatch", "terminal")
+                        return await failed("coding_eval_terminal_mismatch", "terminal")
                     if tuple(kinds) != case.required_interrupts:
-                        return failed("coding_eval_terminal_mismatch", "governance")
-                    if terminal.get("base_commit") not in {None, policy.fixture.base_commit}:
-                        return failed("coding_eval_repository_not_bound", "permission")
+                        return await failed("coding_eval_terminal_mismatch", "governance")
+                    if terminal.get("base_commit") != policy.fixture.base_commit:
+                        return await failed("coding_eval_repository_not_bound", "permission")
                     transitions.append(_transition(len(transitions) + 1, "terminal", state))
                     return CodingBehaviorDriverResult(
                         status="completed", terminal_status=terminal_status, error_code=None, failure_category="none",
@@ -313,57 +384,115 @@ class CodingBehaviorAgentServerDriver:
                         integration_tree_digest=_nested_object_id(values, "merge_result", "result_tree"),
                     )
                 interrupt_id, payload = interrupt
-                if interrupt_id in seen_interrupt_ids:
-                    return failed("coding_eval_unknown_interrupt", "governance")
+                try:
+                    payload_digest = _payload_digest(payload)
+                except (TypeError, ValueError):
+                    return await failed("coding_eval_unknown_interrupt", "governance")
+                if (
+                    interrupt_id in seen_interrupt_ids
+                    or payload_digest in seen_payload_digests
+                    or checkpoint_id in consumed_checkpoint_ids
+                ):
+                    return await failed("coding_eval_unknown_interrupt", "governance")
                 seen_interrupt_ids.add(interrupt_id)
+                seen_payload_digests.add(payload_digest)
+                consumed_checkpoint_ids.add(checkpoint_id)
                 kind = _interrupt_kind(payload)
                 if kind is None:
-                    self._reject(thread_id, created)
-                    return failed("coding_eval_unknown_interrupt", "governance")
+                    current_run_id = await self._reject(
+                        thread_id,
+                        checkpoint_id=checkpoint_id,
+                        bounded=bounded,
+                        run_ids=run_ids,
+                    )
+                    return await failed("coding_eval_unknown_interrupt", "governance")
                 if len(kinds) >= self.max_interrupts:
-                    return failed("coding_eval_interrupt_budget_exceeded", "governance")
+                    return await failed("coding_eval_interrupt_budget_exceeded", "governance")
                 expected = case.required_interrupts[len(kinds)] if len(kinds) < len(case.required_interrupts) else None
                 if kind != expected:
-                    return failed("coding_eval_unknown_interrupt", "governance")
+                    return await failed("coding_eval_unknown_interrupt", "governance")
+                if payload.get("workspace_ref") is not None and payload.get("workspace_ref") != workspace_ref:
+                    return await failed("coding_eval_repository_not_bound", "permission")
                 try:
                     response = policy.response(kind, payload)
                 except ValueError:
-                    self._reject(thread_id, created)
-                    return failed("coding_eval_unknown_interrupt", "governance")
+                    current_run_id = await self._reject(
+                        thread_id,
+                        checkpoint_id=checkpoint_id,
+                        bounded=bounded,
+                        run_ids=run_ids,
+                    )
+                    return await failed("coding_eval_unknown_interrupt", "governance")
                 kinds.append(kind)
                 transitions.append(_transition(len(transitions) + 1, kind, state))
                 if _evidence_size(transitions) > _MAX_EVIDENCE_BYTES:
-                    return failed("coding_eval_interrupt_budget_exceeded", "governance")
-                self.client.runs.wait(
-                    thread_id, ASSISTANT_GRAPH_ID, command={"resume": response},
+                    return await failed("coding_eval_interrupt_budget_exceeded", "governance")
+                await start_run(
+                    command={"resume": response},
+                    checkpoint_id=checkpoint_id,
                     context={"entry_profile": "evaluation", "assistant_execution_mode": "coding"},
-                    multitask_strategy="reject", on_run_created=created,
                 )
+        except TimeoutError:
+            return await failed("coding_eval_deadline_exceeded", "deadline")
         except (ConnectionError, OSError, TransportError):
-            return failed("coding_eval_server_unavailable", "transport")
+            return await failed("coding_eval_server_unavailable", "transport")
         except HTTPStatusError as exc:
             category = "permission" if exc.response.status_code in {401, 403} else "transport"
             code = "coding_eval_repository_not_bound" if category == "permission" else "coding_eval_server_unavailable"
-            return failed(code, category)
+            return await failed(code, category)
         except PermissionError:
-            return failed("coding_eval_repository_not_bound", "permission")
+            return await failed("coding_eval_repository_not_bound", "permission")
         except Exception:
-            return failed("coding_eval_terminal_mismatch", "terminal")
+            return await failed("coding_eval_terminal_mismatch", "terminal")
 
-    def _reject(self, thread_id: str, created: Callable[[Mapping[str, Any]], None]) -> None:
+    async def _reject(
+        self,
+        thread_id: str,
+        *,
+        checkpoint_id: str,
+        bounded: Callable[[Callable[[], Any]], Any],
+        run_ids: list[str],
+    ) -> str | None:
         try:
-            self.client.runs.wait(
-                thread_id, ASSISTANT_GRAPH_ID, command={"resume": {"decision": "reject"}},
-                context={"entry_profile": "evaluation", "assistant_execution_mode": "coding"},
-                multitask_strategy="reject", on_run_created=created,
+            run = await bounded(
+                lambda: self.client.runs.create(
+                    thread_id,
+                    ASSISTANT_GRAPH_ID,
+                    command={"resume": {"decision": "reject"}},
+                    checkpoint_id=checkpoint_id,
+                    context={"entry_profile": "evaluation", "assistant_execution_mode": "coding"},
+                    multitask_strategy="reject",
+                )
             )
+            run_id = _mapping(run, label="reject run").get("run_id")
+            if not isinstance(run_id, str) or not run_id:
+                raise ValueError("reject run identity is missing")
+            run_ids.append(run_id)
+            return run_id
         except Exception:
-            pass
+            return None
 
 
 def _thread_owner(thread: Mapping[str, Any]) -> object:
     metadata = thread.get("metadata")
     return metadata.get("owner") if isinstance(metadata, Mapping) else None
+
+
+def _thread_binding_matches(
+    thread: Mapping[str, Any],
+    *,
+    identity: str,
+    repository_id: str,
+    case_id: str,
+) -> bool:
+    metadata = thread.get("metadata")
+    return isinstance(metadata, Mapping) and metadata == {
+        THREAD_GRAPH_METADATA_KEY: ASSISTANT_GRAPH_ID,
+        "owner": identity,
+        "coding_eval_identity": identity,
+        "coding_eval_repo_id": repository_id,
+        "coding_eval_case_id": case_id,
+    }
 
 
 def _state_thread_id(state: Mapping[str, Any]) -> object:
@@ -396,6 +525,26 @@ def _single_interrupt(state: Mapping[str, Any]) -> tuple[str, Mapping[str, Any]]
     if set(value) != {"id", "value"} or not isinstance(value.get("id"), str):
         raise ValueError("interrupt envelope is invalid")
     return value["id"], _mapping(value.get("value"), label="interrupt value")
+
+
+def _checkpoint_id(state: Mapping[str, Any]) -> str:
+    checkpoint = state.get("checkpoint")
+    value = checkpoint.get("checkpoint_id") if isinstance(checkpoint, Mapping) else None
+    if not isinstance(value, str) or not value or len(value) > 256:
+        raise ValueError("checkpoint identity is missing or invalid")
+    return value
+
+
+def _payload_digest(payload: Mapping[str, Any]) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(encoded) > _MAX_EVIDENCE_BYTES * 4:
+        raise ValueError("interrupt payload exceeds its input budget")
+    return sha256(encoded).hexdigest()
 
 
 def _interrupt_kind(payload: Mapping[str, Any]) -> str | None:
