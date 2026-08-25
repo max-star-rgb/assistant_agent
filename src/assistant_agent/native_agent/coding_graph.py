@@ -20,8 +20,9 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.errors import NodeError
+from langgraph.config import get_config
 from langgraph.graph import END, START, StateGraph
-from langgraph.runtime import Runtime
+from langgraph.runtime import Runtime, get_runtime
 from langgraph.types import Command, Overwrite, RetryPolicy, Send, interrupt
 from pydantic import BaseModel, JsonValue
 
@@ -154,8 +155,8 @@ def _guard_coding_node(
     current_digest: str | None,
     *,
     allow_evaluation_bootstrap: bool = False,
-    allow_attestation_cleanup: bool = False,
     allow_signal_fanin: bool = False,
+    attestation_cleanup: Any | None = None,
 ) -> Any:
     def is_evaluation(args: tuple[object, ...], kwargs: Mapping[str, object]) -> bool:
         candidates = (*args, *kwargs.values())
@@ -183,7 +184,7 @@ def _guard_coding_node(
         return is_evaluation(args, kwargs) and not allow_evaluation_bootstrap
 
     def is_attestation_cleanup(state: object) -> bool:
-        if not allow_attestation_cleanup or not isinstance(state, Mapping):
+        if not isinstance(state, Mapping):
             return False
         result = state.get("coding_result")
         error_code = (
@@ -192,6 +193,27 @@ def _guard_coding_node(
             else getattr(result, "error_code", None)
         )
         return error_code == "coding_eval_execution_attestation_mismatch"
+
+    def failure_update(state: Mapping[str, object]) -> dict[str, object]:
+        update = _coding_attestation_failure(state)
+        if "attestation_mismatch_signals" in update or attestation_cleanup is None:
+            return update
+        try:
+            cleaned = attestation_cleanup({**state, **update})
+        except Exception:
+            return {
+                **update,
+                "analysis_snapshot_release_status": "cleanup_pending",
+                "review_snapshot_release_status": "cleanup_pending",
+                "approval_status": None,
+                "dependency_approval_status": None,
+                "credential_approval_status": None,
+                "artifact_approval_status": None,
+                "review_decision_context": None,
+                "review_decision": None,
+                "merge_approval_status": None,
+            }
+        return dict(cleaned)
 
     def is_signal_fanin(state: object) -> bool:
         return (
@@ -203,24 +225,22 @@ def _guard_coding_node(
     if inspect.iscoroutinefunction(node):
         @functools.wraps(node)
         async def guarded_async(state: object, *args: object, **kwargs: object) -> object:
-            if (
-                mismatch(state, args, kwargs)
-                and not is_attestation_cleanup(state)
-                and not is_signal_fanin(state)
-            ):
-                return _coding_attestation_failure(state)
+            if mismatch(state, args, kwargs):
+                if is_attestation_cleanup(state):
+                    return {}
+                if not is_signal_fanin(state):
+                    return failure_update(state)
             return await node(state, *args, **kwargs)
 
         return guarded_async
 
     @functools.wraps(node)
     def guarded_sync(state: object, *args: object, **kwargs: object) -> object:
-        if (
-            mismatch(state, args, kwargs)
-            and not is_attestation_cleanup(state)
-            and not is_signal_fanin(state)
-        ):
-            return _coding_attestation_failure(state)
+        if mismatch(state, args, kwargs):
+            if is_attestation_cleanup(state):
+                return {}
+            if not is_signal_fanin(state):
+                return failure_update(state)
         return node(state, *args, **kwargs)
 
     return guarded_sync
@@ -2570,6 +2590,25 @@ def build_coding_graph(
 
     builder = StateGraph(CodingState, context_schema=AssistantRunContext)
 
+    def cleanup_attestation_failure(
+        state: CodingState,
+    ) -> dict[str, object]:
+        update = summarize_node(
+            state,
+            get_runtime(AssistantRunContext),
+            get_config(),
+        )
+        return {
+            **update,
+            "approval_status": None,
+            "dependency_approval_status": None,
+            "credential_approval_status": None,
+            "artifact_approval_status": None,
+            "review_decision_context": None,
+            "review_decision": None,
+            "merge_approval_status": None,
+        }
+
     def add_coding_node(name: str, node: Any, **kwargs: Any) -> None:
         error_handler = kwargs.get("error_handler")
         if error_handler is not None:
@@ -2582,8 +2621,8 @@ def build_coding_graph(
                 node,
                 execution_attestation_digest,
                 allow_evaluation_bootstrap=name == "begin_coding_cycle",
-                allow_attestation_cleanup=name == "summarize",
                 allow_signal_fanin=name == "join_analysis",
+                attestation_cleanup=cleanup_attestation_failure,
             ),
             **kwargs,
         )
