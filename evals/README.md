@@ -57,3 +57,12 @@ profile；百炼原生 code execution 不算 held-out repository validation，�
 稳定入口以 `scripts/README.md` 的 System eval 索引为准。新增原生 LangSmith/Release Review 前，必须直接消费
 Agent Server 或 `NativeGraphEvaluationTarget` 的标准 messages/native trace，并重新定义 Dataset、Feedback、
 副作用与 cleanup 合同；不得恢复通用 Runtime facade、旧 turn state 或旧 Tool fixture backend。
+evaluation execution attestation 只在 Agent Server auth hook 签发并校验 case/repository 绑定后写入初始
+coding checkpoint；普通 coding run 与其 `Send` worker 始终携带 `None`，因此 server reload 不会把非评测
+checkpoint 误判为漂移。已进入 evaluation 的 checkpoint 在 reload 后仍按旧 digest fail closed。
+
+fixture cleanup 会清零受管内容，但不会谎报目录已删除；result 明确记录
+`released_with_bounded_sentinel`。固定 work management root 通过 fd-anchored marker registry 将跨 suite retained
+store 限制为最多 64 个，达到上限时在 repository mutation 前拒绝运行并要求 operator cleanup。
+fixture、snapshot 与 result artifact 均从可信 repository root dirfd 逐层 `mkdirat/openat(O_NOFOLLOW)`；artifact
+临时文件、`fsync`、rename 和 inode 复核全部相对冻结 dirfd 完成。
