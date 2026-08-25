@@ -586,6 +586,10 @@ def build_coding_graph(
             )
         if review_repair_redraft_added:
             update["review_repair_redraft_response"] = None
+            update["review_snapshot_release_status"] = _merged_cleanup_status(
+                state,
+                review_repair_live_release_status,
+            )
         return update
 
     def validate_proposal_node(
