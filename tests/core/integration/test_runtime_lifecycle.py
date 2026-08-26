@@ -58,9 +58,9 @@ def test_parent_graph_has_native_fast_planning_and_coding_branches(monkeypatch) 
         nodes = {name for name in graph.nodes if not name.startswith("__error_handler__")}
         assert owner.graph.name == "AssistantRootGraph"
         assert nodes == {
-            "__start__", "capture_trusted_runtime_facts", "memory_recall",
-            "execution_router", "fast_agent", "planning_agent", "coding_graph",
-            "refresh_memory_extraction", "__end__",
+            "__start__", "memory_recall", "execution_router", "fast_agent",
+            "planning_agent", "coding_graph", "refresh_memory_extraction",
+            "__end__",
         }
         assert graph.nodes["fast_agent"].data.name == "AssistantFastAgent"
         assert graph.nodes["planning_agent"].data.name == "AssistantPlanningAgent"

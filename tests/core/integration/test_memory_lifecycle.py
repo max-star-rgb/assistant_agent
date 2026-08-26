@@ -48,6 +48,14 @@ class _Memory:
         self.events.append("commit")
 
 
+class _FailingMemory(_Memory):
+    backend_id = "disabled"
+
+    async def recall(self, **_kwargs: Any):
+        self.events.append("recall")
+        raise RuntimeError("recall-failure-sentinel")
+
+
 class _Runs:
     def __init__(self) -> None:
         self.cancellations: list[dict[str, Any]] = []
@@ -200,6 +208,11 @@ def test_chat_runs_recall_once_and_schedule_extraction_for_each_mode(
     assert all(
         result["memory_context"] == ("memory-sentinel",) for _events, result in results
     )
+    assert all(
+        result["trusted_runtime_facts"]["schema_version"]
+        == "trusted_runtime_facts_v1"
+        for _events, result in results
+    )
     assert sorted(client.runs.cancellations, key=lambda item: item["thread_id"]) == [
         {
             "thread_id": "thread-fast-sentinel",
@@ -221,6 +234,42 @@ def test_chat_runs_recall_once_and_schedule_extraction_for_each_mode(
         and request["after_seconds"] == 1800
         and request["multitask_strategy"] == "enqueue"
         for request in client.runs.requests
+    )
+
+
+@pytest.mark.core_invariant("MEMORY-001")
+def test_recall_degradation_preserves_trusted_runtime_facts() -> None:
+    backend = _FailingMemory()
+    graph = build_assistant_root_graph(
+        memory_backend=backend,
+        fast_agent=_branch(FastAgentState, "AssistantFastAgent"),
+        planning_agent=_branch(PlanningAgentState, "AssistantPlanningAgent"),
+        coding_graph=_branch(CodingState, "AssistantCodingGraph"),
+    )
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {
+                "messages": [HumanMessage(content="request-sentinel")],
+                "execution_mode": "fast",
+            },
+            context=AssistantRunContext(),
+            config={
+                "configurable": {
+                    "thread_id": "thread-degraded-sentinel",
+                    "assistant_id": "assistant-sentinel",
+                    "graph_id": "graph-sentinel",
+                    "langgraph_auth_user": _User(),
+                }
+            },
+        )
+    )
+
+    assert backend.events == ["recall"]
+    assert result["memory_context"] == ()
+    assert result["memory_status"] == "degraded"
+    assert result["trusted_runtime_facts"]["schema_version"] == (
+        "trusted_runtime_facts_v1"
     )
 
 

@@ -18,9 +18,6 @@ from assistant_agent.native_agent.memory import (
     memory_recall_degraded,
     memory_recall_node,
 )
-from assistant_agent.native_agent.runtime_facts import (
-    capture_trusted_runtime_facts_node,
-)
 from assistant_agent.native_agent.state import AssistantRootInput, AssistantRootState
 
 
@@ -44,10 +41,6 @@ def build_assistant_root_graph(
         AssistantRootState,
         input_schema=AssistantRootInput,
         context_schema=AssistantRunContext,
-    )
-    builder.add_node(
-        "capture_trusted_runtime_facts",
-        capture_trusted_runtime_facts_node,
     )
     builder.add_node(
         "memory_recall",
@@ -79,8 +72,7 @@ def build_assistant_root_graph(
         ),
         error_handler=memory_extraction_refresh_degraded,
     )
-    builder.add_edge(START, "capture_trusted_runtime_facts")
-    builder.add_edge("capture_trusted_runtime_facts", "memory_recall")
+    builder.add_edge(START, "memory_recall")
     builder.add_edge("memory_recall", "execution_router")
     builder.add_conditional_edges(
         "execution_router",

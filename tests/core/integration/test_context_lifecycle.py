@@ -27,7 +27,7 @@ from assistant_agent.native_agent.fast_agent import build_fast_agent
 from assistant_agent.native_agent.planning_agent import build_planning_agent
 from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.native_agent.runtime_facts import (
-    capture_trusted_runtime_facts_node,
+    capture_trusted_runtime_facts,
 )
 from assistant_agent.native_agent.state import PlanningAgentState
 from assistant_agent.native_agent.tool_call_limits import PerToolCallLimitMiddleware
@@ -202,8 +202,7 @@ def test_planning_and_task_receive_one_transient_frozen_runtime_context() -> Non
     model.observed_calls = []
     fast = build_fast_agent(model, [])
     graph = build_planning_agent(model, fast)
-    facts = capture_trusted_runtime_facts_node(
-        {},
+    facts = capture_trusted_runtime_facts(
         clock=lambda: datetime(
             2026,
             8,
@@ -212,7 +211,7 @@ def test_planning_and_task_receive_one_transient_frozen_runtime_context() -> Non
             0,
             tzinfo=ZoneInfo("Asia/Shanghai"),
         ),
-    )["trusted_runtime_facts"]
+    )
 
     result = graph.invoke(
         {

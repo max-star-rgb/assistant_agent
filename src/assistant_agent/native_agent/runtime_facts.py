@@ -50,12 +50,11 @@ class TrustedRuntimeFacts(BaseModel):
         return value
 
 
-def capture_trusted_runtime_facts_node(
-    _state: object,
+def capture_trusted_runtime_facts(
     *,
     clock: Callable[[], datetime] | None = None,
-) -> dict[str, dict[str, Any]]:
-    """Capture facts only when LangGraph executes this checkpointed node."""
+) -> dict[str, Any]:
+    """Capture one JSON-safe trusted runtime facts snapshot."""
 
     timezone = ZoneInfo(DEFAULT_RUNTIME_TIMEZONE)
     current_time = (clock or (lambda: datetime.now(timezone)))()
@@ -72,7 +71,7 @@ def capture_trusted_runtime_facts_node(
             is_fallback=True,
         ),
     )
-    return {"trusted_runtime_facts": facts.model_dump(mode="json")}
+    return facts.model_dump(mode="json")
 
 
 def trusted_runtime_facts_message(
@@ -99,6 +98,6 @@ __all__ = [
     "DEFAULT_RUNTIME_TIMEZONE",
     "RuntimeLocation",
     "TrustedRuntimeFacts",
-    "capture_trusted_runtime_facts_node",
+    "capture_trusted_runtime_facts",
     "trusted_runtime_facts_message",
 ]
