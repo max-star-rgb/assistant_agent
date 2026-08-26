@@ -2,6 +2,26 @@ schema_version = 1
 coverage = "complete"
 
 [[domains]]
+id = "documentation-index"
+authority = "docs/README.md"
+read_when = [
+  "开始仓库工程任务并选择需要读取的专项 authority",
+  "新增、删除、重命名或重新归类当前文档",
+]
+source_globs = [
+  "AGENTS.md",
+  "README.md",
+  "docs/README.md",
+  "docs/authority.toml",
+]
+thin_references = ["AGENTS.md", "README.md"]
+verification = [
+  "python scripts/check_documentation_authority.py --repo-root .",
+]
+exclusive_literals = []
+exclusive_allowlist = []
+
+[[domains]]
 id = "agent-server"
 authority = "docs/agent-server-architecture.md"
 read_when = [
@@ -138,7 +158,6 @@ source_globs = [
   "src/assistant_agent/native_agent/memory.py",
   "src/assistant_agent/native_agent/memory_graph.py",
   "src/assistant_agent/native_agent/root_graph.py",
-  "src/assistant_agent/native_agent/runtime_facts.py",
   "src/assistant_agent/native_agent/state.py",
   "src/assistant_agent/memory/**",
   "tests/core/integration/test_memory_lifecycle.py",
@@ -179,9 +198,12 @@ read_when = [
   "AssistantContextPack、ChatRequest 编译、Tool observation 或 context report",
 ]
 source_globs = [
+  "src/assistant_agent/native_agent/assistant_prompt.py",
+  "src/assistant_agent/native_agent/context.py",
   "src/assistant_agent/native_agent/fast_agent.py",
   "src/assistant_agent/native_agent/planning_agent.py",
   "src/assistant_agent/native_agent/state.py",
+  "src/assistant_agent/native_agent/user_context.py",
   "src/assistant_agent/context/**",
   "src/assistant_agent/runtime/system_prompt_policy.py",
 ]
@@ -285,7 +307,7 @@ source_globs = [
   "tests/tdd/**",
   "pyproject.toml",
 ]
-thin_references = ["AGENTS.md", ".codex/skills/assistant-agent-development-testing/SKILL.md"]
+thin_references = ["AGENTS.md"]
 verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/unit/test_test_policy.py",
 ]

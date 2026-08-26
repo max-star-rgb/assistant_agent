@@ -98,7 +98,8 @@ class AgentServerClient(Protocol):
         thread_id: str,
         assistant_id: str,
         input: Mapping[str, object],
-        context: Mapping[str, object],
+        context: Mapping[str, object] | None = None,
+        metadata: Mapping[str, object] | None = None,
         multitask_strategy: str,
         on_run_created: Callable[[str], None],
     ) -> AsyncIterator[Mapping[str, Any]]: ...

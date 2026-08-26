@@ -16,6 +16,7 @@ from langchain.agents.middleware import ModelCallLimitMiddleware, ToolCallLimitM
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
+from langgraph.config import get_config
 from langgraph.graph import END, START, StateGraph
 from langgraph.errors import GraphBubbleUp, NodeCancelledError
 from langgraph.runtime import Runtime
@@ -36,7 +37,10 @@ from assistant_agent.coding.models import (
 from assistant_agent.native_agent.state import merge_attestation_mismatch_signals
 from assistant_agent.coding.tools import build_coding_analysis_tools
 from assistant_agent.coding.workspace import CodingWorkspaceError, CodingWorkspaceService
-from assistant_agent.native_agent.context import AssistantRunContext
+from assistant_agent.native_agent.context import (
+    AssistantRunContext,
+    assistant_runtime_facts,
+)
 from assistant_agent.native_agent.coding_phase import CodingAnalysisPhaseMiddleware
 from assistant_agent.native_agent.providers import coding_analysis_model_view
 from assistant_agent.native_agent.providers import coding_analysis_model_settings
@@ -191,16 +195,17 @@ def _guard_review_node(
         expected = state.get("execution_attestation_digest")
         if isinstance(expected, str):
             return expected != current_digest
-        for candidate in args:
-            context = getattr(candidate, "context", None)
-            profile = (
-                context.get("entry_profile")
-                if isinstance(context, Mapping)
-                else getattr(context, "entry_profile", None)
-            )
-            if profile == "evaluation":
-                return True
-        return False
+        try:
+            return assistant_runtime_facts(get_config()).entry_profile == "evaluation"
+        except RuntimeError:
+            for candidate in args:
+                config = getattr(candidate, "config", None)
+                if isinstance(config, Mapping):
+                    return (
+                        assistant_runtime_facts(config).entry_profile
+                        == "evaluation"
+                    )
+            return False
 
     def failure(state: object) -> dict[str, object]:
         task = state.get("review_task") if isinstance(state, Mapping) else None

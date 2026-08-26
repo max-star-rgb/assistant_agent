@@ -99,6 +99,7 @@ from assistant_agent.coding.tools import build_coding_analysis_tools
 from assistant_agent.coding.workspace import CodingWorkspaceError, CodingWorkspaceService
 from assistant_agent.native_agent.context import (
     AssistantRunContext,
+    assistant_runtime_facts,
     authenticated_user_identity,
 )
 from assistant_agent.native_agent.coding_phase import (
@@ -201,17 +202,7 @@ def _guard_coding_node(
     allow_cleanup_retry: bool = False,
 ) -> Any:
     def is_evaluation(args: tuple[object, ...], kwargs: Mapping[str, object]) -> bool:
-        candidates = (*args, *kwargs.values())
-        for candidate in candidates:
-            context = getattr(candidate, "context", None)
-            profile = (
-                context.get("entry_profile")
-                if isinstance(context, Mapping)
-                else getattr(context, "entry_profile", None)
-            )
-            if profile == "evaluation":
-                return True
-        return False
+        return _is_evaluation_run(*args, *kwargs.values())
 
     def mismatch(
         state: object,
@@ -2865,11 +2856,9 @@ def begin_coding_cycle_node(
 ) -> dict[str, object]:
     """Start a plain-input cycle and atomically discard prior local state."""
 
-    context = getattr(runtime, "context", None)
-    profile = context.get("entry_profile") if isinstance(context, Mapping) else getattr(context, "entry_profile", None)
     trusted_digest = (
         execution_attestation_digest
-        if profile == "evaluation"
+        if _is_evaluation_run(runtime)
         else None
     )
     return {
@@ -2941,6 +2930,19 @@ def begin_coding_cycle_node(
         "repair_approval_context": None,
         "coding_result": None,
     }
+
+
+def _is_evaluation_run(*runtime_candidates: object) -> bool:
+    """Read the trusted evaluation profile from private run metadata."""
+
+    try:
+        return assistant_runtime_facts(get_config()).entry_profile == "evaluation"
+    except RuntimeError:
+        for candidate in runtime_candidates:
+            config = getattr(candidate, "config", None)
+            if isinstance(config, Mapping):
+                return assistant_runtime_facts(config).entry_profile == "evaluation"
+        return False
 
 
 def _resolve_workspace(state, runtime, config, service):

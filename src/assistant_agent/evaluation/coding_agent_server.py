@@ -694,17 +694,18 @@ class CodingBehaviorAgentServerDriver:
             evaluation_context_token = thread_metadata.get("coding_eval_context_token")
             if not isinstance(evaluation_context_token, str):
                 return await failed("coding_eval_repository_not_bound", "permission")
-            evaluation_context = {
-                "entry_profile": "evaluation",
-                "assistant_execution_mode": "coding",
+            evaluation_auth_metadata = {
                 "coding_eval_context_token": evaluation_context_token,
                 "evaluation_case_id": case.case_id,
                 "evaluation_repository_id": policy.repository_id,
             }
             await start_run(
                 input={"messages": [{"role": "user", "content": case.request}], "execution_mode": "coding", "coding_repo_id": policy.repository_id},
-                context=evaluation_context,
-                metadata={"coding_eval_case_id": case.case_id},
+                context={},
+                metadata={
+                    "coding_eval_case_id": case.case_id,
+                    **evaluation_auth_metadata,
+                },
             )
             while True:
                 if self.clock() >= deadline:
@@ -795,7 +796,8 @@ class CodingBehaviorAgentServerDriver:
                         await start_run(
                             command={"resume": {"decision": "reject"}},
                             checkpoint_id=checkpoint_id,
-                            context=evaluation_context,
+                            context={},
+                            metadata=evaluation_auth_metadata,
                         )
                     except Exception:
                         return await failed(
@@ -816,7 +818,8 @@ class CodingBehaviorAgentServerDriver:
                         await start_run(
                             command={"resume": {"decision": "reject"}},
                             checkpoint_id=checkpoint_id,
-                            context=evaluation_context,
+                            context={},
+                            metadata=evaluation_auth_metadata,
                         )
                     except Exception:
                         return await failed(
@@ -830,7 +833,8 @@ class CodingBehaviorAgentServerDriver:
                 await start_run(
                     command={"resume": response},
                     checkpoint_id=checkpoint_id,
-                    context=evaluation_context,
+                    context={},
+                    metadata=evaluation_auth_metadata,
                 )
         except _RunCleanupPending:
             return await failed(
@@ -900,18 +904,26 @@ def _thread_binding_matches(
     case_id: str,
 ) -> bool:
     metadata = thread.get("metadata")
-    if not isinstance(metadata, Mapping) or set(metadata) != {
+    required_keys = {
         THREAD_GRAPH_METADATA_KEY,
         "owner",
         "coding_eval_identity",
         "coding_eval_repo_id",
         "coding_eval_case_id",
         "coding_eval_context_token",
+    }
+    if not isinstance(metadata, Mapping) or set(metadata) not in {
+        frozenset(required_keys),
+        frozenset((*required_keys, "graph_id")),
     }:
+        return False
+    if metadata.get("graph_id", ASSISTANT_GRAPH_ID) != ASSISTANT_GRAPH_ID:
         return False
     token = metadata.get("coding_eval_context_token")
     return isinstance(token, str) and _HEX_64.fullmatch(token) is not None and {
-        key: value for key, value in metadata.items() if key != "coding_eval_context_token"
+        key: value
+        for key, value in metadata.items()
+        if key not in {"coding_eval_context_token", "graph_id"}
     } == {
         THREAD_GRAPH_METADATA_KEY: ASSISTANT_GRAPH_ID,
         "owner": identity,

@@ -19,8 +19,10 @@ from assistant_agent.media.vision.models import VideoUnderstandingRequest
 from assistant_agent.media.vision.vision_client import VisionUnderstandingClient
 from assistant_agent.native_agent.context import (
     AssistantRunContext,
+    assistant_runtime_facts,
     authenticated_user_identity,
 )
+from assistant_agent.media.runtime_media import latest_runtime_media
 from assistant_agent.tools.availability import ToolAvailability
 from assistant_agent.tools.runtime import ToolContext
 from assistant_agent.tools.ids import LIVE_VIEW_INSPECT_TOOL_NAME
@@ -95,14 +97,17 @@ def create_live_view_inspect_tool(
         """
 
         def inspect_live_view() -> ToolResult:
-            if runtime.context.realtime_media_mode != "video":
+            state = runtime.state if isinstance(runtime.state, Mapping) else {}
+            media = latest_runtime_media(state)
+            if not media.live_video_ids:
                 raise ToolException(
-                    "video_handshake_required: 当前连接尚未完成 VIDEO 握手"
+                    "live_video_required: 当前请求没有受信实时视频引用"
                 )
             execution = runtime.execution_info
             user_id = authenticated_user_identity(runtime)
             session_id = getattr(execution, "thread_id", None)
-            capability_token = runtime.context.visual_capability_token
+            runtime_facts = assistant_runtime_facts(runtime.config)
+            capability_token = runtime_facts.visual_capability_token
             live = (
                 live_view_resolver(user_id, session_id, capability_token)
                 if live_view_resolver is not None and capability_token is not None
@@ -112,7 +117,6 @@ def create_live_view_inspect_tool(
                 raise ToolException(
                     "live_video_required: 当前没有媒体入口投影的实时视频"
                 )
-            state = runtime.state if isinstance(runtime.state, Mapping) else {}
             request = VideoUnderstandingRequest(
                 video_ref=live.target_video_id or live.live_video_ids[-1],
                 video_ids=list(live.live_video_ids),
@@ -126,7 +130,7 @@ def create_live_view_inspect_tool(
                 session_id=session_id,
                 run_id=getattr(execution, "run_id", None),
                 metadata={
-                    "entry_profile": runtime.context.entry_profile,
+                    "entry_profile": runtime_facts.entry_profile,
                     "media_source": "live_camera",
                     "visual_target_sequence": live.target_sequence,
                     "visual_window_start_sequence": live.window_start_sequence,

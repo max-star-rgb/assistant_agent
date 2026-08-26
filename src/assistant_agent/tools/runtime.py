@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from assistant_agent.native_agent.context import (
     AssistantRunContext,
+    assistant_runtime_facts,
     authenticated_user_identity,
 )
 from assistant_agent.media.runtime_media import live_visual_window_boundary
@@ -26,10 +27,6 @@ class ToolContext(BaseModel):
     user_id: str | None = None
     session_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
-    skill_reference_grants: dict[str, list[str]] = Field(
-        default_factory=dict,
-        exclude=True,
-    )
     cancel_token: Any | None = Field(default=None, exclude=True)
 
     def is_cancelled(self) -> bool:
@@ -87,8 +84,9 @@ def tool_context(
     execution = runtime.execution_info
     state = runtime.state if isinstance(runtime.state, Mapping) else {}
     request = latest_human_request(state)
+    runtime_facts = assistant_runtime_facts(runtime.config)
     context_metadata = {
-        "entry_profile": runtime.context.entry_profile,
+        "entry_profile": runtime_facts.entry_profile,
         "visual_window_id": request.get("visual_window_id"),
         "visual_window_start_sequence": request.get(
             "visual_window_start_sequence"
@@ -102,24 +100,4 @@ def tool_context(
         session_id=getattr(execution, "thread_id", None),
         run_id=getattr(execution, "run_id", None),
         metadata=context_metadata,
-        skill_reference_grants=skill_reference_grants(state),
     )
-
-
-def skill_reference_grants(state: Mapping[str, Any]) -> dict[str, list[str]]:
-    """Return validated skill-to-reference grants from graph state."""
-
-    raw = state.get("skill_reference_grants")
-    if not isinstance(raw, Mapping):
-        return {}
-    return {
-        skill_id: [
-            reference_id
-            for reference_id in reference_ids
-            if isinstance(reference_id, str) and reference_id
-        ]
-        for skill_id, reference_ids in raw.items()
-        if isinstance(skill_id, str)
-        and skill_id
-        and isinstance(reference_ids, (list, tuple))
-    }

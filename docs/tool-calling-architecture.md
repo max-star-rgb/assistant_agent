@@ -23,13 +23,13 @@ discovery 或 Registry lookup。
 
 进程 composition 仍把完整静态 `BaseTool` inventory 注册给 `create_agent` / `ToolNode`，但完整注册不等于每次
 模型调用全部可见。仓库 Skill 使用 Agent Skills 标准目录与 `SKILL.md` YAML frontmatter；Deep Agents
-`SkillsMiddleware` 通过只读虚拟根 `FilesystemBackend` 发现并投影 L0 元数据。项目不注册该 middleware 配套的通用
-`read_file`，也不注册原有 `file_read`。模型只能使用无路径参数的 `load_skill(skill_id)` 读取完整正文，再使用
-`load_skill_reference(skill_id, reference_id)` 读取本轮已授权的扁平 Markdown reference。
+`SkillsMiddleware` 通过只读虚拟根 `FilesystemBackend` 在 `before_agent` 发现 L0 元数据，并从同一份 runtime state
+向 system message 注入目录。配套的上游 `FilesystemMiddleware(tools=["read_file"])` 只绑定该 Skill 虚拟根，模型用
+标准 `read_file` 读取目录给出的 `SKILL.md` 和其中引用的 supporting files；它不注册 `ls/glob/grep`、写入、删除或
+执行 Tool，也不恢复项目原有 `file_read`。
 
-Skill 与 Tool 可见性是两条独立机制。`load_skill` 按 LangGraph 原生 Tool state-update 契约返回包含完整 Skill 正文的
-标准 `ToolMessage` 和 `Command(update=...)`，只写入当前角色的 `loaded_skill_ids` 与自动发现的窄
-`skill_reference_grants`；标准 `SKILL.md` 不声明项目 Tool 权限，也不能激活 Tool。
+Skill 与 Tool 可见性是两条独立机制。上游 Skills 体系不维护项目 `loaded_skill_ids` 或 reference grant；
+`read_file` 的标准 `ToolMessage` 只进入当前角色 transcript。标准 `SKILL.md` 不声明项目 Tool 权限，也不能激活 Tool。
 
 通用 `ToolProfileMiddleware` 是 `create_agent` 级能力：受信静态 catalog 把 profile ID 映射到已经注册的 Tool 名，
 middleware 自带只读控制 Tool `activate_tool_profile(profile_id)`，并在当前 Agent invocation 的后续 model call 中按
@@ -37,12 +37,11 @@ middleware 自带只读控制 Tool `activate_tool_profile(profile_id)`，并在�
 文本或 Tool artifact 动态声明；具体 Tool 的身份、授权、参数与副作用校验保持不变。未归属任何 Tool Profile 的 Tool
 始终独立可见。
 
-planning coordinator 是独立的官方 `create_agent`：它可使用只读 `load_skill`/`load_skill_reference` 在任务拆解前读取
-专项知识，并使用 `write_todos` 与 `task`；它不装配 `ToolProfileMiddleware`，因此不能激活 profile 或调用业务 Tool。
-执行子 Agent 复用 `AssistantFastAgent`；Planner 是否加载 Skill 仍由 LLM 自主决定，一旦加载，compiled worker 边界把
-Planner Skill ID/reference grant 窄映射为 worker 已加载 Skill state，避免重复加载。没有继承对应 Skill 时，worker
-仍可自主加载；Tool Profile 始终由 worker 在自己的 invocation 中独立激活。Planner 与 worker 使用不同名称的 Skill
-state channel，worker 的 Skill/Profile state 不回写 Planner，Skill state 也不构成 profile 或业务 Tool 授权。
+planning coordinator 是独立的官方 `create_agent`：它可使用只读 `read_file` 在任务拆解前读取专项知识，并使用
+`write_todos` 与 `task`；它不装配 `ToolProfileMiddleware`，因此不能激活 profile 或调用业务 Tool。执行子 Agent 复用
+`AssistantFastAgent`。Planner 是否读取 Skill 仍由 LLM 自主决定；创建 task 时把相关约束写入完整 description，worker
+也可通过自己的上游 Skills middleware 自主读取。Planner 与 worker 不传递 Skill metadata、读取 transcript 或加载状态，
+worker 的 Skill/Profile state 不回写 Planner，Skill 内容也不构成 profile 或业务 Tool 授权。
 
 媒体 Tool 使用另一条与 Skill 正交的条件暴露链。`ConditionalToolExposureMiddleware` 只过滤已经静态注册在
 `request.tools` 中的 Tool，并按 Tool metadata 的封闭 `availability` 枚举读取可信运行事实：
@@ -121,10 +120,10 @@ Tool 的 `artifact` 保留全部规范化 `ShoppingSearchResult`，`content` 按
 镜像、plugin-private runner 或 Registry。旧 `personal_assistant_tools` / `email_tools` 远端映射已删除，MCP
 能力直接使用官方 adapter 生成的标准 Tool。MCP tool discovery 属于 worker 进程 composition，只执行一次；schema、history、state 与
 run 复用同一个 compiled graph 和 Tool 集合，实际 MCP Tool 调用仍遵循官方按调用创建 session 的行为。
-production composition 创建一个指向仓库 `skills/` 的只读虚拟根 backend，并把同一 backend 显式注入
-`SkillLoadingPlugin` 与 Deep Agents `SkillsMiddleware`；planning coordinator 只引用已经编译的 fast agent。
-元数据通过上游 middleware 在构图阶段形成受信快照，正文和 reference 只在窄加载 Tool 实际调用时读取；不存在
-项目自建 `SkillCatalog`、`skill.toml` 或通用文件读取兼容路径。
+production composition 创建一个指向仓库 `skills/` 的只读虚拟根 backend，并把同一 backend 显式注入 Deep Agents
+`SkillsMiddleware` 与只注册 `read_file` 的 `FilesystemMiddleware`；planning coordinator 只引用已经编译的 fast agent。
+元数据由上游 middleware 在每个 Agent invocation 的 `before_agent` 中发现，正文和 supporting files 只在标准
+`read_file` 实际调用时读取；不存在项目自建 `SkillCatalog`、`skill.toml`、Skill loader 或宿主文件读取兼容路径。
 高德 `amap_maps` 的驾车、公交、骑行和步行路线调用通过官方 MCP adapter 的 `tool_interceptors`
 扩展点，在成功结果中追加由受信起终点坐标确定性生成的高德 HTTPS 路线规划链接；链接不包含 API Key，
 失败结果、非法坐标和其他 MCP Tool 保持原样。最终答复原样保留该 Markdown 链接；移动端可尝试调起

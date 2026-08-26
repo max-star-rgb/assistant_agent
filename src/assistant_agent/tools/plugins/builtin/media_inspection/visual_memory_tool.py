@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from time import time
 from typing import Annotated, Any, Literal
 
@@ -29,8 +29,10 @@ from assistant_agent.media.video.visual_timeline_context import (
 )
 from assistant_agent.native_agent.context import (
     AssistantRunContext,
+    assistant_runtime_facts,
     authenticated_user_identity,
 )
+from assistant_agent.media.runtime_media import latest_runtime_media
 from assistant_agent.tools.availability import ToolAvailability
 from assistant_agent.tools.runtime import ToolContext
 from assistant_agent.tools.ids import VISUAL_MEMORY_SEARCH_TOOL_NAME
@@ -275,9 +277,10 @@ def create_visual_memory_search_tool(
         """
 
         def search_visual_memory() -> ToolResult:
-            if runtime.context.realtime_media_mode != "video":
+            state = runtime.state if isinstance(runtime.state, Mapping) else {}
+            if not latest_runtime_media(state).live_video_ids:
                 raise ToolException(
-                    "video_handshake_required: 当前连接尚未完成 VIDEO 握手"
+                    "live_video_required: 当前请求没有受信实时视频引用"
                 )
             execution = runtime.execution_info
             session_id = getattr(execution, "thread_id", None)
@@ -293,7 +296,8 @@ def create_visual_memory_search_tool(
                 session_id=session_id,
             )
             run_id = getattr(execution, "run_id", None)
-            capability_token = runtime.context.visual_capability_token
+            runtime_facts = assistant_runtime_facts(runtime.config)
+            capability_token = runtime_facts.visual_capability_token
             live = (
                 live_view_resolver(user_id, session_id, capability_token)
                 if live_view_resolver is not None and capability_token is not None
@@ -312,7 +316,7 @@ def create_visual_memory_search_tool(
                 session_id=session_id,
                 run_id=run_id,
                 metadata={
-                    "entry_profile": runtime.context.entry_profile,
+                    "entry_profile": runtime_facts.entry_profile,
                     "request_metadata": {
                         "_trusted_visual_memory_as_of_sequence": (
                             live.target_sequence

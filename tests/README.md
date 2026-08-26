@@ -9,7 +9,7 @@
 | Does not own | system eval/Release Review 运行协议、具体 feature 行为、真实 Provider 验证、产品架构 |
 | 源码与 schema 入口 | `pyproject.toml`、`tests/core/INVARIANTS.md`、`tests/core/`、`tests/tdd/` |
 | 验证入口 | `docs/authority.toml` 中 `test-policy.verification` |
-| 相邻 authority | Eval 分层见 [`../evals/README.md`](../evals/README.md)；Codex 测试 workflow 见 [`../.codex/skills/assistant-agent-development-testing/SKILL.md`](../.codex/skills/assistant-agent-development-testing/SKILL.md) |
+| 相邻 authority | Eval 分层见 [`../evals/README.md`](../evals/README.md) |
 
 本文件是 pytest 目录归属、核心准入、验证范围和任务汇报的唯一事实权威。
 

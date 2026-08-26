@@ -65,6 +65,10 @@ from assistant_agent.memory.remote_service import RemoteMemoryServiceClient
 from assistant_agent.media.video.video_context import InMemoryVideoContextStore
 from assistant_agent.media.video.video_context import VideoFrame
 from assistant_agent.media.visual_perception import get_visual_perception_module
+from assistant_agent.native_agent.context import (
+    AssistantRuntimeFacts,
+    assistant_runtime_metadata,
+)
 from assistant_agent.media.artifact_delivery import get_media_artifact_delivery_hub
 from assistant_agent.proactive_delivery import (
     ProactiveMessage,
@@ -998,14 +1002,12 @@ async def _run_chat(
         final_state: dict[str, Any] | None = None
         text_stream = _NativeAssistantTextStream()
         first_delta_sent = False
-        run_context = {
-            "entry_profile": "agent_service",
-            "media_capabilities": list(session.media_capabilities),
-            "realtime_media_mode": (
-                "video" if session.video_handshake_completed else "none"
-            ),
-            "visual_capability_token": visual_capability_token,
-        }
+        run_metadata = assistant_runtime_metadata(
+            AssistantRuntimeFacts(
+                entry_profile="agent_service",
+                visual_capability_token=visual_capability_token,
+            )
+        )
         async for part in client.stream_run(
             thread_id=session.thread_id,
             assistant_id=ASSISTANT_GRAPH_ID,
@@ -1017,7 +1019,8 @@ async def _run_chat(
                 visual_target_sequence=visual_target_sequence,
                 visual_target_video_id=visual_target_video_id,
             ),
-            context=run_context,
+            context={},
+            metadata=run_metadata,
             multitask_strategy="interrupt",
             on_run_created=bind_run,
         ):

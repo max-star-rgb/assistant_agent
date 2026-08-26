@@ -1,6 +1,6 @@
 # LangGraph Agent Server 部署架构
 
-最后更新：2026-08-25
+最后更新：2026-08-26
 
 ## Authority contract
 
@@ -177,9 +177,9 @@ context.assistant_execution_mode: planning
 
 它是同一 graph 的 Agent Server assistant 资源，不是第三张 graph，也不建立新的 Runtime 或 checkpoint schema。
 Studio 选择该 assistant 后，messages-only input 在 `execution_router` 归一化为 planning；默认 assistant 仍按公开
-input 的 `execution_mode` 路由并在省略时使用 fast。tokenless 本地 auth 只允许 create/update 上述固定 assistant ID，
-并把 graph、name、context 与 metadata 强制规范为仓库定义；任意其他 assistant 写入和 delete 继续由默认 deny
-拒绝。
+input 的 `execution_mode` 路由并在省略时使用 fast。除此之外，Studio 可为同一 graph 创建和维护 owner-scoped
+Assistant；其公开 context 只允许 `system_prompt` 与可选 planning preset，`config` 和 metadata 由 auth 规范化，
+更新和删除按 owner 过滤。固定 planning preset 的 graph、name、context 与 metadata 仍由仓库强制规范，不能删除。
 
 新 assistant 与 run 必须选择 `assistant-native-v3`，Studio 用户也必须切换到该新 graph ID。媒体确定性
 thread UUID 的 seed 包含 `assistant-native-v3`，因此同一 v3 connection 重连仍稳定，但不会命中旧 v1/v2 UUID；即便
@@ -201,9 +201,10 @@ manager、cancel token、checkpoint facade 或产品状态机。
 Memory Graph 的严格输入只有标准
 messages；它由 Assistant Graph 通过 Agent Server SDK 调度，不向普通用户入口暴露 run type。
 认证用户唯一来自 Agent Server 原生
-`Runtime.server_info.user.identity`；`AssistantRunContext` 不复制用户或租户身份，只保存有默认值的
-入口 profile、媒体能力，以及媒体入口在 chat 开始时签发的 opaque 视觉
-capability token。每次 run 的公开
+`Runtime.server_info.user.identity`；Studio 可编辑的 `AssistantRunContext` 不复制用户或租户身份，只保存
+Assistant 的 `system_prompt` 与可选 planning preset。入口 profile 和媒体入口在 chat 开始时签发的 opaque 视觉
+capability token 只放入 namespaced run metadata；媒体能力和实时模式由当前标准 message 的受信来源投影判定，不是
+Assistant 配置。每次 run 的公开
 `execution_mode` 不放入 context；只有上述服务端持久 assistant 资源可通过窄
 `assistant_execution_mode=planning` preset 覆盖 messages-only 默认值。窗口内容不进入标准 messages/context，
 也不由模型或普通 Graph 输入提交。middleware 和 Tool 必须以
@@ -427,7 +428,7 @@ workspace 到期仍由后续 `resolve()` 进入既有同步 cleanup 路径处理
 - current v2 checkpoint 的 snapshot/path/digest/permission/identity/expiry/manifest 错误全部 fail closed 为 `coding_review_binding_mismatch`，不得投影为可批准的 unavailable。仅 completed `legacy_v1` 保留旧物理 snapshot 已回收时的兼容恢复；pending downgrade 继续 fail closed。
 - 审批后的 commit 接收同一 validation snapshot 与 canonical review report digest；临时 Git index 生成的 tree object 经 `sha256(tree_oid)` 必须等于 reviewed `tree_digest`，否则拒绝提交。commit trailer 和 `CodingCommitResult` 同时记录 validation/report/tree binding。
 - validation failure/workspace-change 不交接 snapshot lease；terminal summarize 幂等释放 validation/review snapshot；commit comparison 无论成功或失败都释放 expected/current snapshot。review approve 且 integration 开启时，父 checkpoint 在 commit 消费前继续持有 active lease；这些 release 不新增 periodic reaper，也不触碰 worktree 或 Git admin lifecycle。
-evaluation context 不直接信任客户端 `entry_profile`。thread create auth hook 为精确 identity/repository/case 与当前
-composition digest 签发进程内 token，run create auth hook 校验后才冻结 evaluation context；token 不进入 Graph
+evaluation run 不直接信任客户端 profile。thread create auth hook 为精确 identity/repository/case 与当前
+composition digest 签发进程内 token，run create auth hook 从请求 metadata 校验后才写入私有 evaluation run facts；token 不进入 Graph
 state 或 result artifact。普通 coding checkpoint 的 execution attestation 为 `None`，跨 hot reload/restart 恢复不受
 evaluation boot nonce 影响；已冻结的 evaluation checkpoint 则继续在所有 node 调用前校验并 fail closed。

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import operator
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import Annotated, Literal, NotRequired, Required
 
 from langchain.agents import AgentState
@@ -107,7 +107,6 @@ class AssistantRootState(MessagesState):
     memory_context: NotRequired[tuple[str, ...]]
     memory_status: NotRequired[MemoryStatus]
     execution_mode: NotRequired[ExecutionMode]
-    trusted_runtime_facts: NotRequired[dict[str, object]]
     coding_repo_id: NotRequired[str]
     coding_result: NotRequired[CodingTerminalResult]
 
@@ -118,12 +117,7 @@ class FastAgentState(AgentState):
     memory_context: NotRequired[tuple[str, ...]]
     memory_status: NotRequired[MemoryStatus]
     execution_mode: NotRequired[ExecutionMode]
-    trusted_runtime_facts: NotRequired[dict[str, object]]
     provider_search_profile: NotRequired[ProviderSearchProfile]
-    loaded_skill_ids: NotRequired[Annotated[list[str], _merge_unique_strings]]
-    skill_reference_grants: NotRequired[
-        Annotated[dict[str, list[str]], _merge_reference_grants]
-    ]
 
 
 class PlanningAgentState(AgentState):
@@ -134,17 +128,8 @@ class PlanningAgentState(AgentState):
     ]
     memory_status: NotRequired[Annotated[MemoryStatus, _merge_identical_value]]
     execution_mode: NotRequired[Annotated[ExecutionMode, _merge_identical_value]]
-    trusted_runtime_facts: NotRequired[
-        Annotated[dict[str, object], _merge_identical_value]
-    ]
     provider_search_profile: NotRequired[
         Annotated[ProviderSearchProfile, _merge_identical_value]
-    ]
-    planner_loaded_skill_ids: NotRequired[
-        Annotated[list[str], _merge_unique_strings]
-    ]
-    planner_skill_reference_grants: NotRequired[
-        Annotated[dict[str, list[str]], _merge_reference_grants]
     ]
 
 
@@ -183,7 +168,6 @@ class CodingState(AgentState):
     memory_context: NotRequired[tuple[str, ...]]
     memory_status: NotRequired[MemoryStatus]
     execution_mode: NotRequired[ExecutionMode]
-    trusted_runtime_facts: NotRequired[dict[str, object]]
     coding_repo_id: Required[str]
     workspace_ref: NotRequired[str | None]
     base_commit: NotRequired[str | None]
@@ -289,21 +273,6 @@ def _merge_identical_value(current, update):
     if update in (None, (), {}, "") or update == current:
         return current
     raise ValueError("parallel task results contain conflicting frozen state")
-
-
-def _merge_reference_grants(
-    current: Mapping[str, Sequence[str]] | None,
-    update: Mapping[str, Sequence[str]] | None,
-) -> dict[str, list[str]]:
-    merged = {
-        skill_id: list(dict.fromkeys(reference_ids))
-        for skill_id, reference_ids in (current or {}).items()
-    }
-    for skill_id, reference_ids in (update or {}).items():
-        merged[skill_id] = list(
-            dict.fromkeys([*merged.get(skill_id, ()), *reference_ids])
-        )
-    return merged
 
 
 __all__ = [

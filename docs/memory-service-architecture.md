@@ -7,9 +7,9 @@
 | 字段 | 内容 |
 | --- | --- |
 | 定位 | 父图固定 Memory 节点、冻结快照与后端协议的当前权威 |
-| Owns | `MemoryBackend`、合并 TrustedRuntimeFacts 采集的 `memory_recall`、`memory_extract`、`memory_context`、Mem0/LangMem/第三方装配 |
+| Owns | `MemoryBackend`、`memory_recall`、`memory_extract`、`memory_context`、Mem0/LangMem/第三方装配 |
 | Does not own | Mem0 HTTP wire、prompt 渲染、Agent Server Store 实现、旧 Memory bundle/ledger |
-| 源码与 schema 入口 | `src/assistant_agent/native_agent/memory.py`、`src/assistant_agent/native_agent/runtime_facts.py`、`src/assistant_agent/memory/mem0/` |
+| 源码与 schema 入口 | `src/assistant_agent/native_agent/memory.py`、`src/assistant_agent/memory/mem0/` |
 | 验证入口 | `docs/authority.toml` 中 `graph-memory.verification`；核心不变量 `MEMORY-001` |
 | 相邻 authority | Mem0 wire 见 [`memory_server_api_spec.md`](memory_server_api_spec.md)；Context 见 [`context_engineering_status.md`](context_engineering_status.md) |
 
@@ -18,18 +18,17 @@
 Memory 是领域和 backend protocol 边界，不是必须整体嵌入主图的 compiled subgraph。实际编译拓扑拆成：
 
 ```text
-assistant-native-v3: memory_recall(+ trusted facts capture) -> fast/planning -> refresh delayed memory -> END
+assistant-native-v3: memory_recall -> fast/planning -> refresh delayed memory -> END
 assistant-memory-v1: memory_extract -> END
 ```
 
-每个 chat run 都通过单个 `memory_recall` 节点重新 recall 一次，并在同一节点更新中采集 TrustedRuntimeFacts；因此既能读取 Store
-中的最新长期记忆，也能把两类独立 state channel 冻结在同一 checkpoint。planning coordinator 及 task 内的 fast 子 Agent
+每个 chat run 都通过单个 `memory_recall` 节点重新 recall 一次，并把结果冻结在当前 checkpoint。planning coordinator 及 task 内的 fast 子 Agent
 只读取当前 run 冻结的 `memory_context`，不持有 backend，也不重复 recall。独立 Memory Graph 使用 message-only state，
 不继承父图的 execution、Memory 快照或 fast agent Skill channel。recall 使用
 LangGraph `RetryPolicy(max_attempts=3)`；最终失败由 LangGraph 原生 node error handler 返回
-`Command(update={memory_context: (), memory_status: degraded, trusted_runtime_facts: ...}, goto=execution_router)`，父图随后继续回答。
-从已完成 recall 之后的 checkpoint resume 时沿用两类冻结快照；从更早 checkpoint replay 并重新执行 recall 时允许
-重新读取最新记忆并重新采集 TrustedRuntimeFacts，不建立跨 replay 的额外冻结层。
+`Command(update={memory_context: (), memory_status: degraded}, goto=execution_router)`，父图随后继续回答。
+从已完成 recall 之后的 checkpoint resume 时沿用冻结快照；从更早 checkpoint replay 并重新执行 recall 时允许
+重新读取最新记忆，不建立跨 replay 的额外冻结层。日期与用户地区由 Context authority 管理，不由 Memory 采集或保存。
 
 最终回答产生后，主图使用官方 `langgraph_sdk` 调用 `runs.list(thread_id, status="pending")`，只筛选带
 `assistant_agent_run_kind=memory_extraction` metadata 的旧 Memory run，再逐个调用
@@ -76,11 +75,9 @@ mock mode 只能使用 disabled；远端 backend 要求 real mode 和完整显�
 ## 冻结快照与安全
 
 state 只保存有界 `tuple[str, ...]` 与 `ready|empty|degraded`。最多 32 项、每项 4,000 字、总计 12,000 字。
-Memory 正文是不可信历史数据。model-call middleware 在最新真实用户请求前临时插入一条运行时上下文
-`HumanMessage`；其中 TrustedRuntimeFacts 与 Memory 使用独立标题分区，Memory 继续用引用格式和自然语言明确为
-可能过时的背景资料。该组合消息只进入本次 Provider 请求，不写入 messages state、checkpoint 或 summarization。
-`memory_context` 与 `trusted_runtime_facts` 仍是独立 state channel；Memory 不能覆盖当前请求，也不能用于确认身份、
-权限、当前事实、操作参数或 Tool schema。
+Memory 正文是不可信历史数据。model-call middleware 在最新真实用户请求前临时插入一条 Memory `HumanMessage`，
+并用引用格式和自然语言明确其为可能过时的背景资料。该消息只进入本次 Provider 请求，不写入 messages state、
+checkpoint 或 summarization。Memory 不能覆盖当前请求，也不能用于确认身份、权限、当前事实、操作参数或 Tool schema。
 
 旧 `MemoryNodeBundle`、commit ledger 与 time-travel Memory 兼容层已随旧 Runtime 删除。Mem0 HTTP client 与
 identity adapter 继续由当前最小 `MemoryBackend` 复用；旧 checkpoint 不迁移进 `assistant-native-v3`。

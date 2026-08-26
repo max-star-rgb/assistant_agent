@@ -208,11 +208,7 @@ def test_chat_runs_recall_once_and_schedule_extraction_for_each_mode(
     assert all(
         result["memory_context"] == ("memory-sentinel",) for _events, result in results
     )
-    assert all(
-        result["trusted_runtime_facts"]["schema_version"]
-        == "trusted_runtime_facts_v1"
-        for _events, result in results
-    )
+    assert all("trusted_runtime_facts" not in result for _events, result in results)
     assert sorted(client.runs.cancellations, key=lambda item: item["thread_id"]) == [
         {
             "thread_id": "thread-fast-sentinel",
@@ -238,7 +234,7 @@ def test_chat_runs_recall_once_and_schedule_extraction_for_each_mode(
 
 
 @pytest.mark.core_invariant("MEMORY-001")
-def test_recall_degradation_preserves_trusted_runtime_facts() -> None:
+def test_recall_degradation_only_returns_memory_fallback_state() -> None:
     backend = _FailingMemory()
     graph = build_assistant_root_graph(
         memory_backend=backend,
@@ -268,9 +264,7 @@ def test_recall_degradation_preserves_trusted_runtime_facts() -> None:
     assert backend.events == ["recall", "recall", "recall"]
     assert result["memory_context"] == ()
     assert result["memory_status"] == "degraded"
-    assert result["trusted_runtime_facts"]["schema_version"] == (
-        "trusted_runtime_facts_v1"
-    )
+    assert "trusted_runtime_facts" not in result
 
 
 @pytest.mark.core_invariant("MEMORY-001")

@@ -18,6 +18,11 @@ from assistant_agent.agent_server.attestation import (
     verify_evaluation_context_token,
 )
 from assistant_agent.agent_server.graph import get_native_assistant_execution_attestation
+from assistant_agent.native_agent.context import (
+    AssistantRunContext,
+    AssistantRuntimeFacts,
+    assistant_runtime_metadata,
+)
 
 
 _EVALUATION_TOKEN_KEY = "coding_eval_context_token"
@@ -77,20 +82,32 @@ async def authorize_planning_assistant_create(
     ctx: Auth.types.AuthContext,
     value: Auth.types.on.assistants.create.value,
 ) -> bool | None:
-    """Allow only the repository-owned planning preset assistant definition."""
+    """Normalize the managed preset or one user-owned Assistant."""
 
-    del ctx
-    if str(value.get("assistant_id")) != PLANNING_ASSISTANT_ID:
+    if str(value.get("assistant_id")) == PLANNING_ASSISTANT_ID:
+        value["graph_id"] = ASSISTANT_GRAPH_ID
+        value["name"] = PLANNING_ASSISTANT_NAME
+        value["config"] = {}
+        value["context"] = {ASSISTANT_EXECUTION_MODE_CONTEXT_KEY: "planning"}
+        value["metadata"] = {
+            "assistant_agent_preset": "planning",
+            "managed_by": "assistant_agent",
+        }
+        value["if_exists"] = "do_nothing"
+        return None
+    if str(value.get("graph_id")) != ASSISTANT_GRAPH_ID:
         return False
-    value["graph_id"] = ASSISTANT_GRAPH_ID
-    value["name"] = PLANNING_ASSISTANT_NAME
+    try:
+        context = AssistantRunContext.model_validate(value.get("context") or {})
+    except ValueError:
+        return False
+    owner = str(ctx.user.identity)
     value["config"] = {}
-    value["context"] = {ASSISTANT_EXECUTION_MODE_CONTEXT_KEY: "planning"}
+    value["context"] = context.model_dump()
     value["metadata"] = {
-        "assistant_agent_preset": "planning",
-        "managed_by": "assistant_agent",
+        "owner": owner,
+        "managed_by": owner,
     }
-    value["if_exists"] = "do_nothing"
     return None
 
 
@@ -99,20 +116,43 @@ async def authorize_planning_assistant_update(
     ctx: Auth.types.AuthContext,
     value: Auth.types.on.assistants.update.value,
 ) -> bool | None:
-    """Keep updates confined to the repository-owned planning preset."""
+    """Keep the preset immutable and normalize user-owned Assistant updates."""
 
-    del ctx
-    if str(value.get("assistant_id")) != PLANNING_ASSISTANT_ID:
+    if str(value.get("assistant_id")) == PLANNING_ASSISTANT_ID:
+        value["graph_id"] = ASSISTANT_GRAPH_ID
+        value["name"] = PLANNING_ASSISTANT_NAME
+        value["config"] = {}
+        value["context"] = {ASSISTANT_EXECUTION_MODE_CONTEXT_KEY: "planning"}
+        value["metadata"] = {
+            "assistant_agent_preset": "planning",
+            "managed_by": "assistant_agent",
+        }
+        return None
+    graph_id = value.get("graph_id")
+    if graph_id is not None and str(graph_id) != ASSISTANT_GRAPH_ID:
         return False
+    try:
+        context = AssistantRunContext.model_validate(value.get("context") or {})
+    except ValueError:
+        return False
+    owner = str(ctx.user.identity)
     value["graph_id"] = ASSISTANT_GRAPH_ID
-    value["name"] = PLANNING_ASSISTANT_NAME
     value["config"] = {}
-    value["context"] = {ASSISTANT_EXECUTION_MODE_CONTEXT_KEY: "planning"}
-    value["metadata"] = {
-        "assistant_agent_preset": "planning",
-        "managed_by": "assistant_agent",
-    }
-    return None
+    value["context"] = context.model_dump()
+    value["metadata"] = {"owner": owner, "managed_by": owner}
+    return {"owner": owner}
+
+
+@auth.on.assistants.delete
+async def authorize_assistant_delete(
+    ctx: Auth.types.AuthContext,
+    value: Auth.types.on.assistants.delete.value,
+) -> Auth.types.FilterType | bool:
+    """Protect the managed preset and scope custom Assistant deletion to its owner."""
+
+    if str(value.get("assistant_id")) == PLANNING_ASSISTANT_ID:
+        return False
+    return {"owner": str(ctx.user.identity)}
 
 
 @auth.on.threads.create
@@ -214,23 +254,15 @@ async def authorize_run_create(
         "evaluation_case_id",
         "evaluation_execution_attestation_digest",
     }
-    requested_evaluation = context.get("entry_profile") == "evaluation" or bool(
-        evaluation_fields.intersection(context)
-    )
+    requested_evaluation = bool(evaluation_fields.intersection(metadata))
     if requested_evaluation:
-        if set(context) != {
-            "entry_profile",
-            "assistant_execution_mode",
-            _EVALUATION_TOKEN_KEY,
-            "evaluation_repository_id",
-            "evaluation_case_id",
-        } or context.get("entry_profile") != "evaluation" or context.get(
-            "assistant_execution_mode"
-        ) != "coding":
+        if not evaluation_fields.issuperset(
+            key for key in metadata if key.startswith("evaluation_")
+        ):
             return False
-        token = context.get(_EVALUATION_TOKEN_KEY)
-        repository_id = context.get("evaluation_repository_id")
-        case_id = context.get("evaluation_case_id")
+        token = metadata.get(_EVALUATION_TOKEN_KEY)
+        repository_id = metadata.get("evaluation_repository_id")
+        case_id = metadata.get("evaluation_case_id")
         if not (
             isinstance(token, str)
             and isinstance(repository_id, str)
@@ -251,11 +283,19 @@ async def authorize_run_create(
             attestation_digest=digest,
         ):
             return False
-        context.clear()
-        context.update(
-            entry_profile="evaluation",
-            assistant_execution_mode="coding",
+        for key in evaluation_fields:
+            metadata.pop(key, None)
+        metadata.update(
+            assistant_runtime_metadata(
+                AssistantRuntimeFacts(entry_profile="evaluation")
+            )
         )
+    try:
+        normalized_context = AssistantRunContext.model_validate(context)
+    except ValueError:
+        return False
+    context.clear()
+    context.update(normalized_context.model_dump())
     return {
         "owner": str(ctx.user.identity),
         THREAD_GRAPH_METADATA_KEY: ASSISTANT_GRAPH_ID,
@@ -279,6 +319,7 @@ __all__ = [
     "allow_assistant_search",
     "authenticate",
     "authorize_planning_assistant_create",
+    "authorize_assistant_delete",
     "authorize_planning_assistant_update",
     "authorize_run_create",
     "authorize_thread_create",

@@ -1,4 +1,0 @@
-interface:
-  display_name: "Assistant Agent Interview Trainer"
-  short_description: "Simulated interview workflow for assistant_agent modules"
-  default_prompt: "Use $assistant-agent-interview-trainer to continue an assistant_agent module interview and update the interview notes."

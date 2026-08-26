@@ -1,6 +1,0 @@
-interface:
-  display_name: "Assistant Agent Pytest Guidance"
-  short_description: "Risk-based pytest design, scope selection, and diagnosis"
-  default_prompt: "Use $assistant-agent-development-testing to design or update pytest coverage and choose the smallest sufficient verification scope."
-policy:
-  allow_implicit_invocation: true

@@ -7,7 +7,6 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from deepagents.backends.protocol import BackendProtocol
 from langchain_core.tools import BaseTool
 
 from assistant_agent.config import ProviderConfig
@@ -40,7 +39,6 @@ def _create_builtin_tools(
     config: ProviderConfig,
     *,
     resources: NativeToolResources,
-    skills_backend: BackendProtocol,
 ) -> list[BaseTool]:
     """Build the trusted in-process inventory without Registry or discovery."""
 
@@ -58,7 +56,7 @@ def _create_builtin_tools(
         live_view_resolver=resources.live_view_resolver,
     )
     concrete_tools: list[BaseTool] = []
-    for plugin in _builtin_plugins(skills_backend=skills_backend):
+    for plugin in _builtin_plugins():
         built = plugin.build_tools(context)
         if not all(isinstance(tool, BaseTool) for tool in built):
             raise TypeError("built-in plugins must return LangChain BaseTool instances")
@@ -144,7 +142,6 @@ async def create_native_tool_inventory(
     resources: NativeToolResources,
     mcp_server_configs: Sequence[MCPServerConfig],
     mcp_client_factory: Callable[..., Any] | None = None,
-    skills_backend: BackendProtocol,
 ) -> list[BaseTool]:
     """Compose the one production inventory from built-ins and official MCP tools."""
 
@@ -152,7 +149,6 @@ async def create_native_tool_inventory(
         _create_builtin_tools,
         config,
         resources=resources,
-        skills_backend=skills_backend,
     )
     mcp_tools = await _create_official_mcp_tools(
         mcp_server_configs,
@@ -165,10 +161,7 @@ async def create_native_tool_inventory(
     return sorted(tools, key=lambda tool: tool.name)
 
 
-def _builtin_plugins(
-    *,
-    skills_backend: BackendProtocol,
-) -> tuple[Any, ...]:
+def _builtin_plugins() -> tuple[Any, ...]:
     """Return an explicit list; no filesystem or configured-module discovery."""
 
     from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.plugin import (
@@ -191,9 +184,6 @@ def _builtin_plugins(
         PythonExecutionPlugin,
     )
     from assistant_agent.tools.plugins.builtin.shopping.plugin import ShoppingToolPlugin
-    from assistant_agent.tools.plugins.builtin.skill_loading.plugin import (
-        SkillLoadingPlugin,
-    )
     from assistant_agent.tools.plugins.builtin.visual_image_search.plugin import (
         VisualImageSearchPlugin,
     )
@@ -203,7 +193,6 @@ def _builtin_plugins(
 
     return (
         EmailAccessPlugin(),
-        SkillLoadingPlugin(backend=skills_backend),
         LodgingToolPlugin(),
         PythonExecutionPlugin(),
         MediaInspectionPlugin(),

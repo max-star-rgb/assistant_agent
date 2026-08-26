@@ -26,8 +26,9 @@ from assistant_agent.improvement.models import (
 )
 from assistant_agent.skills.native import (
     create_project_skills_backend,
+    create_project_skills_middleware,
     list_skill_reference_ids,
-    load_project_skills_metadata,
+    native_skill_metadata,
 )
 from assistant_agent.improvement.proposer import ProposalResult
 from assistant_agent.improvement.paths import ImprovementTargetPathError, resolve_repo_skill_file
@@ -457,10 +458,13 @@ def _load_descriptor(
     skill_id: str,
 ) -> tuple[SkillMetadata, tuple[str, ...]] | None:
     backend = create_project_skills_backend(repo_root / "skills")
+    middleware = create_project_skills_middleware(backend)
+    update = middleware.before_agent({}, None, {})  # type: ignore[arg-type]
+    metadata_items = native_skill_metadata(update or {})
     metadata = next(
         (
             item
-            for item in load_project_skills_metadata(backend)
+            for item in metadata_items
             if item["name"] == skill_id
         ),
         None,

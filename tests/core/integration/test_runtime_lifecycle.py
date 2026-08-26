@@ -505,8 +505,7 @@ def test_public_input_separates_mode_from_non_identity_runtime_context() -> None
     assert value.execution_mode == "fast"
     assert coding.coding_repo_id == "repo-sentinel"
     assert set(type(context).model_fields) == {
-        "assistant_execution_mode", "entry_profile", "media_capabilities",
-        "realtime_media_mode", "visual_capability_token",
+        "system_prompt", "assistant_execution_mode",
     }
     with pytest.raises(ValidationError):
         AssistantRootInput.model_validate({"messages": [], "execution_mode": "legacy-sentinel"})

@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
-from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
-from deepagents.backends import FilesystemBackend
 import pytest
+from deepagents.middleware import FilesystemMiddleware
 from langchain.agents.middleware import (
     HumanInTheLoopMiddleware,
     ModelCallLimitMiddleware,
@@ -26,9 +23,6 @@ from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.fast_agent import build_fast_agent
 from assistant_agent.native_agent.planning_agent import build_planning_agent
 from assistant_agent.native_agent.providers import MockAssistantChatModel
-from assistant_agent.native_agent.runtime_facts import (
-    capture_trusted_runtime_facts,
-)
 from assistant_agent.native_agent.state import PlanningAgentState
 from assistant_agent.native_agent.tool_call_limits import PerToolCallLimitMiddleware
 from assistant_agent.native_agent.tool_profiles import (
@@ -132,27 +126,15 @@ class _FastWriteModel(MockAssistantChatModel):
         )
 
 
-class _PlanningSkillHandoffModel(MockAssistantChatModel):
+class _PlanningNativeTaskModel(MockAssistantChatModel):
     _planning_calls: int = PrivateAttr(default=0)
 
     def _response_message(self, messages, **kwargs):
         del messages
         visible = _tool_names(kwargs.get("tools"))
-        if {"task", "write_todos", "load_skill"} <= visible:
+        if {"task", "write_todos", "read_file"} <= visible:
             self._planning_calls += 1
             if self._planning_calls == 1:
-                return AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": "load_skill",
-                            "args": {"skill_id": "skill-sentinel"},
-                            "id": "load-skill-sentinel",
-                            "type": "tool_call",
-                        }
-                    ],
-                )
-            if self._planning_calls == 2:
                 return AIMessage(
                     content="",
                     tool_calls=[
@@ -197,28 +179,16 @@ def test_frozen_memory_is_transient_context_before_the_current_request() -> None
 
 
 @pytest.mark.core_invariant("CTX-001")
-def test_planning_and_task_receive_one_transient_frozen_runtime_context() -> None:
+def test_planning_and_task_receive_one_transient_frozen_memory_context() -> None:
     model = _CapturePlanningMessagesModel()
     model.observed_calls = []
     fast = build_fast_agent(model, [])
     graph = build_planning_agent(model, fast)
-    facts = capture_trusted_runtime_facts(
-        clock=lambda: datetime(
-            2026,
-            8,
-            24,
-            12,
-            0,
-            tzinfo=ZoneInfo("Asia/Shanghai"),
-        ),
-    )
-
     result = graph.invoke(
         {
             "messages": [HumanMessage(content="request-sentinel")],
             "memory_context": ("memory-sentinel",),
             "memory_status": "ready",
-            "trusted_runtime_facts": facts,
             "execution_mode": "planning",
         },
         context=AssistantRunContext(),
@@ -238,7 +208,6 @@ def test_planning_and_task_receive_one_transient_frozen_runtime_context() -> Non
         humans = [item for item in messages if isinstance(item, HumanMessage)]
         assert len(humans) == 2
         assert "memory-sentinel" in str(humans[-2].content)
-        assert "2026-08-24" in str(humans[-2].content)
         assert humans[-1].content == "request-sentinel"
     assert [
         item.content for item in result["messages"] if isinstance(item, HumanMessage)
@@ -246,36 +215,20 @@ def test_planning_and_task_receive_one_transient_frozen_runtime_context() -> Non
 
 
 @pytest.mark.core_invariant("CTX-001")
-def test_planner_loaded_skill_state_is_narrowly_inherited_by_task(
-    tmp_path: Path,
-) -> None:
-    skill_dir = tmp_path / "skills" / "skill-sentinel"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        "---\n"
-        "name: skill-sentinel\n"
-        "description: Generic skill sentinel.\n"
-        "---\n\n"
-        "Generic inherited guidance.\n",
-        encoding="utf-8",
-    )
+def test_planning_task_receives_only_narrow_native_worker_state() -> None:
     observed_worker_states: list[dict[str, Any]] = []
 
     def worker(state: dict[str, Any]) -> dict[str, Any]:
         observed_worker_states.append(state)
         return {
             "messages": [AIMessage(content="worker-complete")],
-            "loaded_skill_ids": ["worker-local-sentinel"],
             "active_tool_profile_ids": ["worker-profile-sentinel"],
+            "skills_metadata": [{"name": "worker-skill-sentinel"}],
         }
 
     graph = build_planning_agent(
-        _PlanningSkillHandoffModel(),
+        _PlanningNativeTaskModel(),
         RunnableLambda(worker),
-        skills_backend=FilesystemBackend(
-            root_dir=tmp_path / "skills",
-            virtual_mode=True,
-        ),
     )
     result = graph.invoke(
         {
@@ -287,14 +240,16 @@ def test_planner_loaded_skill_state_is_narrowly_inherited_by_task(
         context=AssistantRunContext(),
     )
 
-    assert observed_worker_states[0]["loaded_skill_ids"] == ["skill-sentinel"]
-    assert observed_worker_states[0]["skill_reference_grants"] == {
-        "skill-sentinel": []
-    }
-    assert "planner_loaded_skill_ids" not in observed_worker_states[0]
-    assert result["planner_loaded_skill_ids"] == ["skill-sentinel"]
-    assert "loaded_skill_ids" not in result
+    worker_state = observed_worker_states[0]
+    assert [message.content for message in worker_state["messages"]] == [
+        "task-sentinel"
+    ]
+    assert "todos" not in worker_state
+    assert "skills_metadata" not in worker_state
+    assert "loaded_skill_ids" not in worker_state
+    assert "skill_reference_grants" not in worker_state
     assert "active_tool_profile_ids" not in result
+    assert "skills_metadata" not in result
 
 
 @pytest.mark.core_invariant("CTX-001")
@@ -343,6 +298,11 @@ def test_create_agent_owns_native_limits_summary_retry_hitl_and_per_tool_limit(
     assert any(isinstance(item, HumanInTheLoopMiddleware) for item in captured)
     assert any(isinstance(item, ToolRetryMiddleware) for item in captured)
     assert "SkillsMiddleware" in {type(item).__name__ for item in captured}
+    skill_filesystems = [
+        item for item in captured if isinstance(item, FilesystemMiddleware)
+    ]
+    assert len(skill_filesystems) == 1
+    assert [tool.name for tool in skill_filesystems[0].tools] == ["read_file"]
     profile_middleware = [
         item for item in captured if isinstance(item, ToolProfileMiddleware)
     ]

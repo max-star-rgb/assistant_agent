@@ -24,7 +24,12 @@ from assistant_agent.agent_server.config import ASSISTANT_GRAPH_ID
 from assistant_agent.agent_server.media_app import _native_graph_warmup_url
 from assistant_agent.agent_server.media_protocol import MediaProtocolError, parse_chat, parse_envelope
 from assistant_agent.agent_server.media_session import MediaConnectionSession
-from assistant_agent.native_agent.context import AssistantRunContext
+from assistant_agent.native_agent.context import (
+    AssistantRunContext,
+    AssistantRuntimeFacts,
+    assistant_runtime_facts,
+    assistant_runtime_metadata,
+)
 
 
 @pytest.mark.core_invariant("GATE-001")
@@ -92,7 +97,7 @@ def test_current_clients_reject_v1_v2_checkpoint_and_thread_at_graph_id_boundary
             thread_id="legacy-thread",
             assistant_id=ASSISTANT_GRAPH_ID,
             input={"messages": [{"role": "user", "content": "hello"}]},
-            context={"entry_profile": "agent_service"},
+            context={},
             multitask_strategy="enqueue",
             on_run_created=lambda _run_id: None,
         ):
@@ -192,23 +197,30 @@ def test_media_wire_parser_is_strict_and_does_not_define_graph_lifecycle() -> No
 
 
 @pytest.mark.core_invariant("IDENT-001")
-def test_native_run_context_contains_capabilities_not_identity() -> None:
+def test_assistant_context_is_public_configuration_not_private_run_facts() -> None:
     context = AssistantRunContext.model_validate(
         {
-            "entry_profile": "agent_service",
-            "media_capabilities": ["audio"],
+            "system_prompt": "assistant-persona-sentinel",
+            "assistant_execution_mode": "planning",
         }
     )
     assert set(type(context).model_fields) == {
+        "system_prompt",
         "assistant_execution_mode",
-        "entry_profile",
-        "media_capabilities",
-        "realtime_media_mode",
-        "visual_capability_token",
     }
-    assert context.assistant_execution_mode is None
-    assert context.realtime_media_mode == "none"
-    assert context.media_capabilities == ("audio",)
+    assert context.system_prompt == "assistant-persona-sentinel"
+    facts = assistant_runtime_facts(
+        {
+            "metadata": assistant_runtime_metadata(
+                AssistantRuntimeFacts(
+                    entry_profile="agent_service",
+                    visual_capability_token="opaque-capability",
+                )
+            )
+        }
+    )
+    assert facts.entry_profile == "agent_service"
+    assert facts.visual_capability_token == "opaque-capability"
 
 
 @pytest.mark.core_invariant("IDENT-001")

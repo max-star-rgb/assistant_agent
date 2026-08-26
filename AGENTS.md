@@ -1,6 +1,6 @@
 # AGENTS.md
 
-本文件是 Codex / coding agent 的仓库级入口。开始仓库内任何非纯问答、非单条无副作用命令任务前，以本文件为准。README 只做人类快速导航；专项架构细节在 `docs/*.md` 权威文档中；源码和测试优先于过期 prose。
+本文件是 Codex / coding agent 的仓库级入口。开始仓库内任何非纯问答、非单条无副作用命令任务前，以本文件为准。随后通过 `docs/authority.toml` 路由到 `docs/README.md` 和具体专项文档；源码和测试优先于过期 prose。
 
 ## 1. 项目与入口
 
@@ -10,15 +10,15 @@
 `MULTIMODAL_AGENT_PROVIDER_MODE=mock`。只有 `evals/system` 的明确真实能力评审可以使用真实 Provider，并且必须通过
 `MULTIMODAL_AGENT_PROVIDER_MODE=real`、本机未跟踪配置和对应 operator 确认开关显式启用。
 
-`docs/authority.toml` 是全部 Agent-facing 当前文档的机器可读路由与 owner 清单。开始工程任务时：
+`docs/authority.toml` 是机器可读文档路由和 owner 清单，`docs/README.md` 是其人类可读文档入口。开始工程任务时：
 
-1. 用明确任务类型匹配 `read_when`，用预计读取或修改的路径匹配 `source_globs`；
-2. 先只读取匹配 domain 的 `authority`，并用文首 `Authority contract` 确认 owns / does not own；
-3. 只有改动跨越 contract 边界时，才读取其中列出的相邻 authority；
-4. 若文档与源码或测试不一致，以源码和测试为准，并在同次变更中回补 owner authority。
+1. 先用 `docs/authority.toml` 的 `read_when` 和 `source_globs` 选择文档 domain；
+2. 读取该路由指向的 `docs/README.md` 或具体 authority；需要了解相邻主题时再通过 `docs/README.md` 导航；
+3. 用目标文档文首 `Authority contract` 确认 owns / does not own；
+4. 只有改动跨越 contract 边界时，才读取其中列出的相邻 authority；
+5. 若文档与源码或测试不一致，以源码和测试为准，并在同次变更中回补 owner authority。
 
-不要预读 manifest 中所有 authority。项目 skill 只作为 workflow 检查清单或脚本入口，不作为事实权威。
-manifest 只用于 coding agent 选择工程文档，不进入产品 Runtime，不得用于判断终端用户意图、预选 Tool
+不要预读所有 authority。文档索引和 manifest 只用于 coding agent 选择工程文档，不进入产品 Runtime，不得用于判断终端用户意图、预选 Tool
 或选择 workflow。
 
 涉及实时视频帧、逐帧 VLM、semantic keyframe、SigLIP2、视觉提醒、视觉时间线或历史找物时，先读
@@ -86,9 +86,10 @@ manifest 只用于 coding agent 选择工程文档，不进入产品 Runtime，�
 | `evals/system/` | 正式真实能力验证，以及 `incubating/<feature>/` 中可删除的节点专项检查；边界与结果权威见 `evals/README.md` |
 | `src/assistant_agent/evaluation/` | 原生 Graph evaluation target；当前没有 Release Review runner |
 | `scripts/` | 服务、demo 和 system eval 的稳定命令入口；索引见 `scripts/README.md` |
+| `docs/authority.toml` | coding agent 的机器可读文档路由和 owner 清单 |
+| `docs/README.md` | 由文档路由指向的人类可读入口；导航到具体 authority |
 | `docs/*.md` | 当前架构、接口和状态权威文档 |
 | `docs/development/`, `docs/superpowers/`, `docs/interview/` | 非默认材料：开发阶段记录、历史计划/spec、面试资料；不作为当前规则入口 |
-| `.codex/skills/` | 少量项目 workflow、检查清单和脚本；不作为事实权威 |
 
 修改行为时按 `tests/README.md` 判断是否需要维护测试，并同步维护相关文档。若用户设定更严格 scope，以用户当前约束为准。
 
@@ -103,7 +104,7 @@ manifest 只用于 coding agent 选择工程文档，不进入产品 Runtime，�
 
 ## 7. 文档与工作模式
 
-- `AGENTS.md` 是当前唯一 agent 工作入口，应简短稳定；`README.md` 是人类轻导航入口。
+- `AGENTS.md` 是当前唯一 agent 工作入口，应简短稳定；`docs/authority.toml` 负责代码化路由，`docs/README.md` 负责文档导航，根 `README.md` 只做人类轻导航。
 - 当前 authority 只保留在 `docs/*.md`、`tests/README.md` 与 `evals/README.md`，并全部登记在
   `docs/authority.toml`。新增、删除或重命名 authority 时，同步更新 manifest、文首 contract card；仅当
   人类导航需要时再更新 README，不在 `AGENTS.md` 复制领域路由表。
@@ -113,7 +114,8 @@ manifest 只用于 coding agent 选择工程文档，不进入产品 Runtime，�
 - 修改当前 authority、`AGENTS.md` 文档路由、`docs/authority.toml` 或 authority validator 后，完成前运行
   `/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/check_documentation_authority.py --repo-root .`；
   `review_required` 只表示必须复核 owner，不要求机械制造文档 diff。
-- 新增或修改 pytest、判断代码变更的验证范围、补充回归测试或诊断确定性测试失败时，使用 `.codex/skills/assistant-agent-development-testing`；该 skill 不指导功能实现。不得为小功能机械增加永久测试。
+- 新增或修改 pytest、判断代码变更的验证范围、补充回归测试或诊断确定性测试失败时，先完整读取
+  `tests/README.md` 和 `tests/core/INVARIANTS.md`；不得为小功能机械增加永久测试。
 - 不回滚用户已有改动；提交时只包含本任务相关文件；新增设计文档默认不提交，除非用户明确要求纳入版本控制。
 - 完成修改后需要判断是否应该提交本任务改动；Codex 处于计划模式时，完成后直接提交本任务改动；除非用户明确要求，否则不 push、不合并、不创建 PR。
 - 结束任务时报告完成内容、验证结果、未完成/限制和下一步建议。

@@ -1,11 +1,12 @@
-"""Non-identity runtime configuration for the native assistant graph."""
+"""Public Assistant configuration and private run facts."""
 
 from __future__ import annotations
 
-from typing import Literal
+from collections.abc import Mapping
+from typing import Any, Literal
 
 from langgraph.runtime import Runtime
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class AuthenticatedUserRequired(PermissionError):
@@ -13,22 +14,66 @@ class AuthenticatedUserRequired(PermissionError):
 
 
 class AssistantRunContext(BaseModel):
-    """Static run configuration supplied through LangGraph Runtime.context."""
+    """User-facing Assistant configuration supplied through Runtime.context."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    system_prompt: str = Field(
+        default="",
+        max_length=12_000,
+        description=(
+            "Assistant-specific identity, persona, and task preferences. "
+            "Core safety and tool-governance rules remain authoritative."
+        ),
+        json_schema_extra={
+            "langgraph_type": "prompt",
+            "langgraph_nodes": ["fast_agent", "planning_agent"],
+        },
+    )
+    assistant_execution_mode: Literal["planning"] | None = None
+
+
+ASSISTANT_RUNTIME_METADATA_KEY = "assistant_agent_runtime"
+
+
+class AssistantRuntimeFacts(BaseModel):
+    """Server-issued run facts that must not become Assistant configuration."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     entry_profile: str = Field(default="agent_server", min_length=1, max_length=160)
-    media_capabilities: tuple[str, ...] = Field(default=(), max_length=32)
-    realtime_media_mode: Literal["none", "video"] = "none"
-    visual_capability_token: str | None = Field(default=None, min_length=1, max_length=64)
-    assistant_execution_mode: Literal["planning"] | None = None
+    visual_capability_token: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=160,
+    )
 
-    @field_validator("media_capabilities", mode="before")
-    @classmethod
-    def _normalize_media_capabilities(cls, value: object) -> object:
-        if isinstance(value, list):
-            return tuple(value)
-        return value
+
+def assistant_runtime_facts(config: Mapping[str, Any]) -> AssistantRuntimeFacts:
+    """Read private runtime facts from namespaced RunnableConfig metadata."""
+
+    metadata = config.get("metadata")
+    payload = (
+        metadata.get(ASSISTANT_RUNTIME_METADATA_KEY)
+        if isinstance(metadata, Mapping)
+        else None
+    )
+    if not isinstance(payload, Mapping):
+        return AssistantRuntimeFacts()
+    try:
+        return AssistantRuntimeFacts.model_validate(dict(payload))
+    except ValueError:
+        return AssistantRuntimeFacts()
+
+
+def assistant_runtime_metadata(
+    facts: AssistantRuntimeFacts,
+) -> dict[str, dict[str, object]]:
+    """Build the namespaced metadata fragment used by trusted run adapters."""
+
+    return {
+        ASSISTANT_RUNTIME_METADATA_KEY: facts.model_dump(exclude_none=True),
+    }
 
 
 def authenticated_user_identity(runtime: Runtime[object]) -> str:
@@ -45,7 +90,11 @@ def authenticated_user_identity(runtime: Runtime[object]) -> str:
 
 
 __all__ = [
+    "ASSISTANT_RUNTIME_METADATA_KEY",
     "AssistantRunContext",
+    "AssistantRuntimeFacts",
     "AuthenticatedUserRequired",
+    "assistant_runtime_facts",
+    "assistant_runtime_metadata",
     "authenticated_user_identity",
 ]

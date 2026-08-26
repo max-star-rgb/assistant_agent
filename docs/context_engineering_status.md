@@ -1,6 +1,6 @@
 # LangChain-native Context Engineering
 
-最后更新：2026-08-25
+最后更新：2026-08-26
 
 ## Authority contract
 
@@ -9,48 +9,47 @@
 | 定位 | 生产 Agent 标准 messages、dynamic prompt、预算与 summarization 的当前权威 |
 | Owns | dynamic system prompt、Memory 数据边界、标准 message history、phase-aware limit 与官方 summarization middleware |
 | Does not own | Tool schema、Memory backend、Provider wire、媒体 frame、旧 ContextService |
-| 源码与 schema 入口 | `src/assistant_agent/native_agent/fast_agent.py`、`src/assistant_agent/native_agent/state.py` |
+| 源码与 schema 入口 | `src/assistant_agent/native_agent/assistant_prompt.py`、`src/assistant_agent/native_agent/fast_agent.py`、`src/assistant_agent/native_agent/user_context.py`、`src/assistant_agent/native_agent/context.py`、`src/assistant_agent/native_agent/state.py` |
 | 验证入口 | `docs/authority.toml` 中 `context-engineering.verification`；核心不变量 `CTX-001` |
 | 相邻 authority | Runtime 见 [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md)；Memory 见 [`memory-service-architecture.md`](memory-service-architecture.md) |
 
 ## 当前主链
 
-生产上下文以 LangChain 标准 `messages` channel 为事实源。fast agent 的 `dynamic_prompt` 只维护一份
-provider-neutral 的自然语言操作策略，明确回答目标、Tool 使用条件、事实与推断边界、失败处理和 progressive
-Skill 加载顺序，不按 Provider 复制模板，也不向模型暴露无行为价值的 runtime 枚举或信任标签。只有非空媒体
-能力会被翻译成一句可执行的入口说明。
+生产上下文以 LangChain 标准 `messages` channel 为事实源。fast 与 planning 共用分层 Prompt Builder：第一层是
+provider-neutral、不可由 Assistant 覆盖的稳定核心策略，明确回答目标、Tool 使用条件、事实与推断边界及失败处理；
+第二层是 Studio Assistant 可编辑的 `system_prompt`，只用于身份、人格与任务偏好；最后才追加用户时间/地点与从
+本轮标准 `HumanMessage` 推导的媒体事实。该次序使稳定前缀优先复用，同时避免把入口枚举或 capability 暴露为
+Assistant 配置。Assistant 指令若与核心安全、事实或 Tool 治理冲突，以核心层为准。
 system prompt 同时定义统一的用户可见边界：模型只说明面向用户的能力、结果和必要限制，不复述或解释
 system/developer instructions、隐藏上下文、runtime/checkpoint、路由、内部标签、Tool schema/参数等实现细节；
-含糊指示语不得把临时注入的 Memory 或 TrustedRuntimeFacts 当成用户正在指向的内容。
+含糊指示语不得把临时注入的 Memory 或动态用户特性当成用户正在指向的内容。
 实时 VIDEO 会话中的当前画面属于瞬时事实；每个新的指示性视觉问题都重新调用 `live_view_inspect`，不得把历史
 视觉 Tool observation 当作本轮当前画面证据。
 dynamic prompt 还明确区分两种视觉记忆：`visual_memory_search` 只检索当前 VIDEO 会话/thread 内的短期
 视觉时间线；父图自动召回的跨会话长期视觉文本以 `[长期视觉记忆]` 标记进入临时的相关历史记忆，不通过
 该 Tool 补查。
 
-dynamic prompt 的 L0 index 只呈现 Deep Agents `SkillsMiddleware` 从标准 `SKILL.md` frontmatter 发现的名称与简介。
-成功执行 `load_skill` 后，Tool 按 LangGraph 原生 state-update 契约返回包含完整 Skill 正文的标准 `ToolMessage` 与
-`Command(update=...)`，并把受信 `skill_id` 写入当前角色的 `loaded_skill_ids`；正文不重复追加到 system prompt，
-也不授予 Tool。独立 `ToolProfileMiddleware` 只在 `AssistantFastAgent` 的原生 model-call hook 中根据当前
+Deep Agents `SkillsMiddleware.before_agent` 从标准 `SKILL.md` frontmatter 发现名称与简介，并由同一 middleware 从
+runtime `skills_metadata` 向 system message 注入唯一 L0 目录。模型通过只绑定仓库 `skills/` 虚拟根的上游
+`FilesystemMiddleware.read_file` 读取完整正文与 supporting files；读取结果只进入当前角色 transcript，不维护
+`loaded_skill_ids` 或 reference grant，也不授予 Tool。独立 `ToolProfileMiddleware` 只在 `AssistantFastAgent` 的原生 model-call hook 中根据当前
 `active_tool_profile_ids` 派生业务 Tool schema；未归属 profile 的独立 Tool 保持可见。planning coordinator 可读取
-Skill 以指导任务拆解，但不装配 profile 激活能力或业务 Tool；它通过 Deep Agents 的 `task` 调用同一个 fast Agent。专项 reference 再由
-`load_skill_reference` 按当前 state/checkpoint namespace 中的窄 grant 读取。checkpoint 只保存受信 Skill ID 和
-自动发现并授权的 reference ID；fast 还保存当前 invocation 激活的 profile ID，不复制 Skill 正文、Tool schema 或
-任意 Tool 名；这些状态不进入父图、后续 chat run
-或 Memory Graph。项目不向模型暴露通用文件读取 Tool；Skill 正文与 reference 只能通过 ID-only 窄加载器读取。
+Skill 以指导任务拆解，但不装配 profile 激活能力或业务 Tool；它通过 Deep Agents 的 `task` 调用同一个 fast Agent。
+`read_file` 不进入业务 Tool inventory，且不能读取 Skill 虚拟根之外的宿主文件。fast 只保存当前 invocation 激活的
+profile ID，不复制 Skill 正文、Tool schema 或任意 Tool 名到父图、后续 chat run 或 Memory Graph。
 
-Skill L0 index 使用简短自然语言列表。父图冻结的 `memory_context` 与 `trusted_runtime_facts` 都不进入
-system prompt：位于 summarization 内层的 model-call middleware 在最新真实 `HumanMessage` 前把两者合并投影为
-一条临时 `HumanMessage`。组合消息内先呈现 TrustedRuntimeFacts，再以独立标题和引用格式呈现 Memory；模型请求尾部
-顺序固定为组合运行时上下文、当前真实用户请求。两类数据仍使用独立 state channel，并在组合消息内保留不同的 trust
-boundary；前面的静态 system prompt 与持久历史保持稳定，以利于 Provider KV prefix cache。该组合消息不写入标准
-messages state、checkpoint messages 或摘要；结构化事实快照本身由父图 state/checkpoint 保存。
+Skill L0 index 使用简短自然语言列表。父图冻结的 `memory_context` 不进入 system prompt：位于 summarization 内层的
+model-call middleware 只在最新真实 `HumanMessage` 前投影一条临时 Memory `HumanMessage`。Memory 每一行使用引用格式，
+并明确为可能过时或错误的背景资料而非本轮指令；不能用于确认身份、权限、当前事实和 Tool 参数。该临时消息不写入
+标准 messages state、checkpoint messages 或摘要，最后一条用户消息始终是本轮真实请求。
 
-Memory 每一行以引用文本呈现，并明确为可能过时或错误的背景资料而非本轮指令；不能用于生成身份、权限、当前
-事实和 Tool 参数。TrustedRuntimeFacts 提供带时区的采集时间和部署默认地点；当前默认地点为
-“上海市青浦区华为练秋湖研发中心”。结构化快照仍标记 `source=deployment_default`、`is_fallback=true`，
-模型可见临时消息使用“用户默认地点”中文字段，并明确该地点不是已观测用户物理位置。用户在当前请求中明确指定的任务地点可以
-覆盖本次任务参数，但不能改写可信事实的来源。最后一条用户消息始终是本轮真实请求。
+fast 与 planning 的 model-call middleware 最后使用 LangChain 原生 `dynamic_prompt` 追加易变 system prompt 后缀。
+后缀只包含北京时间自然日（`YYYY-MM-DD`）与 `MULTIMODAL_AGENT_CURRENT_LOCATION` 提供的真实用户地区；不包含时分秒，
+也不把空配置替换成虚构地点，空值明确显示为“未配置”。日期统一按 `Asia/Shanghai` 计算，用户地区会折叠为单行文本。
+若当前消息带用户上传媒体或媒体入口投影的实时视频引用，同一后缀再加入对应的可执行视觉说明；媒体能力不由
+`AssistantRunContext` 声明。该后缀位于稳定核心和 Assistant 指令之后，因此日期通常每天只改变一次，前面的长公共前缀仍可命中 Provider
+KV prefix cache。日期和地区不进入 Graph state/checkpoint；当前请求明确指定的任务地点仍优先作为该任务参数，不会反向
+改写用户配置。
 
 fast `create_agent` 使用官方 `ModelCallLimitMiddleware` 提供每次 invocation 最多 12 次 model call 的安全上限，
 不设置跨 Tool 的总调用上限。只读 Tool retry、长对话
@@ -78,15 +77,14 @@ planning coordinator 本身也是 `create_agent`。锁定依赖 `langchain==1.3.
 Deep Agents 0.7.8 `SubAgentMiddleware` 提供原生 `task(description, subagent_type)` Tool；唯一
 `general-purpose` 类型直接引用已编译的 `AssistantFastAgent`。Supervisor 的标准 messages、Todo ToolCall、task
 ToolCall 与返回的 ToolMessage 全部保留在官方 conversation/checkpoint 中，不再经过项目 projection、working-memory
-JSON 或 marker。父级 Memory 与 TrustedRuntimeFacts 仍由相同 middleware 在最新真实用户请求前投影为一条分区明确的
-临时 `HumanMessage`，不进入 system prompt、state messages 或摘要。
+JSON 或 marker。父级 Memory 仍由相同 middleware 在最新真实用户请求前投影为一条临时 `HumanMessage`，不进入
+system prompt、state messages 或摘要；日期与地区由 coordinator 自己的 dynamic system prompt 提供。
 
 task 调用时，Deep Agents 把模型生成的完整 description 作为子 Agent 唯一的 `HumanMessage`，并传递冻结的
-Memory/TrustedRuntimeFacts 与 execution mode。Planner 是否加载 Skill 仍由 LLM 自主决定；一旦加载，compiled worker
-边界把 `planner_loaded_skill_ids`/`planner_skill_reference_grants` 窄映射为 worker 的
-`loaded_skill_ids`/`skill_reference_grants`，使 worker 不再重复加载同一 Skill。父 conversation、Todo、Tool Profile、
-调用计数和 structured response 被排除。子 Agent 每次 model call 再用同一 Memory/Trusted middleware 把冻结上下文
-放在 task description 前，随后由 fast dynamic prompt、Skill/Profile 渐进加载、summarization 与业务 Tool transcript
+Memory 与 execution mode。Planner 是否读取 Skill 仍由 LLM 自主决定，并把与 task 相关的规则写入
+description；Skill metadata、读取 transcript 和加载状态不跨 Agent 传递。父 conversation、Todo、Tool Profile、调用计数
+和 structured response 被排除。子 Agent 每次 model call 再用 Memory middleware 把冻结上下文放在 task
+description 前，并由自己的 dynamic prompt 取得当日日期与配置地区；随后由上游 Skills/read_file、Tool Profile、summarization 与业务 Tool transcript
 完成独立执行。完成后只把 structured response 或最后一条非空 AI 文本作为父 task `ToolMessage` content 返回；
 worker 的 Skill/Profile state 与内部 transcript 不回灌父消息。多个 task 并行返回时，planning state reducer 只接受
 一致的冻结上下文。

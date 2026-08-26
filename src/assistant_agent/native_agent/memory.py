@@ -27,7 +27,6 @@ from assistant_agent.native_agent.context import (
     authenticated_user_identity,
 )
 from assistant_agent.native_agent.providers import create_chat_model
-from assistant_agent.native_agent.runtime_facts import capture_trusted_runtime_facts
 from assistant_agent.native_agent.state import (
     AssistantRootState,
     MemoryExtractionState,
@@ -397,7 +396,6 @@ async def memory_recall_node(
     return {
         "memory_context": bounded,
         "memory_status": "ready" if bounded else "empty",
-        "trusted_runtime_facts": capture_trusted_runtime_facts(),
     }
 
 
@@ -412,7 +410,6 @@ def memory_recall_degraded(
         update={
             "memory_context": (),
             "memory_status": "degraded",
-            "trusted_runtime_facts": capture_trusted_runtime_facts(),
         },
         goto="execution_router",
     )

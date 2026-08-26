@@ -26,8 +26,6 @@ CALENDAR_CREATE_TOOL_NAME = "calendar_create"
 CONTACTS_SEARCH_TOOL_NAME = "contacts_search"
 PYTHON_INTERPRETER_TOOL_NAME = "python_interpreter"
 HOTEL_PRICE_WATCH_CREATE_TOOL_NAME = "hotel_price_watch_create"
-LOAD_SKILL_TOOL_NAME = "load_skill"
-LOAD_SKILL_REFERENCE_TOOL_NAME = "load_skill_reference"
 DURABLE_TASK_CREATION_TOOL_NAMES = frozenset(
     {
         HOTEL_PRICE_WATCH_CREATE_TOOL_NAME,

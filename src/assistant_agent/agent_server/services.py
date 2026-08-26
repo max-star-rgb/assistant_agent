@@ -92,7 +92,6 @@ class AgentServerExecutionOwner:
             config,
             resources=tool_resources,
             mcp_server_configs=load_mcp_server_configs_from_env(),
-            skills_backend=skills_backend,
         )
         context_token_counter = await asyncio.to_thread(
             create_context_token_counter,
@@ -113,6 +112,7 @@ class AgentServerExecutionOwner:
             visual_history_probe=tool_resources.visual_history_probe,
             live_view_resolver=tool_resources.live_view_resolver,
             skills_backend=skills_backend,
+            current_location=config.current_location,
         )
         planning_agent = build_planning_agent(
             model,
@@ -127,6 +127,7 @@ class AgentServerExecutionOwner:
                 if context_token_counter is not None
                 else None
             ),
+            current_location=config.current_location,
         )
         coding_config = CodingConfig.from_env()
         execution_attestation = build_execution_attestation(config, coding_config)

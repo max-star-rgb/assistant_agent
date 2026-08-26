@@ -9,7 +9,7 @@ from typing import Any
 
 from deepagents.backends import FilesystemBackend
 from deepagents.backends.protocol import BackendProtocol, LsResult
-from deepagents.middleware import SkillsMiddleware
+from deepagents.middleware import FilesystemMiddleware, SkillsMiddleware
 from deepagents.middleware.skills import SkillMetadata
 
 
@@ -26,25 +26,23 @@ def create_project_skills_backend(skills_root: str | Path) -> FilesystemBackend:
 def create_project_skills_middleware(
     backend: BackendProtocol,
 ) -> SkillsMiddleware:
-    """Load Agent Skills metadata without exposing a generic file Tool."""
+    """Create the upstream middleware that owns Skill discovery and prompting."""
 
     return SkillsMiddleware(
         backend=backend,
         sources=[PROJECT_SKILLS_SOURCE],
-        system_prompt=None,
     )
 
 
-def load_project_skills_metadata(
+def create_project_skill_filesystem_middleware(
     backend: BackendProtocol,
-) -> tuple[SkillMetadata, ...]:
-    """Load one trusted metadata snapshot through upstream SkillsMiddleware."""
+) -> FilesystemMiddleware:
+    """Expose only upstream ``read_file`` inside the virtual Skill root."""
 
-    middleware = create_project_skills_middleware(backend)
-    update = middleware.before_agent({}, None, {})  # type: ignore[arg-type]
-    if update is None:
-        return ()
-    return native_skill_metadata(update)
+    return FilesystemMiddleware(
+        backend=backend,
+        tools=["read_file"],
+    )
 
 
 def native_skill_metadata(state: Mapping[str, Any]) -> tuple[SkillMetadata, ...]:
@@ -69,31 +67,6 @@ def native_skill_metadata(state: Mapping[str, Any]) -> tuple[SkillMetadata, ...]
             continue
         result.append(item)  # type: ignore[arg-type]
     return tuple(result)
-
-
-def skill_metadata_by_name(
-    state: Mapping[str, Any],
-    skill_id: str,
-) -> SkillMetadata | None:
-    """Resolve one validated native Skill by its spec name."""
-
-    return next(
-        (
-            metadata
-            for metadata in native_skill_metadata(state)
-            if metadata["name"] == skill_id
-        ),
-        None,
-    )
-
-
-def read_skill_content(
-    backend: BackendProtocol,
-    metadata: SkillMetadata,
-) -> str | None:
-    """Read one exact SKILL.md selected from trusted native metadata."""
-
-    return _download_utf8(backend, metadata["path"])
 
 
 def list_skill_reference_ids(
@@ -123,40 +96,11 @@ def list_skill_reference_ids(
     return sorted(set(reference_ids))
 
 
-def read_skill_reference(
-    backend: BackendProtocol,
-    metadata: SkillMetadata,
-    reference_id: str,
-) -> str | None:
-    """Read one flat Markdown reference previously granted by Skill loading."""
-
-    if _SKILL_ID_PATTERN.fullmatch(reference_id) is None:
-        return None
-    references_dir = PurePosixPath(metadata["path"]).parent / "references"
-    return _download_utf8(backend, str(references_dir / f"{reference_id}.md"))
-
-
-def _download_utf8(backend: BackendProtocol, path: str) -> str | None:
-    responses = backend.download_files([path])
-    if len(responses) != 1:
-        return None
-    response = responses[0]
-    if response.error or response.content is None:
-        return None
-    try:
-        return response.content.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
-
-
 __all__ = [
     "PROJECT_SKILLS_SOURCE",
+    "create_project_skill_filesystem_middleware",
     "create_project_skills_backend",
     "create_project_skills_middleware",
     "list_skill_reference_ids",
-    "load_project_skills_metadata",
     "native_skill_metadata",
-    "read_skill_content",
-    "read_skill_reference",
-    "skill_metadata_by_name",
 ]

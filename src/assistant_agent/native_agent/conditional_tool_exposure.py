@@ -9,12 +9,16 @@ from langchain.agents.middleware import ModelRequest
 from langchain.agents.middleware.types import AgentMiddleware, ModelResponse
 from langchain_core.messages import AIMessage
 from langchain_core.tools import BaseTool
+from langgraph.config import get_config
 
 from assistant_agent.media.runtime_media import latest_runtime_media
 from assistant_agent.media.visual_perception.history_probe import (
     VisualObservationHistoryProbe,
 )
-from assistant_agent.native_agent.context import authenticated_user_identity
+from assistant_agent.native_agent.context import (
+    assistant_runtime_facts,
+    authenticated_user_identity,
+)
 from assistant_agent.tools.availability import (
     ToolAvailability,
     tool_availability,
@@ -63,22 +67,18 @@ class ConditionalToolExposureMiddleware(AgentMiddleware):
         if availability is ToolAvailability.UPLOADED_MEDIA_PRESENT:
             return media.has_uploaded_media
         runtime = request.runtime
-        context = getattr(runtime, "context", None)
-        video_handshake_completed = (
-            getattr(context, "realtime_media_mode", "none") == "video"
-        )
         live = self._trusted_live_view(runtime)
         if availability is ToolAvailability.VIDEO_HANDSHAKE_COMPLETED:
-            return video_handshake_completed and live is not None
+            return bool(media.live_video_ids) and live is not None
         if availability is ToolAvailability.VIDEO_FRAME_RECEIVED:
             return (
-                video_handshake_completed
+                bool(media.live_video_ids)
                 and live is not None
                 and bool(live.live_video_ids)
             )
         if availability is ToolAvailability.VISUAL_KEYFRAME_AVAILABLE:
             return (
-                video_handshake_completed
+                bool(media.live_video_ids)
                 and live is not None
                 and bool(live.live_video_ids)
                 and live.target_video_id in live.live_video_ids
@@ -88,7 +88,7 @@ class ConditionalToolExposureMiddleware(AgentMiddleware):
             )
         if availability is ToolAvailability.VISUAL_HISTORY_AVAILABLE:
             return (
-                video_handshake_completed
+                bool(media.live_video_ids)
                 and live is not None
                 and live.target_sequence is not None
                 and self._has_visual_history(
@@ -101,8 +101,11 @@ class ConditionalToolExposureMiddleware(AgentMiddleware):
     def _trusted_live_view(self, runtime: Any) -> Any | None:
         if self._live_view_resolver is None:
             return None
-        context = getattr(runtime, "context", None)
-        token = getattr(context, "visual_capability_token", None)
+        try:
+            facts = assistant_runtime_facts(get_config())
+        except RuntimeError:
+            return None
+        token = facts.visual_capability_token
         execution = getattr(runtime, "execution_info", None)
         session_id = getattr(execution, "thread_id", None)
         if not isinstance(token, str) or not isinstance(session_id, str):

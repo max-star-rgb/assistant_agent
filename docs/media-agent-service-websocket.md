@@ -1,6 +1,6 @@
 # Media-Agent WebSocket 接口权威文档
 
-Last updated: 2026-08-25
+Last updated: 2026-08-26
 
 ## Authority contract
 
@@ -71,10 +71,11 @@ Last updated: 2026-08-25
 Agent Server `user.identity` 一致。
 
 “完成 VIDEO 握手”的结构化定义是：服务端已成功校验并绑定首个 control 消息、创建该连接对应的 native
-`thread_id`，且绑定的 `callType` 等于 `VIDEO`。它不要求已经收到第一帧。后续 chat run 由媒体入口把该事实
-投影为 `AssistantRunContext.realtime_media_mode="video"`；AUDIO 握手和未完成 control 的连接均为 `none`。
+`thread_id`，且绑定的 `callType` 等于 `VIDEO`。它不要求已经收到第一帧。后续 chat run 不把握手模式写成
+Studio Assistant context；当前媒体可用性由入口生成的标准 `HumanMessage` 媒体 block 判定。
 每次 chat 开始时，媒体入口还会在进程视觉模块中冻结当时的 video IDs 与严格窗口，并只把服务端签发的 opaque
-capability token 放入 run context；token 按认证身份与 thread 校验，run 结束即撤销。窗口不进入用户 message，
+capability token 放入 namespaced run metadata；token 按认证身份与 thread 校验，run 结束即撤销。窗口摘要进入本轮
+标准用户 message，完整窗口和 capability 不进入 Assistant context，
 后续并发 chat 更新 session 投影也不能改变已创建 run 的视觉检索上界。撤销同时绑定 task done callback，覆盖
 协程首次执行前即被取消的路径。
 

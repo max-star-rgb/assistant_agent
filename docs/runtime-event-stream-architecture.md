@@ -36,6 +36,10 @@ planning。普通 assistant 没有 preset，仍完全遵循结构化 input。路
 推断模式。父图不绑定 saver，
 由 LangGraph Agent Server 注入 checkpoint、thread、run、cancel、resume 与 Store 资源。
 
+Studio 可在同一 graph 上创建 owner-scoped Assistant，并通过 context `system_prompt` 定义身份、人格和任务偏好。
+fast 与 planning coordinator 共用分层 Prompt Builder：稳定核心规则不可覆盖，Assistant 指令随后加入，用户
+北京时间/真实地区和本轮媒体事实最后追加；入口 profile、实时媒体模式与视觉 capability 不属于公开 Assistant schema。
+
 coding 分支是显式 `AssistantCodingGraph`，只在结构化输入同时提供受信 allowlist 中的
 `coding_repo_id` 时启用。它在 thread-scoped 临时 Git worktree 中执行 inspect/draft、确定性 patch validation、
 digest-bound 原生 interrupt、受信 apply 和 apply 后的确定性 `run_validation`；模型不可见 apply、validation
@@ -114,12 +118,10 @@ approved changed paths 与严格 lockfile，只有 lockfile 变化才生成 depe
 不保存 wheelhouse path、Docker network/container、proxy client 或文件句柄；获批 plan 只在同一次
 `run_validation` 节点调用内 fetch、离线消费并清理。
 
-`memory_recall` 在召回长期记忆后采集带时区的当前时间与部署默认地点，并在同一次节点更新中分别写入
-`memory_context`、`memory_status` 与结构化 `trusted_runtime_facts`；recall 最终失败时，原生 error handler 将 Memory
-标记为 `degraded`，同时仍采集 TrustedRuntimeFacts。当前默认地点为“上海市青浦区华为练秋湖研发中心”，并显式标记
-`source=deployment_default`、`is_fallback=true`；模型可见临时消息使用“用户默认地点”中文字段，并明确不得把该默认地点
-表述为已观测到的用户物理位置。合并节点完成后两类快照随同一 checkpoint 冻结：从其后的 interrupt 恢复不会重新
-召回或采集；从更早 checkpoint replay 并重新执行 `memory_recall` 时允许同时刷新。
+`memory_recall` 只召回长期记忆，并在同一次节点更新中写入 `memory_context` 与 `memory_status`；recall 最终失败时，
+原生 error handler 将 Memory 标记为 `degraded`。日期与地区不属于 Memory，也不进入 Graph state/checkpoint：fast 与
+planning 在每次 model call 使用原生 `dynamic_prompt`，把北京时间自然日和真实用户地区配置追加到 system prompt 末尾。
+从 recall 后的 interrupt 恢复会沿用冻结 Memory，但 system prompt 会按恢复时的北京时间自然日重新生成；不提供时分秒。
 
 fast 与 planning 直接作为父图节点装配。fast 分支是 `create_agent` 编译出的唯一共享
 `AssistantFastAgent`，使用标准 `BaseChatModel`、`BaseTool`、`ToolRuntime`、messages channel 和官方
@@ -134,8 +136,8 @@ model -> END
 ```
 
 Supervisor 通过官方 `TodoListMiddleware` 获得可执行 `write_todos` Tool，通过 Deep Agents
-`SubAgentMiddleware` 获得可执行 `task(description, subagent_type)` Tool，并持有只读 `load_skill`/
-`load_skill_reference` 以在拆解前读取专项知识；它不持有 `activate_tool_profile` 或业务 Tool。Todo 的
+`SubAgentMiddleware` 获得可执行 `task(description, subagent_type)` Tool，并通过只绑定 Skill 虚拟根的上游
+`read_file` 在拆解前读取专项知识；它不持有 `activate_tool_profile` 或业务 Tool。Todo 的
 `content/status=pending|in_progress|completed` schema、更新语义和
 执行逻辑均由锁定的 `langchain==1.3.15` middleware 提供；项目只通过其官方扩展参数提供中文 system prompt 与
 Tool description，不再维护 Todo reducer、completed gate 或 Worker result ledger。Supervisor 固定关闭
@@ -143,31 +145,31 @@ Provider-native search。
 
 `task` 是 Deep Agents 0.7.8 提供的真实 `StructuredTool`，不是路由占位 schema。唯一注册的
 `general-purpose` 类型直接引用已经编译的共享 `AssistantFastAgent`。task 用 description 创建子 Agent 的唯一
-`HumanMessage`，同时传递父 planning state 中冻结的 Memory/TrustedRuntimeFacts 与 execution mode。Planner 是否加载
-Skill 仍由 LLM 自主决定；一旦加载，项目在 compiled worker 边界把 Planner Skill ID/reference grant 窄映射为 worker
-已加载 Skill state。父 conversation、Todo、Tool Profile、调用计数和 structured response 不进入子 Agent。没有继承
-对应 Skill 时，子 Agent 仍可按自身原生循环加载 Skill、激活 Tool Profile、调用业务 Tool、
+`HumanMessage`，同时传递父 planning state 中冻结的 Memory 与 execution mode。Planner 是否读取
+Skill 仍由 LLM 自主决定，并把 task 所需规则写入 description；Skill metadata、读取 transcript 和加载状态不进入子
+Agent。父 conversation、Todo、Tool Profile、调用计数和 structured response 也不进入子 Agent。子 Agent 可按自身原生
+循环读取 Skill、激活 Tool Profile、调用业务 Tool、
 summarize 或触发 planning 模式非 read HITL。完成后 Deep Agents 只把 structured response 或最后一条非空
 `AIMessage` 文本写成原 task call 对应的父级 `ToolMessage`；项目结果投影不回灌 worker Skill/Profile state 或内部
 AI/Tool transcript。
 
 同一 `AIMessage` 中的多个 task call 由 `create_agent` 内置 `ToolNode` 并行执行；fan-out/fan-in、Tool 错误、
 `Command` state update 与 checkpoint 都使用上游实现。项目只为 task 并发回写的冻结字段声明“结果必须一致”的
-LangGraph reducer；Planner 与 worker 的 Skill/Profile state 使用角色局部 channel，只有 Planner→worker 的已加载
-Skill 窄映射，不合并为 Tool Profile、权限或能力授予。
+LangGraph reducer；Planner 与 worker 的 Skills middleware state 和文件读取 transcript 保持角色局部，不合并为
+Tool Profile、权限或能力授予。
 主链也不再维护 controls、`Send(worker)`、join、wave、attempt、reservation 或 recovery ledger。
 
 
 ## State 与恢复
 
 生产 state channel、checkpoint 和 reducer 调度全部使用 LangGraph 原生能力。父图继续以标准
-`AgentState.messages` / `add_messages` 为事实源，并只增加 `execution_mode`、冻结的
-`memory_context/memory_status` 与 `trusted_runtime_facts`。fast agent 子图使用成功 `load_skill` 产生的
-`loaded_skill_ids`、窄 `skill_reference_grants`，以及显式 `activate_tool_profile` 产生的
-`active_tool_profile_ids`。
+`AgentState.messages` / `add_messages` 为事实源，并只增加 `execution_mode` 与冻结的
+`memory_context/memory_status`。fast agent 子图只额外保存显式
+`activate_tool_profile` 产生的 `active_tool_profile_ids`；上游 `skills_metadata` 是 middleware 私有 state，Skill 正文只
+存在于当前角色的标准 `read_file` transcript。
 
-planning agent 只在官方 state 中保存标准 `messages`、`todos`、冻结的 Memory/TrustedRuntimeFacts、execution mode，
-以及自身只读 Skill 加载产生的 `planner_loaded_skill_ids`/`planner_skill_reference_grants`。它不保存或激活 Tool Profile。
+planning agent 只在官方 state 中保存标准 `messages`、`todos`、冻结的 Memory、execution mode 和
+上游 middleware 私有的 `skills_metadata`；它不保存或激活 Tool Profile，也没有项目 Skill/grant channel。
 Todo 不含项目 `todo_id`，也没有 `worker_results` 或 `worker_writes`
 channel。task 调用、结果与 Todo 更新都作为标准 AI/Tool transcript 进入 checkpoint；子 Agent 私有 transcript
 不进入父 state。恢复、并行 Tool pending writes 与错误语义均由 `create_agent`/`ToolNode`/Agent Server 所有。

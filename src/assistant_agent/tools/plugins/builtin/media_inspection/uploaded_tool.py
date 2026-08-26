@@ -23,6 +23,7 @@ from assistant_agent.media.vision.vision_client import (
 )
 from assistant_agent.native_agent.context import (
     AssistantRunContext,
+    assistant_runtime_facts,
     authenticated_user_identity,
 )
 from assistant_agent.providers.provider_errors import (
@@ -186,6 +187,7 @@ def create_uploaded_media_inspect_tool(
         """分析当前请求中由用户主动上传的图片或视频附件。"""
 
         def inspect_uploaded_media() -> ToolResult:
+            runtime_facts = assistant_runtime_facts(runtime.config)
             state = runtime.state if isinstance(runtime.state, dict) else {}
             media = latest_runtime_media(state)
             if not media.has_uploaded_media:
@@ -208,7 +210,7 @@ def create_uploaded_media_inspect_tool(
                 session_id=request.session_id,
                 run_id=getattr(execution, "run_id", None),
                 metadata={
-                    "entry_profile": runtime.context.entry_profile,
+                    "entry_profile": runtime_facts.entry_profile,
                     "media_source": "uploaded",
                 },
             )

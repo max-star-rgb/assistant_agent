@@ -10,7 +10,11 @@ from langgraph.store.base import BaseStore
 
 from assistant_agent.agent_server.services import AgentServerExecutionOwner
 from assistant_agent.agent_server.config import ASSISTANT_GRAPH_ID
-from assistant_agent.native_agent.context import AssistantRunContext
+from assistant_agent.native_agent.context import (
+    AssistantRunContext,
+    AssistantRuntimeFacts,
+    assistant_runtime_metadata,
+)
 from assistant_agent.native_agent.state import ExecutionMode
 
 
@@ -66,8 +70,12 @@ class NativeGraphEvaluationTarget:
         execution_mode: ExecutionMode = "fast",
         metadata: dict[str, Any] | None = None,
     ) -> NativeGraphEvaluationResult:
-        context = AssistantRunContext(
-            entry_profile="evaluation",
+        context = AssistantRunContext()
+        run_metadata = dict(metadata or {})
+        run_metadata.update(
+            assistant_runtime_metadata(
+                AssistantRuntimeFacts(entry_profile="evaluation")
+            )
         )
         result = await self._owner.graph.ainvoke(
             {
@@ -83,7 +91,8 @@ class NativeGraphEvaluationTarget:
                     "assistant_id": ASSISTANT_GRAPH_ID,
                     "graph_id": ASSISTANT_GRAPH_ID,
                     "langgraph_auth_user": _EvaluationUser(identity),
-                }
+                },
+                "metadata": run_metadata,
             },
             context=context,
         )
