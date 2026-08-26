@@ -1,4 +1,4 @@
-"""Deterministic AMap route-planning links for official MCP results."""
+"""Deterministic AMap navigation links for official MCP route results."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ async def amap_route_link_interceptor(
     request: MCPToolCallRequest,
     handler: Callable[[MCPToolCallRequest], Awaitable[MCPToolCallResult]],
 ) -> MCPToolCallResult:
-    """Append a clickable route-planning link to successful AMap route results."""
+    """Append a clickable navigation link to successful AMap route results."""
 
     result = await handler(request)
     if (
@@ -44,7 +44,7 @@ async def amap_route_link_interceptor(
     )
     if route_url is None:
         return result
-    link = f"[在高德地图中查看路线规划]({route_url})"
+    link = f"[打开高德地图导航]({route_url})"
     return result.model_copy(
         update={
             "content": [

@@ -116,10 +116,14 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 - `scripts/trace_metrics.py`: redacted trace metric summary.
 - `scripts/render_visual_perception_report.py`：从 Agent Server 日志中的脱敏
   `multimodal_observation` 事件生成自包含 HTML，按共享帧序号绘制关键帧 semantic change、选取阈值、
-  reminder image-text cosine、匹配阈值和 created/triggered/cancelled 标记。报告不包含目标文本、媒体内容、
-  embedding 向量、用户原始 ID 或媒体路径，也不会为旧日志重新计算缺失值。通话中实时观察使用 `--live`；
-  命令只绑定 `127.0.0.1`，浏览器通过 SSE 接收日志追加事件，日志轮转或连接中断后自动恢复。实时模式省略
-  `--session-digest` 时自动跟随最新产生视觉事件的会话并切换页面：
+  reminder image-text cosine、匹配阈值和 created/triggered/cancelled 标记。日志和静态报告不包含目标文本、
+  媒体内容、embedding 向量、用户原始 ID 或媒体路径，也不会为旧日志重新计算缺失值。通话中实时观察使用
+  `--live`；命令只绑定 `127.0.0.1`，浏览器通过 SSE 接收日志追加事件，并显示最新 semantic keyframe 大图
+  与最近 12 帧缩略图时间轴。图片由独立的受限本地路由从
+  `.data/visual_perception/keyframes/semantic-input/agent-service-video-<session-hash-24>/` 按需读取，
+  并要求当前日志快照已存在同帧 `semantic_frame.selected`；图片不写入日志或 SSE。需要覆盖 `keyframes`
+  根目录时使用 `--keyframe-root`。日志轮转或连接中断后自动恢复。
+  实时模式省略 `--session-digest` 时自动跟随最新产生视觉事件的会话并切换页面：
 
   ```bash
   /home/lenovo1/miniconda3/envs/hello_agent/bin/python \

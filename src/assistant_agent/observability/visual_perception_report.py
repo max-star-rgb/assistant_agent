@@ -185,6 +185,7 @@ def render_visual_perception_html(
     report: VisualPerceptionReport,
     *,
     live_events_url: str | None = None,
+    live_keyframes_url: str | None = None,
 ) -> str:
     data = json.dumps(
         {
@@ -197,9 +198,17 @@ def render_visual_perception_html(
         separators=(",", ":"),
     ).replace("<", "\\u003c")
     live_url = json.dumps(live_events_url, ensure_ascii=False).replace("<", "\\u003c")
-    return _HTML.replace("__REPORT_DATA__", data).replace(
-        "__LIVE_EVENTS_URL__",
-        live_url,
+    live_keyframes = json.dumps(live_keyframes_url, ensure_ascii=False).replace(
+        "<", "\\u003c"
+    )
+    return (
+        _HTML.replace("__REPORT_DATA__", data)
+        .replace("__LIVE_EVENTS_URL__", live_url)
+        .replace("__LIVE_KEYFRAMES_URL__", live_keyframes)
+        .replace(
+            "__LIVE_KEYFRAMES_ENABLED__",
+            "true" if live_keyframes_url is not None else "false",
+        )
     )
 
 
@@ -223,10 +232,12 @@ _HTML = """<!doctype html>
 <style>
 :root{color-scheme:dark;--bg:#0b1020;--card:#121a2d;--grid:#2a3550;--text:#e8edf7;--muted:#92a0ba;--green:#4ade80;--blue:#60a5fa;--amber:#fbbf24;--red:#fb7185}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif}.wrap{max-width:1280px;margin:auto;padding:24px}.head{display:flex;justify-content:space-between;gap:20px;align-items:end}.muted{color:var(--muted)}.card{background:var(--card);border:1px solid #24304a;border-radius:14px;padding:18px;margin-top:18px;box-shadow:0 12px 30px #0004}.chart{width:100%;height:320px;display:block}.legend{display:flex;gap:18px;flex-wrap:wrap}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}.empty{padding:48px;text-align:center;color:var(--muted)}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:8px;border-bottom:1px solid #25314b;font-variant-numeric:tabular-nums}th{color:var(--muted)}
+.keyframe-stage{position:relative;display:grid;place-items:center;min-height:320px;overflow:hidden;border:1px solid #2a3550;border-radius:12px;background:#080d19}.keyframe-stage img{display:block;width:100%;max-height:68vh;object-fit:contain}.keyframe-meta{display:flex;gap:14px;flex-wrap:wrap;min-height:24px;margin-top:10px;color:var(--muted);font-variant-numeric:tabular-nums}.keyframe-strip{display:flex;gap:10px;overflow-x:auto;padding:10px 2px 2px;scrollbar-color:#3b4a69 transparent}.keyframe-thumb{flex:0 0 148px;padding:0;overflow:hidden;border:2px solid transparent;border-radius:10px;background:#080d19;color:var(--text);cursor:pointer;text-align:left}.keyframe-thumb.active{border-color:var(--green)}.keyframe-thumb img{display:block;width:100%;height:92px;object-fit:cover;background:#080d19}.keyframe-thumb span{display:block;padding:6px 8px;font-variant-numeric:tabular-nums}.keyframe-thumb.missing img{opacity:.25}.keyframe-thumb:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
 </style>
 </head>
 <body><main class="wrap">
-<div class="head"><div><h1>视觉感知诊断时间轴</h1><div class="muted">仅包含脱敏 ID、帧序号、cosine 与决策，不包含媒体内容或 embedding 向量。</div></div><div><code id="session"></code><div id="liveStatus" class="muted"></div></div></div>
+<div class="head"><div><h1>视觉感知诊断时间轴</h1><div class="muted">事件与曲线仅包含脱敏 ID、帧序号、cosine 与决策；关键帧图片由回环本地服务按需读取，不进入日志。</div></div><div><code id="session"></code><div id="liveStatus" class="muted"></div></div></div>
+<section class="card" id="keyframeViewer" data-live-keyframes="__LIVE_KEYFRAMES_ENABLED__" data-history-limit="12"><h2>实时关键帧</h2><div class="muted">最新选中帧大图；下方时间轴保留最近 12 张，可点击回看。</div><div class="keyframe-stage"><img id="latestKeyframe" alt="最新选中关键帧" hidden><div id="keyframeEmpty" class="empty">等待 semantic selector 选出关键帧…</div></div><div id="keyframeMeta" class="keyframe-meta"></div><div id="keyframeStrip" class="keyframe-strip" aria-label="最近关键帧时间轴"></div></section>
 <section class="card"><h2>关键帧选取</h2><div class="muted">横坐标：实际完成 SigLIP2 的原始帧 sequence；被 latest-pending 替换或 embedding 失败的帧没有 cosine 点。</div><div class="legend"><span><i class="dot" style="background:var(--blue)"></i>未选中</span><span><i class="dot" style="background:var(--green)"></i>已选关键帧</span><span><i class="dot" style="background:var(--amber)"></i>semantic change 阈值</span></div><canvas id="semanticChangeChart" class="chart"></canvas></section>
 <section class="card"><h2>提醒图文匹配 cosine</h2><div class="legend"><span><i class="dot" style="background:var(--blue)"></i>cosine</span><span><i class="dot" style="background:var(--amber)"></i>阈值</span><span><i class="dot" style="background:var(--red)"></i>matched</span></div><canvas id="reminderCosineChart" class="chart"></canvas></section>
 <section class="card"><h2>事件明细</h2><div id="events"></div></section>
@@ -234,11 +245,20 @@ _HTML = """<!doctype html>
 <script>
 const report=__REPORT_DATA__;
 const liveEventsUrl=__LIVE_EVENTS_URL__;
+const liveKeyframesUrl=__LIVE_KEYFRAMES_URL__;
 const sessionLabel=document.getElementById('session');
 sessionLabel.textContent=report.session_digest||'等待视觉会话';
 const semantic=report.events.filter(e=>e.event_name==='semantic_frame.selected'||(e.event_name==='semantic_frame.skipped'&&e.semantic_change!==undefined));
 const comparisons=report.events.filter(e=>e.event_name==='visual_reminder.compared');
 const reminderLifecycle=report.events.filter(e=>e.event_name==='visual_reminder.created'||e.event_name==='visual_reminder.triggered'||e.event_name==='visual_reminder.cancelled');
+const keyframeViewer=document.getElementById('keyframeViewer'),latestKeyframe=document.getElementById('latestKeyframe'),keyframeEmpty=document.getElementById('keyframeEmpty'),keyframeMeta=document.getElementById('keyframeMeta'),keyframeStrip=document.getElementById('keyframeStrip');
+const keyframeHistoryLimit=Number(keyframeViewer.dataset.historyLimit)||12,keyframes=[];let activeKeyframeKey='';
+function keyframeUrl(event){const digest=event.session_id_digest,sequence=event.sequence;if(!liveKeyframesUrl||typeof digest!=='string'||!/^[0-9a-f]{16}$/.test(digest)||!Number.isInteger(sequence)||sequence<=0)return null;return `${liveKeyframesUrl}/${digest}/${sequence}.jpg?event=${Number.isInteger(event.order)?event.order:sequence}`}
+function clearKeyframes(){keyframes.length=0;activeKeyframeKey='';renderKeyframes()}
+function acceptKeyframe(event,{renderNow=true}={}){if(event.event_name!=='semantic_frame.selected')return;const url=keyframeUrl(event);if(!url)return;const key=`${event.session_id_digest}:${event.sequence}`;const existing=keyframes.findIndex(frame=>frame.key===key);if(existing>=0)keyframes.splice(existing,1);keyframes.push({key,url,sequence:event.sequence,reason:event.reason,semanticChange:event.semantic_change});if(keyframes.length>keyframeHistoryLimit)keyframes.splice(0,keyframes.length-keyframeHistoryLimit);activeKeyframeKey=key;if(renderNow)renderKeyframes()}
+function renderKeyframes(){keyframeStrip.replaceChildren();if(!keyframes.length){latestKeyframe.hidden=true;latestKeyframe.removeAttribute('src');keyframeMeta.replaceChildren();keyframeEmpty.hidden=false;keyframeEmpty.textContent=liveKeyframesUrl?'等待 semantic selector 选出关键帧…':'关键帧图片仅在本地实时模式中提供';return}const active=keyframes.find(frame=>frame.key===activeKeyframeKey)||keyframes[keyframes.length-1];activeKeyframeKey=active.key;latestKeyframe.dataset.key=active.key;latestKeyframe.alt=`关键帧 ${active.sequence}`;latestKeyframe.src=active.url;latestKeyframe.hidden=false;keyframeEmpty.hidden=true;keyframeMeta.replaceChildren();for(const value of [`sequence ${active.sequence}`,active.reason?`reason ${active.reason}`:'',Number.isFinite(active.semanticChange)?`semantic change ${active.semanticChange.toFixed(4)}`:'']){if(!value)continue;const span=document.createElement('span');span.textContent=value;keyframeMeta.appendChild(span)}for(const frame of keyframes){const button=document.createElement('button');button.type='button';button.className=`keyframe-thumb${frame.key===active.key?' active':''}`;button.setAttribute('aria-label',`查看关键帧 ${frame.sequence}`);const image=document.createElement('img');image.src=frame.url;image.alt='';image.loading='lazy';image.onerror=()=>button.classList.add('missing');const label=document.createElement('span');label.textContent=`#${frame.sequence} · ${frame.reason||'selected'}`;button.append(image,label);button.onclick=()=>{activeKeyframeKey=frame.key;renderKeyframes()};keyframeStrip.appendChild(button)}keyframeStrip.scrollLeft=keyframeStrip.scrollWidth}
+latestKeyframe.onload=()=>{keyframeEmpty.hidden=true;latestKeyframe.hidden=false};latestKeyframe.onerror=()=>{if(!latestKeyframe.src)return;latestKeyframe.hidden=true;keyframeEmpty.hidden=false;keyframeEmpty.textContent='关键帧文件已清理或暂不可用'};
+for(const event of report.events)acceptKeyframe(event,{renderNow:false});renderKeyframes();
 function lifecycleFrame(event){if(Number.isInteger(event.frame_sequence))return event.frame_sequence;const first=comparisons.find(row=>row.reminder_id===event.reminder_id);return first?.frame_sequence}
 function draw(canvas, rows, valueKey, thresholdKey, selectedKey, yMin, yMax, markers=[]){
  const ratio=devicePixelRatio||1,box=canvas.getBoundingClientRect();canvas.width=box.width*ratio;canvas.height=box.height*ratio;const c=canvas.getContext('2d');c.scale(ratio,ratio);const w=box.width,h=box.height,p={l:48,r:18,t:22,b:38};c.clearRect(0,0,w,h);c.font='12px system-ui';c.strokeStyle='#2a3550';c.fillStyle='#92a0ba';
@@ -257,6 +277,6 @@ const eventRoot=document.getElementById('events');
 function appendCell(row,value,tag='td'){const cell=document.createElement(tag);cell.textContent=String(value??'');row.appendChild(cell)}
 function renderTable(){eventRoot.replaceChildren();if(!report.events.length){const empty=document.createElement('div');empty.className='empty';empty.textContent='没有匹配当前 session 的诊断事件';eventRoot.appendChild(empty);return}const table=document.createElement('table'),head=document.createElement('thead'),headRow=document.createElement('tr'),body=document.createElement('tbody');for(const label of ['时间','帧','事件','状态','数值'])appendCell(headRow,label,'th');head.appendChild(headRow);for(const event of report.events){const row=document.createElement('tr');appendCell(row,event.recorded_at);appendCell(row,event.sequence??event.frame_sequence);appendCell(row,event.event_name);appendCell(row,event.reason??event.status);appendCell(row,event.semantic_change??event.similarity);body.appendChild(row)}table.append(head,body);eventRoot.appendChild(table)}
 renderTable();
-function acceptLiveEvent(event){if(!event||typeof event!=='object'||typeof event.event_name!=='string')return;const digest=event.session_id_digest;if(typeof digest==='string'&&digest!==report.session_digest){const previous=report.session_digest;report.session_digest=digest;sessionLabel.textContent=digest;report.events.length=0;semantic.length=0;comparisons.length=0;reminderLifecycle.length=0;document.getElementById('liveStatus').textContent=previous?`已切换会话 ${previous} → ${digest}`:'已发现视觉会话'}report.events.push(event);if(event.event_name==='semantic_frame.selected'||(event.event_name==='semantic_frame.skipped'&&event.semantic_change!==undefined))semantic.push(event);if(event.event_name==='visual_reminder.compared')comparisons.push(event);if(event.event_name==='visual_reminder.created'||event.event_name==='visual_reminder.triggered'||event.event_name==='visual_reminder.cancelled')reminderLifecycle.push(event);render();renderTable()}
+function acceptLiveEvent(event){if(!event||typeof event!=='object'||typeof event.event_name!=='string')return;const digest=event.session_id_digest;if(typeof digest==='string'&&digest!==report.session_digest){const previous=report.session_digest;report.session_digest=digest;sessionLabel.textContent=digest;report.events.length=0;semantic.length=0;comparisons.length=0;reminderLifecycle.length=0;clearKeyframes();document.getElementById('liveStatus').textContent=previous?`已切换会话 ${previous} → ${digest}`:'已发现视觉会话'}report.events.push(event);if(event.event_name==='semantic_frame.selected'||(event.event_name==='semantic_frame.skipped'&&event.semantic_change!==undefined))semantic.push(event);if(event.event_name==='visual_reminder.compared')comparisons.push(event);if(event.event_name==='visual_reminder.created'||event.event_name==='visual_reminder.triggered'||event.event_name==='visual_reminder.cancelled')reminderLifecycle.push(event);acceptKeyframe(event);render();renderTable()}
 if(liveEventsUrl){const status=document.getElementById('liveStatus'),latest=Math.max(0,...report.events.map(event=>Number.isInteger(event.order)?event.order:0)),separator=liveEventsUrl.includes('?')?'&':'?',source=new EventSource(`${liveEventsUrl}${separator}after=${latest}`);status.textContent='正在连接实时日志…';source.onopen=()=>{status.textContent='实时更新中'};source.onerror=()=>{status.textContent='连接中断，正在重连…'};source.addEventListener('visual-perception',message=>{try{acceptLiveEvent(JSON.parse(message.data))}catch{status.textContent='收到无法解析的诊断事件'}})}
 </script></body></html>"""

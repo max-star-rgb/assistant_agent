@@ -213,10 +213,15 @@ input/output 出现 `fast` 只代表 Agent 路由选择，视觉诊断必须定�
 semantic 诊断事件可记录当前 sequence、参考关键帧 sequence、image-image cosine、semantic change、阈值和
 selected/reason；提醒诊断事件可记录脱敏 session/reminder ID、frame sequence、image-text cosine、阈值、
 matched 和生命周期状态。它们不得记录目标文本、通知文案、embedding 向量、媒体内容、用户原始 ID 或媒体路径。
-本地静态或实时报告只投影这些允许字段，不读取或重算模型输入；日志中缺失的历史数值必须保持缺失。实时模式
-只在回环地址提供 HTML 与 SSE，先建立当前日志快照，再以单调事件 ID 增量追踪追加内容；浏览器重连和日志轮转
-不得放宽字段 allowlist。实时模式可显式固定 session digest；未固定时，以每个允许事件携带的有效 digest
-自动切换到最近活跃视觉会话，切换时清空浏览器中的上一会话曲线，禁止把多个会话的数据混画。
+本地静态报告和实时报告的事件、曲线只投影这些允许字段，不读取或重算模型输入；日志中缺失的历史数值必须保持
+缺失。实时报告可通过仅绑定回环地址的独立图片路由，仅为当前报告会话且当前日志快照已存在
+`semantic_frame.selected` 的 session digest + sequence，从配置关键帧根目录下的
+`semantic-input/agent-service-video-<session-hash-24>/frame-<sequence-8>-<uuid>.jpg` 读取 JPEG，在页面中显示
+最新关键帧和最近 12 帧时间轴；目录路径、文件名与图片内容不得进入日志或 SSE，静态 HTML 不嵌入媒体。图片
+路由必须拒绝无效 digest/sequence、目录或文件歧义、符号链接和根目录越界，并返回 `no-store`。实时模式先
+建立当前日志快照，再以单调事件 ID 增量追踪追加内容；浏览器重连和日志轮转不得放宽字段 allowlist。实时模式
+可显式固定 session digest；未固定时，以每个允许事件携带的有效 digest
+自动切换到最近活跃视觉会话，切换时清空浏览器中的上一会话曲线和关键帧时间轴，禁止把多个会话的数据混画。
 
 ## 文本、ASR 与跨模态消费者
 
