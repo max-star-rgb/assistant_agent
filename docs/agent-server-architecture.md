@@ -168,9 +168,10 @@ metadata identity update 使用 owner + graph identity 过滤，因此旧 thread
 
 `assistant-native-v3` graph 下保留系统创建的同名默认 assistant。Studio 可为同一 graph 创建和维护 owner-scoped
 Assistant；其公开 context 只允许 `system_prompt` 与可选 planning preset，`config` 和 metadata 由 auth 规范化，
-更新和删除按 owner 过滤。设置 planning preset 的自建 Assistant 仍使用同一 graph，不建立新的 Runtime 或 checkpoint
-schema；Studio 选择它后，messages-only input 在 `execution_router` 归一化为 planning。默认 assistant 仍按公开 input
-的 `execution_mode` 路由并在省略时使用 fast。
+普通 API 用户的更新和删除按 owner 过滤；LangSmith Studio 身份沿用官方 Studio auth，不附加 owner 过滤，以便 Graph
+页面原生管理其创建的无 owner Assistant。设置 planning preset 的自建 Assistant 仍使用同一 graph，不建立新的 Runtime
+或 checkpoint schema；Studio 选择它后，messages-only input 在 `execution_router` 归一化为 planning。默认 assistant
+仍按公开 input 的 `execution_mode` 路由并在省略时使用 fast。
 
 新 assistant 与 run 必须选择 `assistant-native-v3`，Studio 用户也必须切换到该新 graph ID。媒体确定性
 thread UUID 的 seed 包含 `assistant-native-v3`，因此同一 v3 connection 重连仍稳定，但不会命中旧 v1/v2 UUID；即便

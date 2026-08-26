@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from langgraph_sdk import Auth
+from langgraph_sdk.auth import is_studio_user
 
 from assistant_agent.agent_server.config import (
     ASSISTANT_GRAPH_ID,
@@ -115,6 +116,9 @@ async def authorize_assistant_update(
     value["graph_id"] = ASSISTANT_GRAPH_ID
     value["config"] = {}
     value["context"] = context.model_dump()
+    if is_studio_user(ctx.user):
+        value["metadata"] = {}
+        return True
     value["metadata"] = {"owner": owner, "managed_by": owner}
     return {"owner": owner}
 
@@ -126,6 +130,8 @@ async def authorize_assistant_delete(
 ) -> Auth.types.FilterType | bool:
     """Scope custom Assistant deletion to its owner."""
 
+    if is_studio_user(ctx.user):
+        return True
     return {"owner": str(ctx.user.identity)}
 
 
