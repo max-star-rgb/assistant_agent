@@ -80,21 +80,15 @@ async def authorize_assistant_create(
     ctx: Auth.types.AuthContext,
     value: Auth.types.on.assistants.create.value,
 ) -> bool | None:
-    """Normalize one user-owned Assistant."""
+    """Allow the native Assistant payload and scope API-created resources."""
 
     if str(value.get("graph_id")) != ASSISTANT_GRAPH_ID:
         return False
-    try:
-        context = AssistantRunContext.model_validate(value.get("context") or {})
-    except ValueError:
-        return False
+    if is_studio_user(ctx.user):
+        return True
     owner = str(ctx.user.identity)
-    value["config"] = {}
-    value["context"] = context.model_dump()
-    value["metadata"] = {
-        "owner": owner,
-        "managed_by": owner,
-    }
+    metadata = value.setdefault("metadata", {})
+    metadata.update({"owner": owner, "managed_by": owner})
     return None
 
 
@@ -103,23 +97,16 @@ async def authorize_assistant_update(
     ctx: Auth.types.AuthContext,
     value: Auth.types.on.assistants.update.value,
 ) -> bool | None:
-    """Normalize user-owned Assistant updates."""
+    """Let Agent Server version the payload and enforce API ownership."""
 
     graph_id = value.get("graph_id")
     if graph_id is not None and str(graph_id) != ASSISTANT_GRAPH_ID:
         return False
-    try:
-        context = AssistantRunContext.model_validate(value.get("context") or {})
-    except ValueError:
-        return False
-    owner = str(ctx.user.identity)
-    value["graph_id"] = ASSISTANT_GRAPH_ID
-    value["config"] = {}
-    value["context"] = context.model_dump()
     if is_studio_user(ctx.user):
-        value["metadata"] = {}
         return True
-    value["metadata"] = {"owner": owner, "managed_by": owner}
+    owner = str(ctx.user.identity)
+    metadata = value.setdefault("metadata", {})
+    metadata.update({"owner": owner, "managed_by": owner})
     return {"owner": owner}
 
 
