@@ -142,15 +142,15 @@ class ToolProfileMiddleware(AgentMiddleware[ToolProfileState, Any]):
         profile_index = "\n".join(
             f"- {profile.profile_id}: {profile.description}"
             for profile in self.profiles
-        ) or "- 当前没有可激活的 Tool Profile。"
+        ) or "- 当前没有可加载的 Tool Profile。"
         profiles_by_id = self._profiles_by_id
 
         @tool(
             ACTIVATE_TOOL_PROFILE_TOOL_NAME,
             description=(
-                "仅当完成当前任务确实需要某组尚不可见的执行工具时，按受信 profile_id 激活该组工具。"
-                "激活只影响当前 Agent invocation 的后续模型调用，不执行任何业务动作，也不读取 Skill。"
-                "不得猜测或组合 profile_id。可用 Tool Profile：\n"
+                "当任务需要特定场景的专用工具时，加载对应 Tool Profile，再继续完成任务。"
+                "仅在当前工具不足时按需加载。\n\n"
+                "当前可用 Tool Profile：\n"
                 f"{profile_index}"
             ),
         )
