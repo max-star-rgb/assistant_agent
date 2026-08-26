@@ -24,7 +24,6 @@ SHOPPING_SEARCH_TOOL_NAME = "shopping_search"
 CALENDAR_SEARCH_TOOL_NAME = "calendar_search"
 CALENDAR_CREATE_TOOL_NAME = "calendar_create"
 CONTACTS_SEARCH_TOOL_NAME = "contacts_search"
-PYTHON_INTERPRETER_TOOL_NAME = "python_interpreter"
 HOTEL_PRICE_WATCH_CREATE_TOOL_NAME = "hotel_price_watch_create"
 DURABLE_TASK_CREATION_TOOL_NAMES = frozenset(
     {

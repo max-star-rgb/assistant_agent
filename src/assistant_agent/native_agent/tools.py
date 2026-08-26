@@ -180,9 +180,6 @@ def _builtin_plugins() -> tuple[Any, ...]:
     from assistant_agent.tools.plugins.builtin.media_inspection.plugin import (
         MediaInspectionPlugin,
     )
-    from assistant_agent.tools.plugins.builtin.python_execution.plugin import (
-        PythonExecutionPlugin,
-    )
     from assistant_agent.tools.plugins.builtin.shopping.plugin import ShoppingToolPlugin
     from assistant_agent.tools.plugins.builtin.visual_image_search.plugin import (
         VisualImageSearchPlugin,
@@ -194,7 +191,6 @@ def _builtin_plugins() -> tuple[Any, ...]:
     return (
         EmailAccessPlugin(),
         LodgingToolPlugin(),
-        PythonExecutionPlugin(),
         MediaInspectionPlugin(),
         VisualImageSearchPlugin(),
         WebsiteGuidancePlugin(),
