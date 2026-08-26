@@ -107,7 +107,7 @@ def test_plan_node_rejects_unknown_profile_and_keeps_empty_tool_scope() -> None:
     node = NativePlanNode(
         node_id="rail",
         objective="rail-sentinel",
-        required_skill_ids=("travel-tool-orchestration",),
+        required_skill_ids=("travel planning",),
         allowed_tool_names=(),
         search_profile="rail_official",
     )
@@ -274,7 +274,7 @@ def test_planner_loads_skill_then_returns_structured_plan() -> None:
         "agent_phase": "planner",
     }, context=AssistantRunContext()))
 
-    assert result["active_skill_ids"] == ["travel-tool-orchestration"]
+    assert result["active_skill_ids"] == ["travel planning"]
     assert isinstance(result["structured_response"], NativePlanProposal)
     assert model.tool_sets[0] == {"load_skill"}
     assert "lodging_search" not in model.tool_sets[-1]

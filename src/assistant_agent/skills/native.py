@@ -14,6 +14,18 @@ from deepagents.middleware.skills import SkillMetadata
 
 
 PROJECT_SKILLS_SOURCE = "/"
+_PROJECT_SKILLS_SYSTEM_PROMPT = """## Skills
+
+{skills_locations}{skills_load_warnings}
+
+{skills_list}
+
+仅当当前请求明确匹配某项 Skill，且完整指引会影响下一步决策时，才使用 `read_file` 读取对应的
+`SKILL.md`。需要辅助文件时，按 `SKILL.md` 给出的绝对路径继续读取。
+
+Skill 提供领域知识，不授予工具，也不等于激活 Tool Profile。遵循 Skill 时直接执行，不向用户介绍 Skill、
+文件读取或内部流程。
+"""
 _SKILL_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 
 
@@ -30,7 +42,8 @@ def create_project_skills_middleware(
 
     return SkillsMiddleware(
         backend=backend,
-        sources=[PROJECT_SKILLS_SOURCE],
+        sources=[(PROJECT_SKILLS_SOURCE, "Project")],
+        system_prompt=_PROJECT_SKILLS_SYSTEM_PROMPT,
     )
 
 

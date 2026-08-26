@@ -19,7 +19,8 @@ invariant ID 时禁止修改 `tests/core`。
 
 具体 node、builtin Tool、Provider、Agent Task、配置、文案、prompt、description、console、wrapper
 和覆盖率请求都不得进入 core。功能实现需要 TDD 时使用可手动删除的临时区；有风险证据才保留独立的
-incubating 专项检查。
+incubating 专项检查。提示词、Skill、Tool description 和其他自然语言指令治理不使用 RED/GREEN TDD，也不新增
+`tests/tdd` 文本断言；这类变更使用格式或装配校验、最终上下文检查，以及基于真实失败样本的行为场景评审。
 
 ## 三个位置
 

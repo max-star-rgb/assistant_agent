@@ -344,7 +344,7 @@ planning 中 profile 是显式请求级覆盖：
       "node_id": "rail",
       "objective": "查询指定日期北京到上海的官方高铁候选和时刻",
       "depends_on": [],
-      "required_skill_ids": ["travel-tool-orchestration"],
+      "required_skill_ids": ["travel planning"],
       "allowed_tool_names": [],
       "search_profile": "rail_official"
     },
@@ -352,7 +352,7 @@ planning 中 profile 是显式请求级覆盖：
       "node_id": "hotel",
       "objective": "按用户日期和预算比较上海酒店候选",
       "depends_on": [],
-      "required_skill_ids": ["travel-tool-orchestration"],
+      "required_skill_ids": ["travel planning"],
       "allowed_tool_names": ["lodging_search"],
       "search_profile": "none"
     },
@@ -360,7 +360,7 @@ planning 中 profile 是显式请求级覆盖：
       "node_id": "official_guide",
       "objective": "核验候选景点开放、预约和临时公告",
       "depends_on": [],
-      "required_skill_ids": ["travel-tool-orchestration"],
+      "required_skill_ids": ["travel planning"],
       "allowed_tool_names": [],
       "search_profile": "guide_official"
     },
@@ -368,7 +368,7 @@ planning 中 profile 是显式请求级覆盖：
       "node_id": "xiaohongshu_guide",
       "objective": "补充公开可索引的小红书体验和避坑建议",
       "depends_on": [],
-      "required_skill_ids": ["travel-tool-orchestration"],
+      "required_skill_ids": ["travel planning"],
       "allowed_tool_names": [],
       "search_profile": "guide_xiaohongshu"
     },
@@ -376,7 +376,7 @@ planning 中 profile 是显式请求级覆盖：
       "node_id": "route",
       "objective": "根据车次、酒店和景点结果规划关键通勤路线",
       "depends_on": ["rail", "hotel", "official_guide"],
-      "required_skill_ids": ["travel-tool-orchestration"],
+      "required_skill_ids": ["travel planning"],
       "allowed_tool_names": [
         "mcp_amap_maps_maps_geo",
         "mcp_amap_maps_maps_direction_transit_integrated"

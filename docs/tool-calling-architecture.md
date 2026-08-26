@@ -24,7 +24,9 @@ discovery 或 Registry lookup。
 进程 composition 仍把完整静态 `BaseTool` inventory 注册给 `create_agent` / `ToolNode`，但完整注册不等于每次
 模型调用全部可见。仓库 Skill 使用 Agent Skills 标准目录与 `SKILL.md` YAML frontmatter；Deep Agents
 `SkillsMiddleware` 通过只读虚拟根 `FilesystemBackend` 在 `before_agent` 发现 L0 元数据，并从同一份 runtime state
-向 system message 注入目录。配套的上游 `FilesystemMiddleware(tools=["read_file"])` 只绑定该 Skill 虚拟根，模型用
+向 system message 注入目录。项目只通过 middleware 原生支持的 `system_prompt` 模板压缩目录说明，不替换 discovery、
+state 或读取机制；模板只说明明确匹配时读取、Skill 不授予 Tool，以及不得向用户复述内部读取流程，不包含上游通用脚本
+教程或无关示例。配套的上游 `FilesystemMiddleware(tools=["read_file"])` 只绑定该 Skill 虚拟根，模型用
 标准 `read_file` 读取目录给出的 `SKILL.md` 和其中引用的 supporting files；它不注册 `ls/glob/grep`、写入、删除或
 执行 Tool，也不恢复项目原有 `file_read`。
 
@@ -121,7 +123,8 @@ Tool 的 `artifact` 保留全部规范化 `ShoppingSearchResult`，`content` 按
 能力直接使用官方 adapter 生成的标准 Tool。MCP tool discovery 属于 worker 进程 composition，只执行一次；schema、history、state 与
 run 复用同一个 compiled graph 和 Tool 集合，实际 MCP Tool 调用仍遵循官方按调用创建 session 的行为。
 production composition 创建一个指向仓库 `skills/` 的只读虚拟根 backend，并把同一 backend 显式注入 Deep Agents
-`SkillsMiddleware` 与只注册 `read_file` 的 `FilesystemMiddleware`；planning coordinator 只引用已经编译的 fast agent。
+`SkillsMiddleware` 与只注册 `read_file` 的 `FilesystemMiddleware`；`SkillsMiddleware` 仍使用上游构造和 prompt 插槽，
+但传入项目精简模板，不使用上游面向通用脚本型 Skill 的长教程。planning coordinator 只引用已经编译的 fast agent。
 元数据由上游 middleware 在每个 Agent invocation 的 `before_agent` 中发现，正文和 supporting files 只在标准
 `read_file` 实际调用时读取；不存在项目自建 `SkillCatalog`、`skill.toml`、Skill loader 或宿主文件读取兼容路径。
 高德 `amap_maps` 的驾车、公交、骑行和步行路线调用通过官方 MCP adapter 的 `tool_interceptors`

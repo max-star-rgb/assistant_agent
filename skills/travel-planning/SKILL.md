@@ -1,5 +1,5 @@
 ---
-name: travel-tool-orchestration
+name: travel-planning
 description: 为包含交通、住宿、景点、餐饮或户外活动的出行请求制定可执行方案；适用于目的地旅行、漂流、路线导航、酒店选择及多日行程，单独查询天气时无需使用。
 ---
 
@@ -35,4 +35,4 @@ Profile；天气查询可直接使用独立暴露的天气工具。
 ## 示例
 
 遇到“我想明天去桐庐漂流”这类只有日期、目的地和活动的请求时，读取
-`/travel-tool-orchestration/references/tonglu-rafting-example.md`。其中的查询结果只是表达示例，不代表实时事实。
+`/travel-planning/references/tonglu-rafting-example.md`。其中的查询结果只是表达示例，不代表实时事实。

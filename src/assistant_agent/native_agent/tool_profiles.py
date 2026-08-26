@@ -223,7 +223,7 @@ def project_tool_profiles() -> tuple[ToolProfile, ...]:
         ),
         ToolProfile(
             profile_id="visual-creation",
-            description="图片生成以及把已有图片转换为 3D 模型。",
+            description="图片生成，以及把本轮生成图片和已知的本地生成图片 ID 转换为 3D 模型。",
             tool_names=("image_generation", "image_to_3d"),
         ),
         ToolProfile(

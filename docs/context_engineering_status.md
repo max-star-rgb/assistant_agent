@@ -32,7 +32,9 @@ dynamic prompt 还明确区分两种视觉记忆：`visual_memory_search` 只检
 该 Tool 补查。
 
 Deep Agents `SkillsMiddleware.before_agent` 从标准 `SKILL.md` frontmatter 发现名称与简介，并由同一 middleware 从
-runtime `skills_metadata` 向 system message 注入唯一 L0 目录。模型通过只绑定仓库 `skills/` 虚拟根的上游
+runtime `skills_metadata` 向 system message 注入唯一 L0 目录。目录使用 `SkillsMiddleware` 原生 `system_prompt` 插槽和
+项目精简模板，只保留明确命中后读取、supporting file 路由、Skill/Tool Profile 分离及不泄漏内部流程的说明；不注入
+通用脚本执行教程、无关 workflow 示例或 “when in doubt” 式过度加载建议。模型通过只绑定仓库 `skills/` 虚拟根的上游
 `FilesystemMiddleware.read_file` 读取完整正文与 supporting files；读取结果只进入当前角色 transcript，不维护
 `loaded_skill_ids` 或 reference grant，也不授予 Tool。独立 `ToolProfileMiddleware` 只在 `AssistantFastAgent` 的原生 model-call hook 中根据当前
 `active_tool_profile_ids` 派生业务 Tool schema；未归属 profile 的独立 Tool 保持可见。planning coordinator 可读取
