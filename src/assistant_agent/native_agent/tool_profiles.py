@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Annotated, Any, NotRequired
+from typing import Annotated, Any, Literal, NotRequired
 
 from langchain.agents import AgentState
 from langchain.agents.middleware import ModelRequest
@@ -13,7 +13,14 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import BaseTool, ToolException, tool
 from langgraph.prebuilt import ToolRuntime
 from langgraph.types import Command
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    create_model,
+    field_validator,
+    model_validator,
+)
 
 from assistant_agent.tools.native_boundary import configure_builtin_tool
 
@@ -144,9 +151,20 @@ class ToolProfileMiddleware(AgentMiddleware[ToolProfileState, Any]):
             for profile in self.profiles
         ) or "- 当前没有可加载的 Tool Profile。"
         profiles_by_id = self._profiles_by_id
+        profile_id_type = (
+            Literal.__getitem__(tuple(profiles_by_id)) if profiles_by_id else str
+        )
+        args_schema = create_model(
+            "ActivateToolProfileInput",
+            profile_id=(
+                profile_id_type,
+                Field(description="从当前可用 Tool Profile 中选择要加载的场景。"),
+            ),
+        )
 
         @tool(
             ACTIVATE_TOOL_PROFILE_TOOL_NAME,
+            args_schema=args_schema,
             description=(
                 "当任务需要特定场景的专用工具时，加载对应 Tool Profile，再继续完成任务。"
                 "仅在当前工具不足时按需加载。\n\n"
@@ -155,15 +173,7 @@ class ToolProfileMiddleware(AgentMiddleware[ToolProfileState, Any]):
             ),
         )
         def activate_tool_profile(
-            profile_id: Annotated[
-                str,
-                Field(
-                    min_length=1,
-                    max_length=64,
-                    pattern=r"^[a-z0-9][a-z0-9-]*$",
-                    description="当前任务需要的受信 Tool Profile 标识。",
-                ),
-            ],
+            profile_id: str,
             runtime: ToolRuntime[Any],
         ) -> Command:
             profile = profiles_by_id.get(profile_id)
