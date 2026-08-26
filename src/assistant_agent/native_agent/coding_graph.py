@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import functools
+import inspect
 import json
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -18,8 +20,9 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.errors import NodeError
+from langgraph.config import get_config
 from langgraph.graph import END, START, StateGraph
-from langgraph.runtime import Runtime
+from langgraph.runtime import Runtime, get_runtime
 from langgraph.types import Command, Overwrite, RetryPolicy, Send, interrupt
 from pydantic import BaseModel, JsonValue
 
@@ -131,6 +134,179 @@ class _MissingModelCodingReviewGraph:
         raise PermissionError("coding_review_requires_configured_model")
 
 
+def _coding_attestation_failure(state: Mapping[str, object]) -> dict[str, object]:
+    task = state.get("analysis_task")
+    task_id = (
+        task.get("task_id")
+        if isinstance(task, Mapping)
+        else getattr(task, "task_id", None)
+    )
+    if isinstance(task_id, str):
+        return {"attestation_mismatch_signals": [f"analysis:{task_id}"]}
+    return {
+        "coding_result": _failed(
+            state, "coding_eval_execution_attestation_mismatch"
+        ),
+        "attestation_cleanup_status": "active",
+    }
+
+
+def _attestation_cleanup_released(
+    state: Mapping[str, object],
+    update: Mapping[str, object],
+) -> bool:
+    release_authorities = (
+        "analysis_snapshot_release_status",
+        "review_snapshot_release_status",
+    )
+    approval_channels = (
+        "approval_status",
+        "dependency_approval_status",
+        "credential_approval_status",
+        "artifact_approval_status",
+        "review_decision_context",
+        "review_decision",
+        "merge_approval_status",
+    )
+    missing = object()
+
+    def authority_value(key: str) -> object:
+        try:
+            if not isinstance(state, Mapping) or not isinstance(update, Mapping):
+                return missing
+            if key in update:
+                return update[key]
+            return state.get(key)
+        except Exception:
+            return missing
+
+    for field in release_authorities:
+        value = authority_value(field)
+        if value is missing:
+            return False
+        if value is not None and not (
+            type(value) is str and value == "released"
+        ):
+            return False
+    return all(authority_value(channel) is None for channel in approval_channels)
+
+
+def _guard_coding_node(
+    node: Any,
+    current_digest: str | None,
+    *,
+    allow_evaluation_bootstrap: bool = False,
+    allow_signal_fanin: bool = False,
+    attestation_cleanup: Any | None = None,
+    allow_cleanup_retry: bool = False,
+) -> Any:
+    def is_evaluation(args: tuple[object, ...], kwargs: Mapping[str, object]) -> bool:
+        candidates = (*args, *kwargs.values())
+        for candidate in candidates:
+            context = getattr(candidate, "context", None)
+            profile = (
+                context.get("entry_profile")
+                if isinstance(context, Mapping)
+                else getattr(context, "entry_profile", None)
+            )
+            if profile == "evaluation":
+                return True
+        return False
+
+    def mismatch(
+        state: object,
+        args: tuple[object, ...],
+        kwargs: Mapping[str, object],
+    ) -> bool:
+        if not isinstance(state, Mapping):
+            return False
+        expected = state.get("execution_attestation_digest")
+        if isinstance(expected, str):
+            return expected != current_digest
+        return is_evaluation(args, kwargs) and not allow_evaluation_bootstrap
+
+    def is_attestation_cleanup(state: object) -> bool:
+        if not isinstance(state, Mapping):
+            return False
+        result = state.get("coding_result")
+        error_code = (
+            result.get("error_code")
+            if isinstance(result, Mapping)
+            else getattr(result, "error_code", None)
+        )
+        return error_code == "coding_eval_execution_attestation_mismatch"
+
+    def failure_update(state: Mapping[str, object]) -> dict[str, object]:
+        update = _coding_attestation_failure(state)
+        if "attestation_mismatch_signals" in update or attestation_cleanup is None:
+            return update
+        try:
+            cleaned = attestation_cleanup({**state, **update})
+        except Exception:
+            return {
+                **update,
+                "attestation_cleanup_status": "cleanup_pending",
+                "analysis_snapshot_release_status": "cleanup_pending",
+                "review_snapshot_release_status": "cleanup_pending",
+                "approval_status": None,
+                "dependency_approval_status": None,
+                "credential_approval_status": None,
+                "artifact_approval_status": None,
+                "review_decision_context": None,
+                "review_decision": None,
+                "merge_approval_status": None,
+            }
+        cleaned_update = dict(cleaned)
+        return {
+            **cleaned_update,
+            "attestation_cleanup_status": (
+                "released"
+                if _attestation_cleanup_released(state, cleaned_update)
+                else "cleanup_pending"
+            ),
+        }
+
+    def is_signal_fanin(state: object) -> bool:
+        return (
+            allow_signal_fanin
+            and isinstance(state, Mapping)
+            and bool(state.get("attestation_mismatch_signals"))
+        )
+
+    if inspect.iscoroutinefunction(node):
+        @functools.wraps(node)
+        async def guarded_async(state: object, *args: object, **kwargs: object) -> object:
+            if mismatch(state, args, kwargs):
+                if is_attestation_cleanup(state):
+                    if (
+                        state.get("attestation_cleanup_status") != "released"
+                        and allow_cleanup_retry
+                    ):
+                        return failure_update(state)
+                    return {}
+                if not is_signal_fanin(state):
+                    return failure_update(state)
+            return await node(state, *args, **kwargs)
+
+        return guarded_async
+
+    @functools.wraps(node)
+    def guarded_sync(state: object, *args: object, **kwargs: object) -> object:
+        if mismatch(state, args, kwargs):
+            if is_attestation_cleanup(state):
+                if (
+                    state.get("attestation_cleanup_status") != "released"
+                    and allow_cleanup_retry
+                ):
+                    return failure_update(state)
+                return {}
+            if not is_signal_fanin(state):
+                return failure_update(state)
+        return node(state, *args, **kwargs)
+
+    return guarded_sync
+
+
 def build_coding_graph(
     model: Any,
     tools: list[BaseTool],
@@ -144,6 +320,7 @@ def build_coding_graph(
     analysis_agent: Any | None = None,
     review_graph: Any | None = None,
     checkpointer: Any | None = None,
+    execution_attestation_digest: str | None = None,
 ):
     """Build the deterministic inspect, approve, and apply sequence."""
 
@@ -211,7 +388,11 @@ def build_coding_graph(
         )
     if review_graph is None:
         review_graph = (
-            create_coding_review_graph(model, workspace_service)
+            create_coding_review_graph(
+                model,
+                workspace_service,
+                execution_attestation_digest=execution_attestation_digest,
+            )
             if model is not None
             else _MissingModelCodingReviewGraph()
         )
@@ -223,6 +404,16 @@ def build_coding_graph(
     ) -> dict[str, object]:
         if state.get("coding_result") is not None:
             return {}
+        checkpoint_digest = state.get("execution_attestation_digest")
+        if isinstance(checkpoint_digest, str) and (
+            checkpoint_digest != execution_attestation_digest
+        ):
+            return {
+                "coding_result": CodingTerminalResult(
+                    status="failed",
+                    error_code="coding_eval_execution_attestation_mismatch",
+                )
+            }
         try:
             workspace = _resolve_workspace(state, runtime, config, workspace_service)
         except CodingWorkspaceError as exc:
@@ -343,6 +534,9 @@ def build_coding_graph(
         runtime: Runtime[AssistantRunContext],
         config: RunnableConfig,
     ) -> dict[str, object]:
+        if state.get("attestation_mismatch_signals"):
+            failure = _coding_attestation_failure(state)
+            return cleanup_attestation_failure({**state, **failure})
         workspace = _resolve_workspace(state, runtime, config, workspace_service)
         snapshot = CodingAnalysisSnapshot.model_validate(state["analysis_snapshot"])
         status, results = join_analysis_results(
@@ -1895,6 +2089,10 @@ def build_coding_graph(
             review_input = CodingReviewInput.model_validate(state.get("review_input"))
             projected = {
                 "coding_repo_id": state["coding_repo_id"],
+                "execution_attestation_digest": state.get(
+                    "execution_attestation_digest"
+                ),
+                "attestation_mismatch_signals": [],
                 "workspace_ref": review_input.workspace_ref,
                 "base_commit": review_input.base_commit,
                 "review_snapshot": snapshot,
@@ -1905,6 +2103,9 @@ def build_coding_graph(
                 config=config,
                 context=runtime.context,
             )
+            if output.get("attestation_mismatch_signals"):
+                failure = _coding_attestation_failure(state)
+                return cleanup_attestation_failure({**state, **failure})
             tasks = tuple(
                 CodingReviewTask.model_validate(item)
                 for item in output.get("review_tasks", ())
@@ -2346,16 +2547,27 @@ def build_coding_graph(
             workspace_service,
         )
         cleanup_pending = (
-            state.get("review_snapshot_release_status") == "cleanup_pending"
-            or terminal_release_status == "cleanup_pending"
+            terminal_release_status == "cleanup_pending"
         )
         result = state.get("coding_result") or _failed(state, "patch_invalid")
         terminal_repair_update = _terminal_review_repair_update(state, result)
         result = terminal_repair_update.pop("coding_result", result)
         return {
             "coding_result": result,
-            "validation_snapshot": None,
-            "review_snapshot": None,
+            "analysis_snapshot": (
+                state.get("analysis_snapshot") if cleanup_pending else None
+            ),
+            "validation_snapshot": (
+                state.get("validation_snapshot") if cleanup_pending else None
+            ),
+            "review_snapshot": (
+                state.get("review_snapshot") if cleanup_pending else None
+            ),
+            "analysis_snapshot_release_status": (
+                "cleanup_pending"
+                if terminal_release_status == "cleanup_pending"
+                else None
+            ),
             "review_snapshot_release_status": (
                 "cleanup_pending" if cleanup_pending else None
             ),
@@ -2444,10 +2656,79 @@ def build_coding_graph(
         return "summarize" if state.get("coding_result") is not None else "merge_approval"
 
     builder = StateGraph(CodingState, context_schema=AssistantRunContext)
-    builder.add_node("begin_coding_cycle", begin_coding_cycle_node)
-    builder.add_node("resolve_workspace", resolve_workspace_node)
-    builder.add_node("prepare_analysis", prepare_analysis_node)
-    builder.add_node(
+
+    def cleanup_attestation_failure(
+        state: CodingState,
+    ) -> dict[str, object]:
+        terminal_channels = {
+            "approval_status": None,
+            "dependency_approval_status": None,
+            "credential_approval_status": None,
+            "artifact_approval_status": None,
+            "review_decision_context": None,
+            "review_decision": None,
+            "merge_approval_status": None,
+        }
+        try:
+            update = summarize_node(
+                state,
+                get_runtime(AssistantRunContext),
+                get_config(),
+            )
+        except Exception:
+            return {
+                "coding_result": state["coding_result"],
+                "attestation_cleanup_status": "cleanup_pending",
+                "analysis_snapshot_release_status": "cleanup_pending",
+                "review_snapshot_release_status": "cleanup_pending",
+                **terminal_channels,
+            }
+        cleaned_update = {
+            **update,
+            **terminal_channels,
+        }
+        return {
+            **cleaned_update,
+            "attestation_cleanup_status": (
+                "released"
+                if _attestation_cleanup_released(state, cleaned_update)
+                else "cleanup_pending"
+            ),
+        }
+
+    def add_coding_node(name: str, node: Any, **kwargs: Any) -> None:
+        error_handler = kwargs.get("error_handler")
+        if error_handler is not None:
+            kwargs["error_handler"] = _guard_coding_node(
+                error_handler, execution_attestation_digest
+            )
+        builder.add_node(
+            name,
+            _guard_coding_node(
+                node,
+                execution_attestation_digest,
+                allow_evaluation_bootstrap=name == "begin_coding_cycle",
+                allow_signal_fanin=name == "join_analysis",
+                attestation_cleanup=cleanup_attestation_failure,
+                allow_cleanup_retry=name == "summarize",
+            ),
+            **kwargs,
+        )
+
+    def begin_attested_coding_cycle(
+        state: CodingState,
+        runtime: Runtime[AssistantRunContext],
+    ) -> dict[str, object]:
+        return begin_coding_cycle_node(
+            state,
+            runtime=runtime,
+            execution_attestation_digest=execution_attestation_digest,
+        )
+
+    add_coding_node("begin_coding_cycle", begin_attested_coding_cycle)
+    add_coding_node("resolve_workspace", resolve_workspace_node)
+    add_coding_node("prepare_analysis", prepare_analysis_node)
+    add_coding_node(
         "analyze_workspace",
         analyze_workspace_node,
         input_schema=CodingAnalysisWorkerState,
@@ -2460,40 +2741,40 @@ def build_coding_graph(
         ),
         error_handler=analysis_failure_node,
     )
-    builder.add_node("join_analysis", join_analysis_node)
-    builder.add_node("inspect_and_draft", inspect_and_draft_node)
-    builder.add_node("validate_proposal", validate_proposal_node)
-    builder.add_node("prepare_repair", prepare_repair_node)
-    builder.add_node("consume_repair_budget", consume_repair_budget_node)
-    builder.add_node("approval", approval_node)
-    builder.add_node("apply_patch", apply_patch_node)
-    builder.add_node("plan_dependencies", plan_dependencies_node)
-    builder.add_node("dependency_approval", dependency_approval_node)
-    builder.add_node("plan_credentials", plan_credentials_node)
-    builder.add_node("credential_approval", credential_approval_node)
-    builder.add_node("plan_artifacts", plan_artifacts_node)
-    builder.add_node("artifact_approval", artifact_approval_node)
-    builder.add_node("run_validation", run_validation_node)
-    builder.add_node("prepare_review_snapshot", prepare_review_snapshot_node)
-    builder.add_node("run_code_review", run_code_review_node)
-    builder.add_node("coding_review_decision", coding_review_decision_node)
-    builder.add_node(
+    add_coding_node("join_analysis", join_analysis_node)
+    add_coding_node("inspect_and_draft", inspect_and_draft_node)
+    add_coding_node("validate_proposal", validate_proposal_node)
+    add_coding_node("prepare_repair", prepare_repair_node)
+    add_coding_node("consume_repair_budget", consume_repair_budget_node)
+    add_coding_node("approval", approval_node)
+    add_coding_node("apply_patch", apply_patch_node)
+    add_coding_node("plan_dependencies", plan_dependencies_node)
+    add_coding_node("dependency_approval", dependency_approval_node)
+    add_coding_node("plan_credentials", plan_credentials_node)
+    add_coding_node("credential_approval", credential_approval_node)
+    add_coding_node("plan_artifacts", plan_artifacts_node)
+    add_coding_node("artifact_approval", artifact_approval_node)
+    add_coding_node("run_validation", run_validation_node)
+    add_coding_node("prepare_review_snapshot", prepare_review_snapshot_node)
+    add_coding_node("run_code_review", run_code_review_node)
+    add_coding_node("coding_review_decision", coding_review_decision_node)
+    add_coding_node(
         "consume_review_repair_budget",
         consume_review_repair_budget_node,
     )
-    builder.add_node(
+    add_coding_node(
         "consume_review_repair_context",
         consume_review_repair_context_node,
     )
-    builder.add_node(
+    add_coding_node(
         "checkpoint_review_repair_redraft",
         checkpoint_review_repair_redraft_node,
     )
-    builder.add_node("create_commit", create_commit_node)
-    builder.add_node("prepare_merge", prepare_merge_node)
-    builder.add_node("merge_approval", merge_approval_node)
-    builder.add_node("apply_merge", apply_merge_node)
-    builder.add_node("summarize", summarize_node)
+    add_coding_node("create_commit", create_commit_node)
+    add_coding_node("prepare_merge", prepare_merge_node)
+    add_coding_node("merge_approval", merge_approval_node)
+    add_coding_node("apply_merge", apply_merge_node)
+    add_coding_node("summarize", summarize_node)
     builder.add_edge(START, "begin_coding_cycle")
     builder.add_edge("begin_coding_cycle", "resolve_workspace")
     builder.add_conditional_edges(
@@ -2576,11 +2857,26 @@ def build_coding_graph(
     return builder.compile(name="AssistantCodingGraph", checkpointer=checkpointer)
 
 
-def begin_coding_cycle_node(state: CodingState) -> dict[str, object]:
+def begin_coding_cycle_node(
+    state: CodingState,
+    *,
+    runtime: Runtime[AssistantRunContext] | object | None = None,
+    execution_attestation_digest: str | None = None,
+) -> dict[str, object]:
     """Start a plain-input cycle and atomically discard prior local state."""
 
+    context = getattr(runtime, "context", None)
+    profile = context.get("entry_profile") if isinstance(context, Mapping) else getattr(context, "entry_profile", None)
+    trusted_digest = (
+        execution_attestation_digest
+        if profile == "evaluation"
+        else None
+    )
     return {
         "coding_cycle_generation": int(state.get("coding_cycle_generation") or 0) + 1,
+        "execution_attestation_digest": trusted_digest,
+        "attestation_cleanup_status": "released",
+            "attestation_mismatch_signals": Overwrite([]),
         "workspace_ref": None,
         "base_commit": None,
         "analysis_snapshot": None,
@@ -4081,6 +4377,10 @@ def route_analysis_workers(state: CodingState) -> list[Send] | str:
             {
                 "messages": _analysis_worker_messages(state, task, snapshot),
                 "coding_repo_id": state["coding_repo_id"],
+                "execution_attestation_digest": state.get(
+                    "execution_attestation_digest"
+                ),
+                "attestation_mismatch_signals": [],
                 "workspace_ref": state["workspace_ref"],
                 "base_commit": state["base_commit"],
                 "analysis_snapshot": snapshot,

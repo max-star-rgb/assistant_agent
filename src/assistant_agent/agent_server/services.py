@@ -27,6 +27,11 @@ from assistant_agent.coding.sandbox import (
 from assistant_agent.coding.tools import create_coding_tools
 from assistant_agent.coding.validation import CodingValidationService
 from assistant_agent.coding.workspace import CodingWorkspaceService
+from assistant_agent.agent_server.attestation import (
+    AgentServerExecutionAttestation,
+    build_execution_attestation,
+    execution_attestation_digest,
+)
 from assistant_agent.config import ProviderConfig
 from assistant_agent.context.token_counter import create_context_token_counter
 from assistant_agent.mcp.config import load_mcp_server_configs_from_env
@@ -63,6 +68,7 @@ class AgentServerExecutionOwner:
     memory_backend: MemoryBackend
     graph: Any
     memory_graph: Any
+    execution_attestation: AgentServerExecutionAttestation
 
     @classmethod
     async def compose(
@@ -123,6 +129,7 @@ class AgentServerExecutionOwner:
             ),
         )
         coding_config = CodingConfig.from_env()
+        execution_attestation = build_execution_attestation(config, coding_config)
         coding_workspace_service = CodingWorkspaceService(coding_config)
         if coding_config.enabled:
             coding_workspace_service.start_snapshot_reaper()
@@ -170,6 +177,9 @@ class AgentServerExecutionOwner:
             integration_service=coding_integration_service,
             model_call_limit=config.max_tool_iterations,
             tool_call_limit=config.max_tool_iterations,
+            execution_attestation_digest=execution_attestation_digest(
+                execution_attestation
+            ),
         )
         graph = build_assistant_root_graph(
             memory_backend=memory_backend,
@@ -192,6 +202,7 @@ class AgentServerExecutionOwner:
             memory_backend=memory_backend,
             graph=graph,
             memory_graph=memory_graph,
+            execution_attestation=execution_attestation,
         )
 
     async def aclose(self) -> None:

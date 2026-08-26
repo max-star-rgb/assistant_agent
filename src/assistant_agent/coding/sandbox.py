@@ -40,7 +40,7 @@ class CodingSandboxBackend(Protocol):
     def execute(self, request: CodingSandboxRequest) -> CodingSandboxResult:
         raise NotImplementedError
 
-    async def aclose(self) -> None:
+    async def aclose(self) -> bool:
         raise NotImplementedError
 
 
@@ -153,6 +153,32 @@ class _PipeCollector(threading.Thread):
                 self.buffer.extend(retained)
 
 
+class CodingSandboxCleanupDebt:
+    __slots__ = ("_backend", "_reference", "_container_id", "_released")
+
+    def __init__(
+        self,
+        backend: "DockerCodingSandboxBackend",
+        reference: str,
+        container_id: str | None,
+    ) -> None:
+        self._backend = backend
+        self._reference = reference
+        self._container_id = container_id
+        self._released = False
+
+    def retry(self) -> bool:
+        if self._released:
+            return True
+        self._released = self._backend._retry_container_cleanup(
+            self._reference, self._container_id
+        )
+        return self._released
+
+    def __reduce__(self) -> object:
+        raise TypeError("sandbox cleanup debt is process-local and non-serializable")
+
+
 class DockerCodingSandboxBackend:
     def __init__(
         self,
@@ -181,6 +207,7 @@ class DockerCodingSandboxBackend:
         self._name_factory = name_factory or (
             lambda: f"assistant-coding-{resolved_owner[:20]}-{uuid.uuid4().hex[:16]}"
         )
+        self._cleanup_debts: list[CodingSandboxCleanupDebt] = []
 
     def execute(self, request: CodingSandboxRequest) -> CodingSandboxResult:
         started = self._monotonic()
@@ -220,6 +247,7 @@ class DockerCodingSandboxBackend:
             return self._failure("sandbox_create_failed", started, "not_created")
 
         create_succeeded = False
+        container_id: str | None = None
         try:
             created = self._run(
                 self._create_argv(request, container_name),
@@ -300,6 +328,13 @@ class DockerCodingSandboxBackend:
                 container_name,
                 allow_absent=not create_succeeded,
             )
+            if cleanup_status == "failed":
+                debt_container_id = container_id or self._inspect_id(container_name)
+                self._cleanup_debts.append(
+                    CodingSandboxCleanupDebt(
+                        self, container_name, debt_container_id
+                    )
+                )
         if cleanup_status == "failed" and execution.status == "passed":
             return execution.model_copy(update={
                 "status": "failed", "error_code": "sandbox_cleanup_failed",
@@ -307,17 +342,68 @@ class DockerCodingSandboxBackend:
             })
         return execution.model_copy(update={"cleanup_status": cleanup_status})
 
-    async def aclose(self) -> None:
+    async def aclose(self) -> bool:
+        for _ in range(3):
+            for _ in range(2):
+                self._cleanup_debts = [
+                    debt for debt in self._cleanup_debts if not debt.retry()
+                ]
+                if not self._cleanup_debts:
+                    break
+            inventory = self._owner_container_inventory()
+            if inventory is None:
+                return False
+            remove_failed = False
+            for reference in inventory:
+                remove_failed = (
+                    self._remove(reference) not in {"removed", "not_created"}
+                    or remove_failed
+                )
+            remaining = self._owner_container_inventory()
+            if remaining is None:
+                return False
+            if remove_failed or remaining:
+                continue
+            for _ in range(2):
+                self._cleanup_debts = [
+                    debt for debt in self._cleanup_debts if not debt.retry()
+                ]
+                if not self._cleanup_debts:
+                    break
+            if not self._cleanup_debts:
+                return self._owner_container_inventory() == ()
+        return False
+
+    def _owner_container_inventory(self) -> tuple[str, ...] | None:
         listed = self._run((
             self._docker, "ps", "-aq", "--filter",
             f"label=assistant_agent.coding.owner={self._owner_id}",
         ), timeout=10.0)
         if listed is None or listed.returncode != 0:
-            return
-        for raw_reference in listed.stdout.splitlines():
-            reference = raw_reference.strip()
-            if _CONTAINER_REFERENCE.fullmatch(reference) is not None:
-                self._remove(reference)
+            return None
+        references = tuple(item.strip() for item in listed.stdout.splitlines() if item.strip())
+        if any(_CONTAINER_ID.fullmatch(item) is None for item in references):
+            return None
+        if len(set(references)) != len(references):
+            return None
+        return tuple(sorted(references))
+
+    def _retry_container_cleanup(
+        self, reference: str, expected_container_id: str | None
+    ) -> bool:
+        if _CONTAINER_REFERENCE.fullmatch(reference) is None:
+            return False
+        actual_container_id = self._inspect_id(reference)
+        if actual_container_id is None:
+            return self._owner_container_inventory() == ()
+        if expected_container_id is None or actual_container_id != expected_container_id:
+            return False
+        cleanup_status = self._remove(reference, allow_absent=True)
+        if cleanup_status in {"removed", "not_created"}:
+            return True
+        if self._inspect_id(reference) is not None:
+            return False
+        return self._owner_container_inventory() == ()
 
     def _require_local_image(self, image: str) -> str | None:
         completed = self._run((

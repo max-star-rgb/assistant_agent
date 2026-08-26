@@ -318,6 +318,13 @@ thread metadata 仍按 auth owner 限制，run 与 Store 沿用同一 principal�
 
 ## `/agent-service/v1`
 
+Stage 5E behavior eval 使用同一 custom app 的 authenticated
+`/internal/evaluation/coding-attestation` 只读端点取得实际进程 composition。该端点只接受 loopback developer
+principal，返回非 secret、严格有界的 graph/provider/model、boot nonce、coding registry 与 repository config
+digest；它不创建 thread/run，不审批 interrupt，也不暴露 repository path 或 Provider secret。评测 runner 将其
+canonical digest 冻结进 evaluation checkpoint 并在 case 前后重新采样；attestation 只证明 Server composition，
+不拥有 CodingGraph 决策语义或替代 checkpoint guard。
+
 custom route 只负责：
 
 - 解析、校验 vendor frame；
@@ -420,3 +427,7 @@ workspace 到期仍由后续 `resolve()` 进入既有同步 cleanup 路径处理
 - current v2 checkpoint 的 snapshot/path/digest/permission/identity/expiry/manifest 错误全部 fail closed 为 `coding_review_binding_mismatch`，不得投影为可批准的 unavailable。仅 completed `legacy_v1` 保留旧物理 snapshot 已回收时的兼容恢复；pending downgrade 继续 fail closed。
 - 审批后的 commit 接收同一 validation snapshot 与 canonical review report digest；临时 Git index 生成的 tree object 经 `sha256(tree_oid)` 必须等于 reviewed `tree_digest`，否则拒绝提交。commit trailer 和 `CodingCommitResult` 同时记录 validation/report/tree binding。
 - validation failure/workspace-change 不交接 snapshot lease；terminal summarize 幂等释放 validation/review snapshot；commit comparison 无论成功或失败都释放 expected/current snapshot。review approve 且 integration 开启时，父 checkpoint 在 commit 消费前继续持有 active lease；这些 release 不新增 periodic reaper，也不触碰 worktree 或 Git admin lifecycle。
+evaluation context 不直接信任客户端 `entry_profile`。thread create auth hook 为精确 identity/repository/case 与当前
+composition digest 签发进程内 token，run create auth hook 校验后才冻结 evaluation context；token 不进入 Graph
+state 或 result artifact。普通 coding checkpoint 的 execution attestation 为 `None`，跨 hot reload/restart 恢复不受
+evaluation boot nonce 影响；已冻结的 evaluation checkpoint 则继续在所有 node 调用前校验并 fail closed。

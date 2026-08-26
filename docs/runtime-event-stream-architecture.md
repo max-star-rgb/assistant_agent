@@ -254,8 +254,11 @@ snapshot cleanup 自动跳过。
 Registry/Executor、产品事件投影与零消费者 Runtime DTO 已删除，它不拥有 Graph 生命周期。主动投递的中立
 DTO/Store 位于 `assistant_agent.proactive_delivery`。
 
-评测侧只保留直接调用本生产父图的 `NativeGraphEvaluationTarget` 基元。旧 Runtime/Workflow/Release Review
-runner 因绑定旧 state/evidence 合同而删除，后续行为评测必须基于标准 messages 与 native trace 重新建立。
+评测侧保留直接调用本生产父图的 `NativeGraphEvaluationTarget` 基元，并由 Stage 5E
+`ai_coding_behavior` runner 通过生产 Agent Server 的标准 thread/run/checkpoint/interrupt/resume 生命周期建立
+CodingGraph 行为基线。evaluation contract、fixture、deterministic grader、artifact 与 operator attestation 门禁
+不拥有产品状态机，不得改变节点路由、审批语义或把 Provider-native code execution 当作 repository validation。
+旧 Runtime/Workflow/Release Review runner 仍保持删除，不通过兼容 facade 恢复。
 
 ## 验证
 

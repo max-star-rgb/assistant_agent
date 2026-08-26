@@ -50,8 +50,17 @@ async def close_native_assistant_graph() -> None:
         await owner.aclose()
 
 
+def get_native_assistant_execution_attestation():
+    """Return only the attestation of the already-composed process owner."""
+
+    if _process_owner is None:
+        raise RuntimeError("native assistant composition is not ready")
+    return _process_owner.execution_attestation
+
+
 __all__ = [
     "close_native_assistant_graph",
+    "get_native_assistant_execution_attestation",
     "native_assistant_graph",
     "native_memory_graph",
 ]

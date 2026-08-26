@@ -147,6 +147,11 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   兼容 PyCharm 入口。
 - `evals/system/tools/run_all.py`: 可在 PyCharm 中直接运行；递归发现并依次运行目录下除 helper 与自身之外的
   全部 Tool 冒烟脚本，最后输出逐脚本 return code 和聚合通过状态。
+- `scripts/run_system_ai_coding_behavior_eval.py`：Stage 5E 原生 CodingGraph 行为基线。默认 `--dry-run`
+  只校验 tracked `baseline-v1` manifest 与安全门禁，不连接 `8089`、Provider 或创建临时仓库。真实模式仅允许
+  精确 `http://127.0.0.1:8089`，要求 real mode、`--allow-real-provider`、`--allow-local-git-mutation`、
+  digest-pinned sandbox image、精确 Provider/adapter/model 期望和交互式 attestation ACK；只操作 runner 创建的
+  临时 Git fixture，任一 cleanup debt 使 suite 失败。v1 固定禁用 Provider-native code execution。
 - `scripts/run_system_multimodal_embedding_eval.py`: 验证本地 SigLIP2 联合 image/text ONNX
   资产。`--dry-run` 不加载模型；真实 CUDA session 必须显式传入 `--allow-local-model`，结果写入
   `.data/evals/system/multimodal_embedding/`，不保存向量、文本、图片内容或媒体路径。dry-run 还列出

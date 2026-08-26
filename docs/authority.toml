@@ -85,6 +85,8 @@ source_globs = [
   "src/assistant_agent/native_agent/coding_phase.py",
   "src/assistant_agent/coding/analysis.py",
   "src/assistant_agent/coding/models.py",
+  "src/assistant_agent/coding/review.py",
+  "src/assistant_agent/coding/review_repair.py",
 ]
 thin_references = ["README.md", "docs/agent-server-architecture.md"]
 verification = [
@@ -299,6 +301,7 @@ read_when = [
 source_globs = [
   "evals/system/**",
   "src/assistant_agent/evaluation/**",
+  "scripts/run_system_ai_coding_behavior_eval.py",
 ]
 thin_references = [
   "docs/observability-harness.md",
@@ -306,6 +309,8 @@ thin_references = [
 ]
 verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python scripts/run_system_calendar_create_eval.py --dry-run",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python scripts/run_system_ai_coding_behavior_eval.py --dry-run --suite-id baseline-v1",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/ai-coding-behavior-eval",
   "python -m compileall -q src/assistant_agent/evaluation evals/system",
 ]
 exclusive_literals = []
