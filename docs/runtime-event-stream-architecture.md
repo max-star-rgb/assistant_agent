@@ -1,6 +1,6 @@
 # LangGraph-native Assistant 运行与流式架构
 
-最后更新：2026-08-25
+最后更新：2026-08-26
 
 ## Authority contract
 
@@ -19,7 +19,6 @@
 
 ```text
 AssistantRootGraph
-  -> capture_trusted_runtime_facts
   -> memory_recall
   -> execution_router
        fast     -> AssistantFastAgent --------+
@@ -115,11 +114,12 @@ approved changed paths 与严格 lockfile，只有 lockfile 变化才生成 depe
 不保存 wheelhouse path、Docker network/container、proxy client 或文件句柄；获批 plan 只在同一次
 `run_validation` 节点调用内 fetch、离线消费并清理。
 
-`capture_trusted_runtime_facts` 在 `memory_recall` 前采集带时区的当前时间与部署默认地点，写入结构化
-`trusted_runtime_facts`。当前默认地点为“上海市青浦区华为练秋湖研发中心”，并显式标记
+`memory_recall` 在召回长期记忆后采集带时区的当前时间与部署默认地点，并在同一次节点更新中分别写入
+`memory_context`、`memory_status` 与结构化 `trusted_runtime_facts`；recall 最终失败时，原生 error handler 将 Memory
+标记为 `degraded`，同时仍采集 TrustedRuntimeFacts。当前默认地点为“上海市青浦区华为练秋湖研发中心”，并显式标记
 `source=deployment_default`、`is_fallback=true`；模型可见临时消息使用“用户默认地点”中文字段，并明确不得把该默认地点
-表述为已观测到的用户物理位置。节点完成后快照随 checkpoint 冻结：从其后的 interrupt 恢复不会重新采集；
-从更早 checkpoint replay 并重新执行该节点时允许刷新。这与 `memory_recall` 的原生节点恢复语义一致。
+表述为已观测到的用户物理位置。合并节点完成后两类快照随同一 checkpoint 冻结：从其后的 interrupt 恢复不会重新
+召回或采集；从更早 checkpoint replay 并重新执行 `memory_recall` 时允许同时刷新。
 
 fast 与 planning 直接作为父图节点装配。fast 分支是 `create_agent` 编译出的唯一共享
 `AssistantFastAgent`，使用标准 `BaseChatModel`、`BaseTool`、`ToolRuntime`、messages channel 和官方

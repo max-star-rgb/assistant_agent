@@ -138,6 +138,7 @@ source_globs = [
   "src/assistant_agent/native_agent/memory.py",
   "src/assistant_agent/native_agent/memory_graph.py",
   "src/assistant_agent/native_agent/root_graph.py",
+  "src/assistant_agent/native_agent/runtime_facts.py",
   "src/assistant_agent/native_agent/state.py",
   "src/assistant_agent/memory/**",
   "tests/core/integration/test_memory_lifecycle.py",

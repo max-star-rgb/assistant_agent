@@ -53,7 +53,7 @@ class _FailingMemory(_Memory):
 
     async def recall(self, **_kwargs: Any):
         self.events.append("recall")
-        raise RuntimeError("recall-failure-sentinel")
+        raise ConnectionError("recall-failure-sentinel")
 
 
 class _Runs:
@@ -265,7 +265,7 @@ def test_recall_degradation_preserves_trusted_runtime_facts() -> None:
         )
     )
 
-    assert backend.events == ["recall"]
+    assert backend.events == ["recall", "recall", "recall"]
     assert result["memory_context"] == ()
     assert result["memory_status"] == "degraded"
     assert result["trusted_runtime_facts"]["schema_version"] == (
