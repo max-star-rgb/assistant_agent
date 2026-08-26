@@ -23,6 +23,8 @@ from assistant_agent.coding.models import (
     CodingDependencyPlan,
     CodingMergePreview,
     CodingMergeResult,
+    CodingInspectProgress,
+    CodingInspectRecoveryAttempt,
     CodingPatchApplyResult,
     CodingPatchProposal,
     CodingPatchValidation,
@@ -171,6 +173,13 @@ class CodingState(AgentState):
     coding_repo_id: Required[str]
     workspace_ref: NotRequired[str | None]
     base_commit: NotRequired[str | None]
+    inspect_epoch: NotRequired[int]
+    inspect_recovery_status: NotRequired[
+        Literal["pending", "retrying", "completed", "no_progress", "exhausted"] | None
+    ]
+    inspect_progress: NotRequired[CodingInspectProgress | None]
+    inspect_recovery_history: NotRequired[tuple[CodingInspectRecoveryAttempt, ...]]
+    inspect_recovery_context_consumed: NotRequired[bool]
     analysis_snapshot: NotRequired[CodingAnalysisSnapshot | None]
     analysis_tasks: NotRequired[tuple[CodingAnalysisTask, ...]]
     analysis_results: NotRequired[

@@ -94,6 +94,11 @@ def test_parent_graph_has_native_fast_planning_and_coding_branches(monkeypatch) 
             "join_analysis",
         }
         assert analysis_super_step_nodes.issubset(coding_nodes)
+        inspect_recovery_nodes = {
+            "evaluate_inspect_progress",
+            "consume_inspect_recovery_context",
+        }
+        assert inspect_recovery_nodes.issubset(coding_nodes)
         coding_edges = {(edge.source, edge.target) for edge in coding.edges}
         assert {
             ("prepare_analysis", "analyze_workspace"),
@@ -101,7 +106,27 @@ def test_parent_graph_has_native_fast_planning_and_coding_branches(monkeypatch) 
             ("analyze_workspace", "join_analysis"),
             ("join_analysis", "inspect_and_draft"),
             ("inspect_and_draft", "validate_proposal"),
+            ("inspect_and_draft", "evaluate_inspect_progress"),
+            ("inspect_and_draft", "summarize"),
+            ("evaluate_inspect_progress", "consume_inspect_recovery_context"),
+            ("evaluate_inspect_progress", "summarize"),
+            ("consume_inspect_recovery_context", "inspect_and_draft"),
         } <= coding_edges
+        mutation_or_review_nodes = {
+            "apply_patch",
+            "run_validation",
+            "prepare_review_snapshot",
+            "run_code_review",
+            "coding_review_decision",
+            "create_commit",
+            "prepare_merge",
+            "merge_approval",
+            "apply_merge",
+        }
+        assert not any(
+            source in inspect_recovery_nodes and target in mutation_or_review_nodes
+            for source, target in coding_edges
+        )
         assert {
             target
             for source, target in coding_edges

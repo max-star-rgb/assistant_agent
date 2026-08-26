@@ -1392,6 +1392,65 @@ class CodingMergeResult(BaseModel):
     merge_preview_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class CodingInspectCallEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    tool_name: str = Field(min_length=1, max_length=160)
+    arguments_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    result_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    relative_paths: tuple[str, ...] = Field(default=(), max_length=32)
+
+    @field_validator("relative_paths", mode="before")
+    @classmethod
+    def _canonical_paths(cls, value: object) -> object:
+        from pathlib import PurePosixPath
+
+        values = tuple(value) if isinstance(value, (list, tuple)) else value
+        if not isinstance(values, tuple):
+            return values
+        canonical: list[str] = []
+        for raw in values:
+            if type(raw) is not str or not raw or "\\" in raw:
+                raise ValueError("inspect evidence path is invalid")
+            path = PurePosixPath(raw)
+            if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+                raise ValueError("inspect evidence path must be repository-relative")
+            canonical.append(path.as_posix())
+        return tuple(sorted(set(canonical)))
+
+
+class CodingInspectProgress(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: Literal[1] = 1
+    epoch: int = Field(ge=1, le=3)
+    reason: Literal["tool_budget_exhausted", "model_budget_exhausted"]
+    base_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    workspace_diff_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    calls: tuple[CodingInspectCallEvidence, ...] = Field(max_length=64)
+    progress_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("calls", mode="before")
+    @classmethod
+    def _tuple_calls(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+
+class CodingInspectRecoveryAttempt(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: Literal[1] = 1
+    epoch: int = Field(ge=1, le=3)
+    progress: CodingInspectProgress
+    outcome: Literal["retrying", "completed", "no_progress", "exhausted"]
+
+    @model_validator(mode="after")
+    def _epoch_matches_progress(self) -> "CodingInspectRecoveryAttempt":
+        if self.epoch != self.progress.epoch:
+            raise ValueError("inspect recovery epoch mismatch")
+        return self
+
+
 class CodingTerminalResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -1405,6 +1464,10 @@ class CodingTerminalResult(BaseModel):
     verification_evidence: tuple[CodingCommandEvidence, ...] = ()
     repair_status: Literal["passed", "exhausted", "no_progress"] | None = None
     repair_history: tuple[CodingRepairAttempt, ...] = ()
+    inspect_recovery_status: Literal[
+        "completed", "no_progress", "exhausted"
+    ] | None = None
+    inspect_recovery_history: tuple[CodingInspectRecoveryAttempt, ...] = ()
     source_commit: str | None = Field(default=None, pattern=r"^[0-9a-f]{40,64}$")
     expected_target_head: str | None = Field(
         default=None,
@@ -1416,7 +1479,9 @@ class CodingTerminalResult(BaseModel):
         pattern=r"^[0-9a-f]{64}$",
     )
 
-    @field_validator("changed_paths", "repair_history", mode="before")
+    @field_validator(
+        "changed_paths", "repair_history", "inspect_recovery_history", mode="before"
+    )
     @classmethod
     def _tuple_values(cls, value: object) -> object:
         return tuple(value) if isinstance(value, list) else value
@@ -1519,6 +1584,9 @@ __all__ = [
     "CodingMergeApprovalDecision",
     "CodingMergePreview",
     "CodingMergeResult",
+    "CodingInspectCallEvidence",
+    "CodingInspectProgress",
+    "CodingInspectRecoveryAttempt",
     "CodingReadResult",
     "CodingSearchMatch",
     "CodingSearchResult",
