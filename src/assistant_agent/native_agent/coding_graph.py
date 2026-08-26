@@ -53,6 +53,12 @@ from assistant_agent.coding.models import (
     CodingRepairFailureEvidence,
     CodingTerminalResult,
 )
+from assistant_agent.coding.inspect_recovery import (
+    evaluate_inspect_recovery,
+    extract_inspect_progress,
+    render_inspect_recovery_context,
+    validate_inspect_recovery_checkpoint,
+)
 from assistant_agent.coding.repair import (
     MAX_REPAIR_ROUNDS,
     ensure_repair_progress,
@@ -317,13 +323,13 @@ def build_coding_graph(
 
     validation_service = validation_service or CodingValidationService(workspace_service)
     integration_service = integration_service or CodingIntegrationService(workspace_service)
+    read_names = [
+        item.name for item in tools if (item.metadata or {}).get("effect") == "read"
+    ]
     if inspect_agent is None:
-        read_names = [
-            item.name for item in tools if (item.metadata or {}).get("effect") == "read"
-        ]
         middleware: list[Any] = [
-            ModelCallLimitMiddleware(run_limit=model_call_limit, exit_behavior="error"),
-            ToolCallLimitMiddleware(run_limit=tool_call_limit, exit_behavior="error"),
+            ModelCallLimitMiddleware(run_limit=model_call_limit, exit_behavior="end"),
+            ToolCallLimitMiddleware(run_limit=tool_call_limit, exit_behavior="continue"),
         ]
         if read_names:
             middleware.append(
@@ -574,7 +580,30 @@ def build_coding_graph(
         review_repair_live_release_status: Literal[
             "released", "cleanup_pending"
         ] | None = None
-        if (
+        inspect_recovery_context_added = False
+        if state.get("inspect_recovery_status") == "retrying":
+            try:
+                diff_digest = hashlib.sha256(
+                    workspace_service.diff(workspace).diff.encode("utf-8")
+                ).hexdigest()
+                history = validate_inspect_recovery_checkpoint(
+                    state,
+                    base_commit=workspace.base_commit,
+                    workspace_diff_digest=diff_digest,
+                )
+                if not state.get("inspect_recovery_context_consumed", False):
+                    raise ValueError("coding_inspect_recovery_binding_mismatch")
+            except (CodingWorkspaceError, TypeError, ValueError):
+                return {
+                    "coding_result": _failed(
+                        state, "coding_inspect_recovery_binding_mismatch"
+                    )
+                }
+            call_messages.append(
+                HumanMessage(content=render_inspect_recovery_context(history))
+            )
+            inspect_recovery_context_added = True
+        elif (
             state.get("review_repair_status") == "active"
             and state.get("review_repair_projection") is not None
         ):
@@ -774,7 +803,95 @@ def build_coding_graph(
                 state,
                 review_repair_live_release_status,
             )
+        if artifact is not None:
+            history = tuple(state.get("inspect_recovery_history", ()))
+            if history:
+                normalized = validate_inspect_recovery_checkpoint(
+                    state,
+                    base_commit=workspace.base_commit,
+                    workspace_diff_digest=hashlib.sha256(
+                        workspace_service.diff(workspace).diff.encode("utf-8")
+                    ).hexdigest(),
+                )
+                update.update(
+                    inspect_epoch=int(state.get("inspect_epoch", 1)),
+                    inspect_recovery_status="completed",
+                    inspect_progress=None,
+                    inspect_recovery_history=(
+                        *normalized[:-1],
+                        normalized[-1].model_copy(update={"outcome": "completed"}),
+                    ),
+                    inspect_recovery_context_consumed=False,
+                )
+            return update
+        if (
+            state.get("repair_status") != "active"
+            and state.get("review_repair_status") != "active"
+        ):
+            diff_digest = hashlib.sha256(
+                workspace_service.diff(workspace).diff.encode("utf-8")
+            ).hexdigest()
+            progress = extract_inspect_progress(
+                result,
+                epoch=int(state.get("inspect_epoch", 1)),
+                base_commit=workspace.base_commit,
+                workspace_diff_digest=diff_digest,
+                read_tool_names=frozenset(read_names),
+                model_call_limit=model_call_limit,
+                tool_call_limit=tool_call_limit,
+            )
+            if progress is not None:
+                update.update(
+                    inspect_recovery_status="pending",
+                    inspect_progress=progress,
+                    inspect_recovery_context_consumed=False,
+                )
         return update
+
+    def evaluate_inspect_progress_node(state: CodingState) -> dict[str, object]:
+        progress = state.get("inspect_progress")
+        if progress is None:
+            return {
+                "coding_result": _failed(
+                    state, "coding_inspect_recovery_binding_mismatch"
+                )
+            }
+        try:
+            outcome = evaluate_inspect_recovery(
+                progress, state.get("inspect_recovery_history", ())
+            )
+        except (TypeError, ValueError):
+            return {
+                "coding_result": _failed(
+                    state, "coding_inspect_recovery_binding_mismatch"
+                )
+            }
+        update: dict[str, object] = {
+            "inspect_progress": None,
+            "inspect_recovery_status": outcome.status,
+            "inspect_recovery_history": outcome.history,
+            "inspect_recovery_context_consumed": False,
+        }
+        if outcome.status == "retrying":
+            update["inspect_epoch"] = outcome.next_epoch
+        else:
+            update["coding_result"] = _failed(state, str(outcome.error_code))
+        return update
+
+    def consume_inspect_recovery_context_node(
+        state: CodingState,
+    ) -> dict[str, object]:
+        if (
+            state.get("inspect_recovery_status") != "retrying"
+            or state.get("inspect_progress") is not None
+            or state.get("inspect_recovery_context_consumed", False)
+        ):
+            return {
+                "coding_result": _failed(
+                    state, "coding_inspect_recovery_binding_mismatch"
+                )
+            }
+        return {"inspect_recovery_context_consumed": True}
 
     def validate_proposal_node(
         state: CodingState,
@@ -2543,6 +2660,16 @@ def build_coding_graph(
         result = state.get("coding_result") or _failed(state, "patch_invalid")
         terminal_repair_update = _terminal_review_repair_update(state, result)
         result = terminal_repair_update.pop("coding_result", result)
+        inspect_status = state.get("inspect_recovery_status")
+        if inspect_status in {"completed", "no_progress", "exhausted"}:
+            result = result.model_copy(
+                update={
+                    "inspect_recovery_status": inspect_status,
+                    "inspect_recovery_history": tuple(
+                        state.get("inspect_recovery_history", ())
+                    ),
+                }
+            )
         return {
             "coding_result": result,
             "analysis_snapshot": (
@@ -2595,6 +2722,20 @@ def build_coding_graph(
 
     def after_validation(state: CodingState) -> str:
         return "summarize" if state.get("coding_result") is not None else "approval"
+
+    def after_inspect(state: CodingState) -> str:
+        if state.get("coding_result") is not None:
+            return "summarize"
+        if state.get("inspect_recovery_status") == "pending":
+            return "evaluate_inspect_progress"
+        return "validate_proposal"
+
+    def after_inspect_progress(state: CodingState) -> str:
+        return (
+            "summarize"
+            if state.get("coding_result") is not None
+            else "consume_inspect_recovery_context"
+        )
 
     def after_run_validation(state: CodingState) -> str:
         if state.get("coding_result") is not None:
@@ -2734,6 +2875,10 @@ def build_coding_graph(
     )
     add_coding_node("join_analysis", join_analysis_node)
     add_coding_node("inspect_and_draft", inspect_and_draft_node)
+    add_coding_node("evaluate_inspect_progress", evaluate_inspect_progress_node)
+    add_coding_node(
+        "consume_inspect_recovery_context", consume_inspect_recovery_context_node
+    )
     add_coding_node("validate_proposal", validate_proposal_node)
     add_coding_node("prepare_repair", prepare_repair_node)
     add_coding_node("consume_repair_budget", consume_repair_budget_node)
@@ -2785,7 +2930,17 @@ def build_coding_graph(
     )
     builder.add_edge("analyze_workspace", "join_analysis")
     builder.add_edge("join_analysis", "inspect_and_draft")
-    builder.add_edge("inspect_and_draft", "validate_proposal")
+    builder.add_conditional_edges(
+        "inspect_and_draft",
+        after_inspect,
+        ["validate_proposal", "evaluate_inspect_progress", "summarize"],
+    )
+    builder.add_conditional_edges(
+        "evaluate_inspect_progress",
+        after_inspect_progress,
+        ["consume_inspect_recovery_context", "summarize"],
+    )
+    builder.add_edge("consume_inspect_recovery_context", "inspect_and_draft")
     builder.add_conditional_edges(
         "validate_proposal",
         after_validation,
@@ -2868,6 +3023,11 @@ def begin_coding_cycle_node(
             "attestation_mismatch_signals": Overwrite([]),
         "workspace_ref": None,
         "base_commit": None,
+        "inspect_epoch": 1,
+        "inspect_recovery_status": None,
+        "inspect_progress": None,
+        "inspect_recovery_history": (),
+        "inspect_recovery_context_consumed": False,
         "analysis_snapshot": None,
         "analysis_tasks": (),
         "analysis_results": Overwrite([]),
@@ -3003,6 +3163,11 @@ def _has_checkpointed_cycle_state(state: CodingState) -> bool:
         or state.get("review_repair_redraft_response") is not None
         or state.get("review_repair_redraft_live_check_digest") is not None
         or state.get("review_repair_history")
+        or state.get("inspect_epoch", 1) != 1
+        or state.get("inspect_recovery_status") is not None
+        or state.get("inspect_progress") is not None
+        or state.get("inspect_recovery_history")
+        or state.get("inspect_recovery_context_consumed", False)
     ):
         return True
     return any(

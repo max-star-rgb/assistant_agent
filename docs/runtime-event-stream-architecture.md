@@ -51,6 +51,18 @@ merge_approval -> apply_merge`。merge approval 是独立原生 interrupt，绑�
 target HEAD 和 preview digest；apply 不调用模型，目标漂移或审批不匹配不会重新生成 preview。integration
 关闭时保持阶段 2 applied terminal。coding 不复用 planning 并行 worker，所有 mutation 通过单一顺序节点完成。
 
+primary `inspect_and_draft` 的单 epoch 继续使用官方 `ModelCallLimitMiddleware` 与
+`ToolCallLimitMiddleware` 数值预算，但预算终止采用官方 graceful counter：model limit 结束当前 Agent，tool limit
+把超额调用变成标准 error `ToolMessage`。Runtime 不匹配英文错误文案，只从 middleware counter、标准
+AI/Tool call ID 和受信 read Tool 清单提取不含源码的 canonical progress。首次 inspect 加最多两个 recovery epoch，
+经 `evaluate_inspect_progress -> consume_inspect_recovery_context -> inspect_and_draft` checkpoint 回边复用同一
+thread、workspace、base commit 与顺序 mutation lane；临时 context 只列 canonical Tool 名和仓库相对路径，不写入父
+`messages`。重复 digest、读取集合/路径无新增以 `coding_inspect_no_progress` 终止，第三个 epoch 仍无 proposal 以
+`coding_inspect_recovery_exhausted` 终止；base/diff/history/status/context 任一漂移以
+`coding_inspect_recovery_binding_mismatch` fail closed。Provider、permission、identity、cancel、sandbox、workspace
+和未知异常不进入 recovery。该恢复与 apply 后 validation repair、final review repair 正交，恢复节点不能直达任何
+mutation、validation、review 或 integration 节点。
+
 repository 的 `parallel_analysis_enabled` 静态配置默认关闭；关闭时从 `resolve_workspace` 直接进入既有
 `inspect_and_draft`。显式启用后，首次 draft 前由 `prepare_analysis` 冻结同一 identity/thread/workspace 绑定的
 只读 snapshot，并通过原生 `Send` 在一个 super-step 中把三个固定 task 派发给共享只读 analysis agent；worker

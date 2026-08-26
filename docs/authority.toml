@@ -104,6 +104,7 @@ source_globs = [
   "src/assistant_agent/native_agent/coding_graph.py",
   "src/assistant_agent/native_agent/coding_phase.py",
   "src/assistant_agent/coding/analysis.py",
+  "src/assistant_agent/coding/inspect_recovery.py",
   "src/assistant_agent/coding/models.py",
   "src/assistant_agent/coding/review.py",
   "src/assistant_agent/coding/review_repair.py",
