@@ -16,7 +16,9 @@
 ## 当前主链
 
 生产上下文以 LangChain 标准 `messages` channel 为事实源。fast 与 planning 共用分层 Prompt Builder：第一层是
-provider-neutral、不可由 Assistant 覆盖的稳定核心策略，明确回答目标、Tool 使用条件、事实与推断边界及失败处理；
+provider-neutral、不可由 Assistant 覆盖的稳定核心策略，采用紧凑的工具、执行倾向、交流方式、上下文与记忆、
+安全五段运行契约。默认交流规则要求直接回答、格式与任务复杂度相称、避免罐头开场/机械复述/固定结尾，允许有依据地
+反对用户前提，并明确回答目标、Tool 使用条件、事实与推断边界及失败处理；
 第二层是 Studio Assistant 可编辑的 `system_prompt`，只用于身份、人格与任务偏好；最后才追加用户时间/地点与从
 本轮标准 `HumanMessage` 推导的媒体事实。该次序使稳定前缀优先复用，同时避免把入口枚举或 capability 暴露为
 Assistant 配置。Assistant 指令若与核心安全、事实或 Tool 治理冲突，以核心层为准。
