@@ -5,11 +5,8 @@ from __future__ import annotations
 from langgraph_sdk import Auth
 
 from assistant_agent.agent_server.config import (
-    ASSISTANT_EXECUTION_MODE_CONTEXT_KEY,
     ASSISTANT_GRAPH_ID,
     MEMORY_GRAPH_ID,
-    PLANNING_ASSISTANT_ID,
-    PLANNING_ASSISTANT_NAME,
 )
 from assistant_agent.agent_server.client import THREAD_GRAPH_METADATA_KEY
 from assistant_agent.agent_server.attestation import (
@@ -78,23 +75,12 @@ async def allow_assistant_search(
 
 
 @auth.on.assistants.create
-async def authorize_planning_assistant_create(
+async def authorize_assistant_create(
     ctx: Auth.types.AuthContext,
     value: Auth.types.on.assistants.create.value,
 ) -> bool | None:
-    """Normalize the managed preset or one user-owned Assistant."""
+    """Normalize one user-owned Assistant."""
 
-    if str(value.get("assistant_id")) == PLANNING_ASSISTANT_ID:
-        value["graph_id"] = ASSISTANT_GRAPH_ID
-        value["name"] = PLANNING_ASSISTANT_NAME
-        value["config"] = {}
-        value["context"] = {ASSISTANT_EXECUTION_MODE_CONTEXT_KEY: "planning"}
-        value["metadata"] = {
-            "assistant_agent_preset": "planning",
-            "managed_by": "assistant_agent",
-        }
-        value["if_exists"] = "do_nothing"
-        return None
     if str(value.get("graph_id")) != ASSISTANT_GRAPH_ID:
         return False
     try:
@@ -112,22 +98,12 @@ async def authorize_planning_assistant_create(
 
 
 @auth.on.assistants.update
-async def authorize_planning_assistant_update(
+async def authorize_assistant_update(
     ctx: Auth.types.AuthContext,
     value: Auth.types.on.assistants.update.value,
 ) -> bool | None:
-    """Keep the preset immutable and normalize user-owned Assistant updates."""
+    """Normalize user-owned Assistant updates."""
 
-    if str(value.get("assistant_id")) == PLANNING_ASSISTANT_ID:
-        value["graph_id"] = ASSISTANT_GRAPH_ID
-        value["name"] = PLANNING_ASSISTANT_NAME
-        value["config"] = {}
-        value["context"] = {ASSISTANT_EXECUTION_MODE_CONTEXT_KEY: "planning"}
-        value["metadata"] = {
-            "assistant_agent_preset": "planning",
-            "managed_by": "assistant_agent",
-        }
-        return None
     graph_id = value.get("graph_id")
     if graph_id is not None and str(graph_id) != ASSISTANT_GRAPH_ID:
         return False
@@ -148,10 +124,8 @@ async def authorize_assistant_delete(
     ctx: Auth.types.AuthContext,
     value: Auth.types.on.assistants.delete.value,
 ) -> Auth.types.FilterType | bool:
-    """Protect the managed preset and scope custom Assistant deletion to its owner."""
+    """Scope custom Assistant deletion to its owner."""
 
-    if str(value.get("assistant_id")) == PLANNING_ASSISTANT_ID:
-        return False
     return {"owner": str(ctx.user.identity)}
 
 
@@ -318,9 +292,9 @@ __all__ = [
     "allow_assistant_read",
     "allow_assistant_search",
     "authenticate",
-    "authorize_planning_assistant_create",
+    "authorize_assistant_create",
     "authorize_assistant_delete",
-    "authorize_planning_assistant_update",
+    "authorize_assistant_update",
     "authorize_run_create",
     "authorize_thread_create",
     "authorize_thread_delete",

@@ -29,8 +29,8 @@ AssistantRootGraph
 ```
 
 `execution_mode` 是结构化输入字段，只允许 `fast|planning|coding`；省略时按公开 input schema 默认使用 `fast`，以兼容
-Studio 的标准 messages-only run。同一 `assistant-native-v3` graph 还可由 Agent Server 中固定的
-`assistant-native-v3-planning` assistant 资源提供 `assistant_execution_mode=planning` context preset；
+Studio 的标准 messages-only run。同一 `assistant-native-v3` graph 的自建 Assistant 可提供
+`assistant_execution_mode=planning` context preset；
 `execution_router` 先把该 preset 规范化进 state，因此选择该 assistant 时即使 input schema 补入 fast 也固定进入
 planning。普通 assistant 没有 preset，仍完全遵循结构化 input。路由函数不从用户文本、关键词、Tool 或 Memory
 推断模式。父图不绑定 saver，
@@ -214,8 +214,7 @@ snapshot；completed checkpoint 从上述有界 contract 恢复 decision，不�
 过滤，旧 identity 不能通过更新伪装升级。旧 run 的 interrupt/rollback 只按 owner 授权，以便部署时 drain/cancel。
 SDK adapter 还会在 create/stream 边界复核相同 identity。v1/v2
 或缺失 identity 的 unknown thread 及其 checkpoint 只读，不能进入 v3 run/resume/replay。部署前必须 drain 或
-cancel v2 pending/interrupt run；completed 历史可 inspection。固定 planning
-assistant UUID 保留并改绑 v3，Studio 需要在该 assistant 下创建新 thread。校验函数仍接收调用方期望的 graph ID，
+cancel v2 pending/interrupt run；completed 历史可 inspection。校验函数仍接收调用方期望的 graph ID，
 不阻止 Memory 等独立 Graph 使用自己的 thread 与版本身份。
 
 
