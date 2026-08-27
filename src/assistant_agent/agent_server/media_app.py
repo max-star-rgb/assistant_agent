@@ -389,7 +389,7 @@ class _NativeAssistantTextStream:
                     node == "model"
                     and isinstance(checkpoint_ns, str)
                     and bool(checkpoint_ns)
-                    and not checkpoint_ns.startswith("fast_agent:")
+                    and not checkpoint_ns.startswith("assistant_agent:")
                 )
                 self.message_nodes[message_id] = (
                     "__internal_subgraph__" if is_internal_subgraph_model else node

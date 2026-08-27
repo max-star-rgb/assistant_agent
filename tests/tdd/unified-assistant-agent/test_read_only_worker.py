@@ -11,7 +11,7 @@ from unittest.mock import Mock
 import pytest
 from deepagents.backends import FilesystemBackend
 from deepagents.backends.protocol import BackendProtocol, SandboxBackendProtocol
-from deepagents.middleware import FilesystemMiddleware, SkillsMiddleware
+from deepagents.middleware import SkillsMiddleware
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import BaseTool, StructuredTool
@@ -25,12 +25,12 @@ from assistant_agent.coding.backend import (
 from assistant_agent.coding.config import CodingConfig
 from assistant_agent.coding.workspace import CodingWorkspaceError
 from assistant_agent.agent_server import services
-from assistant_agent.native_agent import fast_agent as fast_agent_module
+from assistant_agent.native_agent import assistant_agent as assistant_agent_module
 from assistant_agent.native_agent.assistant_agent import (
+    build_assistant_agent,
     build_read_only_worker,
     isolated_read_only_worker,
 )
-from assistant_agent.native_agent.fast_agent import build_fast_agent
 from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.native_agent.tool_profiles import ToolProfile
 from assistant_agent.native_agent.context import (
@@ -379,39 +379,35 @@ def test_async_worker_classifies_present_invalid_snapshot_as_invalid(
     service.resolve.assert_not_called()
 
 
-def test_fast_agent_uses_distinct_skills_and_filesystem_backends(
+def test_assistant_agent_uses_distinct_skills_and_filesystem_backends(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    captured_middleware: list[object] = []
+    captured: dict[str, Any] = {}
     skills_backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
     worktree_backend = ReadOnlyCodingWorkspaceBackend(object(), "repo-sentinel")
 
-    def create_agent(**kwargs: Any) -> object:
-        captured_middleware.extend(kwargs["middleware"])
-        return object()
+    monkeypatch.setattr(
+        assistant_agent_module,
+        "create_deep_agent",
+        lambda **kwargs: captured.update(kwargs) or object(),
+    )
 
-    monkeypatch.setattr(fast_agent_module, "create_agent", create_agent)
-
-    build_fast_agent(
+    build_assistant_agent(
         MockAssistantChatModel(),
         [],
-        filesystem_backend=worktree_backend,
+        backend=worktree_backend,
+        worker_graph=RunnableLambda(lambda state: state),
         skills_backend=skills_backend,
         tool_profiles=(),
     )
 
     skills = next(
         middleware
-        for middleware in captured_middleware
+        for middleware in captured["middleware"]
         if isinstance(middleware, SkillsMiddleware)
     )
-    filesystem = next(
-        middleware
-        for middleware in captured_middleware
-        if isinstance(middleware, FilesystemMiddleware)
-    )
     assert skills._backend is skills_backend
-    assert filesystem.backend is worktree_backend
+    assert captured["backend"] is worktree_backend
 
 
 def test_worker_factory_uses_read_only_worktree_backend(
@@ -490,6 +486,4 @@ def test_worker_factory_uses_read_only_worktree_backend(
     assert isinstance(worker_calls[0]["backend"], ReadOnlyCodingWorkspaceBackend)
     assert isinstance(assistant_calls[0]["backend"], CodingWorkspaceBackend)
     assert assistant_calls[0]["worker_graph"] is worker
-    assert root_kwargs["fast_agent"] is assistant
-    assert root_kwargs["planning_agent"] is assistant
-    assert root_kwargs["coding_agent"] is assistant
+    assert root_kwargs["assistant_agent"] is assistant

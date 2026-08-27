@@ -30,9 +30,7 @@ PENDING_RUN_PAGE_SIZE = 100
 def build_assistant_root_graph(
     *,
     memory_backend: MemoryBackend,
-    fast_agent: Any,
-    planning_agent: Any,
-    coding_agent: Any,
+    assistant_agent: Any,
     extraction_delay_seconds: int = DEFAULT_EXTRACTION_DELAY_SECONDS,
 ):
     """Compose recall, execution, and post-answer Memory debounce."""
@@ -52,10 +50,7 @@ def build_assistant_root_graph(
             jitter=False,
         ),
     )
-    builder.add_node("execution_router", execution_router_node)
-    builder.add_node("fast_agent", fast_agent)
-    builder.add_node("planning_agent", planning_agent)
-    builder.add_node("coding_agent", coding_agent)
+    builder.add_node("assistant_agent", assistant_agent)
     builder.add_node(
         "refresh_memory_extraction",
         partial(
@@ -71,39 +66,10 @@ def build_assistant_root_graph(
         ),
     )
     builder.add_edge(START, "memory_recall")
-    builder.add_edge("memory_recall", "execution_router")
-    builder.add_conditional_edges(
-        "execution_router",
-        route_execution_mode,
-        {
-            "fast": "fast_agent",
-            "planning": "planning_agent",
-            "coding": "coding_agent",
-        },
-    )
-    builder.add_edge("fast_agent", "refresh_memory_extraction")
-    builder.add_edge("planning_agent", "refresh_memory_extraction")
-    builder.add_edge("coding_agent", "refresh_memory_extraction")
+    builder.add_edge("memory_recall", "assistant_agent")
+    builder.add_edge("assistant_agent", "refresh_memory_extraction")
     builder.add_edge("refresh_memory_extraction", END)
     return builder.compile(name="AssistantRootGraph")
-
-
-def execution_router_node(
-    state: AssistantRootState,
-    runtime: Runtime[AssistantRunContext],
-) -> dict[str, object]:
-    """Freeze immutable runtime routing context into checkpointed graph state."""
-
-    return {"execution_mode": runtime.context.execution_mode}
-
-
-def route_execution_mode(state: AssistantRootState) -> str:
-    """Route only on the trusted structured execution mode."""
-
-    mode = state.get("execution_mode", "fast")
-    if mode not in {"fast", "planning", "coding"}:
-        raise ValueError("unsupported execution mode")
-    return mode
 
 
 async def refresh_memory_extraction_node(
@@ -179,7 +145,5 @@ __all__ = [
     "MEMORY_ASSISTANT_ID",
     "MEMORY_EXTRACTION_RUN_KIND",
     "build_assistant_root_graph",
-    "execution_router_node",
     "refresh_memory_extraction_node",
-    "route_execution_mode",
 ]

@@ -130,9 +130,7 @@ class AgentServerExecutionOwner:
         )
         graph = build_assistant_root_graph(
             memory_backend=memory_backend,
-            fast_agent=assistant_agent,
-            planning_agent=assistant_agent,
-            coding_agent=assistant_agent,
+            assistant_agent=assistant_agent,
             extraction_delay_seconds=config.memory_extraction_delay_seconds,
         )
         memory_graph = build_memory_extraction_graph(backend=memory_backend)

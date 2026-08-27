@@ -17,6 +17,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
 from assistant_agent.coding.backend import ReadOnlyCodingWorkspaceBackend
+from assistant_agent.agent_server import media_app
 from assistant_agent.native_agent import assistant_agent
 from assistant_agent.native_agent.assistant_agent import (
     build_assistant_agent,
@@ -27,6 +28,7 @@ from assistant_agent.native_agent.providers import (
     MockAssistantChatModel,
     read_only_worker_model_view,
 )
+from assistant_agent.native_agent.root_graph import build_assistant_root_graph
 from assistant_agent.native_agent.state import AssistantAgentState
 from assistant_agent.native_agent.tool_profiles import project_tool_profiles
 
@@ -42,6 +44,10 @@ def _tool(name: str, effect: str) -> BaseTool:
         name=name,
         metadata={"effect": effect},
     )
+
+
+class _Memory:
+    backend_id = "disabled"
 
 
 def test_main_uses_factory_filesystem_and_unified_hitl(monkeypatch, tmp_path) -> None:
@@ -103,6 +109,50 @@ def test_main_uses_factory_filesystem_and_unified_hitl(monkeypatch, tmp_path) ->
         "general-purpose"
     ]
     assert captured["name"] == "AssistantAgent"
+
+
+def test_parent_graph_has_one_execution_route() -> None:
+    graph = build_assistant_root_graph(
+        memory_backend=_Memory(),
+        assistant_agent=RunnableLambda(lambda state: {"messages": state["messages"]}),
+        extraction_delay_seconds=0,
+    )
+    nodes = set(graph.get_graph().nodes)
+
+    assert {"memory_recall", "assistant_agent", "refresh_memory_extraction"} <= nodes
+    assert not {"execution_router", "fast_agent", "planning_agent", "coding_agent"} & nodes
+
+
+def test_media_stream_keeps_unified_assistant_model_public() -> None:
+    stream = media_app._NativeAssistantTextStream()
+    message_id = "assistant-message"
+
+    stream.consume(
+        {
+            "event": "messages/metadata",
+            "data": {
+                message_id: {
+                    "metadata": {
+                        "langgraph_node": "model",
+                        "langgraph_checkpoint_ns": "assistant_agent:sentinel",
+                    }
+                }
+            },
+        }
+    )
+
+    assert stream.consume(
+        {
+            "event": "messages/partial",
+            "data": [
+                {
+                    "id": message_id,
+                    "type": "AIMessageChunk",
+                    "content": "stream-sentinel",
+                }
+            ],
+        }
+    ) == [(1, "stream-sentinel")]
 
 
 class _WriteOnceModel(MockAssistantChatModel):
