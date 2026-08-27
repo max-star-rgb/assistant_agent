@@ -37,9 +37,9 @@ exact sequence 时旧记录只能用于状态诊断，Tool 内部结果记录 `u
 该窗口的 VLM 语义文本或有界不可用说明。Provider、model、ready/missing、内部状态、引用和延迟只留在
 Tool artifact、contract 与 trace，不进入模型可见 ToolMessage。
 
-## 产品与工具边界
+## 进程与静态 Tool inventory 边界
 
-当前用户能力包括：
+当前进程视觉模块与静态 Tool inventory 保留以下能力：
 
 - 会话内短期视觉回忆：对 semantic selector 选中的关键帧执行 VLM 文本化，并在 session 内保留成功结果；
 - 历史找物：在可信 user/session/as-of/time 边界内读取 Store 保留的最多 256 条带时间戳 VLM 文本，
@@ -54,7 +54,8 @@ Tool artifact、contract 与 trace，不进入模型可见 ToolMessage。
 可信 VIDEO 连接中的 `create/list/cancel`，不是 embedding Tool。`live_view_inspect` 继续回答当前实时画面，内部
 后台 observation service 继续生成 rolling VLM snapshot。`siglip2_embed*`、`find_object`、
 `visual_attention_manage` 都不是注册 Tool。Attention 仍只产生内部候选；连接级 reminder manager 是独立的
-一次性状态机，不复用 Attention consumer。当前 media custom route 的投影限制使这三个 Tool 都不会由该入口暴露。
+一次性状态机，不复用 Attention consumer。当前 media custom route 的投影限制使这三个 Tool 都不会由该用户入口暴露，
+因此上述历史找物和连接提醒也不是当前 media 用户入口的可用能力；进程流水线与静态 inventory 不受影响。
 
 `visual_memory_search` 的模型可见描述明确它是当前 VIDEO 会话/thread 内的短期视觉记忆检索，不用于
 跨会话长期视觉记忆。远端长期视觉记忆属于 Memory backend，由父图根据当前请求自动召回并以
@@ -303,7 +304,8 @@ hard gate。
 仅完成 VIDEO 握手、仅收到尚未成为关键帧的原始帧或冻结窗口为空时都不暴露；
 `visual_memory_search` 的可检索历史判定以 backend-neutral 的 `index_status=ready` 为准；Qdrant 持有文本向量时，
 不得再要求进程内 `VisualSemanticRecord.search_embedding` 非空。
-媒体入口在创建 run 时冻结当前视觉投影，并通过 `Runtime.context` 只传递 server-issued opaque capability token；
+媒体入口在创建 run 时冻结当前视觉投影，并把 server-issued opaque capability token 放入 namespaced run metadata；
+公开 `AssistantRunContext` 仍只有 `enable_memory`。
 条件 Tool 暴露和 Tool 执行必须以身份、thread、token 解析同一份投影，不得信任客户端提交的 video ID/sequence，
 也不得在执行期重读可能已被后续聊天更新的 session 投影。冻结投影没有 target sequence 时历史 Tool fail closed，
 不能把 `None` 当作无上界。
