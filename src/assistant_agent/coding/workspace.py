@@ -18,6 +18,7 @@ import struct
 import tempfile
 import time
 import threading
+import re
 from collections import OrderedDict
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -214,11 +215,31 @@ class CodingWorkspaceService:
         self._incremental_reaper_deletion: _IncrementalTombstoneDeletion | None = None
         self._snapshot_reaper_deny: OrderedDict[str, float] = OrderedDict()
 
-    def resolve(self, identity: str, thread_id: str, repo_id: str) -> CodingWorkspace:
+    def resolve(
+        self,
+        identity: str,
+        thread_id: str,
+        repo_id: str,
+        *,
+        base_commit: str | None = None,
+    ) -> CodingWorkspace:
         if not self.config.enabled or repo_id not in self.config.repositories:
             raise CodingWorkspaceError("workspace_not_allowed")
         if not identity.strip() or not thread_id.strip():
             raise CodingWorkspaceError("workspace_identity_mismatch")
+        source_repo = self.config.repositories[repo_id].path
+        if base_commit is not None:
+            if re.fullmatch(r"[0-9a-f]{40,64}", base_commit) is None:
+                raise CodingWorkspaceError("workspace_base_commit_invalid")
+            verified = self._run_git(
+                source_repo,
+                "rev-parse",
+                "--verify",
+                f"{base_commit}^{{commit}}",
+                error_code="workspace_base_commit_invalid",
+            ).strip()
+            if verified != base_commit:
+                raise CodingWorkspaceError("workspace_base_commit_invalid")
         self.cleanup_expired()
         self.config.workspace_root.mkdir(parents=True, exist_ok=True)
         workspace_ref = self._workspace_ref(identity, thread_id, repo_id)
@@ -231,14 +252,15 @@ class CodingWorkspaceService:
                 self._verify_scope(metadata, identity=identity, thread_id=thread_id)
                 if metadata.frozen:
                     raise CodingWorkspaceError("workspace_frozen")
+                if base_commit is not None and metadata.base_commit != base_commit:
+                    raise CodingWorkspaceError("workspace_base_commit_mismatch")
                 metadata = metadata.model_copy(
                     update={"expires_at": self._clock() + timedelta(seconds=self.config.ttl_seconds)}
                 )
                 self._write_metadata(metadata_path, metadata)
                 return self._workspace(metadata)
 
-            source_repo = self.config.repositories[repo_id].path
-            base_commit = self.git_head(source_repo)
+            base_commit = base_commit or self.git_head(source_repo)
             repo_root = management_root / _REPO_DIR
             self._run_git(
                 source_repo,
@@ -285,6 +307,11 @@ class CodingWorkspaceService:
 
     def git_head(self, repo: Path) -> str:
         return self._run_git(repo, "rev-parse", "HEAD", error_code="workspace_git_failed").strip()
+
+    def repository_head(self, repo_id: str) -> str:
+        if not self.config.enabled or repo_id not in self.config.repositories:
+            raise CodingWorkspaceError("workspace_not_allowed")
+        return self.git_head(self.config.repositories[repo_id].path)
 
     def create_analysis_snapshot(
         self,

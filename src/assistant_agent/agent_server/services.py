@@ -105,6 +105,7 @@ class AgentServerExecutionOwner:
             "filesystem_backend": filesystem_backend,
             "current_location": config.current_location,
         }
+        coding_workspace_service = CodingWorkspaceService(coding_config)
         business_tool_profiles = project_tool_profiles()
         filesystem_tool_profile = next(
             profile
@@ -116,7 +117,9 @@ class AgentServerExecutionOwner:
             model,
             tools,
             tool_profiles=(*business_tool_profiles, async_tool_profile),
-            additional_middleware=(build_async_subagent_middleware(),),
+            additional_middleware=(
+                build_async_subagent_middleware(coding_workspace_service, coding_repo_id),
+            ),
             **shared_fast_options,
         )
         worker_graph = build_fast_agent(
@@ -145,10 +148,11 @@ class AgentServerExecutionOwner:
             ),
             current_location=config.current_location,
             tool_profiles=(filesystem_tool_profile, async_tool_profile),
-            additional_middleware=(build_async_subagent_middleware(),),
+            additional_middleware=(
+                build_async_subagent_middleware(coding_workspace_service, coding_repo_id),
+            ),
         )
         execution_attestation = build_execution_attestation(config, coding_config)
-        coding_workspace_service = CodingWorkspaceService(coding_config)
         coding_agent = build_coding_agent(
             model,
             coding_workspace_service,

@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from typing import Any, Literal
 
 from langgraph.runtime import Runtime
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class AuthenticatedUserRequired(PermissionError):
@@ -50,6 +50,16 @@ class AssistantRuntimeFacts(BaseModel):
         min_length=1,
         max_length=160,
     )
+    repository_snapshot_sha: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{40,64}$",
+    )
+
+    @model_validator(mode="after")
+    def _async_worker_requires_snapshot(self) -> "AssistantRuntimeFacts":
+        if self.entry_profile == "async_worker" and self.repository_snapshot_sha is None:
+            raise ValueError("async worker requires repository snapshot sha")
+        return self
 
 
 def assistant_runtime_facts(config: Mapping[str, Any]) -> AssistantRuntimeFacts:
