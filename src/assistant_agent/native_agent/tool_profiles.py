@@ -11,6 +11,7 @@ from langchain.agents.middleware import ModelRequest
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     ModelResponse,
+    PrivateStateAttr,
     ToolCallRequest,
 )
 from langchain_core.messages import AIMessage, ToolMessage
@@ -40,7 +41,7 @@ class ToolProfileState(AgentState):
     """Run-local state owned by ``ToolProfileMiddleware``."""
 
     active_tool_profile_ids: NotRequired[
-        Annotated[list[str], _merge_unique_profile_ids]
+        Annotated[list[str], PrivateStateAttr, _merge_unique_profile_ids]
     ]
 
 

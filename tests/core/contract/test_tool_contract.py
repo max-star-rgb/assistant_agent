@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
+from deepagents.backends import FilesystemBackend, LocalShellBackend
 from langchain.agents import AgentState
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import BaseTool, tool
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode, ToolRuntime
@@ -14,7 +17,7 @@ from assistant_agent.native_agent.context import (
     AssistantRunContext,
     authenticated_user_identity,
 )
-from assistant_agent.native_agent.fast_agent import build_fast_agent
+from assistant_agent.native_agent.assistant_agent import build_assistant_agent
 from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.tools import native_boundary
 from assistant_agent.tools.models import ToolResult
@@ -164,7 +167,7 @@ def test_non_read_unknown_failure_is_sanitized_by_default_toolnode() -> None:
 
 
 @pytest.mark.core_invariant("TOOL-001")
-def test_read_failure_retries_before_becoming_a_tool_message() -> None:
+def test_read_failure_retries_before_becoming_a_tool_message(tmp_path: Path) -> None:
     attempts: list[int] = []
 
     @tool("read_failure_probe", response_format="content_and_artifact")
@@ -182,26 +185,23 @@ def test_read_failure_retries_before_becoming_a_tool_message() -> None:
         return invoke_native_tool("read_failure_probe", fail)
 
     configured = _configure_builtin_probe(read_failure_probe, "read")
-    graph = build_fast_agent(
+    graph = build_assistant_agent(
         _SingleToolCallModel(
             tool_name="read_failure_probe",
             tool_args={"value": "sentinel"},
         ),
         [configured],
+        backend=LocalShellBackend(root_dir=tmp_path, virtual_mode=True),
+        worker_graph=RunnableLambda(lambda state: state),
+        skills_backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
+        tool_profiles=(),
     )
     result = graph.invoke(
-        {
-            "messages": [HumanMessage(content="read-failure-request")],
-            "memory_context": (),
-            "memory_status": "empty",
-            "execution_mode": "fast",
-        },
+        {"messages": [HumanMessage(content="read-failure-request")]},
         context=AssistantRunContext(),
     )
     message = next(
-        message
-        for message in result["messages"]
-        if isinstance(message, ToolMessage)
+        message for message in result["messages"] if isinstance(message, ToolMessage)
     )
 
     assert attempts == [1, 2, 3]

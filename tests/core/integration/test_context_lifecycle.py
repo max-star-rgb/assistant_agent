@@ -2,44 +2,41 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, Sequence
 
 import pytest
-from deepagents.backends import FilesystemBackend
-from deepagents.middleware import FilesystemMiddleware
+from deepagents.backends import FilesystemBackend, LocalShellBackend
 from langchain.agents.middleware import (
-    HumanInTheLoopMiddleware,
     ModelCallLimitMiddleware,
     SummarizationMiddleware,
+    TodoListMiddleware,
     ToolRetryMiddleware,
 )
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_core.tools import StructuredTool
-from langchain_core.runnables import RunnableLambda
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.graph import END, START, StateGraph
-from langgraph.types import Command
+from langchain_core.runnables import Runnable, RunnableLambda
+from langchain_core.tools import BaseTool, StructuredTool
+from langgraph.store.memory import InMemoryStore
 from pydantic import PrivateAttr
 
-from assistant_agent.native_agent.context import AssistantRunContext
-from assistant_agent.native_agent.fast_agent import (
+from assistant_agent.agent_server.services import AgentServerExecutionOwner
+from assistant_agent.coding.backend import ReadOnlyCodingWorkspaceBackend
+from assistant_agent.native_agent import assistant_agent as assistant_agent_module
+from assistant_agent.native_agent.assistant_agent import (
     RecursionFinalSynthesisMiddleware,
-    build_fast_agent,
+    build_assistant_agent,
 )
-from assistant_agent.native_agent.planning_agent import build_planning_agent
+from assistant_agent.native_agent.conditional_tool_exposure import (
+    ConditionalToolExposureMiddleware,
+)
+from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.providers import MockAssistantChatModel
-from assistant_agent.native_agent.state import (
-    AssistantRootState,
-    FastAgentState,
-    PlanningAgentState,
-    merge_async_tasks,
-)
 from assistant_agent.native_agent.tool_call_limits import PerToolCallLimitMiddleware
 from assistant_agent.native_agent.tool_profiles import (
     ToolProfileMiddleware,
     project_tool_profiles,
 )
-from assistant_agent.skills.native import create_project_skills_backend
 
 
 def _tool_names(raw_tools: object) -> set[str]:
@@ -54,21 +51,35 @@ def _tool_names(raw_tools: object) -> set[str]:
     }
 
 
+def _worker() -> Runnable:
+    return RunnableLambda(
+        lambda state: {"messages": [AIMessage(content="worker-sentinel")]}
+    )
+
+
+def _agent(
+    tmp_path: Path,
+    model: BaseChatModel,
+    tools: Sequence[BaseTool] = (),
+    *,
+    worker: Runnable | None = None,
+    tool_profiles=(),
+):
+    return build_assistant_agent(
+        model,
+        tools,
+        backend=LocalShellBackend(root_dir=tmp_path, virtual_mode=True),
+        worker_graph=worker or _worker(),
+        skills_backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
+        tool_profiles=tool_profiles,
+    )
+
+
 class _CaptureMessagesModel(MockAssistantChatModel):
     observed_messages: list[tuple[Any, ...]] = []
 
     def _response_message(self, messages, **kwargs):
         self.observed_messages.append(tuple(messages))
-        return super()._response_message(messages, **kwargs)
-
-
-class _CapturePlanningMessagesModel(MockAssistantChatModel):
-    observed_calls: list[tuple[set[str], tuple[Any, ...]]] = []
-
-    def _response_message(self, messages, **kwargs):
-        self.observed_calls.append(
-            (_tool_names(kwargs.get("tools")), tuple(messages))
-        )
         return super()._response_message(messages, **kwargs)
 
 
@@ -99,72 +110,49 @@ class _FinalSynthesisModel(MockAssistantChatModel):
         )
 
 
-class _PlanningWriteModel(MockAssistantChatModel):
-    _planning_calls: int = PrivateAttr(default=0)
-    _subagent_runs: int = PrivateAttr(default=0)
-
-    @property
-    def subagent_runs(self) -> int:
-        return self._subagent_runs
+class _TaskOnceModel(MockAssistantChatModel):
+    _calls: int = PrivateAttr(default=0)
 
     def _response_message(self, messages, **kwargs):
+        del messages
         visible = _tool_names(kwargs.get("tools"))
-        if {"task", "write_todos"} <= visible:
-            self._planning_calls += 1
-            if self._planning_calls == 1:
-                return AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": "task",
-                            "args": {
-                                "description": "write one sentinel",
-                                "subagent_type": "general-purpose",
-                            },
-                            "id": "task-write-sentinel",
-                            "type": "tool_call",
-                        }
-                    ],
-                )
-            return AIMessage(content="final-answer-sentinel")
-        self._subagent_runs += 1
-        if not any(
-            isinstance(item, ToolMessage) and item.name == "write_probe"
-            for item in messages
-        ):
+        assert {"task", "write_todos"} <= visible
+        self._calls += 1
+        if self._calls == 1:
             return AIMessage(
                 content="",
                 tool_calls=[
                     {
-                        "name": "write_probe",
-                        "args": {"value": "worker-write-sentinel"},
-                        "id": "worker-write-call",
+                        "name": "task",
+                        "args": {
+                            "description": "task-sentinel",
+                            "subagent_type": "general-purpose",
+                        },
+                        "id": "task-sentinel",
                         "type": "tool_call",
                     }
                 ],
             )
-        return AIMessage(content="worker-write-complete")
+        return AIMessage(content="parent-complete-sentinel")
 
 
-class _FastWriteModel(MockAssistantChatModel):
+class _WriteOnceModel(MockAssistantChatModel):
     def _response_message(self, messages, **kwargs):
-        del kwargs
-        if any(isinstance(message, ToolMessage) for message in messages):
-            return AIMessage(content="completed:fast-write-sentinel")
+        del messages, kwargs
         return AIMessage(
             content="",
             tool_calls=[
                 {
                     "name": "write_probe",
-                    "args": {"value": "fast-write-sentinel"},
-                    "id": "call-fast-write-sentinel",
+                    "args": {"value": "write-sentinel"},
+                    "id": "write-probe-sentinel",
                     "type": "tool_call",
                 }
             ],
         )
 
 
-class _FastFilesystemWriteModel(MockAssistantChatModel):
+class _FilesystemWriteModel(MockAssistantChatModel):
     _calls: int = PrivateAttr(default=0)
     _visible_tools: list[set[str]] = PrivateAttr(default_factory=list)
 
@@ -200,25 +188,23 @@ class _FastFilesystemWriteModel(MockAssistantChatModel):
                     }
                 ],
             )
-        if self._calls == 3:
-            return AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "write_file",
-                        "args": {
-                            "file_path": "/sentinel.txt",
-                            "content": "write-sentinel",
-                        },
-                        "id": "write-file-sentinel",
-                        "type": "tool_call",
-                    }
-                ],
-            )
-        return AIMessage(content="unexpected-auto-approval")
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "args": {
+                        "file_path": "/sentinel.txt",
+                        "content": "write-sentinel",
+                    },
+                    "id": "write-file-sentinel",
+                    "type": "tool_call",
+                }
+            ],
+        )
 
 
-class _FastBrowserModel(MockAssistantChatModel):
+class _BrowserModel(MockAssistantChatModel):
     _calls: int = PrivateAttr(default=0)
     _visible_tools: list[set[str]] = PrivateAttr(default_factory=list)
 
@@ -242,59 +228,30 @@ class _FastBrowserModel(MockAssistantChatModel):
                     }
                 ],
             )
-        if self._calls == 2:
-            return AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "mcp_playwright_browser_navigate",
-                        "args": {"url": "https://example.test"},
-                        "id": "browser-navigate-sentinel",
-                        "type": "tool_call",
-                    }
-                ],
-            )
-        return AIMessage(content="unexpected-auto-approval")
-
-
-class _PlanningNativeTaskModel(MockAssistantChatModel):
-    _planning_calls: int = PrivateAttr(default=0)
-
-    def _response_message(self, messages, **kwargs):
-        del messages
-        visible = _tool_names(kwargs.get("tools"))
-        if {"task", "write_todos", "read_file"} <= visible:
-            self._planning_calls += 1
-            if self._planning_calls == 1:
-                return AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": "task",
-                            "args": {
-                                "description": "task-sentinel",
-                                "subagent_type": "general-purpose",
-                            },
-                            "id": "task-sentinel",
-                            "type": "tool_call",
-                        }
-                    ],
-                )
-            return AIMessage(content="planning-complete")
-        raise AssertionError("worker uses a dedicated runnable")
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "mcp_playwright_browser_navigate",
+                    "args": {"url": "https://example.test"},
+                    "id": "browser-navigate-sentinel",
+                    "type": "tool_call",
+                }
+            ],
+        )
 
 
 @pytest.mark.core_invariant("CTX-001")
-def test_frozen_memory_is_transient_context_before_the_current_request() -> None:
+def test_frozen_memory_is_transient_context_before_the_current_request(
+    tmp_path: Path,
+) -> None:
     model = _CaptureMessagesModel()
     model.observed_messages = []
-    graph = build_fast_agent(model, [])
+    graph = _agent(tmp_path, model)
     result = graph.invoke(
         {
             "messages": [HumanMessage(content="request-sentinel")],
             "memory_context": ("memory-sentinel",),
-            "memory_status": "ready",
-            "execution_mode": "fast",
         },
         context=AssistantRunContext(),
     )
@@ -302,7 +259,9 @@ def test_frozen_memory_is_transient_context_before_the_current_request() -> None
     model_humans = [
         item for item in model.observed_messages[-1] if isinstance(item, HumanMessage)
     ]
-    state_humans = [item for item in result["messages"] if isinstance(item, HumanMessage)]
+    state_humans = [
+        item for item in result["messages"] if isinstance(item, HumanMessage)
+    ]
     assert len(model_humans) == 2
     assert "memory-sentinel" in str(model_humans[-2].content)
     assert model_humans[-1].content == "request-sentinel"
@@ -310,172 +269,143 @@ def test_frozen_memory_is_transient_context_before_the_current_request() -> None
 
 
 @pytest.mark.core_invariant("CTX-001")
-def test_planning_and_task_receive_one_transient_frozen_memory_context() -> None:
-    model = _CapturePlanningMessagesModel()
-    model.observed_calls = []
-    fast = build_fast_agent(model, [])
-    graph = build_planning_agent(model, fast)
-    result = graph.invoke(
-        {
-            "messages": [HumanMessage(content="request-sentinel")],
-            "memory_context": ("memory-sentinel",),
-            "memory_status": "ready",
-            "execution_mode": "planning",
-        },
-        context=AssistantRunContext(),
-    )
-
-    parent_calls = [
-        messages
-        for tools, messages in model.observed_calls
-        if {"task", "write_todos"} <= tools
-    ]
-    child_call = next(
-        messages
-        for tools, messages in model.observed_calls
-        if not {"task", "write_todos"} <= tools
-    )
-    for messages in (parent_calls[0], child_call):
-        humans = [item for item in messages if isinstance(item, HumanMessage)]
-        assert len(humans) == 2
-        assert "memory-sentinel" in str(humans[-2].content)
-        assert humans[-1].content == "request-sentinel"
-    assert [
-        item.content for item in result["messages"] if isinstance(item, HumanMessage)
-    ] == ["request-sentinel"]
-
-
-@pytest.mark.core_invariant("CTX-001")
-def test_planning_task_receives_only_narrow_native_worker_state() -> None:
+def test_task_uses_narrow_read_only_worker_state_and_preserves_parent_handles(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("MULTIMODAL_AGENT_PROVIDER_MODE", "mock")
     observed_worker_states: list[dict[str, Any]] = []
 
     def worker(state: dict[str, Any]) -> dict[str, Any]:
         observed_worker_states.append(state)
         return {
-            "messages": [AIMessage(content="worker-complete")],
+            "messages": [AIMessage(content="worker-complete-sentinel")],
             "active_tool_profile_ids": ["worker-profile-sentinel"],
-            "skills_metadata": [{"name": "worker-skill-sentinel"}],
+            "provider_search_profile": "travel_general",
             "async_tasks": {"child-task-sentinel": {"status": "running"}},
         }
 
-    graph = build_planning_agent(
-        _PlanningNativeTaskModel(),
-        RunnableLambda(worker),
+    parent_tasks = {"parent-task-sentinel": {"status": "running"}}
+    graph = _agent(
+        tmp_path,
+        _TaskOnceModel(),
+        worker=RunnableLambda(worker),
     )
     result = graph.invoke(
         {
             "messages": [HumanMessage(content="request-sentinel")],
-            "memory_context": (),
-            "memory_status": "empty",
-            "execution_mode": "planning",
-            "async_tasks": {"task-sentinel": {"status": "running"}},
+            "memory_context": ("memory-sentinel",),
+            "memory_status": "ready",
+            "provider_search_profile": "travel_general",
+            "async_tasks": parent_tasks,
         },
         context=AssistantRunContext(),
     )
 
     worker_state = observed_worker_states[0]
+    assert set(worker_state) == {"messages", "memory_context"}
     assert [message.content for message in worker_state["messages"]] == [
         "task-sentinel"
     ]
-    assert "todos" not in worker_state
-    assert "skills_metadata" not in worker_state
-    assert "loaded_skill_ids" not in worker_state
-    assert "skill_reference_grants" not in worker_state
-    assert "active_tool_profile_ids" not in result
-    assert "skills_metadata" not in result
+    assert "provider_search_profile" not in worker_state
     assert "async_tasks" not in worker_state
-    assert result["async_tasks"] == {
-        "task-sentinel": {"status": "running"},
-        "child-task-sentinel": {"status": "running"},
-    }
+    assert result["async_tasks"] == parent_tasks
+    assert "active_tool_profile_ids" not in result
+
+    owner = asyncio.run(AgentServerExecutionOwner.compose(store=InMemoryStore()))
+    try:
+        worker_tools = set(
+            owner.worker_graph.get_graph().nodes["tools"].data.tools_by_name
+        )
+        assert (
+            not {
+                "write_file",
+                "edit_file",
+                "delete",
+                "execute",
+                "task",
+                "start_async_task",
+            }
+            & worker_tools
+        )
+        read_only_backend = ReadOnlyCodingWorkspaceBackend(
+            SimpleNamespace(), "repo-sentinel"
+        )
+        with pytest.raises(NotImplementedError):
+            read_only_backend.write("/blocked.txt", "blocked")
+    finally:
+        asyncio.run(owner.aclose())
 
 
 @pytest.mark.core_invariant("CTX-001")
-def test_async_task_handles_are_shared_across_fast_and_planning_modes() -> None:
-    for state_schema in (AssistantRootState, FastAgentState, PlanningAgentState):
-        assert "async_tasks" in state_schema.__annotations__
-    assert merge_async_tasks(
-        {"task-1": {"status": "running"}},
-        {"task-1": {"status": "success"}, "task-2": {"status": "running"}},
-    ) == {
-        "task-1": {"status": "success"},
-        "task-2": {"status": "running"},
-    }
-
-
-@pytest.mark.core_invariant("CTX-001")
-def test_create_agent_owns_native_summary_retry_hitl_and_tool_call_policy(
-    monkeypatch: pytest.MonkeyPatch,
+def test_deep_agent_owns_summary_retry_todo_hitl_and_tool_policy(
+    monkeypatch,
+    tmp_path: Path,
 ) -> None:
-    from assistant_agent.native_agent import fast_agent as fast_agent_module
-
     def probe(value: str) -> str:
-        """Return one generic sentinel."""
         return value
 
     write_tool = StructuredTool.from_function(
-        probe, name="write_probe", metadata={"effect": "write"}
+        probe,
+        name="write_probe",
+        description="probe",
+        metadata={"effect": "write"},
     )
     read_tool = StructuredTool.from_function(
-        probe, name="read_probe", metadata={"effect": "read"}
+        probe,
+        name="read_probe",
+        description="probe",
+        metadata={"effect": "read"},
     )
-    captured: list[object] = []
-    real_create_agent = fast_agent_module.create_agent
+    captured: dict[str, Any] = {}
 
-    def recording_create_agent(*args: Any, **kwargs: Any):
-        captured.extend(kwargs["middleware"])
-        return real_create_agent(*args, **kwargs)
+    def recording_create_deep_agent(*args: Any, **kwargs: Any):
+        del args
+        captured.update(kwargs)
+        return object()
 
-    monkeypatch.setattr(fast_agent_module, "create_agent", recording_create_agent)
-    graph = build_fast_agent(
+    monkeypatch.setattr(
+        assistant_agent_module,
+        "create_deep_agent",
+        recording_create_deep_agent,
+    )
+    build_assistant_agent(
         MockAssistantChatModel(),
         [write_tool, read_tool],
+        backend=object(),
+        worker_graph=_worker(),
+        skills_backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
+        tool_profiles=project_tool_profiles(),
     )
-    nodes = set(graph.get_graph().nodes)
-    per_tool = [item for item in captured if isinstance(item, PerToolCallLimitMiddleware)]
-    model_limits = [item for item in captured if isinstance(item, ModelCallLimitMiddleware)]
-    finalizers = [
-        item
-        for item in captured
-        if isinstance(item, RecursionFinalSynthesisMiddleware)
-    ]
+    middleware = captured["middleware"]
 
-    assert model_limits == []
-    assert [item.step_reserve for item in finalizers] == [8]
-    assert [item.max_parallel_calls_per_tool for item in per_tool] == [12]
-    assert any("SummarizationMiddleware" in node for node in nodes)
-    assert any(isinstance(item, SummarizationMiddleware) for item in captured)
-    assert any("HumanInTheLoopMiddleware" in node for node in nodes)
-    assert any(isinstance(item, HumanInTheLoopMiddleware) for item in captured)
-    assert any(isinstance(item, ToolRetryMiddleware) for item in captured)
-    assert "SkillsMiddleware" in {type(item).__name__ for item in captured}
-    skill_filesystems = [
-        item for item in captured if isinstance(item, FilesystemMiddleware)
-    ]
-    assert len(skill_filesystems) == 1
-    assert [tool.name for tool in skill_filesystems[0].tools] == [
-        "ls",
-        "read_file",
+    assert not any(isinstance(item, ModelCallLimitMiddleware) for item in middleware)
+    assert any(isinstance(item, SummarizationMiddleware) for item in middleware)
+    assert any(isinstance(item, TodoListMiddleware) for item in middleware)
+    assert any(isinstance(item, ToolRetryMiddleware) for item in middleware)
+    assert any(isinstance(item, ToolProfileMiddleware) for item in middleware)
+    assert any(
+        isinstance(item, ConditionalToolExposureMiddleware) for item in middleware
+    )
+    assert [
+        item.max_parallel_calls_per_tool
+        for item in middleware
+        if isinstance(item, PerToolCallLimitMiddleware)
+    ] == [12]
+    assert [
+        item.step_reserve
+        for item in middleware
+        if isinstance(item, RecursionFinalSynthesisMiddleware)
+    ] == [8]
+    assert set(captured["interrupt_on"]) >= {
         "write_file",
         "edit_file",
         "delete",
-        "glob",
-        "grep",
-    ]
-    profile_middleware = [
-        item for item in captured if isinstance(item, ToolProfileMiddleware)
-    ]
-    assert len(profile_middleware) == 1
-    assert [tool.name for tool in profile_middleware[0].tools] == [
-        "activate_tool_profile"
-    ]
-    travel_profile = next(
-        profile
-        for profile in project_tool_profiles()
-        if profile.profile_id == "travel"
-    )
-    assert "lodging_search" in travel_profile.tool_names
-    assert "mcp_amap_maps_maps_weather" not in travel_profile.tool_names
+        "execute",
+        "write_probe",
+    }
+    assert "read_probe" not in captured["interrupt_on"]
+    assert [item["name"] for item in captured["subagents"]] == ["general-purpose"]
     filesystem_profile = next(
         profile
         for profile in project_tool_profiles()
@@ -489,11 +419,12 @@ def test_create_agent_owns_native_summary_retry_hitl_and_tool_call_policy(
         "delete",
         "glob",
         "grep",
+        "execute",
     )
 
 
 @pytest.mark.core_invariant("CTX-001")
-def test_tool_call_policy_allows_twelve_parallel_calls_per_tool() -> None:
+def test_tool_policy_allows_twelve_parallel_calls_per_tool(tmp_path: Path) -> None:
     executed: list[str] = []
 
     class ParallelModel(MockAssistantChatModel):
@@ -518,35 +449,26 @@ def test_tool_call_policy_allows_twelve_parallel_calls_per_tool() -> None:
             )
 
     def read_probe(path: str) -> str:
-        """Record one parallel read."""
         executed.append(path)
         return path
 
-    agent = build_fast_agent(
-        ParallelModel(),
-        [
-            StructuredTool.from_function(
-                read_probe,
-                name="read_probe",
-                metadata={"effect": "read"},
-            )
-        ],
-        filesystem_backend=FilesystemBackend(root_dir=Path.cwd(), virtual_mode=True),
-        filesystem_tool_names=("read_file",),
-        tool_profiles=(),
+    tool = StructuredTool.from_function(
+        read_probe,
+        name="read_probe",
+        description="probe",
+        metadata={"effect": "read"},
     )
-
-    result = agent.invoke(
+    result = _agent(tmp_path, ParallelModel(), [tool]).invoke(
         {"messages": [HumanMessage(content="parallel-request")]},
         context=AssistantRunContext(),
     )
 
     assert set(executed) == {f"file-{index}.py" for index in range(12)}
-    assert result["messages"][-1].content == "parallel-finished"
+    assert isinstance(result["messages"][-1], AIMessage)
 
 
 @pytest.mark.core_invariant("CTX-001")
-def test_tool_call_policy_allows_identical_arguments_across_model_turns() -> None:
+def test_tool_policy_allows_identical_arguments_across_turns(tmp_path: Path) -> None:
     executed: list[str] = []
 
     class RepeatModel(MockAssistantChatModel):
@@ -570,197 +492,81 @@ def test_tool_call_policy_allows_identical_arguments_across_model_turns() -> Non
             )
 
     def read_probe(path: str) -> str:
-        """Record one repeated read."""
         executed.append(path)
         return path
 
-    agent = build_fast_agent(
-        RepeatModel(),
-        [
-            StructuredTool.from_function(
-                read_probe,
-                name="read_probe",
-                metadata={"effect": "read"},
-            )
-        ],
-        filesystem_backend=FilesystemBackend(root_dir=Path.cwd(), virtual_mode=True),
-        filesystem_tool_names=("read_file",),
-        tool_profiles=(),
+    tool = StructuredTool.from_function(
+        read_probe,
+        name="read_probe",
+        description="probe",
+        metadata={"effect": "read"},
     )
-
-    result = agent.invoke(
+    _agent(tmp_path, RepeatModel(), [tool]).invoke(
         {"messages": [HumanMessage(content="duplicate-request")]},
         context=AssistantRunContext(),
     )
 
     assert executed == ["same.py", "same.py"]
-    assert result["messages"][-1].content == "duplicate-finished"
 
 
 @pytest.mark.core_invariant("CTX-001")
-def test_fast_agent_uses_remaining_graph_steps_for_natural_synthesis() -> None:
+def test_remaining_graph_steps_force_tool_free_final_synthesis(tmp_path: Path) -> None:
     def budget_probe(value: str) -> str:
-        """Return one recursion sentinel."""
         return value
 
-    model = _FinalSynthesisModel()
-    agent = build_fast_agent(
-        model,
-        [
-            StructuredTool.from_function(
-                budget_probe,
-                name="budget_probe",
-                metadata={"effect": "read"},
-            )
-        ],
-        filesystem_backend=FilesystemBackend(root_dir=Path.cwd(), virtual_mode=True),
-        filesystem_tool_names=("read_file",),
-        tool_profiles=(),
+    tool = StructuredTool.from_function(
+        budget_probe,
+        name="budget_probe",
+        description="probe",
+        metadata={"effect": "read"},
     )
-
-    result = agent.invoke(
+    model = _FinalSynthesisModel()
+    result = _agent(tmp_path, model, [tool]).invoke(
         {"messages": [HumanMessage(content="budget-request")]},
         context=AssistantRunContext(),
         config={"recursion_limit": 12},
     )
 
     assert model.tool_choices[-1] == "none"
-    assert result["messages"][-1].content == "final-synthesis-sentinel"
+    assert isinstance(result["messages"][-1], AIMessage)
+    assert not result["messages"][-1].tool_calls
 
 
 @pytest.mark.core_invariant("CTX-001")
-def test_planning_task_write_interrupts_and_resume_does_not_replay() -> None:
+def test_unified_write_tool_interrupts_before_execution(tmp_path: Path) -> None:
     executed: list[str] = []
 
     def write_probe(value: str) -> str:
-        """Record one approved write operation."""
         executed.append(value)
-        return "write-complete"
-
-    write_tool = StructuredTool.from_function(
-        write_probe, name="write_probe", metadata={"effect": "write"}
-    )
-    model = _PlanningWriteModel()
-    fast = build_fast_agent(model, [write_tool])
-    planning = build_planning_agent(model, fast)
-    builder = StateGraph(PlanningAgentState, context_schema=AssistantRunContext)
-    builder.add_node("planning", planning)
-    builder.add_edge(START, "planning")
-    builder.add_edge("planning", END)
-    graph = builder.compile(checkpointer=InMemorySaver())
-    config = {"configurable": {"thread_id": "native-task-hitl-thread"}}
-
-    async def run_and_resume():
-        interrupted = await graph.ainvoke(
-            {
-                "messages": [HumanMessage(content="request-sentinel")],
-                "memory_context": (),
-                "memory_status": "empty",
-                "execution_mode": "planning",
-            },
-            config=config,
-            context=AssistantRunContext(),
-        )
-        runs_before_resume = model.subagent_runs
-        resumed = await graph.ainvoke(
-            Command(resume={"decisions": [{"type": "approve"}]}),
-            config=config,
-            context=AssistantRunContext(),
-        )
-        return interrupted, resumed, runs_before_resume
-
-    interrupted, resumed, runs_before_resume = asyncio.run(run_and_resume())
-    assert interrupted["__interrupt__"][0].value["action_requests"][0]["name"] == "write_probe"
-    assert executed == ["worker-write-sentinel"]
-    assert runs_before_resume == 1
-    assert model.subagent_runs == 2
-    assert any(
-        isinstance(item, ToolMessage)
-        and item.tool_call_id == "task-write-sentinel"
-        and item.content == "worker-write-complete"
-        for item in resumed["messages"]
-    )
-    assert not any(
-        isinstance(item, ToolMessage) and item.name == "write_probe"
-        for item in resumed["messages"]
-    )
-
-
-@pytest.mark.core_invariant("CTX-001")
-def test_fast_mode_write_tool_does_not_interrupt() -> None:
-    executed: list[str] = []
-
-    def write_probe(value: str) -> str:
-        """Record one fast-mode write operation."""
-        executed.append(value)
-        return "write-complete"
+        return value
 
     tool = StructuredTool.from_function(
-        write_probe, name="write_probe", metadata={"effect": "write"}
+        write_probe,
+        name="write_probe",
+        description="probe",
+        metadata={"effect": "write"},
     )
-    graph = build_fast_agent(_FastWriteModel(), [tool])
-    result = graph.invoke(
-        {
-            "messages": [HumanMessage(content="fast-write-sentinel")],
-            "memory_context": (),
-            "memory_status": "empty",
-            "execution_mode": "fast",
-        },
+    result = _agent(tmp_path, _WriteOnceModel(), [tool]).invoke(
+        {"messages": [HumanMessage(content="write-request-sentinel")]},
         context=AssistantRunContext(),
     )
-    assert "__interrupt__" not in result
-    assert executed == ["fast-write-sentinel"]
+
+    assert executed == []
+    assert result["__interrupt__"][0].value["action_requests"][0]["name"] == (
+        "write_probe"
+    )
 
 
 @pytest.mark.core_invariant("CTX-001")
-def test_filesystem_defaults_to_project_and_accepts_explicit_home_paths(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    project_root = tmp_path / "project"
-    home_root = tmp_path / "home"
-    (project_root / "skills" / "demo").mkdir(parents=True)
-    (project_root / "skills" / "demo" / "SKILL.md").write_text(
-        "project skill",
-        encoding="utf-8",
-    )
-    (project_root / "documents").mkdir(parents=True)
-    (project_root / "documents" / "note.txt").write_text(
-        "project note",
-        encoding="utf-8",
-    )
-    (home_root / "documents").mkdir(parents=True)
-    (home_root / "documents" / "note.txt").write_text("home note", encoding="utf-8")
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home_root))
-
-    backend = create_project_skills_backend(project_root)
-
-    assert backend.read("/documents/note.txt").file_data["content"] == "project note"
-    assert (
-        backend.read(str(home_root / "documents" / "note.txt")).file_data["content"]
-        == "home note"
-    )
-    assert backend.read("/skills/demo/SKILL.md").file_data["content"] == "project skill"
-
-
-@pytest.mark.core_invariant("CTX-001")
-def test_fast_filesystem_profile_requires_approval_before_writing(tmp_path) -> None:
-    (tmp_path / "skills").mkdir()
+def test_filesystem_profile_hides_tools_then_interrupts_write(tmp_path: Path) -> None:
     (tmp_path / "source.txt").write_text("source-sentinel", encoding="utf-8")
-    model = _FastFilesystemWriteModel()
-    graph = build_fast_agent(
+    model = _FilesystemWriteModel()
+    result = _agent(
+        tmp_path,
         model,
-        [],
-        filesystem_backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
-    )
-
-    result = graph.invoke(
-        {
-            "messages": [HumanMessage(content="write-file-request")],
-            "memory_context": (),
-            "memory_status": "empty",
-            "execution_mode": "fast",
-        },
+        tool_profiles=project_tool_profiles(),
+    ).invoke(
+        {"messages": [HumanMessage(content="write-file-request")]},
         context=AssistantRunContext(),
     )
 
@@ -775,31 +581,31 @@ def test_fast_filesystem_profile_requires_approval_before_writing(tmp_path) -> N
         and item.tool_call_id == "hidden-read-file-sentinel"
     )
     assert blocked.status == "error"
-    assert result["__interrupt__"][0].value["action_requests"][0]["name"] == "write_file"
+    assert result["__interrupt__"][0].value["action_requests"][0]["name"] == (
+        "write_file"
+    )
     assert not (tmp_path / "sentinel.txt").exists()
 
 
 @pytest.mark.core_invariant("CTX-001")
-def test_fast_browser_profile_hides_mcp_tools_until_activation() -> None:
+def test_browser_profile_hides_tool_then_interrupts_side_effect(tmp_path: Path) -> None:
     def navigate(url: str) -> str:
-        """Navigate to a URL."""
         return url
 
     browser_tool = StructuredTool.from_function(
         navigate,
         name="mcp_playwright_browser_navigate",
+        description="probe",
         metadata={"effect": "dangerous", "source": "mcp"},
     )
-    model = _FastBrowserModel()
-    graph = build_fast_agent(model, [browser_tool])
-
-    result = graph.invoke(
-        {
-            "messages": [HumanMessage(content="browser-request")],
-            "memory_context": (),
-            "memory_status": "empty",
-            "execution_mode": "fast",
-        },
+    model = _BrowserModel()
+    result = _agent(
+        tmp_path,
+        model,
+        [browser_tool],
+        tool_profiles=project_tool_profiles(),
+    ).invoke(
+        {"messages": [HumanMessage(content="browser-request")]},
         context=AssistantRunContext(),
     )
 

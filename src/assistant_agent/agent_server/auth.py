@@ -186,13 +186,16 @@ async def authorize_run_create(
     metadata = value.setdefault("metadata", {})
     if not isinstance(metadata, dict):
         return False
+    assistant_id = str(value.get("assistant_id"))
+    if assistant_id not in {ASSISTANT_GRAPH_ID, MEMORY_GRAPH_ID, WORKER_GRAPH_ID}:
+        return False
     metadata["owner"] = str(ctx.user.identity)
-    if str(value.get("assistant_id")) == MEMORY_GRAPH_ID:
+    if assistant_id == MEMORY_GRAPH_ID:
         return {
             "owner": str(ctx.user.identity),
             THREAD_GRAPH_METADATA_KEY: MEMORY_GRAPH_ID,
         }
-    if str(value.get("assistant_id")) == WORKER_GRAPH_ID:
+    if assistant_id == WORKER_GRAPH_ID:
         if not _authorized_worker_metadata(metadata):
             return False
         return {

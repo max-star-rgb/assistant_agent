@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from assistant_agent.agent_server.auth import (
     authenticate,
@@ -20,9 +21,17 @@ from assistant_agent.agent_server.client import (
     SdkAgentServerClient,
     require_current_checkpoint_graph,
 )
-from assistant_agent.agent_server.config import ASSISTANT_GRAPH_ID, WORKER_GRAPH_ID
+from assistant_agent.agent_server.config import (
+    ASSISTANT_GRAPH_ID,
+    MEMORY_GRAPH_ID,
+    WORKER_GRAPH_ID,
+)
 from assistant_agent.agent_server.media_app import _native_graph_warmup_url
-from assistant_agent.agent_server.media_protocol import MediaProtocolError, parse_chat, parse_envelope
+from assistant_agent.agent_server.media_protocol import (
+    MediaProtocolError,
+    parse_chat,
+    parse_envelope,
+)
 from assistant_agent.agent_server.media_session import MediaConnectionSession
 from assistant_agent.native_agent.context import (
     AssistantRunContext,
@@ -32,19 +41,27 @@ from assistant_agent.native_agent.context import (
 )
 
 
+LEGACY_GRAPH_IDS = (
+    "assistant-native-v1",
+    "assistant-native-v2",
+    "assistant-native-v3",
+)
+
+
 @pytest.mark.core_invariant("GATE-001")
-def test_agent_server_owns_the_production_graph_and_authenticated_media_route() -> None:
+def test_agent_server_registers_only_current_graph_identities() -> None:
     root = Path(__file__).resolve().parents[3]
     manifest = json.loads((root / "langgraph.json").read_text(encoding="utf-8"))
+
     assert manifest["graphs"] == {
-        "assistant-native-v3": (
+        "assistant-native-v4": (
             "assistant_agent.agent_server.graph:native_assistant_graph"
+        ),
+        "assistant-worker-v2": (
+            "assistant_agent.agent_server.graph:native_worker_graph"
         ),
         "assistant-memory-v1": (
             "assistant_agent.agent_server.graph:native_memory_graph"
-        ),
-        "assistant-worker-v1": (
-            "assistant_agent.agent_server.graph:native_worker_graph"
         ),
     }
     assert manifest["http"] == {
@@ -54,33 +71,33 @@ def test_agent_server_owns_the_production_graph_and_authenticated_media_route() 
 
 
 @pytest.mark.core_invariant("GATE-001")
-def test_current_clients_reject_v1_v2_checkpoint_and_thread_at_graph_id_boundary(
+def test_current_clients_reject_legacy_and_unknown_checkpoint_and_thread_graphs(
     monkeypatch,
 ) -> None:
-    """Catches normal or replayed legacy state entering the incompatible v3 graph."""
-
-    assert ASSISTANT_GRAPH_ID == "assistant-native-v3"
+    assert ASSISTANT_GRAPH_ID == "assistant-native-v4"
+    assert WORKER_GRAPH_ID == "assistant-worker-v2"
+    assert MEMORY_GRAPH_ID == "assistant-memory-v1"
     monkeypatch.setenv("ASSISTANT_AGENT_SERVER_PORT", "8089")
     assert _native_graph_warmup_url() == (
-        "http://127.0.0.1:8089/assistants/assistant-native-v3/graph"
+        "http://127.0.0.1:8089/assistants/assistant-native-v4/graph"
     )
-    assert require_current_checkpoint_graph(
-        {"metadata": {"graph_id": "assistant-native-v3"}}
-    ) == "assistant-native-v3"
-    with pytest.raises(IncompatibleCheckpointGraphError):
-        require_current_checkpoint_graph(
-            {"metadata": {"graph_id": "assistant-native-v1"}}
-        )
-    with pytest.raises(IncompatibleCheckpointGraphError):
-        require_current_checkpoint_graph(
-            {"metadata": {"graph_id": "assistant-native-v2"}}
-        )
+    assert (
+        require_current_checkpoint_graph({"metadata": {"graph_id": ASSISTANT_GRAPH_ID}})
+        == ASSISTANT_GRAPH_ID
+    )
+    for graph_id in (*LEGACY_GRAPH_IDS, None):
+        checkpoint = {"metadata": {"graph_id": graph_id}} if graph_id else {}
+        with pytest.raises(IncompatibleCheckpointGraphError):
+            require_current_checkpoint_graph(checkpoint)
 
     class Threads:
+        def __init__(self, graph_id: str | None) -> None:
+            self.graph_id = graph_id
+
         async def get(self, _thread_id: str) -> dict[str, Any]:
             return {
                 "thread_id": "legacy-thread",
-                "metadata": {"assistant_graph_id": "assistant-native-v2"},
+                "metadata": {"assistant_graph_id": self.graph_id},
             }
 
     class Runs:
@@ -91,28 +108,29 @@ def test_current_clients_reject_v1_v2_checkpoint_and_thread_at_graph_id_boundary
             if False:
                 yield None
 
-    sdk = SimpleNamespace(threads=Threads(), runs=Runs())
-    client = object.__new__(SdkAgentServerClient)
-    client._client = sdk
+    for graph_id in (*LEGACY_GRAPH_IDS, None):
+        sdk = SimpleNamespace(threads=Threads(graph_id), runs=Runs())
+        client = object.__new__(SdkAgentServerClient)
+        client._client = sdk
 
-    async def consume() -> None:
-        async for _part in client.stream_run(
-            thread_id="legacy-thread",
-            assistant_id=ASSISTANT_GRAPH_ID,
-            input={"messages": [{"role": "user", "content": "hello"}]},
-            context={},
-            multitask_strategy="enqueue",
-            on_run_created=lambda _run_id: None,
-        ):
-            pass
+        async def consume() -> None:
+            async for _part in client.stream_run(
+                thread_id="legacy-thread",
+                assistant_id=ASSISTANT_GRAPH_ID,
+                input={"messages": [{"role": "user", "content": "hello"}]},
+                context={},
+                multitask_strategy="enqueue",
+                on_run_created=lambda _run_id: None,
+            ):
+                pass
 
-    with pytest.raises(IncompatibleThreadGraphError):
-        asyncio.run(consume())
-    assert sdk.runs.called is False
+        with pytest.raises(IncompatibleThreadGraphError):
+            asyncio.run(consume())
+        assert sdk.runs.called is False
 
 
 @pytest.mark.core_invariant("GATE-001")
-def test_agent_server_auth_binds_studio_threads_and_runs_to_v3() -> None:
+def test_agent_server_auth_accepts_only_current_graph_identities() -> None:
     ctx = SimpleNamespace(user=SimpleNamespace(identity="studio-user"))
     created = {"metadata": {}}
     assert asyncio.run(authorize_thread_create(ctx, created)) is None
@@ -120,51 +138,71 @@ def test_agent_server_auth_binds_studio_threads_and_runs_to_v3() -> None:
         "assistant_graph_id": ASSISTANT_GRAPH_ID,
         "owner": "studio-user",
     }
-    legacy_create = {"metadata": {"assistant_graph_id": "assistant-native-v2"}}
-    assert asyncio.run(authorize_thread_create(ctx, legacy_create)) is False
-    memory_create = {"graph_id": "assistant-memory-v1", "metadata": {}}
+    for graph_id in (*LEGACY_GRAPH_IDS, "unknown-graph"):
+        value = {"metadata": {"assistant_graph_id": graph_id}}
+        assert asyncio.run(authorize_thread_create(ctx, value)) is False
+
+    memory_create = {"graph_id": MEMORY_GRAPH_ID, "metadata": {}}
     assert asyncio.run(authorize_thread_create(ctx, memory_create)) is None
-    assert memory_create["metadata"]["assistant_graph_id"] == "assistant-memory-v1"
-    worker_create = {"graph_id": WORKER_GRAPH_ID, "metadata": {}}
+    assert memory_create["metadata"]["assistant_graph_id"] == MEMORY_GRAPH_ID
+    worker_metadata = assistant_runtime_metadata(
+        AssistantRuntimeFacts(
+            entry_profile="async_worker",
+            repository_snapshot_sha="a" * 40,
+        )
+    )
+    worker_create = {
+        "graph_id": WORKER_GRAPH_ID,
+        "metadata": dict(worker_metadata),
+    }
     assert asyncio.run(authorize_thread_create(ctx, worker_create)) is None
     assert worker_create["metadata"]["assistant_graph_id"] == WORKER_GRAPH_ID
 
     updated = {
-        "thread_id": "thread-v3",
+        "thread_id": "thread-v4",
         "metadata": {"assistant_graph_id": ASSISTANT_GRAPH_ID, "label": "kept"},
     }
-    update_filter = asyncio.run(authorize_thread_update(ctx, updated))
-    assert update_filter == {
+    assert asyncio.run(authorize_thread_update(ctx, updated)) == {
         "owner": "studio-user",
         "assistant_graph_id": ASSISTANT_GRAPH_ID,
     }
-    legacy_update = {
-        "thread_id": "thread-v2",
-        "metadata": {"assistant_graph_id": "assistant-native-v2"},
-    }
-    assert asyncio.run(authorize_thread_update(ctx, legacy_update)) is False
-    rollback = {"thread_id": "thread-v2", "action": "rollback"}
+    for graph_id in (*LEGACY_GRAPH_IDS, "unknown-graph"):
+        legacy_update = {
+            "thread_id": "legacy-thread",
+            "metadata": {"assistant_graph_id": graph_id},
+        }
+        assert asyncio.run(authorize_thread_update(ctx, legacy_update)) is False
+    rollback = {"thread_id": "legacy-thread", "action": "rollback"}
     assert asyncio.run(authorize_thread_update(ctx, rollback)) == {
         "owner": "studio-user"
     }
 
     run = {"assistant_id": ASSISTANT_GRAPH_ID, "metadata": {}}
-    run_filter = asyncio.run(authorize_run_create(ctx, run))
-    assert run_filter == {
+    assert asyncio.run(authorize_run_create(ctx, run)) == {
         "owner": "studio-user",
         "assistant_graph_id": ASSISTANT_GRAPH_ID,
     }
     assert run["context"] == {}
-    memory_run = {"assistant_id": "assistant-memory-v1", "metadata": {}}
+    memory_run = {"assistant_id": MEMORY_GRAPH_ID, "metadata": {}}
     assert asyncio.run(authorize_run_create(ctx, memory_run)) == {
         "owner": "studio-user",
-        "assistant_graph_id": "assistant-memory-v1",
+        "assistant_graph_id": MEMORY_GRAPH_ID,
     }
-    worker_run = {"assistant_id": WORKER_GRAPH_ID, "metadata": {}}
+    worker_run = {
+        "assistant_id": WORKER_GRAPH_ID,
+        "metadata": dict(worker_metadata),
+    }
     assert asyncio.run(authorize_run_create(ctx, worker_run)) == {
         "owner": "studio-user",
         "assistant_graph_id": WORKER_GRAPH_ID,
     }
+    for graph_id in (*LEGACY_GRAPH_IDS, "unknown-graph"):
+        assert (
+            asyncio.run(
+                authorize_run_create(ctx, {"assistant_id": graph_id, "metadata": {}})
+            )
+            is False
+        )
 
 
 @pytest.mark.core_invariant("GATE-001")
@@ -182,58 +220,63 @@ def test_media_connection_only_correlates_native_thread_run_and_delivery_ids() -
     assert session.deliveries == {}
 
 
+def _chat_body(**extra: object) -> dict[str, object]:
+    return {
+        "chatIndex": "chat-1",
+        "userNumber": "user-1",
+        "contents": [
+            {
+                "speakerNumber": "user-1",
+                "time": "1",
+                "speechContent": "hello",
+            }
+        ],
+        "stream": True,
+        **extra,
+    }
+
+
 @pytest.mark.core_invariant("GATE-001")
-def test_media_wire_parser_is_strict_and_does_not_define_graph_lifecycle() -> None:
+def test_media_wire_parser_rejects_removed_assistant_mode() -> None:
     envelope = parse_envelope(
         {
             "message": "chat",
             "sessionId": "vendor-session",
-            "body": json.dumps(
-                {
-                    "chatIndex": "chat-1",
-                    "userNumber": "user-1",
-                    "contents": [
-                        {
-                            "speakerNumber": "user-1",
-                            "time": "1",
-                            "speechContent": "hello",
-                        }
-                    ],
-                    "stream": True,
-                }
-            ),
+            "body": json.dumps(_chat_body()),
         }
     )
     assert parse_chat(envelope).text == "hello"
+    legacy = parse_envelope(
+        {"message": "chat", "body": json.dumps(_chat_body(assistantMode="planning"))}
+    )
+    with pytest.raises(MediaProtocolError):
+        parse_chat(legacy)
     with pytest.raises(MediaProtocolError):
         parse_envelope({"message": "chat", "body": "not-json"})
 
 
 @pytest.mark.core_invariant("IDENT-001")
 def test_assistant_context_is_public_configuration_not_private_run_facts() -> None:
-    context = AssistantRunContext.model_validate(
-        {
-            "execution_mode": "planning",
-            "enable_memory": False,
-        }
-    )
-    assert set(type(context).model_fields) == {
-        "execution_mode",
-        "enable_memory",
-    }
+    context = AssistantRunContext.model_validate({"enable_memory": False})
+    assert set(type(context).model_fields) == {"enable_memory"}
     assert context.enable_memory is False
+    with pytest.raises(ValidationError):
+        AssistantRunContext.model_validate({"execution_mode": "planning"})
+
     facts = assistant_runtime_facts(
         {
             "metadata": assistant_runtime_metadata(
                 AssistantRuntimeFacts(
                     entry_profile="agent_service",
                     visual_capability_token="opaque-capability",
+                    repository_snapshot_sha="a" * 40,
                 )
             )
         }
     )
     assert facts.entry_profile == "agent_service"
     assert facts.visual_capability_token == "opaque-capability"
+    assert facts.repository_snapshot_sha == "a" * 40
 
 
 @pytest.mark.core_invariant("IDENT-001")
