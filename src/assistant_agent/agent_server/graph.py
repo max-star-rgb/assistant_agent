@@ -30,6 +30,14 @@ async def native_memory_graph(runtime: ServerRuntime):
     yield owner.memory_graph
 
 
+@asynccontextmanager
+async def native_worker_graph(runtime: ServerRuntime):
+    """Yield the independent read-only background worker graph."""
+
+    owner = await _get_process_owner(store=runtime.store)
+    yield owner.worker_graph
+
+
 async def _get_process_owner(*, store) -> AgentServerExecutionOwner:
     global _process_owner
     if _process_owner is not None:
@@ -63,4 +71,5 @@ __all__ = [
     "get_native_assistant_execution_attestation",
     "native_assistant_graph",
     "native_memory_graph",
+    "native_worker_graph",
 ]

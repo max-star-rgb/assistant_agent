@@ -1,6 +1,6 @@
 # LangChain-native Tool 与扩展架构
 
-最后更新：2026-08-25
+最后更新：2026-08-27
 
 ## Authority contract
 
@@ -23,27 +23,37 @@ discovery 或 Registry lookup。
 
 进程 composition 仍把完整静态 `BaseTool` inventory 注册给 `create_agent` / `ToolNode`，但完整注册不等于每次
 模型调用全部可见。仓库 Skill 使用 Agent Skills 标准目录与 `SKILL.md` YAML frontmatter；Deep Agents
-`SkillsMiddleware` 通过只读虚拟根 `FilesystemBackend` 在 `before_agent` 发现 L0 元数据，并从同一份 runtime state
+`SkillsMiddleware` 通过绑定项目 Skill 路由的虚拟 `CompositeBackend` 在 `before_agent` 发现 `/skills/` 下的 L0 元数据，并从同一份 runtime state
 向 system message 注入目录。项目只通过 middleware 原生支持的 `system_prompt` 模板压缩目录说明，不替换 discovery、
 state 或读取机制；模板只说明明确匹配时读取、Skill 不授予 Tool，以及不得向用户复述内部读取流程，不包含上游通用脚本
-教程或无关示例。配套的上游 `FilesystemMiddleware(tools=["read_file"])` 只绑定该 Skill 虚拟根，模型用
-标准 `read_file` 读取目录给出的 `SKILL.md` 和其中引用的 supporting files；它不注册 `ls/glob/grep`、写入、删除或
-执行 Tool，也不恢复项目原有 `file_read`。
+教程或无关示例。配套的上游 `FilesystemMiddleware` 复用同一 backend：默认虚拟根映射当前项目，显式
+`/home/lenovo1/...` 路径映射当前用户主目录。标准 `read_file` 既可通过 `/skills/` 读取项目 `SKILL.md` 和 supporting files，也可读取授权范围内的普通文件；fast 还使用上游 `ls/write_file/edit_file/delete/glob/grep`，
+但不启用 `execute`，也不恢复项目原有 `file_read`。这些文件 Tool 全部归入 `filesystem` Tool Profile，激活前不进入
+模型可见 schema。
 
 Skill 与 Tool 可见性是两条独立机制。上游 Skills 体系不维护项目 `loaded_skill_ids` 或 reference grant；
 `read_file` 的标准 `ToolMessage` 只进入当前角色 transcript。标准 `SKILL.md` 不声明项目 Tool 权限，也不能激活 Tool。
 
 通用 `ToolProfileMiddleware` 是 `create_agent` 级能力：受信静态 catalog 把 profile ID 映射到已经注册的 Tool 名，
 middleware 自带只读控制 Tool `activate_tool_profile(profile_id)`，并在当前 Agent invocation 的后续 model call 中按
-`active_tool_profile_ids` 缩小 `ModelRequest.tools`。激活不会执行业务动作，profile ID 不能由 Skill、Todo、子 Agent
+`active_tool_profile_ids` 缩小 `ModelRequest.tools`。同一 middleware 还在原生 `wrap_tool_call` 边界复核当前
+profile state：模型若从历史消息生成未开放 Tool，任何抵达执行边界的调用都只返回提示先激活对应 Profile 的 error
+`ToolMessage`，不进入 Tool handler；激活后模型可重试原调用。激活不会执行业务动作，profile ID 不能由 Skill、Todo、子 Agent
 文本或 Tool artifact 动态声明；具体 Tool 的身份、授权、参数与副作用校验保持不变。未归属任何 Tool Profile 的 Tool
 始终独立可见。
 
-planning coordinator 是独立的官方 `create_agent`：它可使用只读 `read_file` 在任务拆解前读取专项知识，并使用
-`write_todos` 与 `task`；它不装配 `ToolProfileMiddleware`，因此不能激活 profile 或调用业务 Tool。执行子 Agent 复用
+planning coordinator 是独立的官方 `create_agent`：它可激活 `filesystem` Profile，使用只读文件 Tool 在任务拆解前读取专项知识，并使用
+`write_todos` 与 `task`；它只装配 `filesystem` 和 `async-tasks` Profile，不装配或调用业务 Tool。执行子 Agent 复用
 `AssistantFastAgent`。Planner 是否读取 Skill 仍由 LLM 自主决定；创建 task 时把相关约束写入完整 description，worker
 也可通过自己的上游 Skills middleware 自主读取。Planner 与 worker 不传递 Skill metadata、读取 transcript 或加载状态，
 worker 的 Skill/Profile state 不回写 Planner，Skill 内容也不构成 profile 或业务 Tool 授权。
+
+fast 与 planning coordinator 还静态装配 Deep Agents `AsyncSubAgentMiddleware` 的
+`start/check/update/cancel/list_async_task(s)` Tool，并把五者统一归入 `async-tasks` Profile；激活前不进入模型可见
+Tool schema，激活后才在当前 invocation 中全部开放。项目保留上游 Tool name、schema、参数名、枚举与 state contract，
+只把模型可见 description 覆盖为保留上述英文协议名词的中文说明，并用窄 transport 适配补齐 worker graph ID 和当前
+Agent Server identity；后台 worker 本身不装配这些 Tool，且业务 inventory
+只保留 `effect=read`，因此首版不形成递归 delegation 或异步副作用/HITL 路径。
 
 媒体 Tool 使用另一条与 Skill 正交的条件暴露链。`ConditionalToolExposureMiddleware` 只过滤已经静态注册在
 `request.tools` 中的 Tool，并按 Tool metadata 的封闭 `availability` 枚举读取可信运行事实：
@@ -66,7 +76,7 @@ WebSocket 已成功完成 `callType=VIDEO` 的 control 握手，且本轮冻结�
   结构化业务结果作为 artifact，`response_format="content_and_artifact"` 返回这组标准二元值；LangChain
   据此原生构造 `ToolMessage(content, artifact)`。该边界不定义项目私有 Tool 输出或 UI 渲染协议；失败
   抛出 `ToolException`；
-- metadata 至少声明 `effect=read|generate|write|dangerous` 与 `source=builtin|mcp`。
+- metadata 至少声明 `effect=read|generate|write|dangerous` 与 `source=builtin|deepagents|mcp`。
 
 `uploaded_media_inspect`、`live_view_inspect`、`visual_memory_search` 和 `visual_reminder_manage` 都由原生
 函数 Tool 工厂构造；Tool
@@ -81,19 +91,20 @@ WebSocket 已成功完成 `callType=VIDEO` 的 control 握手，且本轮冻结�
 只读 Tool 由 `ToolRetryMiddleware` 做有界重试，重试耗尽后产生 error `ToolMessage`；非 read 内建 Tool
 使用官方 `BaseTool.handle_tool_error` 把 native boundary 抛出的 `ToolException` 转为同类 error
 `ToolMessage`，因此无需替换默认 `ToolNode`。native boundary 会先脱敏未知异常，领域 Request 校验也在
-该边界内成为有界、可解释的 `ToolException`。fast 模式不触发 HITL；planning 模式的非 read Tool 由
-`HumanInTheLoopMiddleware` 在执行前产生原生 interrupt。schema、身份与授权仍由具体 Tool/业务 adapter 校验；
+该边界内成为有界、可解释的 `ToolException`。fast 模式继续自动放行本地业务 Tool，但 Deep Agents 文件 Tool 与
+MCP Tool 的非 read 调用必须由 `HumanInTheLoopMiddleware` 在执行前产生原生 interrupt；planning 模式对全部非 read
+Tool 保持同一审批边界。schema、身份与授权仍由具体 Tool/业务 adapter 校验；
 外部副作用幂等属于具体 Tool 或业务 API，主链不再维护通用 operation ledger。
 `live_view_inspect` 为避免重复当前画面调用而不进入 read retry 清单，但仍单独启用同一个
 `BaseTool.handle_tool_error` 边界；关键帧 capability 在暴露后失效时只返回一次 error `ToolMessage`。
 
-fast `create_agent` 与 planning coordinator 使用官方 `ModelCallLimitMiddleware` 提供每个 invocation 最多 12 次
-model call 的安全上限，不设置跨 Tool 的总调用上限，也不写 usage、reservation 或 recovery ledger。
-composition 机械构造唯一 `PerToolCallLimitMiddleware.after_model` 节点：每个 Tool 同一组规范化 JSON 参数在一个 run
-最多执行一次，每个 Tool 最多执行 12 组不同参数；重复或超限调用生成标准 error `ToolMessage`，其他 Tool 和同批允许
-调用继续执行。业务 Tool 可在受信静态 metadata 中用正整数 `run_call_limit` 声明更低上限。该策略不读取用户文本或
-运行时 artifact，不跨 Tool 汇总计数。当前 `live_view_inspect` 声明 `run_call_limit=1`；fast/planning 装配均不识别
-具体 Tool 名。
+fast、planning 与 coding 不设置 model call 次数或单个 Tool 的 run 累计次数上限。Studio/调用方提供的 LangGraph
+`recursion_limit` 是整个图的外层防死循环保险丝；项目 middleware 通过原生 `RemainingSteps` 感知剩余 superstep，
+在只剩 8 步时使用 `BaseChatModel.bind_tools([], tool_choice="none")` 配合 `ModelRequest.override(tools=[])`
+完成一次自然综合答复，避免额度真正耗尽后抛出 `GraphRecursionError`，不注入人工限额 `AIMessage`。
+composition 机械构造唯一 `PerToolCallLimitMiddleware.after_model` 节点：同一 model superstep 内同名 Tool 最多并行
+调用 12 个实例；超限调用生成标准 error `ToolMessage`，其他 Tool 和同批允许调用继续执行。后续 model turn 可再次
+调用任意参数，包括与历史调用相同的参数；项目不保存跨轮参数 fingerprint，也不维护单 Tool 或跨 Tool 的 run 总量。
 
 fast agent 的最内层 `ToolProgressMiddleware` 使用官方 `ToolRuntime.stream_writer` 向原生 custom stream 发出
 每次逻辑 Tool 调用的 `started` 和 `completed|failed` 生命周期。事件只携带 `type=tool_progress`、标准
@@ -122,8 +133,9 @@ Tool 的 `artifact` 保留全部规范化 `ShoppingSearchResult`，`content` 按
 镜像、plugin-private runner 或 Registry。旧 `personal_assistant_tools` / `email_tools` 远端映射已删除，MCP
 能力直接使用官方 adapter 生成的标准 Tool。MCP tool discovery 属于 worker 进程 composition，只执行一次；schema、history、state 与
 run 复用同一个 compiled graph 和 Tool 集合，实际 MCP Tool 调用仍遵循官方按调用创建 session 的行为。
-production composition 创建一个指向仓库 `skills/` 的只读虚拟根 backend，并把同一 backend 显式注入 Deep Agents
-`SkillsMiddleware` 与只注册 `read_file` 的 `FilesystemMiddleware`；`SkillsMiddleware` 仍使用上游构造和 prompt 插槽，
+production composition 创建一个默认指向当前项目、并将显式 `/home/lenovo1/...` 路径路由到当前用户主目录的虚拟 `CompositeBackend`，再把同一 backend 显式注入 Deep Agents
+`SkillsMiddleware` 与原生 `FilesystemMiddleware`；前者只从 `/skills/` 发现 Skill，后者向 fast 注册完整文件 Tool、向
+planning coordinator 和只读后台 worker 注册 read 子集；`SkillsMiddleware` 仍使用上游构造和 prompt 插槽，
 但传入项目精简模板，不使用上游面向通用脚本型 Skill 的长教程。planning coordinator 只引用已经编译的 fast agent。
 元数据由上游 middleware 在每个 Agent invocation 的 `before_agent` 中发现，正文和 supporting files 只在标准
 `read_file` 实际调用时读取；不存在项目自建 `SkillCatalog`、`skill.toml`、Skill loader 或宿主文件读取兼容路径。
@@ -133,7 +145,9 @@ production composition 创建一个指向仓库 `skills/` 的只读虚拟根 bac
 高德 App，其他终端使用高德 H5 页面。
 
 Tool Profile 使用上述最终 namespace 名，因此 MCP Tool 与本地 Tool 使用同一通用激活机制。未归属 Tool Profile 的
-allowlisted MCP Tool 默认对模型可见。高德 `mcp_amap_maps_maps_weather` 明确不归 `travel` Tool Profile，保持独立
+allowlisted MCP Tool 默认对模型可见。Playwright MCP 的默认 core automation Tool 统一归入 `browser` Profile，只有
+`activate_tool_profile(profile_id="browser")` 成功后才对 fast 模型可见；其中非 read Tool 继续经过 fast HITL。高德
+`mcp_amap_maps_maps_weather` 明确不归 `travel` Tool Profile，保持独立
 暴露，使单独天气问题无需激活旅行工具组；旅行 Skill 在活动可成行性判断中仍可指导执行 Agent 直接使用这个独立只读 Tool。
 
 MCP 只有一份 `MCPServerConfig` 文件 schema：根对象包含 `servers` 列表，每个 server 只声明官方 adapter
@@ -151,52 +165,18 @@ StateGraph 的标准 `ToolNode` 执行真实 Tool。durable task 不伪造 Agent
 
 ## AI Coding Tool 边界
 
-coding 模式使用独立静态 Tool inventory：`coding_repo_list`、`coding_repo_search`、`coding_repo_read`、
-`coding_repo_status`、`coding_repo_diff` 与 `coding_propose_patch`。前五项是 read Tool；proposal 是
-`effect=generate`，只返回经受信 backend 验证的候选 patch artifact，不写文件。身份、thread 和 workspace
-均由 `ToolRuntime` 与 Agent Server 事实解析，不进入模型 schema。
+coding 模式不再维护项目自研 Tool inventory。父图的 `coding_agent` 是 Deep Agents 官方
+`create_deep_agent`：Todo、filesystem、subagent 和 shell Tool 均由上游 middleware 注入并由标准 `ToolNode`
+执行。项目不注册 `coding_repo_*`、`coding_propose_patch`、patch apply、validation、review、commit 或 merge Tool。
 
-只读并行 analysis agent 精确复用前五项 read Tool，且每次调用只能通过 checkpoint 中的精确
-`workspace_ref + base_commit` 对 process-owned service 执行只读认证 lookup，再访问同一 active snapshot；它不调用
-会创建、续期、reap 或清理 workspace 的 resolve 路径。analysis inventory 不包含 proposal 或任何 mutation Tool，
-其模型调用固定 `provider_search_profile=none`，即使普通主链显式启用了 Provider-native search 也不得带入分析阶段。
-analysis Tool 的 retry 只覆盖明确 transient cause chain；身份、权限、snapshot、schema、路径和其他安全错误立即传播，
-耗尽后的 transient 错误也传播到 worker 的受信失败分类，不能转换成供模型继续生成 succeeded result 的 error ToolMessage。
+唯一项目边界是 `CodingWorkspaceBackend`：它实现 Deep Agents `SandboxBackendProtocol`，从 LangGraph runtime
+读取认证 identity 与 thread，并使用进程装配时固定的内部 repository ID，将所有操作委托给当前隔离 worktree 的官方
+`LocalShellBackend`。
 
-final coding review 使用独立的静态只读 profile，并精确复用上述五个 snapshot-bound read Tool；三个并行 reviewer
-只能读取父 checkpoint 冻结的 final snapshot，固定 `provider_search_profile=none`。review profile 不包含
-`coding_propose_patch`、shell、validation command、dependency/artifact/credential、commit/merge 或任何 mutation
-Tool；review decision 是父 Graph 自有 interrupt，也不是 Tool。普通 reviewer/capability failure 只能形成 signed
-`unavailable` result 并由 canonical report 派生 `unavailable`，不会触发 Tool 写入、自动 patch、自动 repair 或自动 approval。
-pending review 的 Tool read 要求 active v2 immutable manifest；legacy、schema/digest mismatch、identity/permission 和
-snapshot contract 错误 fail closed，不能由 read retry 转换为可继续的模型观察。completed report resume 是否允许
-fresh snapshot rebind 由 runtime checkpoint contract 决定，不扩大 Tool 的 snapshot validation 或生命周期 ownership。
-
-实际 patch apply 是 `AssistantCodingGraph` 的确定性节点，不注册为 Tool。coding inventory 不加入普通
-fast/planning Agent；coding 不提供 shell、delete、commit、merge、push 或任意宿主路径访问。路径、symlink、
-protected glob、UTF-8、大小、base commit、file digest 和 patch digest 均由 Tool/backend fail closed 校验。
-
-阶段 2 的 test/lint/format/build 也不注册为模型 Tool。服务端 repository allowlist 把稳定 command ID 映射为
-固定 argv、kind 和资源上限，并由 Graph 在已批准 patch apply 后按固定 sequence 调用；模型、客户端和消息都
-不能提交 argv、cwd、env、shell syntax 或 command ID。test/lint/build 的 scratch 写入全部丢弃；format 的
-增量 diff 只有重新通过 patch validator 和独立 HITL 后才写入 worktree。命令执行资源生命周期归 Agent Server
-authority。repository 显式启用阶段 4A sandbox 后，这些固定命令迁入本地 digest-pinned Docker image，并只由
-协议合规镜像内的固定 trusted runner 执行；runner 只承担只读输入复制、离线命令执行和有界结构化结果返回。
-sandbox backend、Docker CLI、image、container ID、network、mount、environment 和资源参数都不是
-`BaseTool`，也不进入模型 schema。sandbox 默认断网且不注入宿主秘密，任何失败禁止回退宿主执行。联网、
-Stage 4B1/4B2 的 dependency intent、依赖审批、credential lease 审批、proxy/gateway/downloader 与离线 install
-同样不是 Tool：模型、客户端和消息不能
-提交 lockfile、package、registry、host、port、image、argv、proxy、network 或环境变量。intent 只来自 patch
-changed paths 与 repository 静态 profile；验证容器仍断网。私有 registry 只支持 operator-owned profile、专用
-环境变量 broker 和固定 gateway stdin loader，凭据不进入模型 schema、ToolRuntime、Graph state 或 downloader。
-用户提交 secret、身份驱动 credential selection、其他 ecosystem 和通用 artifact 外部资源能力仍不存在。
-
-阶段 3 的 controlled commit、merge preview 与 merge apply 同样不是模型 Tool。模型和客户端不能提交 target
-branch、commit message、author、Git argv、strategy 或 result commit；这些事实只来自 repository 配置和受信
-integration service。merge approval 是 Graph 自有 interrupt，不把 commit/merge 暴露进任何 Tool inventory。
-push、PR、fetch/pull、远程凭据和自动冲突修复没有注册或隐式执行路径。
-final review 的 reviewer、report 与 user decision 同样不会增加这些能力；integration 关闭时 review approve 只结束
-Graph，不能借由 Tool inventory 创建 commit 或 merge。
+`write_file`、`edit_file`、`delete`、`execute` 使用 Deep Agents 官方
+`HumanInTheLoopMiddleware`；审批、interrupt、checkpoint 和 resume 不经过项目自建 executor。当前本地
+`LocalShellBackend` 不是容器隔离，生产不受信执行必须替换 backend。没有专用或无人审批的 commit、merge、push、PR、
+依赖凭据和 artifact ingress 流程；批准 `execute` 仍可能运行 Git、网络和 worktree 外宿主操作。
 
 ## Provider-native 能力
 
@@ -230,10 +210,3 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
   tests/core/contract/test_tool_contract.py \
   tests/core/contract/test_extension_contract.py
 ```
-
-### Stage 5C immutable review Tool profile（2026-08-24）
-
-- Final-review profile 固定且只读：`coding_repo_list`、`coding_repo_search`、`coding_repo_read`、`coding_repo_status`、`coding_repo_diff`。五条生产路径全部调用 `CodingWorkspaceService.*_analysis_snapshot`，由 immutable manifest、identity/thread/workspace binding、inode/mode/size/content digest 与 snapshot 前后校验保护；`coding_repo_read` 的受信 artifact 额外携带实际 content bytes digest；不得把 `resolve_analysis_snapshot()` 返回的裸 `Path` 交给旧 live `list_files` / `search`。
-- reviewer Tool 错误若 cause chain 含 `CodingWorkspaceError`、`PermissionError`、LangGraph control-flow 或 cancellation，必须原样传播到父图 fail closed；current-v2 read observation 的 snapshot/tree/content/path binding mismatch 同样转换为 `coding_review_binding_mismatch`，只有非安全的 provider/structured-output 不可用才规范化为 `unavailable`。
-- reviewer evidence 的 `content_digest` 来自受信 `coding_repo_read` artifact 覆盖的实际内容字节，`evidence_digest` 再绑定 path、line、excerpt 与该 content digest；模型自述文本不能自行成为证据 identity。
-- reviewer 总 model round 上限为 9，总 ToolCall 上限同为 9：最多 8 次 read Tool 后，第 9 次只供 ToolStrategy 结构化结果；未知 Tool 仍进入总 ToolCall/model round 预算，不能借名称过滤获得额外轮次。

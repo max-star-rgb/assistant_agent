@@ -70,7 +70,7 @@ class NativeGraphEvaluationTarget:
         execution_mode: ExecutionMode = "fast",
         metadata: dict[str, Any] | None = None,
     ) -> NativeGraphEvaluationResult:
-        context = AssistantRunContext()
+        context = AssistantRunContext(execution_mode=execution_mode)
         run_metadata = dict(metadata or {})
         run_metadata.update(
             assistant_runtime_metadata(
@@ -82,7 +82,6 @@ class NativeGraphEvaluationTarget:
                 "messages": [
                     HumanMessage(content=text, additional_kwargs=dict(metadata or {}))
                 ],
-                "execution_mode": execution_mode,
             },
             config={
                 "configurable": {

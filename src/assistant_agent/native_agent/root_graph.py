@@ -4,18 +4,17 @@ from __future__ import annotations
 
 from functools import partial
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 from langchain_core.runnables import RunnableConfig
-from langgraph.errors import NodeError
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
-from langgraph.types import Command, RetryPolicy
+from langgraph.types import RetryPolicy
 from langgraph_sdk import get_client
 
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.memory import (
     MemoryBackend,
-    memory_recall_degraded,
     memory_recall_node,
 )
 from assistant_agent.native_agent.state import AssistantRootInput, AssistantRootState
@@ -24,6 +23,7 @@ from assistant_agent.native_agent.state import AssistantRootInput, AssistantRoot
 MEMORY_ASSISTANT_ID = "assistant-memory-v1"
 DEFAULT_EXTRACTION_DELAY_SECONDS = 1800
 MEMORY_EXTRACTION_RUN_KIND = "memory_extraction"
+MEMORY_SOURCE_THREAD_KEY = "assistant_agent_source_thread_id"
 PENDING_RUN_PAGE_SIZE = 100
 
 
@@ -32,7 +32,7 @@ def build_assistant_root_graph(
     memory_backend: MemoryBackend,
     fast_agent: Any,
     planning_agent: Any,
-    coding_graph: Any,
+    coding_agent: Any,
     extraction_delay_seconds: int = DEFAULT_EXTRACTION_DELAY_SECONDS,
 ):
     """Compose recall, execution, and post-answer Memory debounce."""
@@ -51,12 +51,11 @@ def build_assistant_root_graph(
             max_attempts=3,
             jitter=False,
         ),
-        error_handler=memory_recall_degraded,
     )
     builder.add_node("execution_router", execution_router_node)
     builder.add_node("fast_agent", fast_agent)
     builder.add_node("planning_agent", planning_agent)
-    builder.add_node("coding_graph", coding_graph)
+    builder.add_node("coding_agent", coding_agent)
     builder.add_node(
         "refresh_memory_extraction",
         partial(
@@ -70,7 +69,6 @@ def build_assistant_root_graph(
             max_attempts=3,
             jitter=False,
         ),
-        error_handler=memory_extraction_refresh_degraded,
     )
     builder.add_edge(START, "memory_recall")
     builder.add_edge("memory_recall", "execution_router")
@@ -80,12 +78,12 @@ def build_assistant_root_graph(
         {
             "fast": "fast_agent",
             "planning": "planning_agent",
-            "coding": "coding_graph",
+            "coding": "coding_agent",
         },
     )
     builder.add_edge("fast_agent", "refresh_memory_extraction")
     builder.add_edge("planning_agent", "refresh_memory_extraction")
-    builder.add_edge("coding_graph", "refresh_memory_extraction")
+    builder.add_edge("coding_agent", "refresh_memory_extraction")
     builder.add_edge("refresh_memory_extraction", END)
     return builder.compile(name="AssistantRootGraph")
 
@@ -94,12 +92,9 @@ def execution_router_node(
     state: AssistantRootState,
     runtime: Runtime[AssistantRunContext],
 ) -> dict[str, object]:
-    """Normalize an optional assistant-scoped planning preset into graph state."""
+    """Freeze immutable runtime routing context into checkpointed graph state."""
 
-    preset = runtime.context.assistant_execution_mode
-    if preset is None:
-        return {"execution_mode": state.get("execution_mode", "fast")}
-    return {"execution_mode": "planning"}
+    return {"execution_mode": runtime.context.execution_mode}
 
 
 def route_execution_mode(state: AssistantRootState) -> str:
@@ -114,6 +109,7 @@ def route_execution_mode(state: AssistantRootState) -> str:
 async def refresh_memory_extraction_node(
     state: AssistantRootState,
     config: RunnableConfig,
+    runtime: Runtime[AssistantRunContext],
     *,
     delay_seconds: int,
     enabled: bool,
@@ -121,15 +117,25 @@ async def refresh_memory_extraction_node(
 ) -> dict[str, object]:
     """Replace the old delayed Memory run after producing the answer."""
 
-    if not enabled:
+    if not enabled or not runtime.context.enable_memory:
         return {}
-    thread_id = _thread_id(config)
+    source_thread_id = _thread_id(config)
+    memory_thread_id = str(
+        uuid5(NAMESPACE_URL, f"assistant-agent:memory:{source_thread_id}")
+    )
     client = get_client()
+    memory_thread = await client.threads.create(
+        thread_id=memory_thread_id,
+        graph_id=assistant_id,
+        metadata={MEMORY_SOURCE_THREAD_KEY: source_thread_id},
+        if_exists="do_nothing",
+    )
+    memory_thread_id = str(memory_thread["thread_id"])
     pending_runs: list[dict[str, Any]] = []
     offset = 0
     while True:
         page = await client.runs.list(
-            thread_id,
+            memory_thread_id,
             status="pending",
             limit=PENDING_RUN_PAGE_SIZE,
             offset=offset,
@@ -145,13 +151,13 @@ async def refresh_memory_extraction_node(
         if metadata.get("assistant_agent_run_kind") != MEMORY_EXTRACTION_RUN_KIND:
             continue
         await client.runs.cancel(
-            thread_id,
+            memory_thread_id,
             str(run["run_id"]),
             wait=True,
             action="rollback",
         )
     await client.runs.create(
-        thread_id=thread_id,
+        thread_id=memory_thread_id,
         assistant_id=assistant_id,
         input={"messages": list(state.get("messages", ()))},
         metadata={"assistant_agent_run_kind": MEMORY_EXTRACTION_RUN_KIND},
@@ -159,16 +165,6 @@ async def refresh_memory_extraction_node(
         multitask_strategy="enqueue",
     )
     return {}
-
-
-def memory_extraction_refresh_degraded(
-    _state: AssistantRootState,
-    error: NodeError,
-) -> Command[str]:
-    """Keep post-answer Memory orchestration failure from invalidating an answer."""
-
-    del error
-    return Command(goto=END)
 
 
 def _thread_id(config: RunnableConfig) -> str:
@@ -184,7 +180,6 @@ __all__ = [
     "MEMORY_EXTRACTION_RUN_KIND",
     "build_assistant_root_graph",
     "execution_router_node",
-    "memory_extraction_refresh_degraded",
     "refresh_memory_extraction_node",
     "route_execution_mode",
 ]

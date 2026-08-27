@@ -1,26 +1,55 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_core.tools import tool
+from blockbuster import blockbuster_ctx
+from langchain.agents.middleware import ModelCallLimitMiddleware
+from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
 from langgraph.store.memory import InMemoryStore
+from langgraph.types import Command
 from langgraph_sdk.auth.types import StudioUser
-from pydantic import ValidationError
+from pydantic import PrivateAttr, ValidationError
 
+from assistant_agent.coding import config as coding_config_module
 from assistant_agent.agent_server import services
 from assistant_agent.agent_server.services import AgentServerExecutionOwner
-from assistant_agent.coding import review as coding_review
-from assistant_agent.coding.config import CodingRepositoryConfig
-from assistant_agent.coding.models import CodingAnalysisSnapshot, CodingReviewInput
-from assistant_agent.coding.workspace import CodingWorkspaceError
+from assistant_agent.native_agent import coding_agent as coding_agent_module
+from assistant_agent.native_agent.coding_agent import build_coding_agent
 from assistant_agent.native_agent.context import AssistantRunContext
+from assistant_agent.native_agent.fast_agent import RecursionFinalSynthesisMiddleware
 from assistant_agent.native_agent.providers import MockAssistantChatModel
-from assistant_agent.native_agent.state import AssistantRootInput
+from assistant_agent.native_agent.state import AssistantRootInput, FastAgentState
+from assistant_agent.native_agent.tool_call_limits import PerToolCallLimitMiddleware
+
+
+class _CodingWriteModel(MockAssistantChatModel):
+    _calls: int = PrivateAttr(default=0)
+
+    def _response_message(self, messages, **kwargs):
+        del messages, kwargs
+        self._calls += 1
+        if self._calls == 1:
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "write_file",
+                        "args": {
+                            "file_path": "/approved.txt",
+                            "content": "approved-sentinel",
+                        },
+                        "id": "write-file-sentinel",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        return AIMessage(content="finished-sentinel")
 
 
 def _server_config() -> dict[str, object]:
@@ -37,10 +66,15 @@ async def _open_owner() -> AgentServerExecutionOwner:
     return await AgentServerExecutionOwner.compose(store=InMemoryStore())
 
 
+async def _open_owner_without_event_loop_blocking() -> AgentServerExecutionOwner:
+    with blockbuster_ctx(scanned_modules=coding_config_module):
+        return await AgentServerExecutionOwner.compose(store=InMemoryStore())
+
+
 @pytest.mark.core_invariant("BOOT-001")
 def test_mock_composition_opens_without_real_provider(monkeypatch) -> None:
     monkeypatch.setenv("MULTIMODAL_AGENT_PROVIDER_MODE", "mock")
-    owner = asyncio.run(_open_owner())
+    owner = asyncio.run(_open_owner_without_event_loop_blocking())
     try:
         assert owner.model._llm_type == "assistant-agent-mock"
         assert owner.memory_backend.backend_id == "disabled"
@@ -59,166 +93,107 @@ def test_parent_graph_has_native_fast_planning_and_coding_branches(monkeypatch) 
         assert owner.graph.name == "AssistantRootGraph"
         assert nodes == {
             "__start__", "memory_recall", "execution_router", "fast_agent",
-            "planning_agent", "coding_graph", "refresh_memory_extraction",
+            "planning_agent", "coding_agent", "refresh_memory_extraction",
             "__end__",
         }
         assert graph.nodes["fast_agent"].data.name == "AssistantFastAgent"
         assert graph.nodes["planning_agent"].data.name == "AssistantPlanningAgent"
+        async_tool_names = {
+            "start_async_task",
+            "check_async_task",
+            "update_async_task",
+            "cancel_async_task",
+            "list_async_tasks",
+        }
+        assert async_tool_names <= set(
+            graph.nodes["fast_agent"].data.get_graph().nodes["tools"].data.tools_by_name
+        )
+        assert async_tool_names <= set(
+            graph.nodes["planning_agent"].data.get_graph().nodes["tools"].data.tools_by_name
+        )
+        assert owner.worker_graph.name == "AssistantBackgroundWorker"
+        worker_tool_names = set(
+            owner.worker_graph.get_graph().nodes["tools"].data.tools_by_name
+        )
+        assert not async_tool_names & worker_tool_names
+        assert all(
+            (tool.metadata or {}).get("effect") == "read"
+            for tool in owner.tools
+            if tool.name in worker_tool_names
+        )
         planning = graph.nodes["planning_agent"].data.get_graph()
         assert {"model", "tools"} <= set(planning.nodes)
         assert not {"supervisor", "controls", "worker", "join"} & set(
             planning.nodes
         )
-        assert graph.nodes["coding_graph"].data.name == "AssistantCodingGraph"
-        assert (
-            CodingRepositoryConfig(
-                repo_id="core-probe",
-                path=owner.coding_workspace_service.config.workspace_root.parent,
-                target_branch="main",
-            ).parallel_analysis_enabled
-            is False
-        )
-        assert (
-            CodingRepositoryConfig(
-                repo_id="core-review-probe",
-                path=owner.coding_workspace_service.config.workspace_root.parent,
-                target_branch="main",
-            ).code_review_enabled
-            is False
-        )
-        coding = graph.nodes["coding_graph"].data.get_graph()
-        coding_nodes = set(coding.nodes)
-        analysis_super_step_nodes = {
-            "prepare_analysis",
-            "analyze_workspace",
-            "join_analysis",
-        }
-        assert analysis_super_step_nodes.issubset(coding_nodes)
-        inspect_recovery_nodes = {
-            "evaluate_inspect_progress",
-            "consume_inspect_recovery_context",
-        }
-        assert inspect_recovery_nodes.issubset(coding_nodes)
-        coding_edges = {(edge.source, edge.target) for edge in coding.edges}
+        coding = graph.nodes["coding_agent"].data
+        assert coding.name == "AssistantCodingAgent"
+        coding_tools = set(coding.get_graph().nodes["tools"].data.tools_by_name)
         assert {
-            ("prepare_analysis", "analyze_workspace"),
-            ("prepare_analysis", "join_analysis"),
-            ("analyze_workspace", "join_analysis"),
-            ("join_analysis", "inspect_and_draft"),
-            ("inspect_and_draft", "validate_proposal"),
-            ("inspect_and_draft", "evaluate_inspect_progress"),
-            ("inspect_and_draft", "summarize"),
-            ("evaluate_inspect_progress", "consume_inspect_recovery_context"),
-            ("evaluate_inspect_progress", "summarize"),
-            ("consume_inspect_recovery_context", "inspect_and_draft"),
-        } <= coding_edges
-        mutation_or_review_nodes = {
-            "apply_patch",
-            "run_validation",
-            "prepare_review_snapshot",
-            "run_code_review",
-            "coding_review_decision",
-            "create_commit",
-            "prepare_merge",
-            "merge_approval",
-            "apply_merge",
-        }
-        assert not any(
-            source in inspect_recovery_nodes and target in mutation_or_review_nodes
-            for source, target in coding_edges
-        )
-        assert {
-            target
-            for source, target in coding_edges
-            if source == "analyze_workspace"
-        } == {"join_analysis"}
-        assert {
-            source
-            for source, target in coding_edges
-            if target == "validate_proposal"
-        } == {"inspect_and_draft"}
-        assert {
-            ("apply_patch", "plan_dependencies"),
-            ("plan_dependencies", "plan_credentials"),
-            ("plan_credentials", "plan_artifacts"),
-            ("plan_artifacts", "run_validation"),
-        } <= coding_edges
-        assert {
-            ("run_validation", "prepare_repair"),
-            ("prepare_repair", "consume_repair_budget"),
-            ("consume_repair_budget", "inspect_and_draft"),
-        }.issubset(coding_edges)
-        review_gate_nodes = {
-            "prepare_review_snapshot",
-            "run_code_review",
-            "coding_review_decision",
-        }
-        assert review_gate_nodes.issubset(coding_nodes)
-        review_repair_nodes = {
-            "consume_review_repair_budget",
-            "consume_review_repair_context",
-        }
-        assert review_repair_nodes.issubset(coding_nodes)
-        assert {
-            ("run_validation", "prepare_review_snapshot"),
-            ("prepare_review_snapshot", "run_code_review"),
-            ("run_code_review", "coding_review_decision"),
-            ("coding_review_decision", "create_commit"),
-            ("coding_review_decision", "summarize"),
-        }.issubset(coding_edges)
-        assert {
-            target
-            for source, target in coding_edges
-            if source == "coding_review_decision"
-        } == {"consume_review_repair_budget", "create_commit", "summarize"}
-        assert {
-            target
-            for source, target in coding_edges
-            if source == "consume_review_repair_budget"
-        } == {"consume_review_repair_context", "summarize"}
-        assert {
-            target
-            for source, target in coding_edges
-            if source == "consume_review_repair_context"
-        } == {"inspect_and_draft", "summarize"}
-        repair_lane_nodes = {
-            "run_validation",
-            "prepare_repair",
-            "consume_repair_budget",
-            "approval",
-        }
-        assert not any(
-            source in repair_lane_nodes and target in analysis_super_step_nodes
-            for source, target in coding_edges
-        )
-        assert {
-            ("run_validation", "create_commit"),
-            ("create_commit", "prepare_merge"),
-            ("prepare_merge", "merge_approval"),
-            ("merge_approval", "apply_merge"),
-            ("apply_merge", "summarize"),
-        } <= coding_edges
-        assert {
-            source for source, target in coding_edges if target == "create_commit"
-        } == {"run_validation", "coding_review_decision"}
+            "write_todos", "ls", "read_file", "write_file", "edit_file",
+            "delete", "glob", "grep", "execute", "task",
+        } <= coding_tools
+        assert not {
+            "coding_propose_patch", "coding_patch_apply", "run_validation",
+            "create_commit", "apply_merge",
+        } & coding_tools
         assert owner.graph.checkpointer is None
     finally:
         asyncio.run(owner.aclose())
 
 
 @pytest.mark.core_invariant("LOOP-001")
-def test_production_composition_reuses_one_fast_agent_with_native_call_limits(monkeypatch) -> None:
+def test_coding_agent_uses_only_tool_call_policy(
+    monkeypatch,
+) -> None:
+    captured: list[object] = []
+
+    def recording_create_deep_agent(*args: Any, **kwargs: Any):
+        del args
+        captured.extend(kwargs["middleware"])
+        return object()
+
+    monkeypatch.setattr(
+        coding_agent_module,
+        "create_deep_agent",
+        recording_create_deep_agent,
+    )
+    build_coding_agent(
+        MockAssistantChatModel(),
+        object(),
+        repo_id="repo-sentinel",
+    )
+
+    model_limits = [
+        item for item in captured if isinstance(item, ModelCallLimitMiddleware)
+    ]
+    tool_limits = [
+        item for item in captured if isinstance(item, PerToolCallLimitMiddleware)
+    ]
+    finalizers = [
+        item
+        for item in captured
+        if isinstance(item, RecursionFinalSynthesisMiddleware)
+    ]
+    assert model_limits == []
+    assert [item.max_parallel_calls_per_tool for item in tool_limits] == [12]
+    assert [item.step_reserve for item in finalizers] == [8]
+
+
+@pytest.mark.core_invariant("LOOP-001")
+def test_production_composition_reuses_fast_configuration_without_run_call_limits(monkeypatch) -> None:
     monkeypatch.setenv("MULTIMODAL_AGENT_PROVIDER_MODE", "mock")
-    monkeypatch.setenv("MAX_TOOL_ITERATIONS", "3")
     limits: list[tuple[int | None, int | None]] = []
     planning_limits: list[tuple[int | None, int | None]] = []
     fast_agents: list[object] = []
+    fast_names: list[str | None] = []
     planning_fast_agents: list[object] = []
     real_fast = services.build_fast_agent
     real_planning = services.build_planning_agent
 
     def recording_fast(*args: Any, **kwargs: Any):
         limits.append((kwargs.get("model_call_limit"), kwargs.get("tool_call_limit")))
+        fast_names.append(kwargs.get("name"))
         result = real_fast(*args, **kwargs)
         fast_agents.append(result)
         return result
@@ -234,216 +209,12 @@ def test_production_composition_reuses_one_fast_agent_with_native_call_limits(mo
     monkeypatch.setattr(services, "build_planning_agent", recording_planning)
     owner = asyncio.run(_open_owner())
     try:
-        assert limits == [(3, None)]
-        assert planning_limits == [(3, None)]
-        assert planning_fast_agents == fast_agents
+        assert limits == [(None, None), (None, None)]
+        assert fast_names == [None, "AssistantBackgroundWorker"]
+        assert planning_limits == [(None, None)]
+        assert planning_fast_agents == [fast_agents[0]]
     finally:
         asyncio.run(owner.aclose())
-
-
-@pytest.mark.core_invariant("LOOP-001")
-def test_coding_review_agent_consumes_eight_reads_then_structured_result(
-    monkeypatch,
-) -> None:
-    """Catches ToolStrategy's final result consuming the read-Tool allowance."""
-
-    @tool("review_read_probe")
-    def review_read_probe() -> str:
-        """Return one generic immutable review sentinel."""
-
-        return "review-read-sentinel"
-
-    class ReviewLoopProbeModel(MockAssistantChatModel):
-        def _response_message(self, messages, **kwargs):
-            completed_reads = sum(
-                isinstance(message, ToolMessage)
-                and message.name == "review_read_probe"
-                for message in messages
-            )
-            if completed_reads < 8:
-                return AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": "review_read_probe",
-                            "args": {},
-                            "id": f"review-read-{completed_reads + 1}",
-                            "type": "tool_call",
-                        }
-                    ],
-                )
-            structured_name = next(
-                item["function"]["name"]
-                for item in kwargs.get("tools", ())
-                if item["function"]["name"] != "review_read_probe"
-            )
-            return AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": structured_name,
-                        "args": {
-                            "status": "completed",
-                            "findings": [],
-                            "error_code": None,
-                        },
-                        "id": "review-result",
-                        "type": "tool_call",
-                    }
-                ],
-            )
-
-    monkeypatch.setattr(
-        coding_review,
-        "build_coding_review_tools",
-        lambda _service: [review_read_probe],
-    )
-    now = datetime.now(UTC)
-    snapshot = CodingAnalysisSnapshot(
-        materialization_schema_version="immutable_manifest_v2",
-        snapshot_ref="snapshot-core-review-loop-0001",
-        workspace_ref="workspace-core-review-loop-0001",
-        base_commit="a" * 40,
-        tree_digest="b" * 64,
-        workspace_diff_digest="c" * 64,
-        created_at=now,
-        expires_at=now + timedelta(minutes=30),
-    )
-    review_input = CodingReviewInput(
-        workspace_ref=snapshot.workspace_ref,
-        base_commit=snapshot.base_commit,
-        patch_digest="d" * 64,
-        workspace_diff_digest=snapshot.workspace_diff_digest,
-        snapshot_materialization_schema_version=snapshot.materialization_schema_version,
-        snapshot_created_at=snapshot.created_at,
-        snapshot_expires_at=snapshot.expires_at,
-        generation=1,
-        snapshot_ref=snapshot.snapshot_ref,
-        tree_digest=snapshot.tree_digest,
-        validation_evidence_digest="e" * 64,
-        review_tasks=coding_review.REVIEW_TASK_IDS,
-    )
-    graph = coding_review.create_coding_review_graph(
-        model=ReviewLoopProbeModel(),
-        workspace_service=object(),
-    )
-
-    result = asyncio.run(
-        graph.ainvoke(
-            {
-                "messages": [],
-                "coding_repo_id": "core-probe",
-                "workspace_ref": snapshot.workspace_ref,
-                "base_commit": snapshot.base_commit,
-                "review_snapshot": snapshot,
-                "review_input": review_input,
-            },
-            context=AssistantRunContext(),
-        )
-    )
-
-    assert result["review_report"].status == "clean"
-    assert all(item.status == "completed" for item in result["review_results"])
-
-
-@pytest.mark.core_invariant("LOOP-001")
-def test_coding_review_distinguishes_binding_failure_from_unavailable() -> None:
-    """Catches current snapshot evidence becoming an approvable unavailable report."""
-
-    now = datetime.now(UTC)
-    snapshot = CodingAnalysisSnapshot(
-        materialization_schema_version="immutable_manifest_v2",
-        snapshot_ref="snapshot-core-review-binding-0001",
-        workspace_ref="workspace-core-review-binding-0001",
-        base_commit="a" * 40,
-        tree_digest="b" * 64,
-        workspace_diff_digest="c" * 64,
-        created_at=now,
-        expires_at=now + timedelta(minutes=30),
-    )
-    review_input = CodingReviewInput(
-        workspace_ref=snapshot.workspace_ref,
-        base_commit=snapshot.base_commit,
-        patch_digest="d" * 64,
-        workspace_diff_digest=snapshot.workspace_diff_digest,
-        snapshot_materialization_schema_version=snapshot.materialization_schema_version,
-        snapshot_created_at=snapshot.created_at,
-        snapshot_expires_at=snapshot.expires_at,
-        generation=1,
-        snapshot_ref=snapshot.snapshot_ref,
-        tree_digest=snapshot.tree_digest,
-        validation_evidence_digest="e" * 64,
-        review_tasks=coding_review.REVIEW_TASK_IDS,
-    )
-    state = {
-        "messages": [],
-        "coding_repo_id": "core-probe",
-        "workspace_ref": snapshot.workspace_ref,
-        "base_commit": snapshot.base_commit,
-        "analysis_snapshot": snapshot,
-        "review_input": review_input,
-        "review_task": coding_review.build_review_tasks()[0],
-        "provider_search_profile": "none",
-    }
-
-    class BindingMismatchAgent:
-        async def ainvoke(self, _state, *, config, context):
-            del config, context
-            content = "binding-sentinel\n"
-            return {
-                "structured_response": {
-                    "status": "completed",
-                    "findings": [],
-                    "error_code": None,
-                },
-                "messages": (
-                    ToolMessage(
-                        content="",
-                        name="coding_repo_read",
-                        tool_call_id="binding-probe",
-                        artifact={
-                            "snapshot_ref": snapshot.snapshot_ref,
-                            "tree_digest": "f" * 64,
-                            "content_digest": hashlib.sha256(
-                                content.encode("utf-8")
-                            ).hexdigest(),
-                            "result": {
-                                "path": "src/probe.py",
-                                "content": content,
-                                "start_line": 1,
-                                "end_line": 1,
-                                "total_lines": 1,
-                                "next_line": None,
-                            },
-                        },
-                    ),
-                ),
-            }
-
-    class UnavailableAgent:
-        async def ainvoke(self, _state, *, config, context):
-            del config, context
-            raise RuntimeError("review-unavailable-sentinel")
-
-    with pytest.raises(CodingWorkspaceError) as raised:
-        asyncio.run(
-            coding_review.review_workspace(
-                state,
-                None,
-                review_agent=BindingMismatchAgent(),
-            )
-        )
-    unavailable = asyncio.run(
-        coding_review.review_workspace(
-            state,
-            None,
-            review_agent=UnavailableAgent(),
-        )
-    )["review_results"][0]
-
-    assert raised.value.code == "coding_review_binding_mismatch"
-    assert unavailable.status == "unavailable"
-    assert unavailable.error_code == "coding_review_task_failed"
 
 
 @pytest.mark.core_invariant("RUN-001")
@@ -451,16 +222,12 @@ def test_coding_review_distinguishes_binding_failure_from_unavailable() -> None:
 def test_both_modes_finish_with_standard_ai_messages(monkeypatch) -> None:
     monkeypatch.setenv("MULTIMODAL_AGENT_PROVIDER_MODE", "mock")
     owner = asyncio.run(_open_owner())
-    context = AssistantRunContext()
 
     async def run_modes():
         return [
             await owner.graph.ainvoke(
-                {
-                    "messages": [HumanMessage(content="request-sentinel")],
-                    "execution_mode": mode,
-                },
-                context=context,
+                {"messages": [HumanMessage(content="request-sentinel")]},
+                context=AssistantRunContext(execution_mode=mode),
                 config=_server_config(),
             )
             for mode in ("fast", "planning")
@@ -474,6 +241,29 @@ def test_both_modes_finish_with_standard_ai_messages(monkeypatch) -> None:
         asyncio.run(owner.aclose())
 
 
+@pytest.mark.core_invariant("LOOP-001")
+@pytest.mark.parametrize("execution_mode", ["fast", "planning", "coding"])
+def test_runtime_context_selects_execution_route(
+    monkeypatch,
+    execution_mode: str,
+) -> None:
+    monkeypatch.setenv("MULTIMODAL_AGENT_PROVIDER_MODE", "mock")
+    owner = asyncio.run(_open_owner())
+    try:
+        result = asyncio.run(
+            owner.graph.ainvoke(
+                {"messages": [HumanMessage(content="request-sentinel")]},
+                context=AssistantRunContext(
+                    execution_mode=execution_mode,
+                ),
+                config=_server_config(),
+            )
+        )
+        assert result["execution_mode"] == execution_mode
+    finally:
+        asyncio.run(owner.aclose())
+
+
 @pytest.mark.core_invariant("RUN-001")
 @pytest.mark.core_invariant("LOOP-001")
 def test_fast_and_planning_modes_finish_with_standard_ai_messages(monkeypatch) -> None:
@@ -483,8 +273,8 @@ def test_fast_and_planning_modes_finish_with_standard_ai_messages(monkeypatch) -
     async def run_modes():
         return [
             await owner.graph.ainvoke(
-                {"messages": [HumanMessage(content="request-sentinel")], "execution_mode": mode},
-                context=AssistantRunContext(),
+                {"messages": [HumanMessage(content="request-sentinel")]},
+                context=AssistantRunContext(execution_mode=mode),
                 config=_server_config(),
             )
             for mode in ("fast", "planning")
@@ -511,7 +301,7 @@ def test_studio_messages_only_input_defaults_to_fast(monkeypatch) -> None:
                 config=_server_config(),
             )
         )
-        assert AssistantRootInput.model_validate({"messages": []}).execution_mode == "fast"
+        assert AssistantRunContext().execution_mode == "fast"
         assert isinstance(result["messages"][-1], AIMessage)
     finally:
         asyncio.run(owner.aclose())
@@ -521,16 +311,82 @@ def test_studio_messages_only_input_defaults_to_fast(monkeypatch) -> None:
 @pytest.mark.core_invariant("IDENT-001")
 def test_public_input_separates_mode_from_non_identity_runtime_context() -> None:
     value = AssistantRootInput.model_validate(
-        {"messages": [HumanMessage(content="request-sentinel")], "execution_mode": "fast"}
+        {"messages": [HumanMessage(content="request-sentinel")]}
     )
-    coding = AssistantRootInput.model_validate(
-        {"messages": [], "execution_mode": "coding", "coding_repo_id": "repo-sentinel"}
-    )
-    context = AssistantRunContext.model_validate({})
-    assert value.execution_mode == "fast"
-    assert coding.coding_repo_id == "repo-sentinel"
-    assert set(type(context).model_fields) == {
-        "system_prompt", "assistant_execution_mode",
-    }
+    context = AssistantRunContext.model_validate({"execution_mode": "coding"})
+    assert len(value.messages) == 1
+    assert set(type(value).model_fields) == {"messages"}
+    assert context.execution_mode == "coding"
+    assert set(type(context).model_fields) == {"execution_mode", "enable_memory"}
+    assert context.enable_memory is True
+    mode_schema = AssistantRunContext.model_json_schema()["properties"][
+        "execution_mode"
+    ]
+    memory_schema = AssistantRunContext.model_json_schema()["properties"][
+        "enable_memory"
+    ]
+    assert mode_schema["enum"] == ["fast", "planning", "coding"]
+    assert memory_schema["default"] is True
     with pytest.raises(ValidationError):
-        AssistantRootInput.model_validate({"messages": [], "execution_mode": "legacy-sentinel"})
+        AssistantRootInput.model_validate({"messages": [], "execution_mode": "fast"})
+    with pytest.raises(ValidationError):
+        AssistantRunContext.model_validate({"execution_mode": "legacy-sentinel"})
+
+
+@pytest.mark.core_invariant("LOOP-001")
+@pytest.mark.parametrize("decision, expected_write", [("approve", True), ("reject", False)])
+def test_coding_mutation_interrupts_before_execution_and_resumes_once(
+    tmp_path: Path,
+    decision: str,
+    expected_write: bool,
+) -> None:
+    class WorkspaceService:
+        def resolve(self, identity: str, thread_id: str, repo_id: str):
+            assert (identity, thread_id, repo_id) == (
+                "user-sentinel",
+                f"coding-hitl-{decision}",
+                "repo-sentinel",
+            )
+            return SimpleNamespace(root=tmp_path)
+
+    agent = build_coding_agent(
+        _CodingWriteModel(),
+        WorkspaceService(),
+        repo_id="repo-sentinel",
+    )
+    builder = StateGraph(FastAgentState, context_schema=AssistantRunContext)
+    builder.add_node("coding", agent)
+    builder.add_edge(START, "coding")
+    builder.add_edge("coding", END)
+    graph = builder.compile(checkpointer=InMemorySaver())
+    config = {
+        "configurable": {
+            "thread_id": f"coding-hitl-{decision}",
+            "langgraph_auth_user": SimpleNamespace(identity="user-sentinel"),
+        }
+    }
+    context = AssistantRunContext(execution_mode="coding")
+
+    interrupted = graph.invoke(
+        {"messages": [HumanMessage(content="write-sentinel")]},
+        config=config,
+        context=context,
+    )
+    output = tmp_path / "approved.txt"
+    assert interrupted["__interrupt__"][0].value["action_requests"][0][
+        "name"
+    ] == "write_file"
+    assert not output.exists()
+
+    resume = {"decisions": [{"type": decision}]}
+    if decision == "reject":
+        resume["decisions"][0]["message"] = "rejected-sentinel"
+    resumed = graph.invoke(
+        Command(resume=resume),
+        config=config,
+        context=context,
+    )
+    assert output.exists() is expected_write
+    if expected_write:
+        assert output.read_text(encoding="utf-8") == "approved-sentinel"
+    assert resumed["messages"][-1].content == "finished-sentinel"

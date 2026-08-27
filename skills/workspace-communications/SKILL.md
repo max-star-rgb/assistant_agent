@@ -1,6 +1,6 @@
 ---
 name: workspace-communications
-description: 检索和阅读邮件、查询或创建日历事件、查找联系人；适用于用户要求访问或更新其工作区信息的请求。
+description: 适用于检索或阅读邮件、查询或创建日历事件，以及查找联系人。
 ---
 
 # 邮件、日历与联系人协作

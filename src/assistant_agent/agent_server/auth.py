@@ -8,6 +8,7 @@ from langgraph_sdk.auth import is_studio_user
 from assistant_agent.agent_server.config import (
     ASSISTANT_GRAPH_ID,
     MEMORY_GRAPH_ID,
+    WORKER_GRAPH_ID,
 )
 from assistant_agent.agent_server.client import THREAD_GRAPH_METADATA_KEY
 from assistant_agent.agent_server.attestation import (
@@ -17,7 +18,6 @@ from assistant_agent.agent_server.attestation import (
 )
 from assistant_agent.agent_server.graph import get_native_assistant_execution_attestation
 from assistant_agent.native_agent.context import (
-    AssistantRunContext,
     AssistantRuntimeFacts,
     assistant_runtime_metadata,
 )
@@ -132,7 +132,7 @@ async def authorize_thread_create(
         THREAD_GRAPH_METADATA_KEY
     )
     graph_id = str(requested_graph_id or ASSISTANT_GRAPH_ID)
-    if graph_id not in {ASSISTANT_GRAPH_ID, MEMORY_GRAPH_ID}:
+    if graph_id not in {ASSISTANT_GRAPH_ID, MEMORY_GRAPH_ID, WORKER_GRAPH_ID}:
         return False
     metadata["owner"] = str(ctx.user.identity)
     metadata[THREAD_GRAPH_METADATA_KEY] = graph_id
@@ -180,7 +180,7 @@ async def authorize_thread_update(
     if not isinstance(metadata, dict) or THREAD_GRAPH_METADATA_KEY not in metadata:
         return {"owner": str(ctx.user.identity)}
     graph_id = str(metadata[THREAD_GRAPH_METADATA_KEY])
-    if graph_id not in {ASSISTANT_GRAPH_ID, MEMORY_GRAPH_ID}:
+    if graph_id not in {ASSISTANT_GRAPH_ID, MEMORY_GRAPH_ID, WORKER_GRAPH_ID}:
         return False
     return {"owner": str(ctx.user.identity), THREAD_GRAPH_METADATA_KEY: graph_id}
 
@@ -211,7 +211,15 @@ async def authorize_run_create(
     metadata = value.setdefault("metadata", {})
     metadata["owner"] = str(ctx.user.identity)
     if str(value.get("assistant_id")) == MEMORY_GRAPH_ID:
-        return {"owner": str(ctx.user.identity)}
+        return {
+            "owner": str(ctx.user.identity),
+            THREAD_GRAPH_METADATA_KEY: MEMORY_GRAPH_ID,
+        }
+    if str(value.get("assistant_id")) == WORKER_GRAPH_ID:
+        return {
+            "owner": str(ctx.user.identity),
+            THREAD_GRAPH_METADATA_KEY: WORKER_GRAPH_ID,
+        }
     context = value.setdefault("context", {})
     if not isinstance(context, dict):
         return False
@@ -257,12 +265,6 @@ async def authorize_run_create(
                 AssistantRuntimeFacts(entry_profile="evaluation")
             )
         )
-    try:
-        normalized_context = AssistantRunContext.model_validate(context)
-    except ValueError:
-        return False
-    context.clear()
-    context.update(normalized_context.model_dump())
     return {
         "owner": str(ctx.user.identity),
         THREAD_GRAPH_METADATA_KEY: ASSISTANT_GRAPH_ID,

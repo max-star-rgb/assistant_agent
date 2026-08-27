@@ -1,3 +1,14 @@
+--- a/langgraph_runtime_inmem/database.py
++++ b/langgraph_runtime_inmem/database.py
+@@ -167,6 +167,8 @@
+     if os.path.exists(OPS_FILENAME):
+         try:
+             GLOBAL_STORE.load()
++            if os.path.exists(RETRY_COUNTER_FILENAME):
++                GLOBAL_RETRY_COUNTER._counters.load()
+         except ModuleNotFoundError:
+             logger.error(
+                 "Unable to load cached data - your code has changed in a way that's incompatible with the cache."
 --- a/langgraph_runtime_inmem/ops.py
 +++ b/langgraph_runtime_inmem/ops.py
 @@ -33,6 +33,7 @@
@@ -129,7 +140,6 @@
 -                                worker.worker(run, attempt, loop),
 -                                name=task_name,
 -                                callback=functools.partial(cleanup, runner=runner),
--                            )
 +                        run_id = run["run_id"]
 +                        RUN_QUEUE_SIGNAL.activate(run_id)
 +                        worker_coro = worker.worker(run, attempt, loop)
@@ -168,7 +178,7 @@
 +                            RUN_QUEUE_SIGNAL.notify()
 +                            logger.exception(
 +                                "Background worker submission failed", exc_info=exc
-+                            )
+                             )
 +                            await asyncio.sleep(0.1)
 +                            continue
                      # run stats and sweep if needed
@@ -187,7 +197,7 @@
                  except Exception as exc:
                      # keep trying to run the scheduler indefinitely
                      logger.exception("Background worker scheduler failed", exc_info=exc)
---- /dev/null
+--- a/langgraph_runtime_inmem/queue_signal.py
 +++ b/langgraph_runtime_inmem/queue_signal.py
 @@ -0,0 +1,67 @@
 +from __future__ import annotations

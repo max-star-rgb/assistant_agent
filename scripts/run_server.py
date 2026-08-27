@@ -19,6 +19,7 @@ from typing import TextIO
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LANGGRAPH = Path(sys.executable).with_name("langgraph")
+LANGGRAPH_DEV = REPO_ROOT / "scripts" / "run_langgraph_dev.py"
 POSTGRES_COMPOSE_FILE = REPO_ROOT / "deploy" / "agent_server" / "compose.yaml"
 POSTGRES_IMAGE = "assistant-agent/langgraph-api:local"
 DOCKER_PROXY_VARIABLES = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
@@ -292,8 +293,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         use_env_file=not args.no_env_file,
     ) as config_path:
         command = [
-            str(LANGGRAPH),
-            "dev",
+            str(sys.executable),
+            str(LANGGRAPH_DEV),
             "--config",
             str(config_path),
             "--host",

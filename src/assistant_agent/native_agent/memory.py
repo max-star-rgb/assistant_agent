@@ -11,11 +11,8 @@ import logging
 from typing import Any, Protocol, runtime_checkable
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
-from langgraph.errors import NodeError
-from langgraph.graph import END
 from langgraph.runtime import Runtime
 from langgraph.store.base import BaseStore
-from langgraph.types import Command
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.identity import RequestIdentity
@@ -385,6 +382,8 @@ async def memory_recall_node(
 ) -> dict[str, Any]:
     """Recall exactly once for a parent-graph attempt and freeze the result."""
 
+    if not runtime.context.enable_memory:
+        return {"memory_context": (), "memory_status": "empty"}
     memories = await backend.recall(
         identity=authenticated_user_identity(runtime),
         thread_id=_execution_value(runtime, "thread_id"),
@@ -397,22 +396,6 @@ async def memory_recall_node(
         "memory_context": bounded,
         "memory_status": "ready" if bounded else "empty",
     }
-
-
-def memory_recall_degraded(
-    _state: AssistantRootState,
-    error: NodeError,
-) -> Command[str]:
-    """Use LangGraph recovery to continue with an explicit degraded snapshot."""
-
-    del error
-    return Command(
-        update={
-            "memory_context": (),
-            "memory_status": "degraded",
-        },
-        goto="execution_router",
-    )
 
 
 async def memory_extract_node(
@@ -431,16 +414,6 @@ async def memory_extract_node(
         store=runtime.store,
     )
     return {}
-
-
-def memory_extract_degraded(
-    _state: MemoryExtractionState,
-    error: NodeError,
-) -> Command[str]:
-    """Keep Memory extraction failure isolated from completed chat runs."""
-
-    del error
-    return Command(goto=END)
 
 
 def _create_langmem_manager(config: ProviderConfig, *, store: BaseStore | None):
@@ -570,8 +543,6 @@ __all__ = [
     "MemoryBackend",
     "MemoryBackendConfigurationError",
     "create_memory_backend",
-    "memory_extract_degraded",
     "memory_extract_node",
-    "memory_recall_degraded",
     "memory_recall_node",
 ]

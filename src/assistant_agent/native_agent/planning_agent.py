@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -11,10 +11,10 @@ from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware import CompiledSubAgent, SubAgentMiddleware
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
-    ModelCallLimitMiddleware,
     SummarizationMiddleware,
     TodoListMiddleware,
 )
+from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import MessageLikeRepresentation
 from langchain_core.runnables import RunnableConfig, RunnableLambda
@@ -26,14 +26,17 @@ from assistant_agent.native_agent.assistant_prompt import (
 )
 from assistant_agent.native_agent.fast_agent import (
     MemoryContextMiddleware,
+    RecursionFinalSynthesisMiddleware,
     ToolProgressMiddleware,
 )
 from assistant_agent.native_agent.providers import planning_supervisor_model_view
 from assistant_agent.native_agent.state import PlanningAgentState
 from assistant_agent.native_agent.tool_call_limits import PerToolCallLimitMiddleware
+from assistant_agent.native_agent.tool_profiles import ToolProfile, ToolProfileMiddleware
 from assistant_agent.skills.native import (
-    create_project_skill_filesystem_middleware,
-    create_project_skills_backend,
+    PROJECT_FILESYSTEM_READ_TOOL_NAMES,
+    create_project_filesystem_backend,
+    create_project_filesystem_middleware,
     create_project_skills_middleware,
 )
 
@@ -82,30 +85,33 @@ def build_planning_agent(
     model: BaseChatModel,
     fast_agent: Any,
     *,
-    model_call_limit: int = 12,
     context_window_tokens: int = 128_000,
     compaction_trigger_ratio: float = 0.75,
     compaction_target_ratio: float = 0.15,
     token_counter: Callable[[Iterable[MessageLikeRepresentation]], int] | None = None,
-    skills_backend: BackendProtocol | None = None,
+    filesystem_backend: BackendProtocol | None = None,
     current_location: str | None = None,
+    tool_profiles: Sequence[ToolProfile] = (),
+    additional_middleware: tuple[AgentMiddleware, ...] = (),
 ):
     """Build the native planning coordinator with an executable `task` Tool."""
 
-    if model_call_limit < 1:
-        raise ValueError("model call limit must be positive")
     if context_window_tokens < 100:
         raise ValueError("context window must contain at least 100 tokens")
     if not 0 < compaction_target_ratio < compaction_trigger_ratio <= 1:
         raise ValueError("compaction ratios must satisfy 0 < target < trigger <= 1")
-    resolved_skills_backend = skills_backend or create_project_skills_backend(
-        Path(__file__).resolve().parents[3] / "skills"
+    resolved_filesystem_backend = (
+        filesystem_backend
+        or create_project_filesystem_backend(Path(__file__).resolve().parents[3])
     )
-    skills_middleware = create_project_skills_middleware(resolved_skills_backend)
-    skill_filesystem_middleware = create_project_skill_filesystem_middleware(
-        resolved_skills_backend
+    skills_middleware = create_project_skills_middleware(resolved_filesystem_backend)
+    filesystem_middleware = create_project_filesystem_middleware(
+        resolved_filesystem_backend,
+        tools=PROJECT_FILESYSTEM_READ_TOOL_NAMES,
     )
-    skill_file_tools = tuple(skill_filesystem_middleware.tools)
+    profile_middleware = (
+        (ToolProfileMiddleware(tool_profiles),) if tool_profiles else ()
+    )
 
     worker: CompiledSubAgent = {
         "name": "general-purpose",
@@ -135,7 +141,8 @@ def build_planning_agent(
         middleware=[
             create_assistant_base_prompt(),
             skills_middleware,
-            skill_filesystem_middleware,
+            filesystem_middleware,
+            *profile_middleware,
             TodoListMiddleware(
                 system_prompt=_WRITE_TODOS_SYSTEM_PROMPT_ZH,
                 tool_description=_WRITE_TODOS_DESCRIPTION_ZH,
@@ -145,17 +152,12 @@ def build_planning_agent(
                 subagents=[worker],
                 task_description=_TASK_DESCRIPTION_ZH,
             ),
-            ModelCallLimitMiddleware(
-                run_limit=model_call_limit,
-                exit_behavior="end",
-            ),
-            PerToolCallLimitMiddleware.from_tools(
-                skill_file_tools,
-                default_run_limit=12,
-            ),
+            *additional_middleware,
+            PerToolCallLimitMiddleware(max_parallel_calls_per_tool=12),
             SummarizationMiddleware(**summarization_options),
             MemoryContextMiddleware(),
             create_assistant_runtime_prompt(current_location),
+            RecursionFinalSynthesisMiddleware(),
             ToolProgressMiddleware(),
         ],
         name="AssistantPlanningAgent",
@@ -198,6 +200,8 @@ def _worker_output(result: Mapping[str, Any]) -> dict[str, Any]:
     output = {"messages": result["messages"]}
     if result.get("structured_response") is not None:
         output["structured_response"] = result["structured_response"]
+    if result.get("async_tasks"):
+        output["async_tasks"] = result["async_tasks"]
     return output
 
 

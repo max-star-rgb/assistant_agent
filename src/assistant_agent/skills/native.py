@@ -7,32 +7,50 @@ from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from deepagents.backends import FilesystemBackend
+from deepagents.backends import CompositeBackend, FilesystemBackend
 from deepagents.backends.protocol import BackendProtocol, LsResult
 from deepagents.middleware import FilesystemMiddleware, SkillsMiddleware
 from deepagents.middleware.skills import SkillMetadata
 
 
-PROJECT_SKILLS_SOURCE = "/"
+PROJECT_SKILLS_SOURCE = "/skills/"
+PROJECT_FILESYSTEM_TOOL_NAMES = (
+    "ls",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "delete",
+    "glob",
+    "grep",
+)
+PROJECT_FILESYSTEM_READ_TOOL_NAMES = ("ls", "read_file", "glob", "grep")
+_PROJECT_FILESYSTEM_READ_TOOLS = frozenset(PROJECT_FILESYSTEM_READ_TOOL_NAMES)
 _PROJECT_SKILLS_SYSTEM_PROMPT = """## Skills
 
 {skills_locations}{skills_load_warnings}
 
 {skills_list}
 
-仅当当前请求明确匹配某项 Skill，且完整指引会影响下一步决策时，才使用 `read_file` 读取对应的
-`SKILL.md`。需要辅助文件时，按 `SKILL.md` 给出的绝对路径继续读取。
+当请求匹配某项 Skill，先激活 `filesystem` Tool Profile，再使用 `read_file` 读取对应的 `SKILL.md`。
 
-Skill 提供领域知识，不授予工具，也不等于激活 Tool Profile。遵循 Skill 时直接执行，不向用户介绍 Skill、
-文件读取或内部流程。
+不向用户介绍 Skill、文件读取或内部流程。
 """
 _SKILL_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 
 
-def create_project_skills_backend(skills_root: str | Path) -> FilesystemBackend:
-    """Create the read source used by native Skill discovery and narrow loaders."""
+def create_project_filesystem_backend(project_root: str | Path) -> CompositeBackend:
+    """Create a project-root backend with explicit access inside the user home."""
 
-    return FilesystemBackend(root_dir=Path(skills_root), virtual_mode=True)
+    home_root = Path.home()
+    return CompositeBackend(
+        default=FilesystemBackend(root_dir=Path(project_root), virtual_mode=True),
+        routes={
+            f"{home_root.as_posix().rstrip('/')}/": FilesystemBackend(
+                root_dir=home_root,
+                virtual_mode=True,
+            )
+        },
+    )
 
 
 def create_project_skills_middleware(
@@ -47,15 +65,28 @@ def create_project_skills_middleware(
     )
 
 
-def create_project_skill_filesystem_middleware(
+def create_project_filesystem_middleware(
     backend: BackendProtocol,
+    *,
+    tools: tuple[str, ...] = PROJECT_FILESYSTEM_TOOL_NAMES,
 ) -> FilesystemMiddleware:
-    """Expose only upstream ``read_file`` inside the virtual Skill root."""
+    """Expose governed upstream Deep Agents file tools for the repository."""
 
-    return FilesystemMiddleware(
+    middleware = FilesystemMiddleware(
         backend=backend,
-        tools=["read_file"],
+        tools=list(tools),
     )
+    for filesystem_tool in middleware.tools:
+        filesystem_tool.metadata = {
+            **(filesystem_tool.metadata or {}),
+            "effect": (
+                "read"
+                if filesystem_tool.name in _PROJECT_FILESYSTEM_READ_TOOLS
+                else "write"
+            ),
+            "source": "deepagents",
+        }
+    return middleware
 
 
 def native_skill_metadata(state: Mapping[str, Any]) -> tuple[SkillMetadata, ...]:
@@ -111,8 +142,10 @@ def list_skill_reference_ids(
 
 __all__ = [
     "PROJECT_SKILLS_SOURCE",
-    "create_project_skill_filesystem_middleware",
-    "create_project_skills_backend",
+    "PROJECT_FILESYSTEM_TOOL_NAMES",
+    "PROJECT_FILESYSTEM_READ_TOOL_NAMES",
+    "create_project_filesystem_backend",
+    "create_project_filesystem_middleware",
     "create_project_skills_middleware",
     "list_skill_reference_ids",
     "native_skill_metadata",

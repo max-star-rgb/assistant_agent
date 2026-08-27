@@ -32,16 +32,6 @@ source_globs = [
   "langgraph.json",
   "src/assistant_agent/agent_server/**",
   "src/assistant_agent/coding/config.py",
-  "src/assistant_agent/coding/artifacts.py",
-  "src/assistant_agent/coding/artifact_egress.py",
-  "src/assistant_agent/coding/credentials.py",
-  "src/assistant_agent/coding/dependencies.py",
-  "src/assistant_agent/coding/dependency_egress.py",
-  "src/assistant_agent/coding/integration.py",
-  "src/assistant_agent/coding/repair.py",
-  "src/assistant_agent/coding/sandbox.py",
-  "src/assistant_agent/coding/sandbox_runner.py",
-  "src/assistant_agent/coding/validation.py",
   "src/assistant_agent/coding/workspace.py",
   "src/assistant_agent/proactive_delivery.py",
   "patches/langgraph-runtime-inmem/**",
@@ -101,18 +91,13 @@ source_globs = [
   "src/assistant_agent/native_agent/planning_agent.py",
   "src/assistant_agent/native_agent/state.py",
   "src/assistant_agent/native_agent/models.py",
-  "src/assistant_agent/native_agent/coding_graph.py",
-  "src/assistant_agent/native_agent/coding_phase.py",
-  "src/assistant_agent/coding/analysis.py",
-  "src/assistant_agent/coding/inspect_recovery.py",
+  "src/assistant_agent/native_agent/coding_agent.py",
   "src/assistant_agent/coding/models.py",
-  "src/assistant_agent/coding/review.py",
-  "src/assistant_agent/coding/review_repair.py",
 ]
 thin_references = ["README.md", "docs/agent-server-architecture.md"]
 verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/integration/test_runtime_lifecycle.py",
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/native-deepagents-planning",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/deepagents-coding-agent",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
@@ -133,9 +118,6 @@ source_globs = [
   "src/assistant_agent/skills/**",
   "src/assistant_agent/tools/**",
   "src/assistant_agent/improvement/evaluator.py",
-  "src/assistant_agent/coding/tools.py",
-  "src/assistant_agent/coding/policy.py",
-  "src/assistant_agent/coding/patches.py",
   "src/assistant_agent/mcp/**",
   "src/assistant_agent/automation/durable_tasks/**",
   "skills/**",

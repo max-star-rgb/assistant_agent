@@ -10,7 +10,6 @@ from langgraph.types import RetryPolicy
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.memory import (
     MemoryBackend,
-    memory_extract_degraded,
     memory_extract_node,
 )
 from assistant_agent.native_agent.state import (
@@ -36,7 +35,6 @@ def build_memory_extraction_graph(*, backend: MemoryBackend):
             max_attempts=3,
             jitter=False,
         ),
-        error_handler=memory_extract_degraded,
     )
     builder.add_edge(START, "memory_extract")
     builder.add_edge("memory_extract", END)

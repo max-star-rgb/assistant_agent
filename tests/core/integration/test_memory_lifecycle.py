@@ -5,6 +5,7 @@ from contextlib import nullcontext
 import json
 from pathlib import Path
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
@@ -21,7 +22,6 @@ from assistant_agent.native_agent.planning_agent import build_planning_agent
 from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.native_agent.root_graph import build_assistant_root_graph
 from assistant_agent.native_agent.state import (
-    CodingState,
     FastAgentState,
     PlanningAgentState,
 )
@@ -56,6 +56,12 @@ class _FailingMemory(_Memory):
         raise ConnectionError("recall-failure-sentinel")
 
 
+class _FailingCommitMemory(_Memory):
+    async def commit(self, **_kwargs: Any):
+        self.events.append("commit")
+        raise ConnectionError("commit-failure-sentinel")
+
+
 class _Runs:
     def __init__(self) -> None:
         self.cancellations: list[dict[str, Any]] = []
@@ -88,9 +94,31 @@ class _Runs:
         self.requests.append(kwargs)
 
 
+class _Threads:
+    def __init__(self) -> None:
+        self.requests: list[dict[str, Any]] = []
+
+    async def create(self, **kwargs: Any) -> dict[str, Any]:
+        self.requests.append(kwargs)
+        return {"thread_id": kwargs["thread_id"]}
+
+
+class _FailingThreads(_Threads):
+    async def create(self, **kwargs: Any) -> dict[str, Any]:
+        self.requests.append(kwargs)
+        raise ConnectionError("refresh-failure-sentinel")
+
+
 class _Client:
     def __init__(self) -> None:
+        self.threads = _Threads()
         self.runs = _Runs()
+
+
+class _FailingRefreshClient(_Client):
+    def __init__(self) -> None:
+        super().__init__()
+        self.threads = _FailingThreads()
 
 
 def _branch(schema, name):
@@ -180,14 +208,11 @@ def test_chat_runs_recall_once_and_schedule_extraction_for_each_mode(
             memory_backend=backend,
             fast_agent=_branch(FastAgentState, "AssistantFastAgent"),
             planning_agent=_branch(PlanningAgentState, "AssistantPlanningAgent"),
-            coding_graph=_branch(CodingState, "AssistantCodingGraph"),
+            coding_agent=_branch(FastAgentState, "AssistantCodingAgent"),
         )
         result = await graph.ainvoke(
-            {
-                "messages": [HumanMessage(content="request-sentinel")],
-                "execution_mode": mode,
-            },
-            context=AssistantRunContext(),
+            {"messages": [HumanMessage(content="request-sentinel")]},
+            context=AssistantRunContext(execution_mode=mode),
             config={
                 "configurable": {
                     "thread_id": f"thread-{mode}-sentinel",
@@ -209,23 +234,39 @@ def test_chat_runs_recall_once_and_schedule_extraction_for_each_mode(
         result["memory_context"] == ("memory-sentinel",) for _events, result in results
     )
     assert all("trusted_runtime_facts" not in result for _events, result in results)
-    assert sorted(client.runs.cancellations, key=lambda item: item["thread_id"]) == [
-        {
-            "thread_id": "thread-fast-sentinel",
-            "run_id": "memory-thread-fast-sentinel",
-            "wait": True,
-            "action": "rollback",
-        },
-        {
-            "thread_id": "thread-planning-sentinel",
-            "run_id": "memory-thread-planning-sentinel",
-            "wait": True,
-            "action": "rollback",
-        },
-    ]
+    assert len(client.threads.requests) == 2
+    memory_thread_ids = {
+        request["thread_id"] for request in client.threads.requests
+    }
+    assert memory_thread_ids == {
+        str(
+            uuid5(
+                NAMESPACE_URL,
+                f"assistant-agent:memory:thread-{mode}-sentinel",
+            )
+        )
+        for mode in ("fast", "planning")
+    }
+    assert all(
+        request["graph_id"] == "assistant-memory-v1"
+        and request["if_exists"] == "do_nothing"
+        and request["metadata"]["assistant_agent_source_thread_id"]
+        in {"thread-fast-sentinel", "thread-planning-sentinel"}
+        for request in client.threads.requests
+    )
+    assert {
+        cancellation["thread_id"] for cancellation in client.runs.cancellations
+    } == memory_thread_ids
+    assert all(
+        cancellation["run_id"] == f"memory-{cancellation['thread_id']}"
+        and cancellation["wait"] is True
+        and cancellation["action"] == "rollback"
+        for cancellation in client.runs.cancellations
+    )
     assert len(client.runs.requests) == 2
     assert all(
-        request["assistant_id"] == "assistant-memory-v1"
+        request["thread_id"] in memory_thread_ids
+        and request["assistant_id"] == "assistant-memory-v1"
         and request["metadata"] == {"assistant_agent_run_kind": "memory_extraction"}
         and request["after_seconds"] == 1800
         and request["multitask_strategy"] == "enqueue"
@@ -234,37 +275,88 @@ def test_chat_runs_recall_once_and_schedule_extraction_for_each_mode(
 
 
 @pytest.mark.core_invariant("MEMORY-001")
-def test_recall_degradation_only_returns_memory_fallback_state() -> None:
+def test_disable_memory_skips_recall_and_extraction(monkeypatch) -> None:
+    client = _Client()
+    backend = _Memory()
+    monkeypatch.setattr(root_graph_module, "get_client", lambda: client, raising=False)
+    graph = build_assistant_root_graph(
+        memory_backend=backend,
+        fast_agent=_branch(FastAgentState, "AssistantFastAgent"),
+        planning_agent=_branch(PlanningAgentState, "AssistantPlanningAgent"),
+        coding_agent=_branch(FastAgentState, "AssistantCodingAgent"),
+    )
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {"messages": [HumanMessage(content="request-sentinel")]},
+            context=AssistantRunContext(enable_memory=False),
+            config={"configurable": {"thread_id": "thread-disabled-sentinel"}},
+        )
+    )
+
+    assert backend.events == []
+    assert result["memory_context"] == ()
+    assert result["memory_status"] == "empty"
+    assert client.threads.requests == []
+    assert client.runs.cancellations == []
+    assert client.runs.requests == []
+
+
+@pytest.mark.core_invariant("MEMORY-001")
+def test_recall_reports_error_after_native_retries() -> None:
     backend = _FailingMemory()
     graph = build_assistant_root_graph(
         memory_backend=backend,
         fast_agent=_branch(FastAgentState, "AssistantFastAgent"),
         planning_agent=_branch(PlanningAgentState, "AssistantPlanningAgent"),
-        coding_graph=_branch(CodingState, "AssistantCodingGraph"),
+        coding_agent=_branch(FastAgentState, "AssistantCodingAgent"),
     )
 
-    result = asyncio.run(
-        graph.ainvoke(
-            {
-                "messages": [HumanMessage(content="request-sentinel")],
-                "execution_mode": "fast",
-            },
-            context=AssistantRunContext(),
-            config={
-                "configurable": {
-                    "thread_id": "thread-degraded-sentinel",
-                    "assistant_id": "assistant-sentinel",
-                    "graph_id": "graph-sentinel",
-                    "langgraph_auth_user": _User(),
-                }
-            },
+    with pytest.raises(ConnectionError, match="recall-failure-sentinel"):
+        asyncio.run(
+            graph.ainvoke(
+                {"messages": [HumanMessage(content="request-sentinel")]},
+                context=AssistantRunContext(),
+                config={
+                    "configurable": {
+                        "thread_id": "thread-degraded-sentinel",
+                        "assistant_id": "assistant-sentinel",
+                        "graph_id": "graph-sentinel",
+                        "langgraph_auth_user": _User(),
+                    }
+                },
+            )
         )
-    )
 
     assert backend.events == ["recall", "recall", "recall"]
-    assert result["memory_context"] == ()
-    assert result["memory_status"] == "degraded"
-    assert "trusted_runtime_facts" not in result
+
+
+@pytest.mark.core_invariant("MEMORY-001")
+def test_refresh_reports_error_after_native_retries(monkeypatch) -> None:
+    client = _FailingRefreshClient()
+    monkeypatch.setattr(root_graph_module, "get_client", lambda: client, raising=False)
+    graph = build_assistant_root_graph(
+        memory_backend=_Memory(),
+        fast_agent=_branch(FastAgentState, "AssistantFastAgent"),
+        planning_agent=_branch(PlanningAgentState, "AssistantPlanningAgent"),
+        coding_agent=_branch(FastAgentState, "AssistantCodingAgent"),
+    )
+
+    with pytest.raises(ConnectionError, match="refresh-failure-sentinel"):
+        asyncio.run(
+            graph.ainvoke(
+                {"messages": [HumanMessage(content="request-sentinel")]},
+                context=AssistantRunContext(),
+                config={
+                    "configurable": {
+                        "thread_id": "thread-refresh-failure-sentinel",
+                        "langgraph_auth_user": _User(),
+                    }
+                },
+            )
+        )
+
+    assert len(client.threads.requests) == 3
 
 
 @pytest.mark.core_invariant("MEMORY-001")
@@ -332,6 +424,34 @@ def test_independent_memory_graph_extracts_without_recall_or_agent() -> None:
         "request-sentinel",
         "existing-answer-sentinel",
     ]
+
+
+@pytest.mark.core_invariant("MEMORY-001")
+def test_independent_memory_graph_reports_error_after_native_retries() -> None:
+    backend = _FailingCommitMemory()
+    graph = memory_graph_module.build_memory_extraction_graph(backend=backend)
+
+    with pytest.raises(ConnectionError, match="commit-failure-sentinel"):
+        asyncio.run(
+            graph.ainvoke(
+                {
+                    "messages": [
+                        HumanMessage(content="request-sentinel"),
+                        AIMessage(content="existing-answer-sentinel"),
+                    ],
+                },
+                context=AssistantRunContext(),
+                config={
+                    "configurable": {
+                        "assistant_id": "assistant-sentinel",
+                        "graph_id": "graph-sentinel",
+                        "langgraph_auth_user": _User(),
+                    }
+                },
+            )
+        )
+
+    assert backend.events == ["commit", "commit", "commit"]
 
 
 @pytest.mark.core_invariant("MEMORY-001")

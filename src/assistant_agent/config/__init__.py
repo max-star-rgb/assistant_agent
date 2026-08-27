@@ -29,6 +29,7 @@ DEFAULT_QWEN_REALTIME_VISION_BASE_URL = (
 DEFAULT_QWEN_REALTIME_VISION_REGION = "cn-beijing"
 DEFAULT_QWEN_IMAGE_SEARCH_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DEFAULT_QWEN_IMAGE_SEARCH_MODEL = "qwen3.7-plus"
+DEFAULT_CURRENT_LOCATION = "上海市青浦区华为练秋湖研发中心"
 SUPPORTED_QWEN_REALTIME_VISION_REGIONS = {"cn-beijing", "ap-southeast-1"}
 
 
@@ -141,7 +142,7 @@ class ProviderConfig:
     editable_context_root: str = ".local/context"
     editable_context_user_id: str | None = None
     local_file_access_root: str = ".data/files"
-    current_location: str | None = None
+    current_location: str | None = DEFAULT_CURRENT_LOCATION
     chat_provider: ChatProviderName = "mock"
     chat_api_key: str | None = None
     chat_base_url: str | None = None
@@ -248,7 +249,6 @@ class ProviderConfig:
     max_video_seconds: float = 60.0
     langgraph_checkpointer_backend: LangGraphCheckpointerBackend = "memory"
     langgraph_checkpoint_path: str | None = None
-    max_tool_iterations: int = 12
     durable_tasks_enabled: bool = False
 
     def __post_init__(self) -> None:
@@ -646,7 +646,10 @@ class ProviderConfig:
             local_file_access_root=(
                 source.get("MULTIMODAL_AGENT_FILE_ACCESS_ROOT") or ".data/files"
             ),
-            current_location=(source.get("MULTIMODAL_AGENT_CURRENT_LOCATION") or None),
+            current_location=(
+                source.get("MULTIMODAL_AGENT_CURRENT_LOCATION")
+                or DEFAULT_CURRENT_LOCATION
+            ),
             chat_provider=chat_provider,
             chat_api_key=chat_settings.api_key,
             chat_base_url=chat_settings.base_url,
@@ -951,7 +954,6 @@ class ProviderConfig:
                 or source.get("MULTIMODAL_AGENT_CHECKPOINTER_BACKEND")
             ),
             langgraph_checkpoint_path=source.get("LANGGRAPH_CHECKPOINT_PATH"),
-            max_tool_iterations=_int_env(source.get("MAX_TOOL_ITERATIONS"), 12),
         )
         return config
 

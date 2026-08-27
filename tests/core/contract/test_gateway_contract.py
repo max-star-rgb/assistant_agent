@@ -20,7 +20,7 @@ from assistant_agent.agent_server.client import (
     SdkAgentServerClient,
     require_current_checkpoint_graph,
 )
-from assistant_agent.agent_server.config import ASSISTANT_GRAPH_ID
+from assistant_agent.agent_server.config import ASSISTANT_GRAPH_ID, WORKER_GRAPH_ID
 from assistant_agent.agent_server.media_app import _native_graph_warmup_url
 from assistant_agent.agent_server.media_protocol import MediaProtocolError, parse_chat, parse_envelope
 from assistant_agent.agent_server.media_session import MediaConnectionSession
@@ -42,6 +42,9 @@ def test_agent_server_owns_the_production_graph_and_authenticated_media_route() 
         ),
         "assistant-memory-v1": (
             "assistant_agent.agent_server.graph:native_memory_graph"
+        ),
+        "assistant-worker-v1": (
+            "assistant_agent.agent_server.graph:native_worker_graph"
         ),
     }
     assert manifest["http"] == {
@@ -122,6 +125,9 @@ def test_agent_server_auth_binds_studio_threads_and_runs_to_v3() -> None:
     memory_create = {"graph_id": "assistant-memory-v1", "metadata": {}}
     assert asyncio.run(authorize_thread_create(ctx, memory_create)) is None
     assert memory_create["metadata"]["assistant_graph_id"] == "assistant-memory-v1"
+    worker_create = {"graph_id": WORKER_GRAPH_ID, "metadata": {}}
+    assert asyncio.run(authorize_thread_create(ctx, worker_create)) is None
+    assert worker_create["metadata"]["assistant_graph_id"] == WORKER_GRAPH_ID
 
     updated = {
         "thread_id": "thread-v3",
@@ -148,9 +154,16 @@ def test_agent_server_auth_binds_studio_threads_and_runs_to_v3() -> None:
         "owner": "studio-user",
         "assistant_graph_id": ASSISTANT_GRAPH_ID,
     }
+    assert run["context"] == {}
     memory_run = {"assistant_id": "assistant-memory-v1", "metadata": {}}
     assert asyncio.run(authorize_run_create(ctx, memory_run)) == {
-        "owner": "studio-user"
+        "owner": "studio-user",
+        "assistant_graph_id": "assistant-memory-v1",
+    }
+    worker_run = {"assistant_id": WORKER_GRAPH_ID, "metadata": {}}
+    assert asyncio.run(authorize_run_create(ctx, worker_run)) == {
+        "owner": "studio-user",
+        "assistant_graph_id": WORKER_GRAPH_ID,
     }
 
 
@@ -200,15 +213,15 @@ def test_media_wire_parser_is_strict_and_does_not_define_graph_lifecycle() -> No
 def test_assistant_context_is_public_configuration_not_private_run_facts() -> None:
     context = AssistantRunContext.model_validate(
         {
-            "system_prompt": "assistant-persona-sentinel",
-            "assistant_execution_mode": "planning",
+            "execution_mode": "planning",
+            "enable_memory": False,
         }
     )
     assert set(type(context).model_fields) == {
-        "system_prompt",
-        "assistant_execution_mode",
+        "execution_mode",
+        "enable_memory",
     }
-    assert context.system_prompt == "assistant-persona-sentinel"
+    assert context.enable_memory is False
     facts = assistant_runtime_facts(
         {
             "metadata": assistant_runtime_metadata(

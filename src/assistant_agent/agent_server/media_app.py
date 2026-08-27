@@ -1019,7 +1019,7 @@ async def _run_chat(
                 visual_target_sequence=visual_target_sequence,
                 visual_target_video_id=visual_target_video_id,
             ),
-            context={},
+            context={"execution_mode": chat.execution_mode},
             metadata=run_metadata,
             multitask_strategy="interrupt",
             on_run_created=bind_run,
@@ -1422,7 +1422,6 @@ def media_graph_input(
     content: list[dict[str, Any]] = [{"type": "text", "text": chat.text}]
     return {
         "messages": [{"role": "user", "content": content}],
-        "execution_mode": chat.execution_mode,
     }
 
 

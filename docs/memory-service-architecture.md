@@ -22,28 +22,33 @@ assistant-native-v3: memory_recall -> fast/planning -> refresh delayed memory ->
 assistant-memory-v1: memory_extract -> END
 ```
 
+`AssistantRunContext.enable_memory` 是 Studio Assistant 可持久保存且可被单次 run 同名覆盖的统一开关，默认 true。
+设为 false 时，父图将 recall 冻结为空并跳过 delayed extraction 调度；设为 true 仍要求部署侧已配置并启用 Memory
+backend，不能用运行配置绕过 backend 的 mock/real 与凭据边界。
+
 每个 chat run 都通过单个 `memory_recall` 节点重新 recall 一次，并把结果冻结在当前 checkpoint。planning coordinator 及 task 内的 fast 子 Agent
 只读取当前 run 冻结的 `memory_context`，不持有 backend，也不重复 recall。独立 Memory Graph 使用 message-only state，
 不继承父图的 execution、Memory 快照或 fast agent Skill channel。recall 使用
-LangGraph `RetryPolicy(max_attempts=3)`；最终失败由 LangGraph 原生 node error handler 返回
-`Command(update={memory_context: (), memory_status: degraded}, goto=execution_router)`，父图随后继续回答。
+LangGraph `RetryPolicy(max_attempts=3)`；三次耗尽后不设置 error handler，由 Agent Server 将 chat run 明确终结为 error。
 从已完成 recall 之后的 checkpoint resume 时沿用冻结快照；从更早 checkpoint replay 并重新执行 recall 时允许
 重新读取最新记忆，不建立跨 replay 的额外冻结层。日期与用户地区由 Context authority 管理，不由 Memory 采集或保存。
 
-最终回答产生后，主图使用官方 `langgraph_sdk` 调用 `runs.list(thread_id, status="pending")`，只筛选带
-`assistant_agent_run_kind=memory_extraction` metadata 的旧 Memory run，再逐个调用
-`runs.cancel(thread_id, run_id, wait=True, action="rollback")`，随后在同一个 conversation thread 上调用
-`runs.create` 创建新的
+最终回答产生后，主图从 chat thread ID 确定性派生并按需创建 graph identity 为 `assistant-memory-v1` 的
+companion Memory thread，在该后台 thread 上使用官方 `langgraph_sdk` 调用
+`runs.list(thread_id, status="pending")`，只筛选带 `assistant_agent_run_kind=memory_extraction` metadata 的旧
+Memory run，再逐个调用 `runs.cancel(thread_id, run_id, wait=True, action="rollback")`，随后调用 `runs.create` 创建新的
 `assistant-memory-v1` delayed run，默认 `after_seconds=1800`、`multitask_strategy="enqueue"`，并写入上述
-metadata 标记。这段回答后的 refresh 不取消 pending chat run，也不改变普通用户 chat 入口既有的 `interrupt`
+metadata 标记。companion thread 以 `assistant_agent_source_thread_id` 记录来源；chat thread 不保留后台 pending
+run，因此 Studio 在回答完成后恢复 idle。这段回答后的 refresh 不取消 pending chat run，也不改变普通用户 chat 入口既有的 `interrupt`
 并发语义；
 移除回答前 SDK 往返后，模型可更早开始生成。项目不实现 timer、进程队列或 session manager；延时与队列由
-Agent Server 管理。SDK 调用只等待 Server 接受请求，不等待提取模型；refresh 异常由原生 error handler 隔离。
+Agent Server 管理。SDK 调用只等待 Server 接受请求，不等待提取模型；refresh 同样使用原生三次重试，耗尽后 chat run
+明确终结为 error。
 
 静默窗口到期后，独立 Memory Graph 调用 backend 写入；其异常只结束后台 run，第三方原始错误不进入
-Assistant state。`RetryPolicy`、error handler
-和 `Command` 是 LangGraph 扩展能力，不构成项目自研降级层；
-项目只声明 Memory 失败时仍继续回答并显式标记 degraded 这一产品结果。
+Assistant state。节点使用 LangGraph 原生 `RetryPolicy(max_attempts=3)`；三次耗尽后不设置 error handler，
+由 Agent Server 将独立 Memory run 明确终结为 error，避免静默伪装成 success。此时 chat run 早已完成，
+不会回滚或中断用户回答。recall、refresh 与 extract 均不使用 error handler 吞错。
 
 ## 最小 backend 协议
 

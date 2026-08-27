@@ -14,9 +14,6 @@ from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.providers.provider_errors import sanitize_error_message
 from assistant_agent.tools.models import ToolCategory, ToolResult
 
-RUN_CALL_LIMIT_METADATA_KEY = "run_call_limit"
-
-
 def native_tool_response(
     tool_name: str,
     result: ToolResult,
@@ -64,21 +61,12 @@ def builtin_tool_metadata(
     effect: ToolCategory,
     *,
     availability: str | None = None,
-    run_call_limit: int | None = None,
 ) -> dict[str, Any]:
     """Return the metadata required for a built-in native tool."""
 
     metadata = {"effect": effect, "source": "builtin"}
     if availability is not None:
         metadata["availability"] = availability
-    if run_call_limit is not None:
-        if (
-            isinstance(run_call_limit, bool)
-            or not isinstance(run_call_limit, int)
-            or run_call_limit < 1
-        ):
-            raise ValueError("run_call_limit must be a positive integer")
-        metadata[RUN_CALL_LIMIT_METADATA_KEY] = run_call_limit
     return metadata
 
 
@@ -87,7 +75,6 @@ def configure_builtin_tool(
     effect: ToolCategory,
     *,
     availability: str | None = None,
-    run_call_limit: int | None = None,
     bounded_expected_errors: bool = False,
 ) -> BaseTool:
     """Apply standard metadata and the production ToolException policy."""
@@ -95,7 +82,6 @@ def configure_builtin_tool(
     tool.metadata = builtin_tool_metadata(
         effect,
         availability=availability,
-        run_call_limit=run_call_limit,
     )
     if effect != "read" or bounded_expected_errors:
         tool.handle_tool_error = _bounded_tool_error

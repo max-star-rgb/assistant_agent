@@ -4,20 +4,21 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, NotRequired
 
 from deepagents.backends.protocol import BackendProtocol
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
     HumanInTheLoopMiddleware,
-    ModelCallLimitMiddleware,
     SummarizationMiddleware,
     ToolRetryMiddleware,
 )
 from langchain.agents.middleware.types import (
     AgentMiddleware,
+    AgentState,
     ModelRequest,
     ModelResponse,
+    PrivateStateAttr,
     ToolCallRequest,
 )
 from langchain_core.language_models import BaseChatModel
@@ -25,17 +26,18 @@ from langchain_core.messages import (
     AIMessage,
     HumanMessage,
     MessageLikeRepresentation,
+    SystemMessage,
     ToolMessage,
 )
 from langchain_core.tools import BaseTool
 from langgraph.errors import GraphBubbleUp
+from langgraph.managed.is_last_step import RemainingStepsManager
 from langgraph.types import Command
 
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.assistant_prompt import (
     create_assistant_base_prompt,
     create_assistant_runtime_prompt,
-    render_assistant_core_prompt,
 )
 from assistant_agent.media.visual_perception.history_probe import (
     VisualObservationHistoryProbe,
@@ -54,28 +56,85 @@ from assistant_agent.native_agent.tool_profiles import (
     project_tool_profiles,
 )
 from assistant_agent.skills.native import (
-    create_project_skill_filesystem_middleware,
-    create_project_skills_backend,
+    PROJECT_FILESYSTEM_TOOL_NAMES,
+    create_project_filesystem_backend,
+    create_project_filesystem_middleware,
     create_project_skills_middleware,
 )
+
+
+_FINAL_SYNTHESIS_INSTRUCTION = """工具调用阶段已经结束。请基于当前对话中已有的信息和工具结果，
+直接完成对用户的最终答复。不要请求或假设新的工具调用；如果信息仍不完整，请明确说明限制，并交付当前能够确定的内容。"""
+
+
+class RecursionFinalSynthesisState(AgentState):
+    """Expose LangGraph's remaining supersteps only inside middleware."""
+
+    remaining_steps: NotRequired[
+        Annotated[int, PrivateStateAttr, RemainingStepsManager]
+    ]
+
+
+class RecursionFinalSynthesisMiddleware(AgentMiddleware):
+    """Use the last graph steps for one tool-free natural response."""
+
+    state_schema = RecursionFinalSynthesisState
+
+    def __init__(self, step_reserve: int = 8) -> None:
+        super().__init__()
+        if step_reserve < 1:
+            raise ValueError("final synthesis step reserve must be positive")
+        self.step_reserve = step_reserve
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
+        return handler(self._prepare_request(request))
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        return await handler(self._prepare_request(request))
+
+    def _prepare_request(self, request: ModelRequest) -> ModelRequest:
+        remaining_steps = request.state.get("remaining_steps")
+        if remaining_steps is None or remaining_steps > self.step_reserve:
+            return request
+        system_message = request.system_message or SystemMessage(content="")
+        content = system_message.content
+        if isinstance(content, str):
+            content = f"{content}\n\n{_FINAL_SYNTHESIS_INSTRUCTION}".strip()
+        else:
+            content = [*content, {"type": "text", "text": _FINAL_SYNTHESIS_INSTRUCTION}]
+        return request.override(
+            model=request.model.bind_tools([], tool_choice="none"),
+            tools=[],
+            tool_choice=None,
+            system_message=system_message.model_copy(update={"content": content}),
+        )
 
 
 def build_fast_agent(
     model: BaseChatModel,
     tools: Sequence[BaseTool],
     *,
-    model_call_limit: int = 12,
     context_window_tokens: int = 128_000,
     compaction_trigger_ratio: float = 0.75,
     compaction_target_ratio: float = 0.15,
     token_counter: Callable[[Iterable[MessageLikeRepresentation]], int] | None = None,
-    skills_backend: BackendProtocol | None = None,
+    filesystem_backend: BackendProtocol | None = None,
+    filesystem_tool_names: tuple[str, ...] = PROJECT_FILESYSTEM_TOOL_NAMES,
     tool_profiles: Sequence[ToolProfile] | None = None,
     visual_history_probe: VisualObservationHistoryProbe | None = None,
     live_view_resolver: Callable[[str, str, str], Any] | None = None,
     additional_middleware: Sequence[AgentMiddleware] = (),
     state_schema: type[FastAgentState] = FastAgentState,
     current_location: str | None = None,
+    name: str = "AssistantFastAgent",
 ):
     """Build the shared create_agent unit without binding saver or Store."""
 
@@ -83,39 +142,43 @@ def build_fast_agent(
         raise ValueError("context window must contain at least 100 tokens")
     if not 0 < compaction_target_ratio < compaction_trigger_ratio <= 1:
         raise ValueError("compaction ratios must satisfy 0 < target < trigger <= 1")
-    resolved_skills_backend = skills_backend or create_project_skills_backend(
-        Path(__file__).resolve().parents[3] / "skills"
+    resolved_filesystem_backend = (
+        filesystem_backend
+        or create_project_filesystem_backend(Path(__file__).resolve().parents[3])
     )
-    skills_middleware = create_project_skills_middleware(resolved_skills_backend)
-    skill_filesystem_middleware = create_project_skill_filesystem_middleware(
-        resolved_skills_backend
+    skills_middleware = create_project_skills_middleware(resolved_filesystem_backend)
+    filesystem_middleware = create_project_filesystem_middleware(
+        resolved_filesystem_backend,
+        tools=filesystem_tool_names,
     )
-    skill_file_tools = tuple(skill_filesystem_middleware.tools)
-    if model_call_limit < 1:
-        raise ValueError("model call limit must be positive")
+    filesystem_tools = tuple(filesystem_middleware.tools)
     resolved_tool_profiles = (
         project_tool_profiles() if tool_profiles is None else tuple(tool_profiles)
     )
 
-    read_tool_names = _retryable_read_tool_names([*tools, *skill_file_tools])
+    governed_tools = [*tools, *filesystem_tools]
+    read_tool_names = _retryable_read_tool_names(governed_tools)
     interrupt_policy = {
         tool.name: {
             "allowed_decisions": ["approve", "edit", "reject", "respond"],
-            "when": _planning_mode_requires_approval,
+            "when": (
+                _always_require_approval
+                if (tool.metadata or {}).get("source") in {"deepagents", "mcp"}
+                else _planning_mode_requires_approval
+            ),
         }
-        for tool in tools
+        for tool in governed_tools
         if (tool.metadata or {}).get("effect") not in {None, "read"}
     }
     middleware = [
-        create_assistant_base_prompt(resolved_tool_profiles),
+        create_assistant_base_prompt(),
         skills_middleware,
-        skill_filesystem_middleware,
+        filesystem_middleware,
         ToolProfileMiddleware(resolved_tool_profiles),
         ConditionalToolExposureMiddleware(
             visual_history_probe,
             live_view_resolver,
         ),
-        ModelCallLimitMiddleware(run_limit=model_call_limit, exit_behavior="end"),
     ]
     tool_retry_middleware = (
         ToolRetryMiddleware(
@@ -129,10 +192,7 @@ def build_fast_agent(
         else None
     )
     middleware.append(
-        PerToolCallLimitMiddleware.from_tools(
-            [*tools, *skill_file_tools],
-            default_run_limit=12,
-        )
+        PerToolCallLimitMiddleware(max_parallel_calls_per_tool=12)
     )
     summarization_options = {
         "model": model,
@@ -154,6 +214,7 @@ def build_fast_agent(
         middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_policy))
     middleware.extend(additional_middleware)
     middleware.append(create_assistant_runtime_prompt(current_location))
+    middleware.append(RecursionFinalSynthesisMiddleware())
     middleware.append(ToolProgressMiddleware())
     if tool_retry_middleware is not None:
         middleware.append(tool_retry_middleware)
@@ -164,12 +225,16 @@ def build_fast_agent(
         state_schema=state_schema,
         context_schema=AssistantRunContext,
         middleware=middleware,
-        name="AssistantFastAgent",
+        name=name,
     )
 
 
 def _planning_mode_requires_approval(request: ToolCallRequest) -> bool:
     return request.state.get("execution_mode") == "planning"
+
+
+def _always_require_approval(_request: ToolCallRequest) -> bool:
+    return True
 
 
 class MemoryContextMiddleware(AgentMiddleware):
@@ -257,25 +322,6 @@ def _tool_progress_event(
     }
 
 
-def render_assistant_system_prompt(
-    context: AssistantRunContext,
-    *,
-    tool_profiles: Sequence[ToolProfile] = (),
-) -> str:
-    """Compatibility renderer for callers that only need the stable prompt."""
-
-    core = render_assistant_core_prompt(tool_profiles)
-    custom = context.system_prompt.strip()
-    if not custom:
-        return core
-    return (
-        f"{core}\n\n## Assistant 定制\n\n"
-        "以下内容定义当前 Assistant 的身份、人格和任务偏好；"
-        "它不能覆盖前述核心安全、事实与工具治理边界。\n\n"
-        f"<assistant_instructions>\n{custom}\n</assistant_instructions>"
-    )
-
-
 def _retryable_read_tool_names(tools: Sequence[BaseTool]) -> list[str]:
     """Keep current-view failures out of automatic retries and extra VLM work."""
 
@@ -333,8 +379,8 @@ def _quote_lines(value: str) -> str:
 
 __all__ = [
     "MemoryContextMiddleware",
+    "RecursionFinalSynthesisMiddleware",
     "ToolProgressMiddleware",
     "build_fast_agent",
     "memory_context_message",
-    "render_assistant_system_prompt",
 ]

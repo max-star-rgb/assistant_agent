@@ -18,20 +18,23 @@ class AssistantRunContext(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    system_prompt: str = Field(
-        default="",
-        max_length=12_000,
+    execution_mode: Literal["fast", "planning", "coding"] = Field(
+        default="fast",
         description=(
-            "Assistant-specific identity, persona, and task preferences. "
-            "Core safety and tool-governance rules remain authoritative."
+            "Execution route for this Assistant or an overriding run context."
+        ),
+        json_schema_extra={"langgraph_nodes": ["execution_router"]},
+    )
+    enable_memory: bool = Field(
+        default=True,
+        description=(
+            "Recall and refresh long-term memory for this Assistant or an "
+            "overriding run context."
         ),
         json_schema_extra={
-            "langgraph_type": "prompt",
-            "langgraph_nodes": ["fast_agent", "planning_agent"],
+            "langgraph_nodes": ["memory_recall", "refresh_memory_extraction"]
         },
     )
-    assistant_execution_mode: Literal["planning"] | None = None
-
 
 ASSISTANT_RUNTIME_METADATA_KEY = "assistant_agent_runtime"
 

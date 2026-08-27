@@ -8,7 +8,11 @@ from typing import Annotated, Any, Literal, NotRequired
 
 from langchain.agents import AgentState
 from langchain.agents.middleware import ModelRequest
-from langchain.agents.middleware.types import AgentMiddleware, ModelResponse
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    ModelResponse,
+    ToolCallRequest,
+)
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import BaseTool, ToolException, tool
 from langgraph.prebuilt import ToolRuntime
@@ -96,10 +100,13 @@ class ToolProfileMiddleware(AgentMiddleware[ToolProfileState, Any]):
         self._profiles_by_id = {
             profile.profile_id: profile for profile in catalog.profiles
         }
-        self._claimed_tool_names = frozenset(
-            tool_name
+        self._profile_id_by_tool_name = {
+            tool_name: profile.profile_id
             for profile in catalog.profiles
             for tool_name in profile.tool_names
+        }
+        self._claimed_tool_names = frozenset(
+            self._profile_id_by_tool_name
         )
         self.tools = [self._create_activate_tool()]
 
@@ -123,6 +130,24 @@ class ToolProfileMiddleware(AgentMiddleware[ToolProfileState, Any]):
     ) -> ModelResponse | AIMessage:
         return await handler(self._request_with_visible_tools(request))
 
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
+    ) -> ToolMessage | Command[Any]:
+        return self._blocked_tool_message(request) or handler(request)
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[
+            [ToolCallRequest],
+            Awaitable[ToolMessage | Command[Any]],
+        ],
+    ) -> ToolMessage | Command[Any]:
+        blocked = self._blocked_tool_message(request)
+        return blocked if blocked is not None else await handler(request)
+
     def _request_with_visible_tools(self, request: ModelRequest) -> ModelRequest:
         active_profile_ids = _string_values(
             request.state.get("active_tool_profile_ids")
@@ -145,6 +170,31 @@ class ToolProfileMiddleware(AgentMiddleware[ToolProfileState, Any]):
         profile = self._profiles_by_id.get(profile_id)
         return profile.tool_names if profile is not None else ()
 
+    def _blocked_tool_message(self, request: ToolCallRequest) -> ToolMessage | None:
+        tool_name = request.tool_call["name"]
+        profile_id = self._profile_id_by_tool_name.get(tool_name)
+        active_profile_ids = _string_values(
+            request.state.get("active_tool_profile_ids")
+        )
+        if profile_id is None or profile_id in active_profile_ids:
+            return None
+        observation = {
+            "status": "failed",
+            "error": "tool_profile_not_active",
+            "summary": (
+                f"工具 {tool_name!r} 尚未开放；请先调用 "
+                f"{ACTIVATE_TOOL_PROFILE_TOOL_NAME} 激活 {profile_id!r}。"
+            ),
+            "required_profile_id": profile_id,
+        }
+        return ToolMessage(
+            content=json.dumps(observation, ensure_ascii=False, sort_keys=True),
+            artifact=observation,
+            name=tool_name,
+            tool_call_id=request.tool_call["id"],
+            status="error",
+        )
+
     def _create_activate_tool(self) -> BaseTool:
         profile_index = "\n".join(
             f"- {profile.profile_id}: {profile.description}"
@@ -166,9 +216,9 @@ class ToolProfileMiddleware(AgentMiddleware[ToolProfileState, Any]):
             ACTIVATE_TOOL_PROFILE_TOOL_NAME,
             args_schema=args_schema,
             description=(
-                "当任务需要特定场景的专用工具时，加载对应 Tool Profile，再继续完成任务。"
-                "仅在当前工具不足时按需加载。\n\n"
-                "当前可用 Tool Profile：\n"
+                "实现用户需求时，如果发现缺少相关工具，运行本工具以获取额外的工具集。"
+                "在多数场景下都需要使用本工具，但注意按需要加载\n\n"
+                "当前可用 工具集：\n"
                 f"{profile_index}"
             ),
         )
@@ -218,8 +268,51 @@ def project_tool_profiles() -> tuple[ToolProfile, ...]:
 
     return (
         ToolProfile(
+            profile_id="filesystem",
+            description="读取、搜索、创建、编辑或删除当前仓库中的文件和目录。",
+            tool_names=(
+                "ls",
+                "read_file",
+                "write_file",
+                "edit_file",
+                "delete",
+                "glob",
+                "grep",
+            ),
+        ),
+        ToolProfile(
+            profile_id="browser",
+            description="通过 Playwright 浏览网页、读取页面状态并执行受审批的页面交互。",
+            tool_names=(
+                "mcp_playwright_browser_click",
+                "mcp_playwright_browser_close",
+                "mcp_playwright_browser_console_messages",
+                "mcp_playwright_browser_drag",
+                "mcp_playwright_browser_drop",
+                "mcp_playwright_browser_evaluate",
+                "mcp_playwright_browser_file_upload",
+                "mcp_playwright_browser_fill_form",
+                "mcp_playwright_browser_find",
+                "mcp_playwright_browser_handle_dialog",
+                "mcp_playwright_browser_hover",
+                "mcp_playwright_browser_navigate",
+                "mcp_playwright_browser_navigate_back",
+                "mcp_playwright_browser_network_request",
+                "mcp_playwright_browser_network_requests",
+                "mcp_playwright_browser_press_key",
+                "mcp_playwright_browser_resize",
+                "mcp_playwright_browser_run_code_unsafe",
+                "mcp_playwright_browser_select_option",
+                "mcp_playwright_browser_snapshot",
+                "mcp_playwright_browser_tabs",
+                "mcp_playwright_browser_take_screenshot",
+                "mcp_playwright_browser_type",
+                "mcp_playwright_browser_wait_for",
+            ),
+        ),
+        ToolProfile(
             profile_id="travel",
-            description="酒店、地点发现、周边搜索以及步行、骑行、公交和驾车路线规划。",
+            description="酒店、地点发现、周边搜索以及步行、骑行、公交、高铁和驾车路线规划。",
             tool_names=(
                 "lodging_search",
                 "mcp_amap_maps_maps_geo",

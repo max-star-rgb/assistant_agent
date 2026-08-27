@@ -137,7 +137,7 @@ Graph 完成后发送成功终包：
 ```
 
 `assistantMode` 省略时为 `fast`，也可显式选择 `planning`；旧 `standard|deep_research` 不再接受。媒体适配器
-把请求机械转换为标准 HumanMessage content blocks 和根输入 `execution_mode`。`stream=true` 只投影
+把请求机械转换为标准 HumanMessage content blocks，并把 `execution_mode` 放入本次 run context。`stream=true` 只投影
 `AIMessageChunk` 的 string content 或 `text|output_text` block；当 `messages/metadata` 存在时，明确标记为
 非 `model` 节点的 chunk 会被排除；metadata 缺失时按标准 assistant chunk 降级投影，避免原生流存在但媒体侧
 只能收到终包。planner 等已标记的其他节点内部文本、tool-call name/arguments、ToolMessage 和 updates 不进入媒体正文。
@@ -163,8 +163,9 @@ Agent Server 的 `messages/partial` 是同一 message 的累计快照，适配�
 无尖括号的 HTTP(S) URL。没有安全完整的链接与图片时不输出对应卡片，也不会复用历史轮次结果。
 
 Memory debounce 是所有入口共享的
-主图规则：生成回答后通过官方 Agent Server SDK rollback 同 thread 的旧 pending Memory run，并立即 enqueue
-一个新的 30 分钟 delayed Memory run；pending chat run 不受影响。该 orchestration 不扩展媒体 wire，
+主图规则：生成回答后通过官方 Agent Server SDK，在由 chat thread 确定性派生的 companion Memory thread 上
+rollback 旧 pending Memory run，并立即 enqueue 一个新的 30 分钟 delayed Memory run；chat thread 不保留后台
+pending run。该 orchestration 不扩展媒体 wire，
 WebSocket 挂断也不承担 Memory 语义。
 
 当客户端声明 `clientCapabilities.urlCitationAnnotationsV1=true`，媒体入口只读取最新终态 `AIMessage` 自身的

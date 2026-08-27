@@ -699,9 +699,10 @@ class CodingBehaviorAgentServerDriver:
                 "evaluation_case_id": case.case_id,
                 "evaluation_repository_id": policy.repository_id,
             }
+            coding_context = {"execution_mode": "coding"}
             await start_run(
-                input={"messages": [{"role": "user", "content": case.request}], "execution_mode": "coding", "coding_repo_id": policy.repository_id},
-                context={},
+                input={"messages": [{"role": "user", "content": case.request}]},
+                context=coding_context,
                 metadata={
                     "coding_eval_case_id": case.case_id,
                     **evaluation_auth_metadata,
@@ -735,7 +736,6 @@ class CodingBehaviorAgentServerDriver:
                     )
                 if (
                     values.get("execution_mode") != "coding"
-                    or values.get("coding_repo_id") != policy.repository_id
                     or values.get("base_commit") != policy.fixture.base_commit
                     or not isinstance(current_workspace_ref, str)
                     or not current_workspace_ref
@@ -796,7 +796,7 @@ class CodingBehaviorAgentServerDriver:
                         await start_run(
                             command={"resume": {"decision": "reject"}},
                             checkpoint_id=checkpoint_id,
-                            context={},
+                            context=coding_context,
                             metadata=evaluation_auth_metadata,
                         )
                     except Exception:
@@ -818,7 +818,7 @@ class CodingBehaviorAgentServerDriver:
                         await start_run(
                             command={"resume": {"decision": "reject"}},
                             checkpoint_id=checkpoint_id,
-                            context={},
+                            context=coding_context,
                             metadata=evaluation_auth_metadata,
                         )
                     except Exception:
@@ -833,7 +833,7 @@ class CodingBehaviorAgentServerDriver:
                 await start_run(
                     command={"resume": response},
                     checkpoint_id=checkpoint_id,
-                    context={},
+                    context=coding_context,
                     metadata=evaluation_auth_metadata,
                 )
         except _RunCleanupPending:

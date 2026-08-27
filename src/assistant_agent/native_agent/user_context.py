@@ -24,7 +24,7 @@ def render_user_characteristics_section(
     current_date = current_time.astimezone(timezone).date().isoformat()
     location = " ".join((current_location or "").split())
     return (
-        "用户特性：\n"
+        "## 用户信息\n\n"
         f"- 当前日期（北京时间）：{current_date}\n"
         f"- 用户所处地区：{location or _UNCONFIGURED_LOCATION}"
     )

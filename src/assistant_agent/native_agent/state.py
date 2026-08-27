@@ -9,7 +9,7 @@ from typing import Annotated, Literal, NotRequired, Required
 from langchain.agents import AgentState
 from langchain_core.messages import AnyMessage
 from langgraph.graph import MessagesState
-from pydantic import BaseModel, ConfigDict, JsonValue, model_validator
+from pydantic import BaseModel, ConfigDict, JsonValue
 
 from assistant_agent.coding.analysis import AnalysisStatus, merge_analysis_results
 from assistant_agent.coding.models import (
@@ -45,6 +45,21 @@ from assistant_agent.native_agent.models import ProviderSearchProfile
 ExecutionMode = Literal["fast", "planning", "coding"]
 MemoryStatus = Literal["ready", "empty", "degraded"]
 AnalysisSnapshotReleaseStatus = Literal["active", "released", "cleanup_pending"]
+
+
+def merge_async_tasks(
+    current: dict[str, dict[str, JsonValue]] | None,
+    update: dict[str, dict[str, JsonValue]] | None,
+) -> dict[str, dict[str, JsonValue]]:
+    """Merge official async-subagent task records by stable task ID."""
+
+    return {**(current or {}), **(update or {})}
+
+
+AsyncTasks = Annotated[
+    dict[str, dict[str, JsonValue]],
+    merge_async_tasks,
+]
 
 _ATTESTATION_MISMATCH_SIGNALS = frozenset(
     {
@@ -85,14 +100,6 @@ class AssistantRootInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     messages: list[AnyMessage]
-    execution_mode: ExecutionMode = "fast"
-    coding_repo_id: str | None = None
-
-    @model_validator(mode="after")
-    def _coding_requires_repository(self) -> "AssistantRootInput":
-        if self.execution_mode == "coding" and not (self.coding_repo_id or "").strip():
-            raise ValueError("coding_repo_id is required in coding mode")
-        return self
 
 
 class MemoryExtractionInput(BaseModel):
@@ -109,8 +116,8 @@ class AssistantRootState(MessagesState):
     memory_context: NotRequired[tuple[str, ...]]
     memory_status: NotRequired[MemoryStatus]
     execution_mode: NotRequired[ExecutionMode]
-    coding_repo_id: NotRequired[str]
     coding_result: NotRequired[CodingTerminalResult]
+    async_tasks: NotRequired[AsyncTasks]
 
 
 class FastAgentState(AgentState):
@@ -120,6 +127,7 @@ class FastAgentState(AgentState):
     memory_status: NotRequired[MemoryStatus]
     execution_mode: NotRequired[ExecutionMode]
     provider_search_profile: NotRequired[ProviderSearchProfile]
+    async_tasks: NotRequired[AsyncTasks]
 
 
 class PlanningAgentState(AgentState):
@@ -133,6 +141,7 @@ class PlanningAgentState(AgentState):
     provider_search_profile: NotRequired[
         Annotated[ProviderSearchProfile, _merge_identical_value]
     ]
+    async_tasks: NotRequired[AsyncTasks]
 
 
 class MemoryExtractionState(MessagesState):
@@ -286,6 +295,7 @@ def _merge_identical_value(current, update):
 
 __all__ = [
     "AnalysisSnapshotReleaseStatus",
+    "AsyncTasks",
     "AssistantRootInput",
     "AssistantRootState",
     "CodingAnalysisWorkerState",
@@ -296,4 +306,5 @@ __all__ = [
     "MemoryExtractionState",
     "MemoryStatus",
     "PlanningAgentState",
+    "merge_async_tasks",
 ]

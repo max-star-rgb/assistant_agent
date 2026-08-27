@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and install the repository's event-driven in-memory runtime patch."""
+"""Build and install the repository's native in-memory runtime fixes."""
 
 from __future__ import annotations
 
@@ -17,14 +17,17 @@ PATCH_PATH = (
     REPO_ROOT
     / "patches"
     / "langgraph-runtime-inmem"
-    / "0.32.4-event-wakeup.patch"
+    / "0.33.0-native-recovery.patch"
 )
-UPSTREAM_VERSION = "0.32.4"
-LOCAL_VERSION = "0.32.4+assistant1"
+UPSTREAM_VERSION = "0.33.0"
+LOCAL_VERSION = "0.33.0+assistant1"
 UPSTREAM_WHEEL_SHA256 = (
-    "85b9649c31c04288ebefa3c8733ae01ce1a636c9f221bf27a89f314aae908391"
+    "5118b8ef4ca9c90461cebd84cf0e2f1c6dc0c99b3b3fe58de5c1e31f30e30d53"
 )
 PATCHED_FILE_SHA256 = {
+    "langgraph_runtime_inmem/database.py": (
+        "cba00cf8cbf1e3560cb72126e4d3f6adba82f9789468f8be7a7fe26bb9730dd7"
+    ),
     "langgraph_runtime_inmem/ops.py": (
         "254a9e2961022ca6b64fa256d28d4a743f8b8f40fd0a6eadf55fb694516a3c8a"
     ),
@@ -55,7 +58,7 @@ def _verify_upstream_wheel(wheel_path: Path) -> None:
     if digest != UPSTREAM_WHEEL_SHA256:
         raise RuntimeError(
             "langgraph-runtime-inmem upstream wheel digest changed; "
-            "review and rebase the event-wakeup patch before installing"
+            "review and rebase the native runtime patch before installing"
         )
 
 
@@ -174,7 +177,7 @@ def check_installation() -> bool:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Install the event-driven LangGraph in-memory runtime fork."
+        description="Install the patched LangGraph in-memory runtime fork."
     )
     parser.add_argument(
         "--check",

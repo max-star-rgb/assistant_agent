@@ -14,7 +14,8 @@ eval、Agent Server 主链路覆盖的 probe 不应继续沉积到本目录。
   不构造项目自有 Runtime。`--backend dev`（默认）调用 `langgraph dev`，状态落在仓库共享的
   `.langgraph_api/`，只适合单个本地开发实例。wrapper 使用工作目录级单实例锁，并在启动前检查请求端口；
   端口被占用时直接失败，不允许 `langgraph dev` 自动改用随机端口。PyCharm 共享配置 **Agent Server (Real)**
-  固定使用 `8089` 并启用原生 hot reload；Codex 默认作为客户端连接该实例。只有 PyCharm Server 已停止时，
+  固定使用 `8089` 并启用原生 hot reload；dev bootstrap 在 WatchFiles 扫描阶段排除 `.langgraph_api/`，避免
+  runtime pickle 定时落盘产生虚假的 `changes detected` 日志，同时保留 Python 源码 reload。Codex 默认作为客户端连接该实例。只有 PyCharm Server 已停止时，
   dev backend 才能临时在 `8090` 启动隔离诊断服务，并在诊断完成后停止。
   wrapper 会生成一次性 LangGraph config，使 `--env-file` 真正替换 `langgraph.json` 的 env 来源；
   `--no-env-file` 使用空 env 配置并只继承当前进程环境，可安全启动显式 mock 服务。
@@ -34,9 +35,9 @@ eval、Agent Server 主链路覆盖的 probe 不应继续沉积到本目录。
   `.data/logs/agent_server.log` 只保留历史记录。Studio 使用框架内建身份；其他本地客户端直接声明
   `X-Assistant-User`，当前 tokenless 部署没有网络身份认证，因此不得把 API 暴露到不受信网络。
 - `scripts/install_patched_inmem_runtime.py`：从经过 SHA-256 固定的官方
-  `langgraph-runtime-inmem==0.32.4` wheel 构建并安装 `0.32.4+assistant1` 本地 fork，将 dev queue 的固定
+  `langgraph-runtime-inmem==0.33.0` wheel 构建并安装 `0.33.0+assistant1` 本地 fork，将 dev queue 的固定
   500 ms 扫描改为 run 创建与 worker 完成事件唤醒（完成事件同时覆盖 retry），同时保留 delayed run deadline 与低频安全
-  heartbeat。首次安装或重建 `hello_agent` 环境时，先安装 `.[agent-server-dev]`，再运行该脚本并完整重启
+  heartbeat，并在进程重启时恢复 retry counter，避免同一 run 复用 attempt 1。首次安装或重建 `hello_agent` 环境时，先安装 `.[agent-server-dev]`，再运行该脚本并完整重启
   唯一的 8089 dev server：
 
   ```bash
