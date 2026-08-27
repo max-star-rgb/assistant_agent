@@ -38,7 +38,11 @@ from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.providers import read_only_worker_model_view
 from assistant_agent.native_agent.state import AssistantReadOnlyWorkerState
 from assistant_agent.native_agent.tool_call_limits import PerToolCallLimitMiddleware
-from assistant_agent.native_agent.tool_profiles import ToolProfile, ToolProfileMiddleware
+from assistant_agent.native_agent.tool_profiles import (
+    ACTIVATE_TOOL_PROFILE_TOOL_NAME,
+    ToolProfile,
+    ToolProfileMiddleware,
+)
 from assistant_agent.skills.native import (
     PROJECT_FILESYSTEM_READ_TOOL_NAMES,
     create_project_filesystem_middleware,
@@ -67,6 +71,7 @@ _RESERVED_WORKER_TOOL_NAMES = frozenset(
         "update_async_task",
         "cancel_async_task",
         "list_async_tasks",
+        ACTIVATE_TOOL_PROFILE_TOOL_NAME,
     }
 )
 

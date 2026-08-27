@@ -29,6 +29,7 @@ from assistant_agent.native_agent.assistant_agent import (
 )
 from assistant_agent.native_agent.fast_agent import build_fast_agent
 from assistant_agent.native_agent.providers import MockAssistantChatModel
+from assistant_agent.native_agent.tool_profiles import ToolProfile
 from assistant_agent.native_agent.context import (
     ASSISTANT_RUNTIME_METADATA_KEY,
     AssistantRuntimeFacts,
@@ -81,6 +82,7 @@ def test_worker_exposes_only_read_files_and_read_business_tools(
         "update_async_task",
         "cancel_async_task",
         "list_async_tasks",
+        "activate_tool_profile",
     ],
 )
 def test_worker_rejects_read_labelled_reserved_business_tool_names(
@@ -95,6 +97,13 @@ def test_worker_rejects_read_labelled_reserved_business_tool_names(
                 SimpleNamespace(), "repo-sentinel"
             ),
             skills_backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
+            tool_profiles=(
+                ToolProfile(
+                    profile_id="probe",
+                    description="Probe tools.",
+                    tool_names=("read_probe",),
+                ),
+            ),
         )
 
 
