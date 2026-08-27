@@ -12,6 +12,9 @@ import pytest
 from deepagents.backends import FilesystemBackend
 from deepagents.backends.protocol import BackendProtocol, SandboxBackendProtocol
 from deepagents.middleware import FilesystemMiddleware, SkillsMiddleware
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.runnables import RunnableLambda
+from langchain_core.tools import BaseTool, StructuredTool
 from langgraph_sdk.auth.types import StudioUser
 
 from assistant_agent.coding import backend as backend_module
@@ -20,6 +23,10 @@ from assistant_agent.coding.config import CodingConfig
 from assistant_agent.coding.workspace import CodingWorkspaceError
 from assistant_agent.agent_server import services
 from assistant_agent.native_agent import fast_agent as fast_agent_module
+from assistant_agent.native_agent.assistant_agent import (
+    build_read_only_worker,
+    isolated_read_only_worker,
+)
 from assistant_agent.native_agent.fast_agent import build_fast_agent
 from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.native_agent.context import (
@@ -27,6 +34,98 @@ from assistant_agent.native_agent.context import (
     AssistantRuntimeFacts,
     assistant_runtime_metadata,
 )
+
+
+def _tool(name: str, effect: str) -> BaseTool:
+    def probe(value: str = "sentinel") -> str:
+        """Return the supplied sentinel."""
+
+        return value
+
+    return StructuredTool.from_function(
+        probe,
+        name=name,
+        metadata={"effect": effect},
+    )
+
+
+def test_worker_exposes_only_read_files_and_read_business_tools(
+    tmp_path: Path,
+) -> None:
+    worker = build_read_only_worker(
+        MockAssistantChatModel(),
+        [_tool("read_probe", "read"), _tool("write_probe", "write")],
+        backend=ReadOnlyCodingWorkspaceBackend(SimpleNamespace(), "repo-sentinel"),
+        skills_backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
+    )
+    tools = set(worker.get_graph().nodes["tools"].data.tools_by_name)
+
+    assert {"ls", "read_file", "glob", "grep", "read_probe"} <= tools
+    assert not {
+        "write_file",
+        "edit_file",
+        "delete",
+        "execute",
+        "write_probe",
+        "task",
+        "start_async_task",
+    } & tools
+
+
+def test_task_projection_drops_parent_and_worker_private_state() -> None:
+    observed: list[dict[str, Any]] = []
+
+    def worker(state: dict[str, Any]) -> dict[str, Any]:
+        observed.append(state)
+        return {
+            "messages": [
+                *state["messages"],
+                AIMessage(content="internal-draft"),
+                AIMessage(content="worker-report"),
+            ],
+            "provider_search_profile": "sentinel",
+            "async_tasks": {"worker-task": {"status": "running"}},
+            "active_tool_profile_ids": ["sentinel"],
+        }
+
+    runnable = isolated_read_only_worker(RunnableLambda(worker))
+    result = runnable.invoke(
+        {
+            "messages": [HumanMessage(content="task-description")],
+            "memory_context": ("memory",),
+            "memory_status": "ready",
+            "provider_search_profile": "travel_general",
+            "async_tasks": {"parent-task": {"status": "running"}},
+            "active_tool_profile_ids": ["browser"],
+            "future_sentinel": "private",
+        }
+    )
+
+    assert set(observed[0]) == {"messages", "memory_context"}
+    assert set(result) == {"messages"}
+    assert [message.content for message in result["messages"]] == ["worker-report"]
+
+
+def test_task_projection_returns_only_nonempty_structured_response() -> None:
+    runnable = isolated_read_only_worker(
+        RunnableLambda(
+            lambda state: {
+                "messages": [AIMessage(content="worker-report")],
+                "structured_response": {"answer": "sentinel"},
+                "async_tasks": {"blocked": {}},
+            }
+        )
+    )
+
+    result = runnable.invoke(
+        {
+            "messages": [HumanMessage(content="task-description")],
+            "memory_context": (),
+        }
+    )
+
+    assert set(result) == {"messages", "structured_response"}
+    assert result["structured_response"] == {"answer": "sentinel"}
 
 
 def test_read_only_backend_has_no_mutation_or_execute_capability() -> None:

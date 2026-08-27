@@ -34,7 +34,6 @@ from assistant_agent.coding.models import (
     CodingReviewTask,
     CodingReviewerResult,
 )
-from assistant_agent.native_agent.state import merge_attestation_mismatch_signals
 from assistant_agent.coding.tools import build_coding_analysis_tools
 from assistant_agent.coding.workspace import CodingWorkspaceError, CodingWorkspaceService
 from assistant_agent.native_agent.context import (
@@ -71,6 +70,37 @@ _CODING_REVIEW_PROMPT = (
     "patches, execute commands, validate, integrate, access the network, request "
     "credentials, or modify files."
 )
+_ATTESTATION_MISMATCH_SIGNALS = frozenset(
+    {
+        "analysis:structure_context",
+        "analysis:change_test_impact",
+        "analysis:safety_governance",
+        "review:correctness_regression",
+        "review:security_governance",
+        "review:tests_validation",
+        "review:correctness",
+        "review:security",
+        "review:regression",
+        "review:graph",
+    }
+)
+
+
+def merge_attestation_mismatch_signals(
+    current: Sequence[str] | None,
+    update: Sequence[str] | None,
+) -> list[str]:
+    values = [*(current or ()), *(update or ())]
+    if len(values) > 16 or any(
+        not isinstance(value, str)
+        or value not in _ATTESTATION_MISMATCH_SIGNALS
+        for value in values
+    ):
+        raise ValueError("coding attestation mismatch signals are invalid")
+    merged = sorted(set(values))
+    if len(merged) > 8:
+        raise ValueError("coding attestation mismatch signals exceed their bound")
+    return merged
 
 
 class _ReviewEvidenceResponse(BaseModel):

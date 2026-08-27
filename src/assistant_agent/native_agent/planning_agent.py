@@ -29,8 +29,8 @@ from assistant_agent.native_agent.fast_agent import (
     RecursionFinalSynthesisMiddleware,
     ToolProgressMiddleware,
 )
-from assistant_agent.native_agent.providers import planning_supervisor_model_view
-from assistant_agent.native_agent.state import PlanningAgentState
+from assistant_agent.native_agent.providers import read_only_worker_model_view
+from assistant_agent.native_agent.state import AssistantAgentState
 from assistant_agent.native_agent.tool_call_limits import PerToolCallLimitMiddleware
 from assistant_agent.native_agent.tool_profiles import ToolProfile, ToolProfileMiddleware
 from assistant_agent.skills.native import (
@@ -134,9 +134,9 @@ def build_planning_agent(
         summarization_options["token_counter"] = token_counter
 
     return create_agent(
-        model=planning_supervisor_model_view(model),
+        model=read_only_worker_model_view(model),
         tools=[],
-        state_schema=PlanningAgentState,
+        state_schema=AssistantAgentState,
         context_schema=AssistantRunContext,
         middleware=[
             create_assistant_base_prompt(),

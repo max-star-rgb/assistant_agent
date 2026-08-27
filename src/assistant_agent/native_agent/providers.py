@@ -11,7 +11,6 @@ from langchain_core.messages import (
     AIMessageChunk,
     AnyMessage,
     HumanMessage,
-    ToolMessage,
 )
 from langchain_core.outputs import (
     ChatGeneration,
@@ -108,9 +107,6 @@ class MockAssistantChatModel(BaseChatModel):
         return self.bind(tools=normalized, tool_choice=tool_choice, **kwargs)
 
     def _response_message(self, messages: list[AnyMessage], **kwargs: Any) -> AIMessage:
-        planning = _mock_planning_agent_response(messages, kwargs.get("tools"))
-        if planning is not None:
-            return planning
         structured = _mock_structured_tool_call(kwargs.get("tools"), messages)
         if structured is not None and kwargs.get("tool_choice") == "any":
             name, arguments = structured
@@ -216,8 +212,8 @@ def coding_analysis_model_view(model: BaseChatModel) -> BaseChatModel:
     return model
 
 
-def planning_supervisor_model_view(model: BaseChatModel) -> BaseChatModel:
-    """Return a Supervisor view with provider-native search disabled."""
+def read_only_worker_model_view(model: BaseChatModel) -> BaseChatModel:
+    """Return a read-only worker view with provider-native search disabled."""
 
     return coding_analysis_model_view(model)
 
@@ -285,58 +281,11 @@ def _mock_structured_tool_call(
     return None
 
 
-def _mock_planning_agent_response(
-    messages: Sequence[AnyMessage],
-    tools: Any,
-) -> AIMessage | None:
-    names = _mock_tool_names(tools)
-    if not {"write_todos", "task"} <= names:
-        return None
-    task_result = next(
-        (
-            message
-            for message in reversed(messages)
-            if isinstance(message, ToolMessage)
-            and message.tool_call_id.startswith("mock-task-")
-        ),
-        None,
-    )
-    if task_result is not None:
-        return AIMessage(content=f"已完成 planning mock：{task_result.text}")
-    content = _last_human_text(list(messages)).strip() or "mock planning task"
-    return AIMessage(
-        content="",
-        tool_calls=[
-            {
-                "name": "task",
-                "args": {
-                    "description": content[:20_000],
-                    "subagent_type": "general-purpose",
-                },
-                "id": "mock-task-general-purpose",
-                "type": "tool_call",
-            }
-        ],
-    )
-
-
-def _mock_tool_names(tools: Any) -> set[str]:
-    if not isinstance(tools, list):
-        return set()
-    return {
-        name
-        for item in tools
-        if isinstance(item, Mapping)
-        and isinstance((function := item.get("function")), Mapping)
-        and isinstance((name := function.get("name")), str)
-    }
-
-
 __all__ = [
     "MockAssistantChatModel",
     "ProviderConfigurationError",
     "coding_analysis_model_settings",
     "coding_analysis_model_view",
     "create_chat_model",
-    "planning_supervisor_model_view",
+    "read_only_worker_model_view",
 ]

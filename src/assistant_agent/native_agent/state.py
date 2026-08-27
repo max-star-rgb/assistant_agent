@@ -2,49 +2,17 @@
 
 from __future__ import annotations
 
-import operator
-from collections.abc import Sequence
-from typing import Annotated, Literal, NotRequired, Required
+from typing import Annotated, Literal, NotRequired
 
+from deepagents import DeepAgentState
 from langchain.agents import AgentState
 from langchain_core.messages import AnyMessage
 from langgraph.graph import MessagesState
 from pydantic import BaseModel, ConfigDict, JsonValue
 
-from assistant_agent.coding.analysis import AnalysisStatus, merge_analysis_results
-from assistant_agent.coding.models import (
-    CodingAnalysisResult,
-    CodingAnalysisSnapshot,
-    CodingAnalysisTask,
-    CodingCommandEvidence,
-    CodingCommitResult,
-    CodingArtifactIngressPlan,
-    CodingCredentialRequest,
-    CodingDependencyPlan,
-    CodingMergePreview,
-    CodingMergeResult,
-    CodingInspectProgress,
-    CodingInspectRecoveryAttempt,
-    CodingPatchApplyResult,
-    CodingPatchProposal,
-    CodingPatchValidation,
-    CodingReviewInput,
-    CodingReviewReport,
-    CodingReviewRepairAttempt,
-    CodingReviewRepairContext,
-    CodingReviewerResult,
-    CodingReviewTask,
-    CodingRepairApprovalContext,
-    CodingRepairAttempt,
-    CodingRepairFailureEvidence,
-    CodingTerminalResult,
-)
-
 from assistant_agent.native_agent.models import ProviderSearchProfile
 
-ExecutionMode = Literal["fast", "planning", "coding"]
 MemoryStatus = Literal["ready", "empty", "degraded"]
-AnalysisSnapshotReleaseStatus = Literal["active", "released", "cleanup_pending"]
 
 
 def merge_async_tasks(
@@ -60,39 +28,6 @@ AsyncTasks = Annotated[
     dict[str, dict[str, JsonValue]],
     merge_async_tasks,
 ]
-
-_ATTESTATION_MISMATCH_SIGNALS = frozenset(
-    {
-        "analysis:structure_context",
-        "analysis:change_test_impact",
-        "analysis:safety_governance",
-        "review:correctness_regression",
-        "review:security_governance",
-        "review:tests_validation",
-        "review:correctness",
-        "review:security",
-        "review:regression",
-        "review:graph",
-    }
-)
-
-
-def merge_attestation_mismatch_signals(
-    current: Sequence[str] | None,
-    update: Sequence[str] | None,
-) -> list[str]:
-    values = [*(current or ()), *(update or ())]
-    if len(values) > 16 or any(
-        not isinstance(value, str)
-        or value not in _ATTESTATION_MISMATCH_SIGNALS
-        for value in values
-    ):
-        raise ValueError("coding attestation mismatch signals are invalid")
-    merged = sorted(set(values))
-    if len(merged) > 8:
-        raise ValueError("coding attestation mismatch signals exceed their bound")
-    return merged
-
 
 class AssistantRootInput(BaseModel):
     """Strict public input for a new native assistant run."""
@@ -115,33 +50,22 @@ class AssistantRootState(MessagesState):
 
     memory_context: NotRequired[tuple[str, ...]]
     memory_status: NotRequired[MemoryStatus]
-    execution_mode: NotRequired[ExecutionMode]
-    coding_result: NotRequired[CodingTerminalResult]
     async_tasks: NotRequired[AsyncTasks]
 
 
-class FastAgentState(AgentState):
-    """State consumed inside the reusable create_agent subgraph."""
+class AssistantAgentState(DeepAgentState):
+    """State used by the main assistant agent."""
 
     memory_context: NotRequired[tuple[str, ...]]
     memory_status: NotRequired[MemoryStatus]
-    execution_mode: NotRequired[ExecutionMode]
     provider_search_profile: NotRequired[ProviderSearchProfile]
     async_tasks: NotRequired[AsyncTasks]
 
 
-class PlanningAgentState(AgentState):
-    """State shared by parallel upstream `task` Tool invocations."""
+class AssistantReadOnlyWorkerState(AgentState):
+    """Private state available to the isolated read-only worker."""
 
-    memory_context: NotRequired[
-        Annotated[tuple[str, ...], _merge_identical_value]
-    ]
-    memory_status: NotRequired[Annotated[MemoryStatus, _merge_identical_value]]
-    execution_mode: NotRequired[Annotated[ExecutionMode, _merge_identical_value]]
-    provider_search_profile: NotRequired[
-        Annotated[ProviderSearchProfile, _merge_identical_value]
-    ]
-    async_tasks: NotRequired[AsyncTasks]
+    memory_context: NotRequired[tuple[str, ...]]
 
 
 class MemoryExtractionState(MessagesState):
@@ -150,161 +74,14 @@ class MemoryExtractionState(MessagesState):
     pass
 
 
-class CodingAnalysisWorkerState(AgentState):
-    """Narrow input state for one snapshot-bound coding analysis branch."""
-
-    coding_repo_id: Required[str]
-    execution_attestation_digest: Required[str | None]
-    attestation_mismatch_signals: NotRequired[
-        Annotated[list[str], merge_attestation_mismatch_signals]
-    ]
-    workspace_ref: Required[str]
-    base_commit: Required[str]
-    analysis_snapshot: Required[CodingAnalysisSnapshot]
-    analysis_task: Required[CodingAnalysisTask]
-    provider_search_profile: Required[Literal["none"]]
-
-
-class CodingState(AgentState):
-    """Sequential coding channels kept out of fast and planning branches."""
-
-    coding_cycle_generation: NotRequired[int]
-    execution_attestation_digest: NotRequired[str | None]
-    attestation_cleanup_status: NotRequired[
-        Literal["active", "released", "cleanup_pending"]
-    ]
-    attestation_mismatch_signals: NotRequired[
-        Annotated[list[str], merge_attestation_mismatch_signals]
-    ]
-    memory_context: NotRequired[tuple[str, ...]]
-    memory_status: NotRequired[MemoryStatus]
-    execution_mode: NotRequired[ExecutionMode]
-    coding_repo_id: Required[str]
-    workspace_ref: NotRequired[str | None]
-    base_commit: NotRequired[str | None]
-    inspect_epoch: NotRequired[int]
-    inspect_recovery_status: NotRequired[
-        Literal["pending", "retrying", "completed", "no_progress", "exhausted"] | None
-    ]
-    inspect_progress: NotRequired[CodingInspectProgress | None]
-    inspect_recovery_history: NotRequired[tuple[CodingInspectRecoveryAttempt, ...]]
-    inspect_recovery_context_consumed: NotRequired[bool]
-    analysis_snapshot: NotRequired[CodingAnalysisSnapshot | None]
-    analysis_tasks: NotRequired[tuple[CodingAnalysisTask, ...]]
-    analysis_results: NotRequired[
-        Annotated[list[CodingAnalysisResult], merge_analysis_results]
-    ]
-    analysis_status: NotRequired[AnalysisStatus | Literal["pending"] | None]
-    analysis_snapshot_release_status: NotRequired[
-        AnalysisSnapshotReleaseStatus | None
-    ]
-    analysis_context_consumed: NotRequired[bool]
-    draft_artifact: NotRequired[dict[str, object] | None]
-    proposal: NotRequired[CodingPatchProposal | None]
-    validation: NotRequired[CodingPatchValidation | None]
-    approval_status: NotRequired[Literal["pending", "approved", "rejected"] | None]
-    approval_origin: NotRequired[Literal["model", "formatter", "repair"] | None]
-    applied_result: NotRequired[CodingPatchApplyResult | None]
-    approved_changed_paths: NotRequired[Annotated[list[str], _merge_unique_strings]]
-    dependency_plan: NotRequired[CodingDependencyPlan | None]
-    dependency_approval_status: NotRequired[
-        Literal["pending", "approved", "rejected", "not_required"] | None
-    ]
-    credential_request: NotRequired[CodingCredentialRequest | None]
-    credential_approval_status: NotRequired[
-        Literal["pending", "approved", "rejected", "not_required"] | None
-    ]
-    artifact_ingress_plan: NotRequired[CodingArtifactIngressPlan | None]
-    artifact_approval_status: NotRequired[
-        Literal["pending", "approved", "rejected", "not_required"] | None
-    ]
-    format_round: NotRequired[int]
-    verification_evidence: NotRequired[
-        Annotated[list[CodingCommandEvidence], operator.add]
-    ]
-    validation_snapshot: NotRequired[CodingAnalysisSnapshot | None]
-    validation_binding_digest: NotRequired[str | None]
-    last_verification_status: NotRequired[Literal["passed", "failed"] | None]
-    review_required: NotRequired[bool]
-    review_generation: NotRequired[int | None]
-    review_snapshot: NotRequired[CodingAnalysisSnapshot | None]
-    review_snapshot_schema_version: NotRequired[
-        Literal["legacy_v1", "immutable_manifest_v2"] | None
-    ]
-    review_snapshot_release_status: NotRequired[
-        Literal["active", "released", "cleanup_pending"] | None
-    ]
-    review_input: NotRequired[CodingReviewInput | None]
-    review_tasks: NotRequired[tuple[CodingReviewTask, ...]]
-    review_results: NotRequired[
-        Annotated[list[CodingReviewerResult], operator.add]
-    ]
-    review_report: NotRequired[CodingReviewReport | None]
-    review_status: NotRequired[Literal["clean", "findings", "unavailable"] | None]
-    review_validation_digest: NotRequired[str | None]
-    review_decision_context: NotRequired[dict[str, JsonValue] | None]
-    review_decision: NotRequired[Literal["approved", "rejected"] | None]
-    review_repair_count: NotRequired[int]
-    review_repair_status: NotRequired[
-        Literal["pending", "active", "exhausted"] | None
-    ]
-    review_repair_context: NotRequired[CodingReviewRepairContext | None]
-    review_repair_context_consumed: NotRequired[bool]
-    review_repair_projection: NotRequired[dict[str, JsonValue] | None]
-    review_repair_redraft_response: NotRequired[str | None]
-    review_repair_redraft_live_check_digest: NotRequired[str | None]
-    review_repair_history: NotRequired[list[CodingReviewRepairAttempt]]
-    review_repair_audit_report: NotRequired[CodingReviewReport | None]
-    review_repair_audit_evidence: NotRequired[tuple[CodingCommandEvidence, ...]]
-    review_repair_decision_summary: NotRequired[dict[str, JsonValue] | None]
-    review_repair_terminal_report: NotRequired[CodingReviewReport | None]
-    review_repair_terminal_evidence: NotRequired[tuple[CodingCommandEvidence, ...]]
-    review_repair_terminal_decision_summary: NotRequired[
-        dict[str, JsonValue] | None
-    ]
-    integration_required: NotRequired[bool]
-    commit_result: NotRequired[CodingCommitResult | None]
-    merge_preview: NotRequired[CodingMergePreview | None]
-    merge_result: NotRequired[CodingMergeResult | None]
-    repair_round: NotRequired[int]
-    repair_status: NotRequired[
-        Literal["pending", "active", "passed", "exhausted", "no_progress"] | None
-    ]
-    repair_failure_evidence: NotRequired[CodingRepairFailureEvidence | None]
-    repair_history: NotRequired[Annotated[list[CodingRepairAttempt], operator.add]]
-    repair_model_calls: NotRequired[int]
-    repair_proposal_digests: NotRequired[Annotated[list[str], _merge_unique_strings]]
-    repair_approval_context: NotRequired[CodingRepairApprovalContext | None]
-    coding_result: NotRequired[CodingTerminalResult | None]
-
-
-def _merge_unique_strings(
-    current: Sequence[str] | None,
-    update: Sequence[str] | None,
-) -> list[str]:
-    return list(dict.fromkeys([*(current or ()), *(update or ())]))
-
-
-def _merge_identical_value(current, update):
-    if current in (None, (), {}, ""):
-        return update
-    if update in (None, (), {}, "") or update == current:
-        return current
-    raise ValueError("parallel task results contain conflicting frozen state")
-
-
 __all__ = [
-    "AnalysisSnapshotReleaseStatus",
     "AsyncTasks",
+    "AssistantAgentState",
+    "AssistantReadOnlyWorkerState",
     "AssistantRootInput",
     "AssistantRootState",
-    "CodingAnalysisWorkerState",
-    "CodingState",
-    "ExecutionMode",
-    "FastAgentState",
     "MemoryExtractionInput",
     "MemoryExtractionState",
     "MemoryStatus",
-    "PlanningAgentState",
     "merge_async_tasks",
 ]
