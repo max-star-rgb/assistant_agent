@@ -57,8 +57,8 @@ from assistant_agent.native_agent.tool_profiles import (
 )
 from assistant_agent.skills.native import (
     PROJECT_FILESYSTEM_TOOL_NAMES,
-    create_project_filesystem_backend,
     create_project_filesystem_middleware,
+    create_project_skills_backend,
     create_project_skills_middleware,
 )
 
@@ -127,6 +127,7 @@ def build_fast_agent(
     compaction_target_ratio: float = 0.15,
     token_counter: Callable[[Iterable[MessageLikeRepresentation]], int] | None = None,
     filesystem_backend: BackendProtocol | None = None,
+    skills_backend: BackendProtocol | None = None,
     filesystem_tool_names: tuple[str, ...] = PROJECT_FILESYSTEM_TOOL_NAMES,
     tool_profiles: Sequence[ToolProfile] | None = None,
     visual_history_probe: VisualObservationHistoryProbe | None = None,
@@ -144,9 +145,10 @@ def build_fast_agent(
         raise ValueError("compaction ratios must satisfy 0 < target < trigger <= 1")
     resolved_filesystem_backend = (
         filesystem_backend
-        or create_project_filesystem_backend(Path(__file__).resolve().parents[3])
+        or create_project_skills_backend(Path(__file__).resolve().parents[3])
     )
-    skills_middleware = create_project_skills_middleware(resolved_filesystem_backend)
+    resolved_skills_backend = skills_backend or resolved_filesystem_backend
+    skills_middleware = create_project_skills_middleware(resolved_skills_backend)
     filesystem_middleware = create_project_filesystem_middleware(
         resolved_filesystem_backend,
         tools=filesystem_tool_names,

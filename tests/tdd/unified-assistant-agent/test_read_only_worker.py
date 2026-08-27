@@ -9,7 +9,9 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
+from deepagents.backends import FilesystemBackend
 from deepagents.backends.protocol import BackendProtocol, SandboxBackendProtocol
+from deepagents.middleware import FilesystemMiddleware, SkillsMiddleware
 from langgraph_sdk.auth.types import StudioUser
 
 from assistant_agent.coding import backend as backend_module
@@ -17,6 +19,9 @@ from assistant_agent.coding.backend import ReadOnlyCodingWorkspaceBackend
 from assistant_agent.coding.config import CodingConfig
 from assistant_agent.coding.workspace import CodingWorkspaceError
 from assistant_agent.agent_server import services
+from assistant_agent.native_agent import fast_agent as fast_agent_module
+from assistant_agent.native_agent.fast_agent import build_fast_agent
+from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.native_agent.context import (
     ASSISTANT_RUNTIME_METADATA_KEY,
     AssistantRuntimeFacts,
@@ -146,6 +151,75 @@ def test_async_worker_rejects_malformed_snapshot_before_workspace_resolution(
 
     assert exc_info.value.code == "workspace_snapshot_invalid"
     service.resolve.assert_not_called()
+
+
+@pytest.mark.parametrize("snapshot", ["", 0, False])
+def test_async_worker_classifies_present_invalid_snapshot_as_invalid(
+    monkeypatch: pytest.MonkeyPatch,
+    snapshot: object,
+) -> None:
+    service = SimpleNamespace(resolve=Mock())
+    monkeypatch.setattr(
+        backend_module,
+        "get_runtime",
+        lambda context_schema: SimpleNamespace(
+            server_info=SimpleNamespace(user=StudioUser("user-sentinel"))
+        ),
+    )
+    monkeypatch.setattr(
+        backend_module,
+        "get_config",
+        lambda: {
+            "configurable": {"thread_id": "worker-thread"},
+            "metadata": {
+                ASSISTANT_RUNTIME_METADATA_KEY: {
+                    "entry_profile": "async_worker",
+                    "repository_snapshot_sha": snapshot,
+                }
+            },
+        },
+    )
+
+    with pytest.raises(CodingWorkspaceError) as exc_info:
+        ReadOnlyCodingWorkspaceBackend(service, "repo-sentinel").ls("/")
+
+    assert exc_info.value.code == "workspace_snapshot_invalid"
+    service.resolve.assert_not_called()
+
+
+def test_fast_agent_uses_distinct_skills_and_filesystem_backends(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured_middleware: list[object] = []
+    skills_backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+    worktree_backend = ReadOnlyCodingWorkspaceBackend(object(), "repo-sentinel")
+
+    def create_agent(**kwargs: Any) -> object:
+        captured_middleware.extend(kwargs["middleware"])
+        return object()
+
+    monkeypatch.setattr(fast_agent_module, "create_agent", create_agent)
+
+    build_fast_agent(
+        MockAssistantChatModel(),
+        [],
+        filesystem_backend=worktree_backend,
+        skills_backend=skills_backend,
+        tool_profiles=(),
+    )
+
+    skills = next(
+        middleware
+        for middleware in captured_middleware
+        if isinstance(middleware, SkillsMiddleware)
+    )
+    filesystem = next(
+        middleware
+        for middleware in captured_middleware
+        if isinstance(middleware, FilesystemMiddleware)
+    )
+    assert skills._backend is skills_backend
+    assert filesystem.backend is worktree_backend
 
 
 def test_worker_factory_uses_read_only_worktree_backend(

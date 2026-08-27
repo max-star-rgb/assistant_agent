@@ -39,7 +39,7 @@ from assistant_agent.native_agent.tool_profiles import (
     ToolProfileMiddleware,
     project_tool_profiles,
 )
-from assistant_agent.skills.native import create_project_filesystem_backend
+from assistant_agent.skills.native import create_project_skills_backend
 
 
 def _tool_names(raw_tools: object) -> set[str]:
@@ -733,7 +733,7 @@ def test_filesystem_defaults_to_project_and_accepts_explicit_home_paths(
     (home_root / "documents" / "note.txt").write_text("home note", encoding="utf-8")
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home_root))
 
-    backend = create_project_filesystem_backend(project_root)
+    backend = create_project_skills_backend(project_root)
 
     assert backend.read("/documents/note.txt").file_data["content"] == "project note"
     assert (

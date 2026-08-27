@@ -43,10 +43,6 @@ def create_project_skills_backend(project_root: str | Path) -> FilesystemBackend
 
     return FilesystemBackend(root_dir=Path(project_root), virtual_mode=True)
 
-
-create_project_filesystem_backend = create_project_skills_backend
-
-
 def create_project_skills_middleware(
     backend: BackendProtocol,
 ) -> SkillsMiddleware:
@@ -139,7 +135,6 @@ __all__ = [
     "PROJECT_FILESYSTEM_TOOL_NAMES",
     "PROJECT_FILESYSTEM_READ_TOOL_NAMES",
     "create_project_skills_backend",
-    "create_project_filesystem_backend",
     "create_project_filesystem_middleware",
     "create_project_skills_middleware",
     "list_skill_reference_ids",

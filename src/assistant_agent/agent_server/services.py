@@ -41,7 +41,7 @@ from assistant_agent.native_agent.tools import (
 )
 from assistant_agent.skills.native import (
     PROJECT_FILESYSTEM_READ_TOOL_NAMES,
-    create_project_filesystem_backend,
+    create_project_skills_backend,
 )
 
 
@@ -79,8 +79,8 @@ class AgentServerExecutionOwner:
             config,
             store,
         )
-        filesystem_backend = await asyncio.to_thread(
-            create_project_filesystem_backend,
+        skills_backend = await asyncio.to_thread(
+            create_project_skills_backend,
             project_root,
         )
         tools = await create_native_tool_inventory(
@@ -103,7 +103,7 @@ class AgentServerExecutionOwner:
             ),
             "visual_history_probe": tool_resources.visual_history_probe,
             "live_view_resolver": tool_resources.live_view_resolver,
-            "filesystem_backend": filesystem_backend,
+            "filesystem_backend": skills_backend,
             "current_location": config.current_location,
         }
         coding_workspace_service = CodingWorkspaceService(coding_config)
@@ -113,6 +113,7 @@ class AgentServerExecutionOwner:
                 coding_workspace_service,
                 coding_repo_id,
             ),
+            "skills_backend": skills_backend,
         }
         business_tool_profiles = project_tool_profiles()
         filesystem_tool_profile = next(
@@ -145,7 +146,7 @@ class AgentServerExecutionOwner:
         planning_agent = build_planning_agent(
             model,
             fast_agent,
-            filesystem_backend=filesystem_backend,
+            filesystem_backend=skills_backend,
             context_window_tokens=config.context_input_token_limit,
             compaction_trigger_ratio=config.context_compaction_trigger_ratio,
             compaction_target_ratio=config.context_compaction_target_ratio,

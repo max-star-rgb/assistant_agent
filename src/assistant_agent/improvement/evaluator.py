@@ -25,7 +25,7 @@ from assistant_agent.improvement.models import (
     ImprovementOpportunity,
 )
 from assistant_agent.skills.native import (
-    create_project_filesystem_backend,
+    create_project_skills_backend,
     create_project_skills_middleware,
     list_skill_reference_ids,
     native_skill_metadata,
@@ -457,7 +457,7 @@ def _load_descriptor(
     repo_root: Path,
     skill_id: str,
 ) -> tuple[SkillMetadata, tuple[str, ...]] | None:
-    backend = create_project_filesystem_backend(repo_root)
+    backend = create_project_skills_backend(repo_root)
     middleware = create_project_skills_middleware(backend)
     update = middleware.before_agent({}, None, {})  # type: ignore[arg-type]
     metadata_items = native_skill_metadata(update or {})

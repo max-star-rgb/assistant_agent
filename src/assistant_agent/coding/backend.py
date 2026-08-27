@@ -39,7 +39,10 @@ def _workspace(
         else None
     )
     if isinstance(raw_facts, Mapping) and raw_facts.get("entry_profile") == "async_worker":
-        if not raw_facts.get("repository_snapshot_sha"):
+        if (
+            "repository_snapshot_sha" not in raw_facts
+            or raw_facts["repository_snapshot_sha"] is None
+        ):
             raise CodingWorkspaceError("workspace_snapshot_required")
         try:
             facts = AssistantRuntimeFacts.model_validate(dict(raw_facts))

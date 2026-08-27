@@ -35,8 +35,8 @@ from assistant_agent.native_agent.tool_call_limits import PerToolCallLimitMiddle
 from assistant_agent.native_agent.tool_profiles import ToolProfile, ToolProfileMiddleware
 from assistant_agent.skills.native import (
     PROJECT_FILESYSTEM_READ_TOOL_NAMES,
-    create_project_filesystem_backend,
     create_project_filesystem_middleware,
+    create_project_skills_backend,
     create_project_skills_middleware,
 )
 
@@ -102,7 +102,7 @@ def build_planning_agent(
         raise ValueError("compaction ratios must satisfy 0 < target < trigger <= 1")
     resolved_filesystem_backend = (
         filesystem_backend
-        or create_project_filesystem_backend(Path(__file__).resolve().parents[3])
+        or create_project_skills_backend(Path(__file__).resolve().parents[3])
     )
     skills_middleware = create_project_skills_middleware(resolved_filesystem_backend)
     filesystem_middleware = create_project_filesystem_middleware(
