@@ -41,7 +41,7 @@ class AssistantRuntimeFacts(BaseModel):
     )
     repository_snapshot_sha: str | None = Field(
         default=None,
-        pattern=r"^[0-9a-f]{40,64}$",
+        pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
     )
 
     @model_validator(mode="after")

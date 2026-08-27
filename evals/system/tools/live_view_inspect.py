@@ -3,7 +3,6 @@
 from _smoke_runner import run_tool_smoke
 from _smoke_adapters import VisualToolSmokeClient
 
-from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.media.visual_perception.module import LiveViewProjection
 
 from assistant_agent.tools.plugins.builtin.media_inspection.live_tool import (
@@ -14,6 +13,14 @@ from assistant_agent.tools.plugins.builtin.media_inspection.live_tool import (
 FIXED_INPUT = {"question": "当前画面里有什么？"}
 FIXED_REQUEST = [
     {"type": "text", "text": "请查看当前画面。"},
+    {
+        "type": "video",
+        "source": "live_camera",
+        "id": "tool-smoke-live-video",
+        "window_id": "tool-smoke-window",
+        "window_start_sequence": 1,
+        "target_sequence": 3,
+    },
 ]
 FIXED_LIVE_VIEW = LiveViewProjection(
     live_video_ids=("tool-smoke-live-video",),
@@ -29,13 +36,9 @@ if __name__ == "__main__":
         run_tool_smoke(
             create_live_view_inspect_tool(
                 VisualToolSmokeClient(),
-                live_view_resolver=lambda _user_id, _session_id: FIXED_LIVE_VIEW,
+                live_view_resolver=lambda *_: FIXED_LIVE_VIEW,
             ),
             FIXED_INPUT,
             request_content=FIXED_REQUEST,
-            run_context=AssistantRunContext(
-                entry_profile="system_eval",
-                realtime_media_mode="video",
-            ),
         )
     )

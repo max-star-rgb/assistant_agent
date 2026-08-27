@@ -86,7 +86,10 @@ def invoke_native_tool(
                 "langgraph_auth_user": _EvalUser(user_identity),
             },
             "metadata": assistant_runtime_metadata(
-                AssistantRuntimeFacts(entry_profile="system_eval")
+                AssistantRuntimeFacts(
+                    entry_profile="system_eval",
+                    visual_capability_token="tool-smoke-capability",
+                )
             ),
         },
     )
