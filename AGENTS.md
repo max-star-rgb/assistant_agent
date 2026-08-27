@@ -33,12 +33,12 @@
 
 硬边界：
 
-- 入口层只负责接入和归一化请求；生产主运行时是 `native_agent.AssistantRootGraph`，fast 分支使用
-  `create_agent`，planning 分支使用显式 StateGraph 并复用同一个 fast Agent。
+- 入口层只负责接入和归一化请求；生产主运行时是 `native_agent.AssistantRootGraph`，父图在 Memory recall 与
+  refresh 之间只执行一个由 `create_deep_agent` 编译的 `AssistantAgent`，不按请求切换执行模式。
 - LangGraph Agent Server 负责 assistant/thread/run/checkpoint/cancel/interrupt/resume/stream 生命周期；媒体
   custom route 只做协议归一化与连接关联，不承担主大脑职责。
 - 生产主链的本地显式工具调用使用标准 `BaseTool -> ToolNode` 与 `ToolRuntime` 注入；read Tool 使用官方
-  retry middleware；fast 模式不触发 HITL，planning 模式对非 read Tool 使用原生 HITL；副作用幂等归具体 Tool 或业务 API。旧
+  retry middleware；全部副作用 Tool 使用统一原生 HITL，同步与异步 worker 都只读；副作用幂等归具体 Tool 或业务 API。旧
   Registry/Executor 兼容链已经删除；durable task 等外围能力使用显式 allowlist 与窄业务 adapter。配置为 `qwen` provider 的百炼兼容
   Chat Completions 通过显式配置启用的
   Provider-native 只读联网属于模型生成能力，不投影为本地 Tool，也不进入该执行链。

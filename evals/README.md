@@ -4,41 +4,28 @@
 
 | 字段 | 内容 |
 | --- | --- |
-| 定位 | System eval 与原生 Graph 评测 target 的当前权威 |
+| 定位 | System eval 与原生 Graph evaluation target 的当前权威 |
 | Owns | 真实能力专项验证、operator 门禁、system artifact、原生 Graph evaluation target |
-| Does not own | 默认 pytest、生产 Graph 实现、LangSmith Dataset/Experiment 的未来重建方案 |
+| Does not own | 默认 pytest、生产 Graph 实现、未来 unified behavior eval 的 Dataset/Experiment 设计 |
 | 源码与 schema 入口 | `evals/system/`、`src/assistant_agent/evaluation/` |
 | 验证入口 | `docs/authority.toml` 中 `system-eval.verification` |
 | 相邻 authority | `tests/README.md`、`docs/runtime-event-stream-architecture.md`、`docs/observability-harness.md` |
 
 ## 当前验证分层
 
-当前只保留 System eval：真实能力评审在 operator 明确授权下验证 Provider、Tool、Memory 或媒体能力，并把有限、
-脱敏的结果写入 `.data/evals/system/`。`evals/system/tools/` 另保留离线 Tool 执行冒烟：每个当前业务 inventory Tool 一个
-可在 PyCharm 直接运行的固定输入脚本，只判断标准 `ToolNode` 调用是否成功返回结果，不验证候选数量、排序或具体
-业务内容；Deep Agents middleware 自带的 `read_file` 等框架 scaffolding 由集成测试验证，不在该目录复制 smoke。
-`run_all.py` 一键运行该目录及子目录的全部非 helper 冒烟脚本。默认 pytest 与临时 TDD 的边界仍由
-`tests/README.md` 管理。
+默认 pytest 与临时 TDD 由 `tests/README.md` 管理。System eval 只在 operator 明确授权下验证 Provider、Tool、
+Memory 或媒体真实能力，并把有限、脱敏的结果写入 `.data/evals/system/`。`evals/system/tools/` 另保留离线 Tool
+冒烟：每个当前业务 Tool 通过标准 `ToolNode` 执行固定输入，只检查成功返回，不复制 Deep Agents filesystem 等
+框架 Tool 的集成覆盖。`run_all.py` 递归运行该目录的非 helper 冒烟脚本。
 
-旧 Runtime Regression、Workflow Regression 与 Release Review runner 已随通用旧 Graph Runtime 删除。它们的
-evidence、fixture backend、catalog 与终态合同绑定旧 `AgentState`，不能通过兼容 facade 投影到新图。仓库提供
-`NativeGraphEvaluationTarget` 仍是直接调用生产 `AssistantRootGraph` 的基元。Stage 5E 另建立
-`ai_coding_behavior` 原生行为基线：它只通过现有 Agent Server 的公开 thread/run/checkpoint/interrupt/resume
-生命周期驱动生产 CodingGraph，以受信临时 Git fixture 和 deterministic grader 形成证据；评测层不拥有或复制
-产品状态机，也不是通用上线前 Release Review 门禁。
+仓库继续提供 `NativeGraphEvaluationTarget`，它直接调用生产 `AssistantRootGraph`，不经过旧 Runtime facade 或
+mock fallback。旧 Runtime Regression、Workflow Regression、Release Review 和 CodingGraph behavior baseline
+runner 均已删除；当前没有上线前统一 Agent 行为门禁。
 
-## AI Coding behavior baseline
-
-稳定入口为 `scripts/run_system_ai_coding_behavior_eval.py`，固定 suite 为 `baseline-v1`。默认 `--dry-run` 只读取
-tracked、无 symlink、大小受限的 manifest 并验证 schema/catalog，不连接 Server、Provider，不创建 Git fixture。
-真实模式固定连接 `http://127.0.0.1:8089`，要求 real mode、digest-pinned sandbox image、双授权开关，以及 operator
-对一次 reload nonce 和 Server execution attestation 的精确 ACK。Server attestation 绑定 graph/provider/model、
-boot incarnation、coding registry 和 repository config digest；同一 digest 冻结进 evaluation checkpoint，并在
-每次 case 前后复核。redirect、DNS alias、未知 interrupt、ACK replay、attestation 漂移和 cleanup debt 均 fail closed。
-
-结果 artifact 只保存严格 schema 的脱敏投影和 digest，不保存源码、patch、消息、prompt、Provider 原始响应、
-宿主路径、secret-like key/value 或可复用身份。`provider_native_code_execution=disabled` 是 v1 固定 execution
-profile；百炼原生 code execution 不算 held-out repository validation，也不会被 runner 静默启用。
+未来若建立 unified coding behavior eval，必须直接消费 `assistant-native-v4` 或
+`NativeGraphEvaluationTarget` 的标准 messages、原生 trace、当前 state 与 interrupt/resume 合同，并重新定义
+Dataset、Feedback、副作用审批、sandbox 与 cleanup 证据。不得复用旧 graph mode、旧 checkpoint state、旧 fixture
+catalog 或已删除的 attestation route 来宣称当前行为质量。
 
 ## 真实运行安全
 
@@ -50,20 +37,12 @@ profile；百炼原生 code execution 不算 held-out repository validation，�
 - operator 明确确认调用范围与副作用；
 - 使用本机未跟踪配置，不提交 key、原始响应、真实用户数据或远端 artifact。
 
-普通 pytest、`--help`、schema 校验与本任务验证保持 mock/offline。不得检测到 key 后自动启用真实调用，也不得
-用 mock fallback 冒充真实能力验证。
+普通 pytest、`--help`、schema 校验和 `--dry-run` 保持 mock/offline。不得检测到 key 后自动启用真实调用，也不得
+用 mock fallback 冒充真实能力验证。稳定入口以 `scripts/README.md` 的 System eval 索引为准。
 
-## 维护与验证
+## 验证
 
-稳定入口以 `scripts/README.md` 的 System eval 索引为准。新增原生 LangSmith/Release Review 前，必须直接消费
-Agent Server 或 `NativeGraphEvaluationTarget` 的标准 messages/native trace，并重新定义 Dataset、Feedback、
-副作用与 cleanup 合同；不得恢复通用 Runtime facade、旧 turn state 或旧 Tool fixture backend。
-evaluation execution attestation 只在 Agent Server auth hook 签发并校验 case/repository 绑定后写入初始
-coding checkpoint；普通 coding run 与其 `Send` worker 始终携带 `None`，因此 server reload 不会把非评测
-checkpoint 误判为漂移。已进入 evaluation 的 checkpoint 在 reload 后仍按旧 digest fail closed。
-
-fixture cleanup 会清零受管内容，但不会谎报目录已删除；result 明确记录
-`released_with_bounded_sentinel`。固定 work management root 通过 fd-anchored marker registry 将跨 suite retained
-store 限制为最多 64 个，达到上限时在 repository mutation 前拒绝运行并要求 operator cleanup。
-fixture、snapshot 与 result artifact 均从可信 repository root dirfd 逐层 `mkdirat/openat(O_NOFOLLOW)`；artifact
-临时文件、`fsync`、rename 和 inode 复核全部相对冻结 dirfd 完成。
+```bash
+MULTIMODAL_AGENT_PROVIDER_MODE=mock python scripts/run_system_calendar_create_eval.py --dry-run
+python -m compileall -q src/assistant_agent/evaluation evals/system
+```

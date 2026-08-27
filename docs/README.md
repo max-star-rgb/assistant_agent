@@ -18,7 +18,7 @@
 | --- | --- |
 | Agent Server、thread/run/checkpoint、部署和公开入口 | [agent-server-architecture.md](agent-server-architecture.md) |
 | Media-Agent WebSocket、音视频 wire contract | [media-agent-service-websocket.md](media-agent-service-websocket.md) |
-| AssistantRootGraph、fast/planning、stream 与原生 state | [runtime-event-stream-architecture.md](runtime-event-stream-architecture.md) |
+| AssistantRootGraph、统一 Assistant、只读 worker、stream 与原生 state | [runtime-event-stream-architecture.md](runtime-event-stream-architecture.md) |
 | Tool、MCP、Tool Profile、Provider-native 能力和副作用治理 | [tool-calling-architecture.md](tool-calling-architecture.md) |
 | 长期 Memory Graph、冻结上下文和 backend | [memory-service-architecture.md](memory-service-architecture.md) |
 | Mem0 与远端视觉 Memory Service API | [memory_server_api_spec.md](memory_server_api_spec.md) |

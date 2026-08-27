@@ -1,6 +1,6 @@
 # LangGraph-native 可观测性
 
-最后更新：2026-08-24
+最后更新：2026-08-28
 
 ## Authority contract
 
@@ -15,7 +15,7 @@
 
 ## 生产 tracing
 
-`assistant-native-v3` 直接依赖 LangChain/LangGraph callback。Agent Server、父图、子图、node、LLM 与 Tool 的
+`assistant-native-v4` 直接依赖 LangChain/LangGraph callback。Agent Server、父图、子图、node、LLM 与 Tool 的
 实际执行树由 LangSmith native tracing 观察；生产 composition 不创建 `ProductEventProjector`、canonical
 run tree、JSONL lifecycle shadow tree 或 OTel 重建层。
 
@@ -25,14 +25,13 @@ Agent Server 的原生 LangChain/LangGraph callback tracing 由标准 `LANGSMITH
 client 或发出网络请求。Provider 原始 payload、Authorization、Memory 正文和媒体正文不得进入 metadata；
 Tool artifact 和 message content 是否记录遵循 LangSmith/部署脱敏配置。
 
-### fast 路由与视觉 trace 定位
+### 统一 Agent 与视觉 trace 定位
 
-`route_execution_mode()` 是原生 conditional edge，其 trace input/output 显示 `fast` 只表示本轮选择了
-`fast_agent` 分支，不是 LLM 或 VLM 的输入输出被改写成字符串 `fast`。诊断视觉调用时应定位
-`vlm.infer` generation，而不是把 route span 当作 generation。
+统一主图不再包含模式 conditional edge。诊断视觉调用时应定位 `vision.observation -> vlm.infer` generation，
+不要把 `AssistantAgent` 的 Todo、task 或 Tool span 当作 VLM generation。
 
 视觉 span 的父子关系、安全字段和目标帧 barrier 语义由视觉 authority 定义；本 authority 只要求它们继续
-使用 LangSmith native tracing、遵守全局脱敏边界，并能从 route span 导航到真正的 `vlm.infer` generation。
+使用 LangSmith native tracing、遵守全局脱敏边界，并能从统一 Agent trace 导航到真正的 `vlm.infer` generation。
 
 ## 旧本地观测兼容
 

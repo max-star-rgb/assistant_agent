@@ -44,10 +44,7 @@ source_globs = [
 thin_references = ["README.md", "scripts/README.md"]
 verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_gateway_contract.py tests/core/integration/test_runtime_lifecycle.py",
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/ai-coding-validation",
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/ai-coding-integration",
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/ai-coding-sandbox",
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/ai-coding-artifact-governance",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/unified-assistant-agent",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/agent-server-inmem-wakeup",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python scripts/agent_cli.py --help",
 ]
@@ -82,22 +79,21 @@ exclusive_allowlist = []
 id = "runtime-event-stream"
 authority = "docs/runtime-event-stream-architecture.md"
 read_when = [
-  "AssistantRootGraph、fast/planning create_agent、Deep Agents task 或原生 state channel",
+  "AssistantRootGraph、统一 AssistantAgent、Deep Agents task、只读 worker 或原生 state channel",
   "LangGraph stream、interrupt/resume、checkpoint 或 terminal messages",
 ]
 source_globs = [
   "src/assistant_agent/native_agent/root_graph.py",
-  "src/assistant_agent/native_agent/fast_agent.py",
-  "src/assistant_agent/native_agent/planning_agent.py",
+  "src/assistant_agent/native_agent/assistant_agent.py",
   "src/assistant_agent/native_agent/state.py",
   "src/assistant_agent/native_agent/models.py",
-  "src/assistant_agent/native_agent/coding_agent.py",
+  "src/assistant_agent/coding/backend.py",
   "src/assistant_agent/coding/models.py",
 ]
 thin_references = ["README.md", "docs/agent-server-architecture.md"]
 verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/integration/test_runtime_lifecycle.py",
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/deepagents-coding-agent",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/unified-assistant-agent",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
@@ -183,8 +179,7 @@ read_when = [
 source_globs = [
   "src/assistant_agent/native_agent/assistant_prompt.py",
   "src/assistant_agent/native_agent/context.py",
-  "src/assistant_agent/native_agent/fast_agent.py",
-  "src/assistant_agent/native_agent/planning_agent.py",
+  "src/assistant_agent/native_agent/assistant_agent.py",
   "src/assistant_agent/native_agent/state.py",
   "src/assistant_agent/native_agent/user_context.py",
   "src/assistant_agent/context/**",
@@ -193,6 +188,7 @@ source_globs = [
 thin_references = ["README.md", "docs/runtime-event-stream-architecture.md"]
 verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/integration/test_context_lifecycle.py",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/unified-assistant-agent",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
@@ -307,7 +303,6 @@ read_when = [
 source_globs = [
   "evals/system/**",
   "src/assistant_agent/evaluation/**",
-  "scripts/run_system_ai_coding_behavior_eval.py",
 ]
 thin_references = [
   "docs/observability-harness.md",
@@ -315,8 +310,6 @@ thin_references = [
 ]
 verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python scripts/run_system_calendar_create_eval.py --dry-run",
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python scripts/run_system_ai_coding_behavior_eval.py --dry-run --suite-id baseline-v1",
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/ai-coding-behavior-eval",
   "python -m compileall -q src/assistant_agent/evaluation evals/system",
 ]
 exclusive_literals = []

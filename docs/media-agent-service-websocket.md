@@ -1,6 +1,6 @@
 # Media-Agent WebSocket 接口权威文档
 
-Last updated: 2026-08-26
+Last updated: 2026-08-28
 
 ## Authority contract
 
@@ -122,7 +122,7 @@ capability token 放入 namespaced run metadata；token 按认证身份与 threa
 }
 ```
 
-媒体入口创建原生 run 时开启 `stream_subgraphs=true`，因为 fast Agent 是父图中的原生子图；否则 Provider
+媒体入口创建原生 run 时开启 `stream_subgraphs=true`，因为统一 `AssistantAgent` 是父图中的原生子图；否则 Provider
 虽已产生 token，顶层 Agent Server stream 仍看不到子图消息。模型在 ToolCall 前生成的普通文本按上述结构
 原样增量发送；若模型直接产生 ToolCall 而没有任何前导正文，媒体适配器不合成提示语，等待模型后续正文或
 终态。ToolCall name/arguments、ToolMessage、原生 updates 与 custom Tool 生命周期均不进入媒体正文。
@@ -136,11 +136,12 @@ Graph 完成后发送成功终包：
 }
 ```
 
-`assistantMode` 省略时为 `fast`，也可显式选择 `planning`；旧 `standard|deep_research` 不再接受。媒体适配器
-把请求机械转换为标准 HumanMessage content blocks，并把 `execution_mode` 放入本次 run context。`stream=true` 只投影
+当前 wire 不发送或接受 `assistantMode`；请求 body 出现该字段时直接返回协议错误。媒体适配器只把请求机械转换为
+标准 `HumanMessage` content blocks，并把入口、视觉 capability 等受信运行事实放入服务端签发的 namespaced metadata；
+公开 run context 只提交 `enable_memory`。`stream=true` 只投影
 `AIMessageChunk` 的 string content 或 `text|output_text` block；当 `messages/metadata` 存在时，明确标记为
 非 `model` 节点的 chunk 会被排除；metadata 缺失时按标准 assistant chunk 降级投影，避免原生流存在但媒体侧
-只能收到终包。planner 等已标记的其他节点内部文本、tool-call name/arguments、ToolMessage 和 updates 不进入媒体正文。
+只能收到终包。同步/异步 worker 等已标记的内部子图文本、tool-call name/arguments、ToolMessage 和 updates 不进入媒体正文。
 Agent Server 的 `messages/partial` 是同一 message 的累计快照，适配器按 message ID
 计算 append-only delta；模型生成的 Tool 前导文本与工具后的下一条 assistant message 之间若均无换行，适配器在新消息首包
 补一个换行。中间包按 `sequence` 递增且 `final=false`，不携带 `deliveryId`；`stream=false` 不发送中间包。
@@ -274,9 +275,10 @@ run/checkpoint，也不宣称跨进程、离线或 exactly-once 投递；没有 
 ## 7. 重连与当前限制
 
 相同 `assistant graph ID + user + vendor sessionId` 通过确定性 UUID 映射到同一个 native thread；同一
-`assistant-native-v3` connection 重连不会创建第二份对话轴，且 v3 UUID 不会碰撞旧版 v1/v2 UUID。
+`assistant-native-v4` connection 重连不会创建第二份对话轴，且 v4 UUID 不会碰撞旧版 native v1/v2/v3 UUID。
 创建请求以 `if_exists="do_nothing"` 返回 existing thread 时，中央 SDK 边界仍会验证稳定 metadata
-`assistant_graph_id=assistant-native-v3`；v1/v2 或缺失字段的 thread 在 session bind 和 run 创建前拒绝。
+`assistant_graph_id=assistant-native-v4`；retired native v1/v2/v3、worker-v1 或缺失字段的 thread 在 session bind
+和 run 创建前拒绝。
 custom route 创建 run 时使用 `stream_resumable=true` 与 `on_disconnect=continue`，内部订阅临时断开后从最后
 event ID 调用 `threads.join_stream`，而不是重建项目自有 session/runtime。同一连接的重复 `chatIndex` 在创建
 第二个 run 前拒绝；后续不同 chat 使用 Agent Server 原生 `interrupt`，避免旧的 pending/retrying run 永久阻塞

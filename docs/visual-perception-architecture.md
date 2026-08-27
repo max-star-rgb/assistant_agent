@@ -1,6 +1,6 @@
 # 实时视觉感知与语义关键帧架构
 
-Last updated: 2026-08-25
+Last updated: 2026-08-28
 
 ## Authority contract
 
@@ -206,9 +206,9 @@ exact k 结果；Tool 不读取或理解选帧内部状态，也不回退到更�
 Provider 原始响应。
 
 chat 冻结目标边界后，`visual.target_barrier.started/finished` 才记录 window ID、起止序号、等待时长、
-ready/missing 数量和目标终态。context 帧晚完成不能延长 target barrier span。LangGraph conditional edge 的
-input/output 出现 `fast` 只代表 Agent 路由选择，视觉诊断必须定位真正的 `vlm.infer` generation；视觉流水线
-本身不读取或依赖该路由结果。
+ready/missing 数量和目标终态。context 帧晚完成不能延长 target barrier span。统一 Agent trace 中的文本生成与
+视觉 observation 是不同执行路径；视觉诊断必须定位真正的 `vlm.infer` generation。视觉流水线不读取或依赖
+Agent 的 Todo、task 或 Tool 选择，也不因统一主图迁移而串行化。
 
 semantic 诊断事件可记录当前 sequence、参考关键帧 sequence、image-image cosine、semantic change、阈值和
 selected/reason；提醒诊断事件可记录脱敏 session/reminder ID、frame sequence、image-text cosine、阈值、
@@ -320,7 +320,7 @@ hard gate。
 `visual_reminder_manage` 是 `category=write`。只有显式注入连接级 reminder resources 的受信 composition
 才构造该 Tool；session 与身份由 `ToolRuntime` 绑定，模型不能提交 owner、manager、embedding 或阈值。
 其 `availability=video_frame_received` 只读取服务端冻结 live-view projection 中非空的 `live_video_ids`，
-不读取用户话术。create/list/cancel 经过同一 `BaseTool -> ToolNode` 路径，planning 模式下由原生 HITL
+不读取用户话术。create/list/cancel 经过同一 `BaseTool -> ToolNode` 路径，并作为副作用由统一原生 HITL
 在执行前审批。
 
 向量、owned evidence 路径和原始 VLM payload 不进入模型 schema、Tool data、trace、日志或 system eval artifact。

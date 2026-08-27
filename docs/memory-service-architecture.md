@@ -1,6 +1,6 @@
 # LangGraph-native 长期记忆架构
 
-最后更新：2026-08-26
+最后更新：2026-08-28
 
 ## Authority contract
 
@@ -18,7 +18,7 @@
 Memory 是领域和 backend protocol 边界，不是必须整体嵌入主图的 compiled subgraph。实际编译拓扑拆成：
 
 ```text
-assistant-native-v3: memory_recall -> fast/planning -> refresh delayed memory -> END
+assistant-native-v4: memory_recall -> AssistantAgent -> refresh delayed memory -> END
 assistant-memory-v1: memory_extract -> END
 ```
 
@@ -26,9 +26,9 @@ assistant-memory-v1: memory_extract -> END
 设为 false 时，父图将 recall 冻结为空并跳过 delayed extraction 调度；设为 true 仍要求部署侧已配置并启用 Memory
 backend，不能用运行配置绕过 backend 的 mock/real 与凭据边界。
 
-每个 chat run 都通过单个 `memory_recall` 节点重新 recall 一次，并把结果冻结在当前 checkpoint。planning coordinator 及 task 内的 fast 子 Agent
-只读取当前 run 冻结的 `memory_context`，不持有 backend，也不重复 recall。独立 Memory Graph 使用 message-only state，
-不继承父图的 execution、Memory 快照或 fast agent Skill channel。recall 使用
+每个 chat run 都通过单个 `memory_recall` 节点重新 recall 一次，并把结果冻结在当前 checkpoint。统一 Assistant 及
+同步只读 task worker 只读取当前 run 冻结的 `memory_context`，不持有 backend，也不重复 recall。独立 Memory Graph
+使用 message-only state，不继承父图的 Memory 快照或 Assistant 私有 Skill channel。recall 使用
 LangGraph `RetryPolicy(max_attempts=3)`；三次耗尽后不设置 error handler，由 Agent Server 将 chat run 明确终结为 error。
 从已完成 recall 之后的 checkpoint resume 时沿用冻结快照；从更早 checkpoint replay 并重新执行 recall 时允许
 重新读取最新记忆，不建立跨 replay 的额外冻结层。日期与用户地区由 Context authority 管理，不由 Memory 采集或保存。
@@ -85,7 +85,7 @@ Memory 正文是不可信历史数据。model-call middleware 在最新真实用
 checkpoint 或 summarization。Memory 不能覆盖当前请求，也不能用于确认身份、权限、当前事实、操作参数或 Tool schema。
 
 旧 `MemoryNodeBundle`、commit ledger 与 time-travel Memory 兼容层已随旧 Runtime 删除。Mem0 HTTP client 与
-identity adapter 继续由当前最小 `MemoryBackend` 复用；旧 checkpoint 不迁移进 `assistant-native-v3`。
+identity adapter 继续由当前最小 `MemoryBackend` 复用；旧 checkpoint 不迁移进 `assistant-native-v4`。
 
 ## 验证
 

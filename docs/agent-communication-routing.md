@@ -1,6 +1,6 @@
 # Agent Communication Routing
 
-最后更新：2026-08-26
+最后更新：2026-08-28
 
 ## Authority contract
 
@@ -15,9 +15,9 @@
 
 ## 当前边界
 
-生产用户会话路径只有 Agent Server 托管的 `AssistantRootGraph`。fast/planning 静态装配 Deep Agents 官方
+生产用户会话路径只有 Agent Server 托管的 `AssistantRootGraph`。统一 `AssistantAgent` 静态装配 Deep Agents
 `AsyncSubAgentMiddleware` 的 model-callable 后台 delegation Tool，并只允许启动注册的只读
-`assistant-worker-v1` 兄弟图；它不经过关键词 router，也不启用本目录的 transport runtime。multi-agent 包仍是可选协议与
+`assistant-worker-v2` 兄弟图；它不经过关键词 router，也不启用本目录的 transport runtime。multi-agent 包仍是可选协议与
 路由组件，不在 production custom route 中自动启用。
 
 `AgentRouter` 只选择调用方显式注入的本地 invoker，并要求其返回 `AgentRunResponse`。仓库不再提供自动构造本地

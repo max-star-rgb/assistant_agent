@@ -34,7 +34,7 @@ Provider profiles and external-provider configuration are documented in [docs/to
 
 | package | responsibility |
 | --- | --- |
-| `native_agent/` | 生产父 StateGraph、fast create_agent、planning 子图、Provider/Tool/Memory 装配 |
+| `native_agent/` | 生产父 StateGraph、统一 `AssistantAgent`、只读 worker 与 Provider/Tool/Memory 装配 |
 | `runtime/` | Tool、Provider、媒体、Context 与 durable task 仍复用的中立 DTO/外围治理模块；不拥有 Graph 生命周期 |
 | `context/` | 尚未迁移入口使用的旧 Context compiler 与专项能力 |
 | `skills/` | Skill 加载、召回、校验、目录、执行与持久化 |
@@ -56,10 +56,10 @@ Provider profiles and external-provider configuration are documented in [docs/to
 `context/models.py` 和 `multi_agent/a2a_protocol.py`。
 
 旧外围入口仍可通过 `MULTIMODAL_AGENT_TOOL_PLUGIN_MODULES` 使用动态 Python Plugin；该机制会执行所配置
-module 的进程内代码，不是不可信代码沙箱。生产 `assistant-native-v3` 只使用受信静态 Tool 清单和官方 MCP
+module 的进程内代码，不是不可信代码沙箱。生产 `assistant-native-v4` 只使用受信静态 Tool 清单和官方 MCP
 allowlist，不加载动态 module。具体边界见 Tool calling 文档。
 
-长期记忆由父图固定的 `memory_recall` / `memory_commit` 节点定位，正文冻结在 `state.memory_context`。
+长期记忆由父图固定的 `memory_recall` / `refresh_memory_extraction` 节点定位，正文冻结在 `state.memory_context`。
 composition root 一次只装配一个最小 `MemoryBackend`：默认离线 `disabled`，也可显式选择 Mem0、使用
 LangGraph `BaseStore` 的 LangMem，或注入第三方 adapter。具体配置和 mock/real 边界见长期记忆架构文档。
 
