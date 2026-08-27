@@ -30,7 +30,7 @@ from assistant_agent.native_agent.fast_agent import (
     ToolProgressMiddleware,
 )
 from assistant_agent.native_agent.providers import read_only_worker_model_view
-from assistant_agent.native_agent.state import AssistantAgentState
+from assistant_agent.native_agent.state import PlanningAgentState
 from assistant_agent.native_agent.tool_call_limits import PerToolCallLimitMiddleware
 from assistant_agent.native_agent.tool_profiles import ToolProfile, ToolProfileMiddleware
 from assistant_agent.skills.native import (
@@ -136,7 +136,7 @@ def build_planning_agent(
     return create_agent(
         model=read_only_worker_model_view(model),
         tools=[],
-        state_schema=AssistantAgentState,
+        state_schema=PlanningAgentState,
         context_schema=AssistantRunContext,
         middleware=[
             create_assistant_base_prompt(),

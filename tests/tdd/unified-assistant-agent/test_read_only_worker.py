@@ -60,16 +60,54 @@ def test_worker_exposes_only_read_files_and_read_business_tools(
     )
     tools = set(worker.get_graph().nodes["tools"].data.tools_by_name)
 
-    assert {"ls", "read_file", "glob", "grep", "read_probe"} <= tools
-    assert not {
+    assert tools == {"ls", "read_file", "glob", "grep", "read_probe"}
+
+
+@pytest.mark.parametrize(
+    "reserved_name",
+    [
+        "ls",
+        "read_file",
         "write_file",
         "edit_file",
         "delete",
+        "glob",
+        "grep",
         "execute",
-        "write_probe",
         "task",
+        "write_todos",
         "start_async_task",
-    } & tools
+        "check_async_task",
+        "update_async_task",
+        "cancel_async_task",
+        "list_async_tasks",
+    ],
+)
+def test_worker_rejects_read_labelled_reserved_business_tool_names(
+    tmp_path: Path,
+    reserved_name: str,
+) -> None:
+    with pytest.raises(ValueError, match="reserved infrastructure name"):
+        build_read_only_worker(
+            MockAssistantChatModel(),
+            [_tool(reserved_name, "read")],
+            backend=ReadOnlyCodingWorkspaceBackend(
+                SimpleNamespace(), "repo-sentinel"
+            ),
+            skills_backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
+        )
+
+
+def test_worker_rejects_duplicate_business_tool_names(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="duplicate business tool name"):
+        build_read_only_worker(
+            MockAssistantChatModel(),
+            [_tool("read_probe", "read"), _tool("read_probe", "read")],
+            backend=ReadOnlyCodingWorkspaceBackend(
+                SimpleNamespace(), "repo-sentinel"
+            ),
+            skills_backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
+        )
 
 
 def test_task_projection_drops_parent_and_worker_private_state() -> None:
@@ -126,6 +164,49 @@ def test_task_projection_returns_only_nonempty_structured_response() -> None:
 
     assert set(result) == {"messages", "structured_response"}
     assert result["structured_response"] == {"answer": "sentinel"}
+
+
+def test_task_projection_forwards_runnable_config_sync_and_async() -> None:
+    observed: list[tuple[str, set[str], str]] = []
+
+    def worker(state: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        observed.append(
+            ("sync", set(state), config["configurable"]["projection_sentinel"])
+        )
+        return {"messages": [AIMessage(content="sync-report")]}
+
+    async def aworker(
+        state: dict[str, Any], config: dict[str, Any]
+    ) -> dict[str, Any]:
+        observed.append(
+            ("async", set(state), config["configurable"]["projection_sentinel"])
+        )
+        return {"messages": [AIMessage(content="async-report")]}
+
+    runnable = isolated_read_only_worker(RunnableLambda(worker, afunc=aworker))
+    state = {
+        "messages": [HumanMessage(content="task-description")],
+        "memory_context": ("memory",),
+        "future_sentinel": "private",
+    }
+
+    sync_result = runnable.invoke(
+        state,
+        {"configurable": {"projection_sentinel": "sync-config"}},
+    )
+    async_result = asyncio.run(
+        runnable.ainvoke(
+            state,
+            {"configurable": {"projection_sentinel": "async-config"}},
+        )
+    )
+
+    assert [sync_result["messages"][0].content] == ["sync-report"]
+    assert [async_result["messages"][0].content] == ["async-report"]
+    assert observed == [
+        ("sync", {"messages", "memory_context"}, "sync-config"),
+        ("async", {"messages", "memory_context"}, "async-config"),
+    ]
 
 
 def test_read_only_backend_has_no_mutation_or_execute_capability() -> None:

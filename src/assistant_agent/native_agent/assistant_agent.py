@@ -50,6 +50,25 @@ from assistant_agent.tools.ids import LIVE_VIEW_INSPECT_TOOL_NAME
 _FINAL_SYNTHESIS_INSTRUCTION = """工具调用阶段已经结束。请基于当前对话中已有的信息和工具结果，
 直接完成对用户的最终答复。不要请求或假设新的工具调用；如果信息仍不完整，请明确说明限制，并交付当前能够确定的内容。"""
 _DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000
+_RESERVED_WORKER_TOOL_NAMES = frozenset(
+    {
+        "ls",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "delete",
+        "glob",
+        "grep",
+        "execute",
+        "task",
+        "write_todos",
+        "start_async_task",
+        "check_async_task",
+        "update_async_task",
+        "cancel_async_task",
+        "list_async_tasks",
+    }
+)
 
 
 class RecursionFinalSynthesisState(AgentState):
@@ -254,9 +273,16 @@ def build_read_only_worker(
     """Compile one non-delegating worker with read-only Tool capabilities."""
 
     worker_model = read_only_worker_model_view(model)
-    read_tools = [
-        tool for tool in tools if (tool.metadata or {}).get("effect") == "read"
-    ]
+    read_tools: list[BaseTool] = []
+    business_tool_names: set[str] = set()
+    for tool in tools:
+        if tool.name in _RESERVED_WORKER_TOOL_NAMES:
+            raise ValueError(f"reserved infrastructure name: {tool.name}")
+        if tool.name in business_tool_names:
+            raise ValueError(f"duplicate business tool name: {tool.name}")
+        business_tool_names.add(tool.name)
+        if (tool.metadata or {}).get("effect") == "read":
+            read_tools.append(tool)
     skills_middleware = create_project_skills_middleware(skills_backend)
     filesystem_middleware = create_project_filesystem_middleware(
         backend,

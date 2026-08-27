@@ -36,7 +36,7 @@ from assistant_agent.native_agent.assistant_prompt import (
 from assistant_agent.media.visual_perception.history_probe import (
     VisualObservationHistoryProbe,
 )
-from assistant_agent.native_agent.state import AssistantAgentState
+from assistant_agent.native_agent.state import FastAgentState
 from assistant_agent.native_agent.conditional_tool_exposure import (
     ConditionalToolExposureMiddleware,
 )
@@ -71,7 +71,7 @@ def build_fast_agent(
     visual_history_probe: VisualObservationHistoryProbe | None = None,
     live_view_resolver: Callable[[str, str, str], Any] | None = None,
     additional_middleware: Sequence[AgentMiddleware] = (),
-    state_schema: type[AssistantAgentState] = AssistantAgentState,
+    state_schema: type[FastAgentState] = FastAgentState,
     current_location: str | None = None,
     name: str = "AssistantFastAgent",
 ):
