@@ -13,7 +13,10 @@ from langchain_core.tools import BaseTool
 from langgraph.store.base import BaseStore
 
 from assistant_agent.coding.config import CodingConfig, CodingRepositoryConfig
-from assistant_agent.coding.backend import ReadOnlyCodingWorkspaceBackend
+from assistant_agent.coding.backend import (
+    CodingWorkspaceBackend,
+    ReadOnlyCodingWorkspaceBackend,
+)
 from assistant_agent.coding.workspace import CodingWorkspaceService
 from assistant_agent.agent_server.attestation import (
     AgentServerExecutionAttestation,
@@ -24,25 +27,25 @@ from assistant_agent.agent_server.async_delegation import (
     build_async_subagent_middleware,
 )
 from assistant_agent.config import ProviderConfig
-from assistant_agent.context.token_counter import create_context_token_counter
 from assistant_agent.mcp.config import load_mcp_server_configs_from_env
 from assistant_agent.media.visual_perception import get_visual_perception_module
-from assistant_agent.native_agent.fast_agent import build_fast_agent
-from assistant_agent.native_agent.coding_agent import build_coding_agent
+from assistant_agent.native_agent.assistant_agent import (
+    build_assistant_agent,
+    build_read_only_worker,
+)
 from assistant_agent.native_agent.memory import MemoryBackend, create_memory_backend
 from assistant_agent.native_agent.memory_graph import build_memory_extraction_graph
-from assistant_agent.native_agent.planning_agent import build_planning_agent
-from assistant_agent.native_agent.providers import create_chat_model
+from assistant_agent.native_agent.providers import (
+    create_chat_model,
+    read_only_worker_model_view,
+)
 from assistant_agent.native_agent.root_graph import build_assistant_root_graph
 from assistant_agent.native_agent.tool_profiles import project_tool_profiles
 from assistant_agent.native_agent.tools import (
     NativeToolResources,
     create_native_tool_inventory,
 )
-from assistant_agent.skills.native import (
-    PROJECT_FILESYSTEM_READ_TOOL_NAMES,
-    create_project_skills_backend,
-)
+from assistant_agent.skills.native import create_project_skills_backend
 
 
 @dataclass
@@ -79,99 +82,60 @@ class AgentServerExecutionOwner:
             config,
             store,
         )
-        skills_backend = await asyncio.to_thread(
-            create_project_skills_backend,
-            project_root,
-        )
         tools = await create_native_tool_inventory(
             config,
             resources=tool_resources,
             mcp_server_configs=load_mcp_server_configs_from_env(),
         )
-        context_token_counter = await asyncio.to_thread(
-            create_context_token_counter,
-            config,
-        )
-        shared_fast_options = {
-            "context_window_tokens": config.context_input_token_limit,
-            "compaction_trigger_ratio": config.context_compaction_trigger_ratio,
-            "compaction_target_ratio": config.context_compaction_target_ratio,
-            "token_counter": (
-                context_token_counter.count_messages
-                if context_token_counter is not None
-                else None
-            ),
-            "visual_history_probe": tool_resources.visual_history_probe,
-            "live_view_resolver": tool_resources.live_view_resolver,
-            "filesystem_backend": skills_backend,
-            "current_location": config.current_location,
-        }
+        execution_attestation = build_execution_attestation(config, coding_config)
         coding_workspace_service = CodingWorkspaceService(coding_config)
-        worker_fast_options = {
-            **shared_fast_options,
-            "filesystem_backend": ReadOnlyCodingWorkspaceBackend(
-                coding_workspace_service,
-                coding_repo_id,
-            ),
-            "skills_backend": skills_backend,
-        }
-        business_tool_profiles = project_tool_profiles()
-        filesystem_tool_profile = next(
-            profile
-            for profile in business_tool_profiles
-            if profile.profile_id == "filesystem"
+        skills_backend = await asyncio.to_thread(
+            create_project_skills_backend,
+            project_root,
         )
+        business_tool_profiles = project_tool_profiles()
         async_tool_profile = async_task_tool_profile()
-        fast_agent = build_fast_agent(
+        read_only_backend = ReadOnlyCodingWorkspaceBackend(
+            coding_workspace_service,
+            coding_repo_id,
+        )
+        worker_graph = build_read_only_worker(
+            read_only_worker_model_view(model),
+            tools,
+            backend=read_only_backend,
+            skills_backend=skills_backend,
+            tool_profiles=business_tool_profiles,
+            visual_history_probe=tool_resources.visual_history_probe,
+            live_view_resolver=tool_resources.live_view_resolver,
+            current_location=config.current_location,
+        )
+        async_middleware = build_async_subagent_middleware(
+            coding_workspace_service,
+            coding_repo_id,
+        )
+        writable_backend = CodingWorkspaceBackend(
+            coding_workspace_service,
+            coding_repo_id,
+        )
+        assistant_agent = build_assistant_agent(
             model,
             tools,
+            backend=writable_backend,
+            worker_graph=worker_graph,
+            skills_backend=skills_backend,
             tool_profiles=(*business_tool_profiles, async_tool_profile),
             additional_middleware=(
-                build_async_subagent_middleware(coding_workspace_service, coding_repo_id),
+                async_middleware,
             ),
-            **shared_fast_options,
-        )
-        worker_graph = build_fast_agent(
-            model,
-            [
-                tool
-                for tool in tools
-                if (tool.metadata or {}).get("effect") == "read"
-            ],
-            name="AssistantBackgroundWorker",
-            tool_profiles=business_tool_profiles,
-            filesystem_tool_names=PROJECT_FILESYSTEM_READ_TOOL_NAMES,
-            **worker_fast_options,
-        )
-        planning_agent = build_planning_agent(
-            model,
-            fast_agent,
-            filesystem_backend=skills_backend,
-            context_window_tokens=config.context_input_token_limit,
-            compaction_trigger_ratio=config.context_compaction_trigger_ratio,
-            compaction_target_ratio=config.context_compaction_target_ratio,
-            token_counter=(
-                context_token_counter.count_messages
-                if context_token_counter is not None
-                else None
-            ),
+            visual_history_probe=tool_resources.visual_history_probe,
+            live_view_resolver=tool_resources.live_view_resolver,
             current_location=config.current_location,
-            tool_profiles=(filesystem_tool_profile, async_tool_profile),
-            additional_middleware=(
-                build_async_subagent_middleware(coding_workspace_service, coding_repo_id),
-            ),
-        )
-        execution_attestation = build_execution_attestation(config, coding_config)
-        coding_agent = build_coding_agent(
-            model,
-            coding_workspace_service,
-            repo_id=coding_repo_id,
         )
         graph = build_assistant_root_graph(
             memory_backend=memory_backend,
-            fast_agent=fast_agent,
-            planning_agent=planning_agent,
-            coding_agent=coding_agent,
+            fast_agent=assistant_agent,
+            planning_agent=assistant_agent,
+            coding_agent=assistant_agent,
             extraction_delay_seconds=config.memory_extraction_delay_seconds,
         )
         memory_graph = build_memory_extraction_graph(backend=memory_backend)

@@ -18,7 +18,10 @@ from langchain_core.tools import BaseTool, StructuredTool
 from langgraph_sdk.auth.types import StudioUser
 
 from assistant_agent.coding import backend as backend_module
-from assistant_agent.coding.backend import ReadOnlyCodingWorkspaceBackend
+from assistant_agent.coding.backend import (
+    CodingWorkspaceBackend,
+    ReadOnlyCodingWorkspaceBackend,
+)
 from assistant_agent.coding.config import CodingConfig
 from assistant_agent.coding.workspace import CodingWorkspaceError
 from assistant_agent.agent_server import services
@@ -414,11 +417,12 @@ def test_fast_agent_uses_distinct_skills_and_filesystem_backends(
 def test_worker_factory_uses_read_only_worktree_backend(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    fast_calls: list[dict[str, Any]] = []
+    worker_calls: list[dict[str, Any]] = []
+    assistant_calls: list[dict[str, Any]] = []
+    worker = object()
+    assistant = object()
+    root_kwargs: dict[str, Any] = {}
     config = SimpleNamespace(
-        context_input_token_limit=1000,
-        context_compaction_trigger_ratio=0.75,
-        context_compaction_target_ratio=0.15,
         current_location=None,
         memory_extraction_delay_seconds=0,
     )
@@ -427,10 +431,13 @@ def test_worker_factory_uses_read_only_worktree_backend(
         live_view_resolver=None,
     )
 
-    def build_fast_agent(*args: Any, **kwargs: Any) -> object:
-        del args
-        fast_calls.append(kwargs)
-        return object()
+    def build_worker(*args: Any, **kwargs: Any) -> object:
+        worker_calls.append({"args": args, **kwargs})
+        return worker
+
+    def build_assistant(*args: Any, **kwargs: Any) -> object:
+        assistant_calls.append({"args": args, **kwargs})
+        return assistant
 
     async def create_native_tool_inventory(*args: Any, **kwargs: Any) -> list[object]:
         del args, kwargs
@@ -454,24 +461,29 @@ def test_worker_factory_uses_read_only_worktree_backend(
         "create_native_tool_inventory",
         create_native_tool_inventory,
     )
-    monkeypatch.setattr(services, "create_context_token_counter", lambda config: None)
-    monkeypatch.setattr(
-        services,
-        "project_tool_profiles",
-        lambda: [SimpleNamespace(profile_id="filesystem")],
-    )
+    monkeypatch.setattr(services, "project_tool_profiles", lambda: ())
     monkeypatch.setattr(services, "async_task_tool_profile", lambda: object())
     monkeypatch.setattr(
-        services, "build_async_subagent_middleware", lambda *args: object()
+        services,
+        "build_async_subagent_middleware",
+        lambda *args: SimpleNamespace(tools=[]),
     )
-    monkeypatch.setattr(services, "build_fast_agent", build_fast_agent)
-    monkeypatch.setattr(services, "build_planning_agent", lambda *args, **kwargs: object())
+    monkeypatch.setattr(services, "build_read_only_worker", build_worker)
+    monkeypatch.setattr(services, "build_assistant_agent", build_assistant)
     monkeypatch.setattr(services, "build_execution_attestation", lambda *args: object())
-    monkeypatch.setattr(services, "build_coding_agent", lambda *args, **kwargs: object())
-    monkeypatch.setattr(services, "build_assistant_root_graph", lambda **kwargs: object())
+    monkeypatch.setattr(
+        services,
+        "build_assistant_root_graph",
+        lambda **kwargs: root_kwargs.update(kwargs) or object(),
+    )
     monkeypatch.setattr(services, "build_memory_extraction_graph", lambda **kwargs: object())
 
     asyncio.run(services.AgentServerExecutionOwner.compose(store=None))
 
-    assert isinstance(fast_calls[1]["filesystem_backend"], ReadOnlyCodingWorkspaceBackend)
-    assert fast_calls[1]["filesystem_tool_names"] == ("ls", "read_file", "glob", "grep")
+    assert len(worker_calls) == len(assistant_calls) == 1
+    assert isinstance(worker_calls[0]["backend"], ReadOnlyCodingWorkspaceBackend)
+    assert isinstance(assistant_calls[0]["backend"], CodingWorkspaceBackend)
+    assert assistant_calls[0]["worker_graph"] is worker
+    assert root_kwargs["fast_agent"] is assistant
+    assert root_kwargs["planning_agent"] is assistant
+    assert root_kwargs["coding_agent"] is assistant

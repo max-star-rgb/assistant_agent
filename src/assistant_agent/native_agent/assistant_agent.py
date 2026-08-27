@@ -5,9 +5,14 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Annotated, Any, NotRequired
 
+from deepagents import create_deep_agent
 from deepagents.backends.protocol import BackendProtocol
 from langchain.agents import create_agent
-from langchain.agents.middleware import SummarizationMiddleware, ToolRetryMiddleware
+from langchain.agents.middleware import (
+    SummarizationMiddleware,
+    TodoListMiddleware,
+    ToolRetryMiddleware,
+)
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
@@ -36,7 +41,10 @@ from assistant_agent.native_agent.conditional_tool_exposure import (
 )
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.providers import read_only_worker_model_view
-from assistant_agent.native_agent.state import AssistantReadOnlyWorkerState
+from assistant_agent.native_agent.state import (
+    AssistantAgentState,
+    AssistantReadOnlyWorkerState,
+)
 from assistant_agent.native_agent.tool_call_limits import PerToolCallLimitMiddleware
 from assistant_agent.native_agent.tool_profiles import (
     ACTIVATE_TOOL_PROFILE_TOOL_NAME,
@@ -54,6 +62,34 @@ from assistant_agent.tools.ids import LIVE_VIEW_INSPECT_TOOL_NAME
 _FINAL_SYNTHESIS_INSTRUCTION = """工具调用阶段已经结束。请基于当前对话中已有的信息和工具结果，
 直接完成对用户的最终答复。不要请求或假设新的工具调用；如果信息仍不完整，请明确说明限制，并交付当前能够确定的内容。"""
 _DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000
+_APPROVAL = {"allowed_decisions": ["approve", "edit", "reject"]}
+_FILESYSTEM_SIDE_EFFECTS = ("write_file", "edit_file", "delete", "execute")
+_WRITE_TODOS_DESCRIPTION_ZH = """创建并管理当前工作会话的结构化待办列表。
+
+只在复杂、多步骤任务中使用。开始执行前把当前事项标记为 in_progress，完成后立即标记为 completed；
+如果遇到错误或阻塞，保持 in_progress 并记录需要解决的新事项。简单任务应直接完成，不必创建待办列表。
+最后一次更新待办后，还必须另发一条消息交付用户实际要求的结果。"""
+_WRITE_TODOS_SYSTEM_PROMPT_ZH = """## `write_todos`
+
+你可以使用 `write_todos` Tool 管理和规划复杂目标。对于复杂、多步骤目标，应使用该 Tool 跟踪每个必要步骤，
+并把较大的目标拆分为更小、更明确的 Todo。
+
+完成一个步骤后，必须立即把对应 Todo 标记为 completed，不要积攒多个已完成步骤后再批量更新。
+对于只需少量步骤的简单目标，应直接完成，不要调用 `write_todos`。创建和维护 Todo 会消耗时间与 token，
+仅在它确实有助于管理复杂任务时使用。
+
+## Todo 使用规则
+
+- 同一个 model turn 中不得并行调用多个 `write_todos`。
+- 执行过程中可以修订 Todo 列表；新信息可能带来新事项，也可能使旧事项不再相关。
+
+## 完成任务
+
+全部工作完成后，必须在最后一次 `write_todos` 调用之后的下一条消息中给出最终答复，不能把最终答复放在
+同一次 Tool 调用中。最终答复应直接从用户要求的实际结果开始，例如数据、计算、总结或分析，而不是只确认任务已完成。"""
+_GENERAL_PURPOSE_DESCRIPTION_ZH = (
+    "通用执行 Agent；使用与主助理相同的业务能力，适合完成复杂、多步骤、上下文密集的任务。"
+)
 _RESERVED_WORKER_TOOL_NAMES = frozenset(
     {
         "ls",
@@ -220,6 +256,106 @@ def _retryable_read_tool_names(tools: Sequence[BaseTool]) -> list[str]:
     ]
 
 
+def _interrupt_on(tools: Sequence[BaseTool]) -> dict[str, object]:
+    result = {name: _APPROVAL for name in _FILESYSTEM_SIDE_EFFECTS}
+    for tool in tools:
+        metadata = tool.metadata or {}
+        effect = metadata.get("effect")
+        if effect in {"write", "dangerous", "generate"} or (
+            metadata.get("source") == "mcp" and effect != "read"
+        ):
+            result[tool.name] = _APPROVAL
+    return result
+
+
+def build_assistant_agent(
+    model: BaseChatModel,
+    tools: Sequence[BaseTool],
+    *,
+    backend: BackendProtocol,
+    worker_graph: Runnable,
+    skills_backend: BackendProtocol,
+    tool_profiles: Sequence[ToolProfile] = (),
+    additional_middleware: Sequence[AgentMiddleware] = (),
+    visual_history_probe: VisualObservationHistoryProbe | None = None,
+    live_view_resolver: Callable[[str, str, str], Any] | None = None,
+    current_location: str | None = None,
+    checkpointer=None,
+):
+    """Compile the single planning and execution loop."""
+
+    middleware_tools = tuple(
+        tool
+        for item in additional_middleware
+        for tool in getattr(item, "tools", ())
+    )
+    read_tool_names = tuple(
+        sorted(
+            {
+                "ls",
+                "read_file",
+                "glob",
+                "grep",
+                *(
+                    tool.name
+                    for tool in (*tools, *middleware_tools)
+                    if (tool.metadata or {}).get("effect") == "read"
+                ),
+            }
+        )
+    )
+    summarization_options = {
+        "model": model,
+        "trigger": ("tokens", int(_DEFAULT_CONTEXT_WINDOW_TOKENS * 0.75)),
+        "keep": ("tokens", int(_DEFAULT_CONTEXT_WINDOW_TOKENS * 0.15)),
+        "trim_tokens_to_summarize": None,
+    }
+    return create_deep_agent(
+        model=model,
+        tools=list(tools),
+        backend=backend,
+        subagents=[
+            {
+                "name": "general-purpose",
+                "description": _GENERAL_PURPOSE_DESCRIPTION_ZH,
+                "runnable": isolated_read_only_worker(worker_graph),
+            }
+        ],
+        state_schema=AssistantAgentState,
+        context_schema=AssistantRunContext,
+        middleware=[
+            create_assistant_base_prompt(),
+            create_project_skills_middleware(skills_backend),
+            ToolProfileMiddleware(tool_profiles),
+            ConditionalToolExposureMiddleware(
+                visual_history_probe,
+                live_view_resolver,
+            ),
+            TodoListMiddleware(
+                system_prompt=_WRITE_TODOS_SYSTEM_PROMPT_ZH,
+                tool_description=_WRITE_TODOS_DESCRIPTION_ZH,
+            ),
+            *additional_middleware,
+            PerToolCallLimitMiddleware(max_parallel_calls_per_tool=12),
+            SummarizationMiddleware(**summarization_options),
+            MemoryContextMiddleware(),
+            create_assistant_runtime_prompt(current_location),
+            RecursionFinalSynthesisMiddleware(),
+            ToolProgressMiddleware(),
+            ToolRetryMiddleware(
+                max_retries=2,
+                tools=read_tool_names,
+                initial_delay=0,
+                backoff_factor=0,
+                jitter=False,
+            ),
+        ],
+        interrupt_on=_interrupt_on([*tools, *middleware_tools]),
+        checkpointer=checkpointer,
+        name="AssistantAgent",
+    )
+
+
 def _request_with_memory_context(request: ModelRequest) -> ModelRequest:
     memories = tuple(request.state.get("memory_context", ()))
     message = memory_context_message(memories)
@@ -383,6 +519,7 @@ __all__ = [
     "RecursionFinalSynthesisMiddleware",
     "RecursionFinalSynthesisState",
     "ToolProgressMiddleware",
+    "build_assistant_agent",
     "build_read_only_worker",
     "isolated_read_only_worker",
     "memory_context_message",

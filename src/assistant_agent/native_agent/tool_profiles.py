@@ -278,6 +278,7 @@ def project_tool_profiles() -> tuple[ToolProfile, ...]:
                 "delete",
                 "glob",
                 "grep",
+                "execute",
             ),
         ),
         ToolProfile(
