@@ -35,6 +35,12 @@ from scripts.media_simulator import chat_body
 
 
 WORKER_ASSISTANT_ID = UUID("ad895394-eb31-5aa1-a5ac-d24c4050ca05")
+LEGACY_SYSTEM_ASSISTANT_IDS = (
+    UUID("5d65b3ea-e849-5e47-afde-ed71e133b9da"),
+    UUID("46ed656d-0f2d-5320-a380-0bea189fc304"),
+    UUID("845db169-0dc1-5167-9e6c-f5b5f0aaf844"),
+    UUID("0e81d29f-8729-5318-a864-e4334f8dd8b3"),
+)
 
 
 def _chat_envelope() -> MediaEnvelope:
@@ -256,3 +262,22 @@ def test_worker_authorization_accepts_complete_snapshot(
         }
     )
     assert asyncio.run(authorize(_auth_context(), value)) == expected
+
+
+@pytest.mark.parametrize("assistant_id", LEGACY_SYSTEM_ASSISTANT_IDS)
+def test_run_authorization_rejects_legacy_system_assistants(
+    monkeypatch: pytest.MonkeyPatch,
+    assistant_id: UUID,
+) -> None:
+    monkeypatch.setenv("REDIS_URI", "redis://localhost:6379")
+    monkeypatch.setenv("DATABASE_URI", "postgres://localhost/test")
+
+    assert (
+        asyncio.run(
+            authorize_run_create(
+                _auth_context(),
+                {"assistant_id": assistant_id, "metadata": {}},
+            )
+        )
+        is False
+    )

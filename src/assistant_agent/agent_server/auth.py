@@ -222,6 +222,7 @@ def _run_graph_id(assistant_id: UUID) -> str | None:
         uuid5(NAMESPACE_GRAPH, "assistant-native-v1"),
         uuid5(NAMESPACE_GRAPH, "assistant-native-v2"),
         uuid5(NAMESPACE_GRAPH, "assistant-native-v3"),
+        uuid5(NAMESPACE_GRAPH, "assistant-worker-v1"),
     }:
         return None
     return {

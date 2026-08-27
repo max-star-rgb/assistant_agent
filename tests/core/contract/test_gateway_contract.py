@@ -46,6 +46,7 @@ LEGACY_GRAPH_IDS = (
     "assistant-native-v1",
     "assistant-native-v2",
     "assistant-native-v3",
+    "assistant-worker-v1",
 )
 SYSTEM_ASSISTANT_IDS = {
     ASSISTANT_GRAPH_ID: UUID("8d030b92-89be-5d58-918d-ff35e996429a"),
@@ -56,6 +57,7 @@ LEGACY_ASSISTANT_IDS = (
     UUID("5d65b3ea-e849-5e47-afde-ed71e133b9da"),
     UUID("46ed656d-0f2d-5320-a380-0bea189fc304"),
     UUID("845db169-0dc1-5167-9e6c-f5b5f0aaf844"),
+    UUID("0e81d29f-8729-5318-a864-e4334f8dd8b3"),
 )
 
 
