@@ -7,6 +7,7 @@ from typing import Any, Sequence
 import pytest
 from deepagents.backends import FilesystemBackend, LocalShellBackend
 from deepagents.middleware import FilesystemMiddleware
+from langchain.agents.middleware import TodoListMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableLambda
@@ -52,7 +53,18 @@ def test_main_uses_factory_filesystem_and_unified_hitl(monkeypatch, tmp_path) ->
     )
     result = build_assistant_agent(
         MockAssistantChatModel(),
-        [_tool("read_probe", "read"), _tool("write_probe", "write")],
+        [
+            _tool("read_probe", "read"),
+            _tool("write_probe", "write"),
+            _tool("dangerous_probe", "dangerous"),
+            _tool("generate_probe", "generate"),
+            StructuredTool.from_function(
+                lambda value: value,
+                name="mcp_probe",
+                description="Return one MCP sentinel.",
+                metadata={"effect": "external", "source": "mcp"},
+            ),
+        ],
         backend=object(),
         worker_graph=RunnableLambda(lambda state: state),
         skills_backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
@@ -78,9 +90,15 @@ def test_main_uses_factory_filesystem_and_unified_hitl(monkeypatch, tmp_path) ->
         "delete",
         "execute",
         "write_probe",
+        "dangerous_probe",
+        "generate_probe",
+        "mcp_probe",
         "start_async_task",
     }
     assert "check_async_task" not in captured["interrupt_on"]
+    assert sum(
+        isinstance(item, TodoListMiddleware) for item in captured["middleware"]
+    ) == 1
     assert [item["name"] for item in captured["subagents"]] == [
         "general-purpose"
     ]

@@ -35,10 +35,7 @@ from assistant_agent.native_agent.assistant_agent import (
 )
 from assistant_agent.native_agent.memory import MemoryBackend, create_memory_backend
 from assistant_agent.native_agent.memory_graph import build_memory_extraction_graph
-from assistant_agent.native_agent.providers import (
-    create_chat_model,
-    read_only_worker_model_view,
-)
+from assistant_agent.native_agent.providers import create_chat_model
 from assistant_agent.native_agent.root_graph import build_assistant_root_graph
 from assistant_agent.native_agent.tool_profiles import project_tool_profiles
 from assistant_agent.native_agent.tools import (
@@ -100,7 +97,7 @@ class AgentServerExecutionOwner:
             coding_repo_id,
         )
         worker_graph = build_read_only_worker(
-            read_only_worker_model_view(model),
+            model,
             tools,
             backend=read_only_backend,
             skills_backend=skills_backend,

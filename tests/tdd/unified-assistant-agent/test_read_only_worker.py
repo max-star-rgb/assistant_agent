@@ -422,6 +422,11 @@ def test_worker_factory_uses_read_only_worktree_backend(
     worker = object()
     assistant = object()
     root_kwargs: dict[str, Any] = {}
+    model_view = object()
+    model = SimpleNamespace(
+        _llm_type="assistant-agent-dashscope-native",
+        model_copy=lambda **kwargs: model_view,
+    )
     config = SimpleNamespace(
         current_location=None,
         memory_extraction_delay_seconds=0,
@@ -448,7 +453,7 @@ def test_worker_factory_uses_read_only_worktree_backend(
         services,
         "_compose_sync",
         lambda config, store: (
-            object(),
+            model,
             resources,
             object(),
             tmp_path,
@@ -481,6 +486,7 @@ def test_worker_factory_uses_read_only_worktree_backend(
     asyncio.run(services.AgentServerExecutionOwner.compose(store=None))
 
     assert len(worker_calls) == len(assistant_calls) == 1
+    assert worker_calls[0]["args"][0] is model
     assert isinstance(worker_calls[0]["backend"], ReadOnlyCodingWorkspaceBackend)
     assert isinstance(assistant_calls[0]["backend"], CodingWorkspaceBackend)
     assert assistant_calls[0]["worker_graph"] is worker

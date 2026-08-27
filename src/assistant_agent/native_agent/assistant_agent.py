@@ -88,7 +88,8 @@ _WRITE_TODOS_SYSTEM_PROMPT_ZH = """## `write_todos`
 全部工作完成后，必须在最后一次 `write_todos` 调用之后的下一条消息中给出最终答复，不能把最终答复放在
 同一次 Tool 调用中。最终答复应直接从用户要求的实际结果开始，例如数据、计算、总结或分析，而不是只确认任务已完成。"""
 _GENERAL_PURPOSE_DESCRIPTION_ZH = (
-    "通用执行 Agent；使用与主助理相同的业务能力，适合完成复杂、多步骤、上下文密集的任务。"
+    "只读分析与研究 Agent；可以读取文件并使用只读业务 Tool，不能写入文件、执行命令或实施任何副作用。"
+    "需要副作用的步骤必须由主助理执行。"
 )
 _RESERVED_WORKER_TOOL_NAMES = frozenset(
     {
