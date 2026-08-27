@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from deepagents.backends import CompositeBackend, FilesystemBackend
+from deepagents.backends import FilesystemBackend
 from deepagents.backends.protocol import BackendProtocol, LsResult
 from deepagents.middleware import FilesystemMiddleware, SkillsMiddleware
 from deepagents.middleware.skills import SkillMetadata
@@ -38,19 +38,13 @@ _PROJECT_SKILLS_SYSTEM_PROMPT = """## Skills
 _SKILL_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 
 
-def create_project_filesystem_backend(project_root: str | Path) -> CompositeBackend:
-    """Create a project-root backend with explicit access inside the user home."""
+def create_project_skills_backend(project_root: str | Path) -> FilesystemBackend:
+    """Create the project-root backend used only for Skill discovery."""
 
-    home_root = Path.home()
-    return CompositeBackend(
-        default=FilesystemBackend(root_dir=Path(project_root), virtual_mode=True),
-        routes={
-            f"{home_root.as_posix().rstrip('/')}/": FilesystemBackend(
-                root_dir=home_root,
-                virtual_mode=True,
-            )
-        },
-    )
+    return FilesystemBackend(root_dir=Path(project_root), virtual_mode=True)
+
+
+create_project_filesystem_backend = create_project_skills_backend
 
 
 def create_project_skills_middleware(
@@ -144,6 +138,7 @@ __all__ = [
     "PROJECT_SKILLS_SOURCE",
     "PROJECT_FILESYSTEM_TOOL_NAMES",
     "PROJECT_FILESYSTEM_READ_TOOL_NAMES",
+    "create_project_skills_backend",
     "create_project_filesystem_backend",
     "create_project_filesystem_middleware",
     "create_project_skills_middleware",

@@ -13,6 +13,7 @@ from langchain_core.tools import BaseTool
 from langgraph.store.base import BaseStore
 
 from assistant_agent.coding.config import CodingConfig, CodingRepositoryConfig
+from assistant_agent.coding.backend import ReadOnlyCodingWorkspaceBackend
 from assistant_agent.coding.workspace import CodingWorkspaceService
 from assistant_agent.agent_server.attestation import (
     AgentServerExecutionAttestation,
@@ -106,6 +107,13 @@ class AgentServerExecutionOwner:
             "current_location": config.current_location,
         }
         coding_workspace_service = CodingWorkspaceService(coding_config)
+        worker_fast_options = {
+            **shared_fast_options,
+            "filesystem_backend": ReadOnlyCodingWorkspaceBackend(
+                coding_workspace_service,
+                coding_repo_id,
+            ),
+        }
         business_tool_profiles = project_tool_profiles()
         filesystem_tool_profile = next(
             profile
@@ -132,7 +140,7 @@ class AgentServerExecutionOwner:
             name="AssistantBackgroundWorker",
             tool_profiles=business_tool_profiles,
             filesystem_tool_names=PROJECT_FILESYSTEM_READ_TOOL_NAMES,
-            **shared_fast_options,
+            **worker_fast_options,
         )
         planning_agent = build_planning_agent(
             model,
