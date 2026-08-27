@@ -28,8 +28,9 @@ embedding coordinator、`SessionVisualSemanticStorePool`、视觉检索派生索
 `uploaded_media_inspect` 为用户主动上传的图片/视频附件执行受治理的同步 VLM 推理，并复用模块持有的
 进程级 `VisionUnderstandingClient`；它不读取摄像头实时视频。`live_view_inspect` 是实时视觉文本的
 薄消费入口，不再为用户 query 二次调用 VLM。主 Agent LLM 根据模块已经发布的结构化文本回答 query。
-实时读取分为两种语义：没有冻结目标窗口时读取 latest 已完成结果；Agent-Service chat 的 video block 携带
-可信 `window_id + window_start_sequence + target_sequence` 时，最多 4 秒等待 exact target。strict 未命中
+实时读取分为两种语义：没有冻结目标窗口时读取 latest 已完成结果；受信 video block 携带
+`window_id + window_start_sequence + target_sequence` 时，最多 4 秒等待 exact target。当前 Agent-Service media custom route 不生成该 block，
+因此不会从该入口进入这两种 Tool 读取语义。strict 未命中
 exact sequence 时旧记录只能用于状态诊断，Tool 内部结果记录 `usable_visual_text=false`，主模型不得把旧文本当作当前画面。
 `live_view_inspect` 给主模型的成功或不可用结果都固定收窄为两个字段：`window` 按选帧顺序列出
 `sequence + captured_at`，其中 `captured_at` 是 `Asia/Shanghai` 的 ISO 8601 时间；`vlm_response` 承载
@@ -48,12 +49,12 @@ Tool artifact、contract 与 trace，不进入模型可见 ToolMessage。
 - 连接级视觉提醒：把用户提交的视觉条件计算一次 text embedding，与每个成功完成共享 image embedding
   的 semantic 准入帧匹配，首次命中后通过当前 Agent-Service VIDEO 连接即时通知。
 
-给主 LLM 的视觉语义 Tool 包括 `live_view_inspect`、`visual_memory_search` 和
+静态 Tool inventory 中给主 LLM 的视觉语义 Tool 包括 `live_view_inspect`、`visual_memory_search` 和
 `visual_reminder_manage`。后者只管理当前
 可信 VIDEO 连接中的 `create/list/cancel`，不是 embedding Tool。`live_view_inspect` 继续回答当前实时画面，内部
 后台 observation service 继续生成 rolling VLM snapshot。`siglip2_embed*`、`find_object`、
 `visual_attention_manage` 都不是注册 Tool。Attention 仍只产生内部候选；连接级 reminder manager 是独立的
-一次性状态机，不复用 Attention consumer。
+一次性状态机，不复用 Attention consumer。当前 media custom route 的投影限制使这三个 Tool 都不会由该入口暴露。
 
 `visual_memory_search` 的模型可见描述明确它是当前 VIDEO 会话/thread 内的短期视觉记忆检索，不用于
 跨会话长期视觉记忆。远端长期视觉记忆属于 Memory backend，由父图根据当前请求自动召回并以
@@ -306,6 +307,10 @@ hard gate。
 条件 Tool 暴露和 Tool 执行必须以身份、thread、token 解析同一份投影，不得信任客户端提交的 video ID/sequence，
 也不得在执行期重读可能已被后续聊天更新的 session 投影。冻结投影没有 target sequence 时历史 Tool fail closed，
 不能把 `None` 当作无上界。
+当前 media custom route 虽然仍在进程 owner 中冻结这些投影并运行视觉并行流水线，但
+`media_graph_input()` 只生成文本 `HumanMessage`，不注入 `source=live_camera` block。所以
+`latest_runtime_media(...).live_video_ids` 为空，上述三个实时视觉 Tool 不会由该入口条件暴露。后续恢复必须设计
+受信的非消息投影并补齐 coverage，不得将 camera facts 直接暴露给主 LLM；本任务不改 production wiring。
 其描述把实时视频会话中的“这是什么/这个呢/它在做什么”等指示性问题视为视觉请求，不要求用户必须说出
 “摄像头”或“画面”，但问候和无关纯文本任务不调用。实时画面是瞬时事实：每个新的当前画面问题都必须重新调用，
 历史视觉 Tool observation 不能替代本轮证据；同一用户问题失败后不以相同参数重试。
@@ -329,9 +334,6 @@ session evidence 不是长期记忆，不写 Mem0，也不跨 user/session 搜�
 ## 验证入口
 
 ```bash
-MULTIMODAL_AGENT_PROVIDER_MODE=mock /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  -m pytest -q tests/tdd/realtime-visual-target-window
-
 MULTIMODAL_AGENT_PROVIDER_MODE=mock /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
   scripts/run_system_realtime_visual_target_window_eval.py --dry-run
 

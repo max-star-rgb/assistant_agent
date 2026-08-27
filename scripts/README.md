@@ -111,7 +111,6 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 
 ## Observability and local operations
 
-- `scripts/trace_metrics.py`: redacted trace metric summary.
 - `scripts/render_visual_perception_report.py`：从 Agent Server 日志中的脱敏
   `multimodal_observation` 事件生成自包含 HTML，按共享帧序号绘制关键帧 semantic change、选取阈值、
   reminder image-text cosine、匹配阈值和 created/triggered/cancelled 标记。日志和静态报告不包含目标文本、
@@ -137,8 +136,6 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 
 ## Eval and evidence
 
-- `scripts/run_demo_flows.py`: offline scenario matrix for regression demos.
-- `scripts/run_evals.py`: offline eval harness for lower-layer behavior checks.
 - `evals/system/tools/<tool_name>.py`: 每个当前注册 Tool 一个可在 PyCharm 直接运行的离线固定输入冒烟脚本；
   通过原生 `ToolNode` 调用一次，只检查调用成功且返回结果，不断言候选数量、排序或具体业务内容。
   `scripts/run_system_calendar_create_eval.py` 与 `scripts/run_system_calendar_search_eval.py` 仅保留为相应脚本的
@@ -152,13 +149,12 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   的架构检查面；流水线行为
   由离线 pytest 验证。
 - `scripts/run_system_realtime_visual_target_window_eval.py`：验证 live camera SigLIP2 latest-wins、chat
-  冻结最近最多八个逻辑关键帧 sequence、只等待最后一个 target 的行为。默认
+  冻结严格 1～5 个逻辑关键帧 sequence、只等待最后一个 target 的行为。默认
   `--dry-run` 不读取图片、不联网；真实运行要求 real Provider mode、完整 Qwen realtime vision 配置、
-  `--allow-real-provider` 和 operator 提供的八张 sequence-named JPEG。每个实际执行的关键帧使用隔离 WebSocket
+  `--allow-real-provider` 和 operator 提供的恰好 5 张 sequence-named JPEG。每个实际执行的关键帧使用隔离 WebSocket
   client，已选关键帧并行执行，Tool 只等待逻辑窗口的 exact target；artifact 只保存 sequence/status/latency/concurrency 和 trace/span ID。
 - 旧 Runtime/Workflow/Release Review LangSmith runner 已随旧 Graph Runtime 删除。后续评测重建必须直接消费
   Agent Server 或 `NativeGraphEvaluationTarget` 的标准 messages/native trace，当前不得宣称存在上线前行为门禁。
-- `scripts/run_improvement_lab.py`: offline, non-mutating improvement proposal runner.
 
 ## Specialized integrations
 
@@ -192,29 +188,6 @@ Runtime 使用 `onnx` 解析图中真实 external-data 引用并核对 manifest�
 和 `onnxscript` 只属于模型准备环境，不是线上 Runtime 依赖。
 旧 provider/model-dir 环境变量是迁移 alias，计划不早于 `0.3.0` 删除。完整平台边界见
 `docs/visual-perception-architecture.md`。
-
-### Website guidance local verification
-
-`website_guidance` 的 real backend 需要安装 browser extra 和对应的 Playwright Chromium；该能力默认关闭，
-本地验证不需要真实 Provider 或任何 key。安装依赖与 Chromium（只在需要 real browser smoke 时执行）：
-
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pip install -e ".[browser,dev]"
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m playwright install chromium
-```
-
-普通临时 TDD（不启动 Chromium）和受控本地 Chromium smoke 分开运行；两者都使用 mock Provider mode，
-且 `tests/tdd/website_guidance/` 可由用户手动整目录删除，不属于默认 pytest。Chromium smoke 只连接测试
-进程临时启动的 `127.0.0.1` HTTP server，不调用真实 Provider 或公网网站：
-
-```bash
-MULTIMODAL_AGENT_PROVIDER_MODE=mock /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  -m pytest -q tests/tdd/website_guidance -m "not playwright_smoke"
-
-MULTIMODAL_AGENT_PROVIDER_MODE=mock /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  -m pytest -q tests/tdd/website_guidance -m playwright_smoke
-```
-
 
 新增脚本必须对应当前权威文档中的稳定入口或无法由现有 pytest/eval 表达的 operator 流程；
 临时诊断优先使用不提交的一次性命令。

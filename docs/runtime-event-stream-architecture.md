@@ -51,8 +51,8 @@ allowlist 投影，只传一条任务 `HumanMessage` 和冻结的 `memory_contex
 ## Worktree、snapshot 与恢复
 
 主 Agent 使用可写 `CodingWorkspaceBackend`，同步/异步 worker 使用 `ReadOnlyCodingWorkspaceBackend`；二者都按
-Agent Server 认证 identity、thread 和进程固定 repository ID 解析隔离 worktree。Skill discovery 使用另一份只读
-`FilesystemBackend`，只负责 `/skills/` 元数据与正文读取；当前 composition 不使用 `CompositeBackend`，也不把
+Agent Server 认证 identity、thread 和进程固定 repository ID 解析隔离 worktree。Skill discovery 使用另一份独立的普通
+`FilesystemBackend`，只由 `SkillsMiddleware` 用于 `/skills/` 的只读发现；当前 composition 不使用 `CompositeBackend`，也不把
 Skill 根与模型可见 worktree 根合并。
 
 `start_async_task` 在创建 child thread/run 前读取一次 repository HEAD，并把该 SHA 同时冻结到 task handle、child
@@ -84,8 +84,11 @@ container 或 remote sandbox backend。
 `started|completed|failed`，不发送参数、结果或异常正文。模型循环不设置 model 或单 Tool 的 run 累计次数上限；
 同一 model superstep 内同名 Tool 最多并行 12 次，并在 `recursion_limit` 只剩 8 步时关闭 Tool 完成一次自然综合。
 
-实时摄像头仍只通过最新标准 `HumanMessage` 的受信 video block 和 capability 进入统一 Agent。父图与 task 不执行
-逐帧 VLM，也不改变视觉调度；SigLIP2 latest-wins、关键帧窗口和并行 VLM 始终由视觉 authority 的独立流水线负责。
+实时摄像头的进程级并行流水线与 namespaced capability facts 仍会运行和冻结；SigLIP2
+latest-wins、关键帧窗口和并行 VLM 始终由视觉 authority 负责，不进入父图或 task。但当前 media custom route
+的 `media_graph_input()` 只投影文本，不把 `source=live_camera` block 注入标准 message；因此依赖
+`latest_runtime_media(...).live_video_ids` 的实时视觉 Tool 不会由该入口条件暴露。恢复这些能力需要另立受信的非消息投影
+和 coverage，不得让主 LLM 直接感知摄像头。
 
 ## 验证
 

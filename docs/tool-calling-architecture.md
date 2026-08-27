@@ -53,7 +53,8 @@ worker 不提供 shell，也不装配异步 delegation Tool。
 媒体 Tool 的条件暴露与 Skill/Profile 正交：`uploaded_media_inspect` 依赖受信 uploaded media block；
 `live_view_inspect` 依赖本轮冻结 target；`visual_memory_search` 还要求当前 thread 有可检索文本；
 `visual_reminder_manage` 要求连接已经收到并绑定有效视频帧。条件来自入口签发的 capability 与服务端事实，不读取
-用户关键词；Tool handler 会再次校验身份、thread 和冻结边界。
+用户关键词；Tool handler 会再次校验身份、thread 和冻结边界。当前 media custom route 不注入
+`source=live_camera` message block，因此不会满足这三个实时 Tool 的条件；详见视觉 authority。
 
 ## 统一 HITL 与 LocalShell 边界
 

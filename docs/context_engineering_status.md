@@ -25,14 +25,14 @@ prompt。`entry_profile`、视觉 capability token 与 repository snapshot SHA �
 `AssistantRuntimeFacts`，只放在 namespaced run metadata。用户身份只来自 Agent Server
 `Runtime.server_info.user.identity`。公开 context 不包含模式、prompt、身份、仓库选择或 Tool 授权。
 
-实时 VIDEO 的当前画面是瞬时事实；每个新的指示性视觉问题都重新调用 `live_view_inspect`，不能把历史视觉
+实时 VIDEO 的当前画面是瞬时事实；若受信入口暴露 `live_view_inspect`，每个新的指示性视觉问题都必须重新调用，不能把历史视觉
 Tool observation 当作本轮证据。`visual_memory_search` 只查当前 VIDEO thread 的短期视觉时间线；父图自动召回的
 跨会话长期视觉文本以 `[长期视觉记忆]` 标记进入临时 Memory message。
 
 ## Skill、filesystem 与 task state
 
-Deep Agents `SkillsMiddleware` 从专用只读 Skills discovery backend 的 `/skills/` 发现标准 `SKILL.md` L0 元数据，
-正文只在模型实际调用 `read_file` 时进入当前角色 transcript。这个 backend 与主 Agent 的可写 worktree backend、
+Deep Agents `SkillsMiddleware` 从独立的普通 `FilesystemBackend` 的 `/skills/` 发现标准 `SKILL.md` L0 元数据，
+并只将它用于只读发现；正文只在模型实际调用 `read_file` 时进入当前角色 transcript。这个 backend 与主 Agent 的可写 worktree backend、
 worker 的只读 worktree backend 相互分离；Skills 不授予 Tool，也不扩大文件访问或 task state。
 
 同步 `task` 使用双向显式 allowlist，而不是传递整个 Deep Agent state：

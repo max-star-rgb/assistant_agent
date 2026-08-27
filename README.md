@@ -73,10 +73,3 @@ Basic check（只运行稳定的 `tests/core` 核心框架安全网）：
 手动整目录删除。
 有风险证据的节点专项检查放在 `evals/system/incubating/<feature>/`，也不进入默认 pytest。具体命令和
 准入规则见 [tests/README.md](tests/README.md)。
-
-Additional deterministic offline checks:
-
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_evals.py
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_demo_flows.py
-```

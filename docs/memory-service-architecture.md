@@ -91,6 +91,5 @@ identity adapter 继续由当前最小 `MemoryBackend` 复用；旧 checkpoint �
 
 ```bash
 MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
-  tests/core/integration/test_memory_lifecycle.py \
-  tests/tdd/native-memory-service/test_delayed_extraction.py
+  tests/core/integration/test_memory_lifecycle.py
 ```

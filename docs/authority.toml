@@ -45,7 +45,6 @@ thin_references = ["README.md", "scripts/README.md"]
 verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_gateway_contract.py tests/core/integration/test_runtime_lifecycle.py",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/unified-assistant-agent",
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/agent-server-inmem-wakeup",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python scripts/agent_cli.py --help",
 ]
 exclusive_literals = []
@@ -108,9 +107,11 @@ read_when = [
 source_globs = [
   ".env.example",
   "src/assistant_agent/config/**",
+  "src/assistant_agent/native_agent/assistant_agent.py",
   "src/assistant_agent/native_agent/providers.py",
   "src/assistant_agent/native_agent/tool_profiles.py",
   "src/assistant_agent/native_agent/tools.py",
+  "src/assistant_agent/coding/backend.py",
   "src/assistant_agent/skills/**",
   "src/assistant_agent/tools/**",
   "src/assistant_agent/improvement/evaluator.py",
@@ -122,6 +123,7 @@ thin_references = ["README.md", "scripts/README.md"]
 verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_tool_contract.py",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_extension_contract.py",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/unified-assistant-agent",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
@@ -144,7 +146,6 @@ source_globs = [
 thin_references = ["README.md", "docs/context_engineering_status.md", "scripts/README.md"]
 verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/integration/test_memory_lifecycle.py",
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/native-memory-service/test_delayed_extraction.py",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
@@ -163,8 +164,7 @@ source_globs = [
 ]
 thin_references = ["README.md", "docs/memory-service-architecture.md"]
 verification = [
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/langgraph-memory-nodes/test_mem0_nodes.py",
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/remote-visual-memory",
+  "python -m compileall -q src/assistant_agent/memory/mem0 src/assistant_agent/memory/remote_service.py",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
@@ -207,10 +207,10 @@ source_globs = [
   "src/assistant_agent/media/video/**",
   "src/assistant_agent/tools/plugins/builtin/media_inspection/**",
   "scripts/run_system_multimodal_embedding_eval.py",
+  "scripts/run_system_realtime_visual_target_window_eval.py",
 ]
 thin_references = ["README.md", "docs/media-agent-service-websocket.md"]
 verification = [
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/realtime-visual-target-window",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python scripts/run_system_realtime_visual_target_window_eval.py --dry-run",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python scripts/run_system_multimodal_embedding_eval.py --dry-run",
 ]
@@ -242,12 +242,17 @@ read_when = [
   "canonical event、trace lifecycle 或日常异常 trace 沉淀",
 ]
 source_globs = [
-  "src/assistant_agent/observability/**",
+  "src/assistant_agent/agent_server/services.py",
+  "src/assistant_agent/native_agent/assistant_agent.py",
+  "src/assistant_agent/observability/langsmith_config.py",
+  "src/assistant_agent/observability/langsmith_native.py",
+  "src/assistant_agent/observability/trace_content_policy.py",
+  "tests/core/contract/test_observability_contract.py",
 ]
 thin_references = ["scripts/README.md"]
 verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_observability_contract.py",
-  "python -m compileall -q src/assistant_agent/observability",
+  "python -m compileall -q src/assistant_agent/agent_server/services.py src/assistant_agent/native_agent/assistant_agent.py src/assistant_agent/observability/langsmith_config.py src/assistant_agent/observability/langsmith_native.py src/assistant_agent/observability/trace_content_policy.py",
 ]
 exclusive_literals = []
 exclusive_allowlist = []

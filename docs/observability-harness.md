@@ -6,10 +6,10 @@
 
 | 字段 | 内容 |
 | --- | --- |
-| 定位 | 生产 Graph 原生 tracing 与旧本地审计兼容边界的当前权威 |
-| Owns | LangSmith native tracing、callback 传播、脱敏与旧 trace reader/ledger 边界 |
-| Does not own | Graph 路由、Agent Server/media wire、Provider 语义、评测 Dataset 与发布决策 |
-| 源码与 schema 入口 | `src/assistant_agent/native_agent/`、`src/assistant_agent/observability/` |
+| 定位 | 生产 Graph 原生 tracing 与脱敏边界的当前权威 |
+| Owns | LangSmith native tracing、callback 传播与脱敏边界 |
+| Does not own | Graph 路由、Agent Server/media wire、历史 trace store/query、Provider 语义、评测 Dataset 与发布决策 |
+| 源码与 schema 入口 | `native_agent/assistant_agent.py`、`agent_server/services.py`、`observability/langsmith_*.py`、`observability/trace_content_policy.py` |
 | 验证入口 | `docs/authority.toml` 中 `runtime-observability.verification`；核心不变量 `OBS-001` |
 | 相邻 authority | [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md)、[`visual-perception-architecture.md`](visual-perception-architecture.md)、[`observability-diagnosis-runbook.md`](observability-diagnosis-runbook.md)、[`../evals/README.md`](../evals/README.md) |
 
@@ -33,11 +33,11 @@ Tool artifact 和 message content 是否记录遵循 LangSmith/部署脱敏配�
 视觉 span 的父子关系、安全字段和目标帧 barrier 语义由视觉 authority 定义；本 authority 只要求它们继续
 使用 LangSmith native tracing、遵守全局脱敏边界，并能从统一 Agent trace 导航到真正的 `vlm.infer` generation。
 
-## 旧本地观测兼容
+## 旧本地观测边界
 
-`src/assistant_agent/observability/` 中 canonical reader、ledger、trace query 和历史诊断工具继续用于旧
-runtime、历史记录与外围入口；它们不是新父图的执行依赖，也不得反向决定 graph route、resume、cancel 或
-terminal。历史诊断仍按 [`observability-diagnosis-runbook.md`](observability-diagnosis-runbook.md) 操作。
+历史 canonical reader、ledger、trace query 与诊断工具不是新父图的执行依赖，也不得反向决定 graph
+route、resume、cancel 或 terminal。历史 trace 诊断按
+[`observability-diagnosis-runbook.md`](observability-diagnosis-runbook.md) 的独立 owner 执行。
 
 未来行为评测可以把 production graph 作为 target，但 Dataset、Experiment 与 Score 的 owner 仍是
 `evals/README.md`。当前旧 Release Review runner 已删除；不得从评测或本地 ledger 构造第二棵“看起来像”

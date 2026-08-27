@@ -72,10 +72,10 @@ Agent Server `user.identity` 一致。
 
 “完成 VIDEO 握手”的结构化定义是：服务端已成功校验并绑定首个 control 消息、创建该连接对应的 native
 `thread_id`，且绑定的 `callType` 等于 `VIDEO`。它不要求已经收到第一帧。后续 chat run 不把握手模式写成
-Studio Assistant context；当前媒体可用性由入口生成的标准 `HumanMessage` 媒体 block 判定。
+Studio Assistant context。
 每次 chat 开始时，媒体入口还会在进程视觉模块中冻结当时的 video IDs 与严格窗口，并只把服务端签发的 opaque
-capability token 放入 namespaced run metadata；token 按认证身份与 thread 校验，run 结束即撤销。窗口摘要进入本轮
-标准用户 message，完整窗口和 capability 不进入 Assistant context，
+capability token 放入 namespaced run metadata；token 按认证身份与 thread 校验，run 结束即撤销。当前
+`media_graph_input()` 只投影 chat 文本，窗口摘要、`source=live_camera` block 和 capability 都不进入标准用户 message；
 后续并发 chat 更新 session 投影也不能改变已创建 run 的视觉检索上界。撤销同时绑定 task done callback，覆盖
 协程首次执行前即被取消的路径。
 
@@ -136,8 +136,8 @@ Graph 完成后发送成功终包：
 }
 ```
 
-当前 wire 不发送或接受 `assistantMode`；请求 body 出现该字段时直接返回协议错误。媒体适配器只把请求机械转换为
-标准 `HumanMessage` content blocks，并把入口、视觉 capability 等受信运行事实放入服务端签发的 namespaced metadata；
+当前 wire 不发送或接受 `assistantMode`；请求 body 出现该字段时直接返回协议错误。媒体适配器只把 chat 文本机械转换为
+标准 `HumanMessage` content，并把入口、视觉 capability 等受信运行事实放入服务端签发的 namespaced metadata；
 公开 run context 只提交 `enable_memory`。`stream=true` 只投影
 `AIMessageChunk` 的 string content 或 `text|output_text` block；当 `messages/metadata` 存在时，明确标记为
 非 `model` 节点的 chunk 会被排除；metadata 缺失时按标准 assistant chunk 降级投影，避免原生流存在但媒体侧
@@ -210,8 +210,8 @@ enqueue 时已有有效在线 presence 才排队，在线写成功后记为 sent
 字段校验，再进入连接级 `one in-flight + one latest pending` 后台解码边界；新 pending 会替换尚未开始的旧
 pending，旧消息仍收到正常 `videoResponse`，但不再解码、提交 VLM 或进入视觉窗口。后台任务在 media edge
 的工作线程中把独立 Annex-B H.264 frame 解码为有界 JPEG window，因此消费速度下降时不会形成历史 FIFO
-积压。Graph 输入只携带稳定 `video_id`。Graph worker
-的受治理 `live_view_inspect` Tool 通过进程级有界内存 frame index 解析该引用；H.264 hex、JPEG
+积压。稳定 `video_id` 仅保留在进程视觉 owner 和 namespaced capability facts 中，当前不进入 Graph 标准 message；
+因此虽然受治理 `live_view_inspect` Tool 能通过进程级有界内存 frame index 解析该引用，它不会由本入口暴露。H.264 hex、JPEG
 正文和本地路径均不进入 Graph State、prompt 或 Agent Server Store。
 
 显式启用远端视觉 Memory Service 时，同一批已校验 H.264 bytes 还会复制到独立顺序归档 lane；该 lane
@@ -230,13 +230,11 @@ pending，旧消息仍收到正常 `videoResponse`，但不再解码、提交 VL
 `contents[].time` 提供的上游帧时间，不得当作服务端收包或解码时间。日志不记录 H.264/JPEG 正文、路径、
 用户正文或 Provider payload；不满足安全字符约束的 `video_index` 只记录摘要。
 
-媒体入口给摄像头引用固定标记 `source=live_camera`；用户主动上传的图片或视频必须由普通请求入口标记为
-`source=uploaded`，交给独立的 `uploaded_media_inspect`，两类引用不能互相替代。VIDEO control 成功后即允许
-模型进入实时视频模式；只有本轮冻结窗口已经包含 selector 选中的目标关键帧时才允许模型看到
-`live_view_inspect`。当当前 `user/thread/as-of sequence` 已产生可检索视觉文本时，才进一步暴露
-`visual_memory_search`。`visual_reminder_manage` 则在首个视频包成功解码、`video_id` 已绑定后才暴露；此时
-媒体连接把连接级 reminder manager 注册到视觉 Runtime，并将提醒命中机械投影为当前 WebSocket 上的主动
-`chatResponse`。握手后尚未收到有效帧、解码失败或连接已关闭时均不可用。这些条件暴露不依赖 Skill 加载。
+用户主动上传的图片或视频必须由普通请求入口标记为 `source=uploaded`，交给独立的
+`uploaded_media_inspect`。进程视觉模块仍冻结 live camera 窗口和 namespaced capability facts，也会继续运行
+selector、并行 VLM 和 reminder manager；但当前 custom route 不向标准 message 注入 `source=live_camera` block。
+统一条件 middleware 从 `latest_runtime_media(...).live_video_ids` 判定实时媒体可用性，因此
+`live_view_inspect`、`visual_memory_search` 和 `visual_reminder_manage` 不会由该入口暴露给模型。
 
 媒体 wire 只负责把每个成功解码帧提交给连接级视觉句柄。chat 到达 A 时刻后，入口在任何异步发送或其他
 `await` 之前同步冻结 selector 已经登记的当前半固定关键帧窗口（1～5 帧），随后立即发送 `chatProgress`，
@@ -245,11 +243,11 @@ pending，旧消息仍收到正常 `videoResponse`，但不再解码、提交 VL
 关键帧从新窗口开始。用户输入是否最终调用视觉 Tool 不改变这个短期记忆分段动作。当时仍处于
 pending/in-flight、尚未 selected 的帧不属于已关闭窗口。尚未完成解码或尚未完成选帧的工作不会阻塞 run
 创建；其后成为新关键帧也不回写已经冻结的本轮投影。
-随后媒体入口把视觉模块冻结得到的可信
-`window_id`、`window_start_sequence` 和 `target_sequence` 绑定到标准 `source=live_camera` video content
-block，不传 JPEG、Provider client 或 task。K+a 时刻 Tool 只能读取这个 exact target，不得吸收 A 之后新增的
-关键帧。窗口并发、semantic keyframe、目标帧等待、ready/missing 结果和
+随后媒体入口只把冻结投影保存在进程 owner 并将 opaque capability token 写入 namespaced metadata，
+不传 JPEG、Provider client 或 task，也不把 `window_id`、`window_start_sequence` 和 `target_sequence` 写入标准 message。
+窗口并发、semantic keyframe、目标帧等待、ready/missing 结果和
 晚到帧处理均以 [`visual-perception-architecture.md`](visual-perception-architecture.md) 为唯一权威。
+恢复实时视觉 Tool 需要另立受信的非消息投影与 coverage，不得让主 LLM 直接感知摄像头；这不属于本次文档迁移。
 
 保留 callback：
 
@@ -305,8 +303,7 @@ producer。citation、生成图片 detail、H.264 显式
 ```bash
 MULTIMODAL_AGENT_PROVIDER_MODE=mock \
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
-  tests/core/contract/test_gateway_contract.py \
-  tests/tdd/agent_server_native_runtime/test_media_custom_route.py
+  tests/core/contract/test_gateway_contract.py
 
 MULTIMODAL_AGENT_PROVIDER_MODE=mock LANGSMITH_TRACING=false \
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \

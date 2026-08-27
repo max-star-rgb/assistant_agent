@@ -92,8 +92,8 @@ incubating 不是正式真实 system eval。`checks_*.py` 必须保持 offline�
 4. 如果有真实 bug，先证明它是框架 bug，并说明现有 core 安全网为何漏检；明确关联 invariant ID 后，
    才扩展该 invariant 已有的 core 测试。
 5. 如果只是 node/provider 专项风险，且有持续观察价值，放入独立
-   `evals/system/incubating/<feature>/`；待发布模型的工具决策、参数语义和回答质量放入
-   `evals/release_review`。
+   `evals/system/incubating/<feature>/`；待发布模型的工具决策、参数语义和回答质量等未来统一行为评测
+   需先由 eval authority 重建并登记稳定入口。
 6. 新增 core invariant 属于明确的框架契约决策：先登记 ID 和负责文件，再添加最小测试。覆盖率、
    文件变动或评审要求本身不是准入证据。
 

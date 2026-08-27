@@ -37,7 +37,7 @@
   refresh 之间只执行一个由 `create_deep_agent` 编译的 `AssistantAgent`，不按请求切换执行模式。
 - LangGraph Agent Server 负责 assistant/thread/run/checkpoint/cancel/interrupt/resume/stream 生命周期；媒体
   custom route 只做协议归一化与连接关联，不承担主大脑职责。
-- 生产主链的本地显式工具调用使用标准 `BaseTool -> ToolNode` 与 `ToolRuntime` 注入；read Tool 使用官方
+- 生产主链的本地显式工具调用使用标准 `BaseTool -> ToolNode` 与 `ToolRuntime` 注入；可安全重试的 read Tool 使用官方
   retry middleware；全部副作用 Tool 使用统一原生 HITL，同步与异步 worker 都只读；副作用幂等归具体 Tool 或业务 API。旧
   Registry/Executor 兼容链已经删除；durable task 等外围能力使用显式 allowlist 与窄业务 adapter。配置为 `qwen` provider 的百炼兼容
   Chat Completions 通过显式配置启用的
