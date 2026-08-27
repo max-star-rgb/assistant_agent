@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from uuid import UUID
 
 import pytest
 from pydantic import ValidationError
@@ -31,6 +32,9 @@ from assistant_agent.native_agent.context import (
     assistant_runtime_metadata,
 )
 from scripts.media_simulator import chat_body
+
+
+WORKER_ASSISTANT_ID = UUID("ad895394-eb31-5aa1-a5ac-d24c4050ca05")
 
 
 def _chat_envelope() -> MediaEnvelope:
@@ -193,17 +197,20 @@ def test_obsolete_coding_attestation_route_is_removed() -> None:
 )
 @pytest.mark.parametrize("operation", ["thread", "run"])
 def test_worker_authorization_rejects_invalid_runtime_facts(
+    monkeypatch: pytest.MonkeyPatch,
     operation: str,
     metadata: dict[str, Any],
     case: str,
 ) -> None:
     del case
+    monkeypatch.setenv("REDIS_URI", "redis://localhost:6379")
+    monkeypatch.setenv("DATABASE_URI", "postgres://localhost/test")
     value = {
         "metadata": dict(metadata),
         **(
             {"graph_id": WORKER_GRAPH_ID}
             if operation == "thread"
-            else {"assistant_id": WORKER_GRAPH_ID}
+            else {"assistant_id": WORKER_ASSISTANT_ID}
         ),
     }
     authorize = (
@@ -216,9 +223,12 @@ def test_worker_authorization_rejects_invalid_runtime_facts(
 @pytest.mark.parametrize("snapshot_length", [40, 64])
 @pytest.mark.parametrize("operation", ["thread", "run"])
 def test_worker_authorization_accepts_complete_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
     operation: str,
     snapshot_length: int,
 ) -> None:
+    monkeypatch.setenv("REDIS_URI", "redis://localhost:6379")
+    monkeypatch.setenv("DATABASE_URI", "postgres://localhost/test")
     metadata = assistant_runtime_metadata(
         AssistantRuntimeFacts(
             entry_profile="async_worker",
@@ -230,7 +240,7 @@ def test_worker_authorization_accepts_complete_snapshot(
         **(
             {"graph_id": WORKER_GRAPH_ID}
             if operation == "thread"
-            else {"assistant_id": WORKER_GRAPH_ID}
+            else {"assistant_id": WORKER_ASSISTANT_ID}
         ),
     }
     authorize = (

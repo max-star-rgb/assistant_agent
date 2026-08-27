@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from blockbuster import blockbuster_ctx
@@ -15,13 +17,21 @@ from langgraph_sdk.auth.types import StudioUser
 from pydantic import ValidationError
 
 from assistant_agent.agent_server.services import AgentServerExecutionOwner
+from assistant_agent.agent_server import async_delegation
+from assistant_agent.agent_server.async_delegation import (
+    BACKGROUND_AGENT_NAME,
+    build_async_subagent_middleware,
+)
 from assistant_agent.coding import config as coding_config_module
 from assistant_agent.native_agent import assistant_agent as assistant_agent_module
 from assistant_agent.native_agent.assistant_agent import (
     RecursionFinalSynthesisMiddleware,
     build_assistant_agent,
 )
-from assistant_agent.native_agent.context import AssistantRunContext
+from assistant_agent.native_agent.context import (
+    ASSISTANT_RUNTIME_METADATA_KEY,
+    AssistantRunContext,
+)
 from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.native_agent.state import AssistantRootInput
 from assistant_agent.native_agent.tool_call_limits import PerToolCallLimitMiddleware
@@ -180,3 +190,78 @@ def test_public_input_and_context_expose_no_private_run_facts() -> None:
         AssistantRootInput.model_validate({"messages": [], "execution_mode": "fast"})
     with pytest.raises(ValidationError):
         AssistantRunContext.model_validate({"execution_mode": "fast"})
+
+
+@pytest.mark.core_invariant("LOOP-001")
+def test_async_task_reuses_the_creation_snapshot_for_later_worker_runs(
+    monkeypatch,
+) -> None:
+    snapshot = "a" * 40
+    moved_head = "b" * 40
+    observed_heads: list[str] = []
+
+    class WorkspaceService:
+        head = snapshot
+
+        def repository_head(self, repo_id: str) -> str:
+            assert repo_id == "repo-sentinel"
+            observed_heads.append(self.head)
+            return self.head
+
+    client = SimpleNamespace(
+        threads=SimpleNamespace(
+            create=AsyncMock(return_value={"thread_id": "worker-thread"})
+        ),
+        runs=SimpleNamespace(
+            create=AsyncMock(
+                side_effect=[{"run_id": "worker-run"}, {"run_id": "worker-run-2"}]
+            )
+        ),
+        aclose=AsyncMock(),
+    )
+    monkeypatch.setattr(async_delegation, "get_client", lambda **_kwargs: client)
+    service = WorkspaceService()
+    middleware = build_async_subagent_middleware(service, "repo-sentinel")
+    start = next(tool for tool in middleware.tools if tool.name == "start_async_task")
+
+    def runtime(async_tasks=None):
+        return SimpleNamespace(
+            state={
+                "memory_context": ("memory-sentinel",),
+                "async_tasks": async_tasks or {},
+            },
+            config={
+                "configurable": {"thread_id": "parent-thread"},
+                "run_id": "parent-run",
+            },
+            tool_call_id="tool-call-sentinel",
+            server_info=SimpleNamespace(user=SimpleNamespace(identity="user-sentinel")),
+        )
+
+    started = asyncio.run(
+        start.coroutine(
+            description="task-sentinel",
+            subagent_type=BACKGROUND_AGENT_NAME,
+            runtime=runtime(),
+        )
+    )
+    task = next(iter(started.update["async_tasks"].values()))
+    service.head = moved_head
+    asyncio.run(
+        async_delegation._update_async_task(
+            task["task_id"],
+            "follow-up-sentinel",
+            runtime({task["task_id"]: task}),
+        )
+    )
+
+    def metadata_snapshot(call) -> str:
+        return call.kwargs["metadata"][ASSISTANT_RUNTIME_METADATA_KEY][
+            "repository_snapshot_sha"
+        ]
+
+    assert observed_heads == [snapshot]
+    assert task["repository_snapshot_sha"] == snapshot
+    assert metadata_snapshot(client.threads.create.await_args) == snapshot
+    assert metadata_snapshot(client.runs.create.await_args_list[0]) == snapshot
+    assert metadata_snapshot(client.runs.create.await_args_list[1]) == snapshot

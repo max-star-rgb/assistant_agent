@@ -17,7 +17,9 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable, RunnableLambda
 from langchain_core.tools import BaseTool, StructuredTool
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
+from langgraph.types import Command
 from pydantic import PrivateAttr
 
 from assistant_agent.agent_server.services import AgentServerExecutionOwner
@@ -26,6 +28,7 @@ from assistant_agent.native_agent import assistant_agent as assistant_agent_modu
 from assistant_agent.native_agent.assistant_agent import (
     RecursionFinalSynthesisMiddleware,
     build_assistant_agent,
+    isolated_read_only_worker,
 )
 from assistant_agent.native_agent.conditional_tool_exposure import (
     ConditionalToolExposureMiddleware,
@@ -64,6 +67,7 @@ def _agent(
     *,
     worker: Runnable | None = None,
     tool_profiles=(),
+    checkpointer=None,
 ):
     return build_assistant_agent(
         model,
@@ -72,6 +76,7 @@ def _agent(
         worker_graph=worker or _worker(),
         skills_backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
         tool_profiles=tool_profiles,
+        checkpointer=checkpointer,
     )
 
 
@@ -138,7 +143,13 @@ class _TaskOnceModel(MockAssistantChatModel):
 
 class _WriteOnceModel(MockAssistantChatModel):
     def _response_message(self, messages, **kwargs):
-        del messages, kwargs
+        del kwargs
+        if any(
+            isinstance(message, ToolMessage)
+            and message.tool_call_id == "write-probe-sentinel"
+            for message in messages
+        ):
+            return AIMessage(content="write-complete-sentinel")
         return AIMessage(
             content="",
             tool_calls=[
@@ -279,13 +290,37 @@ def test_task_uses_narrow_read_only_worker_state_and_preserves_parent_handles(
     def worker(state: dict[str, Any]) -> dict[str, Any]:
         observed_worker_states.append(state)
         return {
-            "messages": [AIMessage(content="worker-complete-sentinel")],
+            "messages": [
+                AIMessage(content="worker-draft-sentinel", id="worker-draft"),
+                AIMessage(content="worker-final-sentinel", id="worker-final"),
+            ],
             "active_tool_profile_ids": ["worker-profile-sentinel"],
-            "provider_search_profile": "travel_general",
+            "provider_search_profile": "deep_research",
             "async_tasks": {"child-task-sentinel": {"status": "running"}},
+            "future_private_state": "private-sentinel",
         }
 
     parent_tasks = {"parent-task-sentinel": {"status": "running"}}
+    projected = isolated_read_only_worker(
+        RunnableLambda(
+            lambda state: {
+                **worker(state),
+                "structured_response": {"answer": "structured-sentinel"},
+            }
+        )
+    ).invoke(
+        {
+            "messages": [HumanMessage(content="task-sentinel")],
+            "memory_context": ("memory-sentinel",),
+            "provider_search_profile": "travel_general",
+            "async_tasks": parent_tasks,
+        }
+    )
+    assert set(projected) == {"messages", "structured_response"}
+    assert [message.id for message in projected["messages"]] == ["worker-final"]
+    assert projected["structured_response"] == {"answer": "structured-sentinel"}
+    observed_worker_states.clear()
+
     graph = _agent(
         tmp_path,
         _TaskOnceModel(),
@@ -310,7 +345,18 @@ def test_task_uses_narrow_read_only_worker_state_and_preserves_parent_handles(
     assert "provider_search_profile" not in worker_state
     assert "async_tasks" not in worker_state
     assert result["async_tasks"] == parent_tasks
+    assert result["provider_search_profile"] == "travel_general"
     assert "active_tool_profile_ids" not in result
+    assert not {
+        "worker-draft",
+        "worker-final",
+    } & {getattr(message, "id", None) for message in result["messages"]}
+    task_result = next(
+        message
+        for message in result["messages"]
+        if isinstance(message, ToolMessage) and message.tool_call_id == "task-sentinel"
+    )
+    assert task_result.content == "worker-final-sentinel"
 
     owner = asyncio.run(AgentServerExecutionOwner.compose(store=InMemoryStore()))
     try:
@@ -533,7 +579,14 @@ def test_remaining_graph_steps_force_tool_free_final_synthesis(tmp_path: Path) -
 
 
 @pytest.mark.core_invariant("CTX-001")
-def test_unified_write_tool_interrupts_before_execution(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "decision,expected_executions", [("approve", 1), ("reject", 0)]
+)
+def test_unified_write_interrupt_resume_executes_at_most_once(
+    tmp_path: Path,
+    decision: str,
+    expected_executions: int,
+) -> None:
     executed: list[str] = []
 
     def write_probe(value: str) -> str:
@@ -546,14 +599,56 @@ def test_unified_write_tool_interrupts_before_execution(tmp_path: Path) -> None:
         description="probe",
         metadata={"effect": "write"},
     )
-    result = _agent(tmp_path, _WriteOnceModel(), [tool]).invoke(
+    graph = _agent(
+        tmp_path,
+        _WriteOnceModel(),
+        [tool],
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": f"write-{decision}-sentinel"}}
+    interrupted = graph.invoke(
         {"messages": [HumanMessage(content="write-request-sentinel")]},
         context=AssistantRunContext(),
+        config=config,
     )
 
     assert executed == []
-    assert result["__interrupt__"][0].value["action_requests"][0]["name"] == (
-        "write_probe"
+    assert (
+        interrupted["__interrupt__"][0].value["action_requests"][0]["name"]
+        == "write_probe"
+    )
+
+    decision_payload = {"type": decision}
+    if decision == "reject":
+        decision_payload["message"] = "rejected-sentinel"
+    resumed = graph.invoke(
+        Command(resume={"decisions": [decision_payload]}),
+        context=AssistantRunContext(),
+        config=config,
+    )
+    assert len(executed) == expected_executions
+    assert (
+        sum(
+            isinstance(message, ToolMessage)
+            and message.tool_call_id == "write-probe-sentinel"
+            for message in resumed["messages"]
+        )
+        == 1
+    )
+
+    replayed = graph.invoke(
+        Command(resume={"decisions": [decision_payload]}),
+        context=AssistantRunContext(),
+        config=config,
+    )
+    assert len(executed) == expected_executions
+    assert (
+        sum(
+            isinstance(message, ToolMessage)
+            and message.tool_call_id == "write-probe-sentinel"
+            for message in replayed["messages"]
+        )
+        == 1
     )
 
 

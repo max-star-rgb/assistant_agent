@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from uuid import UUID, uuid5
 
 from langgraph_sdk import Auth
 from langgraph_sdk.auth import is_studio_user
@@ -186,16 +187,19 @@ async def authorize_run_create(
     metadata = value.setdefault("metadata", {})
     if not isinstance(metadata, dict):
         return False
-    assistant_id = str(value.get("assistant_id"))
-    if assistant_id not in {ASSISTANT_GRAPH_ID, MEMORY_GRAPH_ID, WORKER_GRAPH_ID}:
+    assistant_id = value.get("assistant_id")
+    if not isinstance(assistant_id, UUID):
+        return False
+    graph_id = _run_graph_id(assistant_id)
+    if graph_id is None:
         return False
     metadata["owner"] = str(ctx.user.identity)
-    if assistant_id == MEMORY_GRAPH_ID:
+    if graph_id == MEMORY_GRAPH_ID:
         return {
             "owner": str(ctx.user.identity),
             THREAD_GRAPH_METADATA_KEY: MEMORY_GRAPH_ID,
         }
-    if assistant_id == WORKER_GRAPH_ID:
+    if graph_id == WORKER_GRAPH_ID:
         if not _authorized_worker_metadata(metadata):
             return False
         return {
@@ -209,6 +213,22 @@ async def authorize_run_create(
         "owner": str(ctx.user.identity),
         THREAD_GRAPH_METADATA_KEY: ASSISTANT_GRAPH_ID,
     }
+
+
+def _run_graph_id(assistant_id: UUID) -> str | None:
+    from langgraph_api.graph import NAMESPACE_GRAPH  # noqa: PLC0415
+
+    if assistant_id in {
+        uuid5(NAMESPACE_GRAPH, "assistant-native-v1"),
+        uuid5(NAMESPACE_GRAPH, "assistant-native-v2"),
+        uuid5(NAMESPACE_GRAPH, "assistant-native-v3"),
+    }:
+        return None
+    return {
+        uuid5(NAMESPACE_GRAPH, ASSISTANT_GRAPH_ID): ASSISTANT_GRAPH_ID,
+        uuid5(NAMESPACE_GRAPH, MEMORY_GRAPH_ID): MEMORY_GRAPH_ID,
+        uuid5(NAMESPACE_GRAPH, WORKER_GRAPH_ID): WORKER_GRAPH_ID,
+    }.get(assistant_id, ASSISTANT_GRAPH_ID)
 
 
 def _authorized_worker_metadata(metadata: Mapping[str, object]) -> bool:

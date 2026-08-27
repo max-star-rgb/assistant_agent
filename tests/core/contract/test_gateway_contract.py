@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from uuid import UUID
 
 import pytest
 from pydantic import ValidationError
@@ -45,6 +46,16 @@ LEGACY_GRAPH_IDS = (
     "assistant-native-v1",
     "assistant-native-v2",
     "assistant-native-v3",
+)
+SYSTEM_ASSISTANT_IDS = {
+    ASSISTANT_GRAPH_ID: UUID("8d030b92-89be-5d58-918d-ff35e996429a"),
+    WORKER_GRAPH_ID: UUID("ad895394-eb31-5aa1-a5ac-d24c4050ca05"),
+    MEMORY_GRAPH_ID: UUID("b209df74-50ea-53ce-89ad-cc13d3c44e1b"),
+}
+LEGACY_ASSISTANT_IDS = (
+    UUID("5d65b3ea-e849-5e47-afde-ed71e133b9da"),
+    UUID("46ed656d-0f2d-5320-a380-0bea189fc304"),
+    UUID("845db169-0dc1-5167-9e6c-f5b5f0aaf844"),
 )
 
 
@@ -130,7 +141,9 @@ def test_current_clients_reject_legacy_and_unknown_checkpoint_and_thread_graphs(
 
 
 @pytest.mark.core_invariant("GATE-001")
-def test_agent_server_auth_accepts_only_current_graph_identities() -> None:
+def test_agent_server_auth_accepts_only_current_graph_identities(monkeypatch) -> None:
+    monkeypatch.setenv("REDIS_URI", "redis://localhost:6379")
+    monkeypatch.setenv("DATABASE_URI", "postgres://localhost/test")
     ctx = SimpleNamespace(user=SimpleNamespace(identity="studio-user"))
     created = {"metadata": {}}
     assert asyncio.run(authorize_thread_create(ctx, created)) is None
@@ -177,29 +190,43 @@ def test_agent_server_auth_accepts_only_current_graph_identities() -> None:
         "owner": "studio-user"
     }
 
-    run = {"assistant_id": ASSISTANT_GRAPH_ID, "metadata": {}}
+    run = {"assistant_id": SYSTEM_ASSISTANT_IDS[ASSISTANT_GRAPH_ID], "metadata": {}}
     assert asyncio.run(authorize_run_create(ctx, run)) == {
         "owner": "studio-user",
         "assistant_graph_id": ASSISTANT_GRAPH_ID,
     }
     assert run["context"] == {}
-    memory_run = {"assistant_id": MEMORY_GRAPH_ID, "metadata": {}}
+    memory_run = {
+        "assistant_id": SYSTEM_ASSISTANT_IDS[MEMORY_GRAPH_ID],
+        "metadata": {},
+    }
     assert asyncio.run(authorize_run_create(ctx, memory_run)) == {
         "owner": "studio-user",
         "assistant_graph_id": MEMORY_GRAPH_ID,
     }
     worker_run = {
-        "assistant_id": WORKER_GRAPH_ID,
+        "assistant_id": SYSTEM_ASSISTANT_IDS[WORKER_GRAPH_ID],
         "metadata": dict(worker_metadata),
     }
     assert asyncio.run(authorize_run_create(ctx, worker_run)) == {
         "owner": "studio-user",
         "assistant_graph_id": WORKER_GRAPH_ID,
     }
-    for graph_id in (*LEGACY_GRAPH_IDS, "unknown-graph"):
+    custom_run = {
+        "assistant_id": UUID("123e4567-e89b-12d3-a456-426614174000"),
+        "metadata": {},
+    }
+    assert asyncio.run(authorize_run_create(ctx, custom_run)) == {
+        "owner": "studio-user",
+        "assistant_graph_id": ASSISTANT_GRAPH_ID,
+    }
+    for assistant_id in LEGACY_ASSISTANT_IDS:
         assert (
             asyncio.run(
-                authorize_run_create(ctx, {"assistant_id": graph_id, "metadata": {}})
+                authorize_run_create(
+                    ctx,
+                    {"assistant_id": assistant_id, "metadata": {}},
+                )
             )
             is False
         )
