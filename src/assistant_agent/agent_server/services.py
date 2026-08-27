@@ -23,6 +23,7 @@ from assistant_agent.agent_server.async_delegation import (
     build_async_subagent_middleware,
 )
 from assistant_agent.config import ProviderConfig
+from assistant_agent.context.token_counter import create_context_token_counter
 from assistant_agent.mcp.config import load_mcp_server_configs_from_env
 from assistant_agent.media.visual_perception import get_visual_perception_module
 from assistant_agent.native_agent.assistant_agent import (
@@ -62,6 +63,10 @@ class AgentServerExecutionOwner:
         """Build configured clients without blocking the Agent Server loop."""
 
         config = ProviderConfig.from_env()
+        context_token_counter = await asyncio.to_thread(
+            create_context_token_counter,
+            config,
+        )
         (
             model,
             tool_resources,
@@ -86,6 +91,16 @@ class AgentServerExecutionOwner:
         )
         business_tool_profiles = project_tool_profiles()
         async_tool_profile = async_task_tool_profile()
+        context_options = {
+            "context_window_tokens": config.context_input_token_limit,
+            "compaction_trigger_ratio": config.context_compaction_trigger_ratio,
+            "compaction_target_ratio": config.context_compaction_target_ratio,
+            "token_counter": (
+                context_token_counter.count_messages
+                if context_token_counter is not None
+                else None
+            ),
+        }
         read_only_backend = ReadOnlyCodingWorkspaceBackend(
             coding_workspace_service,
             coding_repo_id,
@@ -95,6 +110,7 @@ class AgentServerExecutionOwner:
             tools,
             backend=read_only_backend,
             skills_backend=skills_backend,
+            **context_options,
             tool_profiles=business_tool_profiles,
             visual_history_probe=tool_resources.visual_history_probe,
             live_view_resolver=tool_resources.live_view_resolver,
@@ -114,6 +130,7 @@ class AgentServerExecutionOwner:
             backend=writable_backend,
             worker_graph=worker_graph,
             skills_backend=skills_backend,
+            **context_options,
             tool_profiles=(*business_tool_profiles, async_tool_profile),
             additional_middleware=(
                 async_middleware,

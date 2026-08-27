@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from typing import Annotated, Any, NotRequired
 
 from deepagents import create_deep_agent
@@ -22,7 +22,13 @@ from langchain.agents.middleware.types import (
     ToolCallRequest,
 )
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    MessageLikeRepresentation,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda
 from langchain_core.tools import BaseTool
 from langgraph.errors import GraphBubbleUp
@@ -269,6 +275,31 @@ def _interrupt_on(tools: Sequence[BaseTool]) -> dict[str, object]:
     return result
 
 
+def _summarization_options(
+    model: BaseChatModel,
+    *,
+    context_window_tokens: int,
+    compaction_trigger_ratio: float,
+    compaction_target_ratio: float,
+    token_counter: Callable[[Iterable[MessageLikeRepresentation]], int] | None,
+) -> dict[str, Any]:
+    options: dict[str, Any] = {
+        "model": model,
+        "trigger": (
+            "tokens",
+            max(1, int(context_window_tokens * compaction_trigger_ratio)),
+        ),
+        "keep": (
+            "tokens",
+            max(1, int(context_window_tokens * compaction_target_ratio)),
+        ),
+        "trim_tokens_to_summarize": None,
+    }
+    if token_counter is not None:
+        options["token_counter"] = token_counter
+    return options
+
+
 def build_assistant_agent(
     model: BaseChatModel,
     tools: Sequence[BaseTool],
@@ -276,6 +307,10 @@ def build_assistant_agent(
     backend: BackendProtocol,
     worker_graph: Runnable,
     skills_backend: BackendProtocol,
+    context_window_tokens: int = _DEFAULT_CONTEXT_WINDOW_TOKENS,
+    compaction_trigger_ratio: float = 0.75,
+    compaction_target_ratio: float = 0.15,
+    token_counter: Callable[[Iterable[MessageLikeRepresentation]], int] | None = None,
     tool_profiles: Sequence[ToolProfile] = (),
     additional_middleware: Sequence[AgentMiddleware] = (),
     visual_history_probe: VisualObservationHistoryProbe | None = None,
@@ -305,12 +340,6 @@ def build_assistant_agent(
             }
         )
     )
-    summarization_options = {
-        "model": model,
-        "trigger": ("tokens", int(_DEFAULT_CONTEXT_WINDOW_TOKENS * 0.75)),
-        "keep": ("tokens", int(_DEFAULT_CONTEXT_WINDOW_TOKENS * 0.15)),
-        "trim_tokens_to_summarize": None,
-    }
     return create_deep_agent(
         model=model,
         tools=list(tools),
@@ -338,7 +367,15 @@ def build_assistant_agent(
             ),
             *additional_middleware,
             PerToolCallLimitMiddleware(max_parallel_calls_per_tool=12),
-            SummarizationMiddleware(**summarization_options),
+            SummarizationMiddleware(
+                **_summarization_options(
+                    model,
+                    context_window_tokens=context_window_tokens,
+                    compaction_trigger_ratio=compaction_trigger_ratio,
+                    compaction_target_ratio=compaction_target_ratio,
+                    token_counter=token_counter,
+                )
+            ),
             MemoryContextMiddleware(),
             create_assistant_runtime_prompt(current_location),
             RecursionFinalSynthesisMiddleware(),
@@ -407,6 +444,10 @@ def build_read_only_worker(
     *,
     backend: BackendProtocol,
     skills_backend: BackendProtocol,
+    context_window_tokens: int = _DEFAULT_CONTEXT_WINDOW_TOKENS,
+    compaction_trigger_ratio: float = 0.75,
+    compaction_target_ratio: float = 0.15,
+    token_counter: Callable[[Iterable[MessageLikeRepresentation]], int] | None = None,
     tool_profiles: Sequence[ToolProfile] = (),
     visual_history_probe: VisualObservationHistoryProbe | None = None,
     live_view_resolver: Callable[[str, str, str], Any] | None = None,
@@ -447,10 +488,13 @@ def build_read_only_worker(
             ),
             PerToolCallLimitMiddleware(max_parallel_calls_per_tool=12),
             SummarizationMiddleware(
-                model=worker_model,
-                trigger=("tokens", int(_DEFAULT_CONTEXT_WINDOW_TOKENS * 0.75)),
-                keep=("tokens", int(_DEFAULT_CONTEXT_WINDOW_TOKENS * 0.15)),
-                trim_tokens_to_summarize=None,
+                **_summarization_options(
+                    worker_model,
+                    context_window_tokens=context_window_tokens,
+                    compaction_trigger_ratio=compaction_trigger_ratio,
+                    compaction_target_ratio=compaction_target_ratio,
+                    token_counter=token_counter,
+                )
             ),
             MemoryContextMiddleware(),
             create_assistant_runtime_prompt(current_location),
@@ -486,17 +530,27 @@ def _worker_input(state: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _worker_output(result: Mapping[str, Any]) -> dict[str, Any]:
+    structured_response = result.get("structured_response")
     final_message = next(
         (
             message
             for message in reversed(result.get("messages") or ())
             if isinstance(message, AIMessage) and message.text.strip()
         ),
-        AIMessage(content=""),
+        None,
     )
+    if final_message is None:
+        final_message = (
+            AIMessage(content="")
+            if structured_response
+            else AIMessage(
+                content="只读 worker 未生成可用结果，任务未完成。",
+                response_metadata={"error_code": "empty_worker_result"},
+            )
+        )
     output = {"messages": [final_message]}
-    if result.get("structured_response") is not None:
-        output["structured_response"] = result["structured_response"]
+    if structured_response is not None:
+        output["structured_response"] = structured_response
     return output
 
 

@@ -10,6 +10,7 @@ from uuid import UUID
 import pytest
 from pydantic import ValidationError
 
+from assistant_agent.agent_server import auth as auth_module
 from assistant_agent.agent_server.auth import (
     authenticate,
     authorize_run_create,
@@ -35,6 +36,7 @@ from assistant_agent.agent_server.media_protocol import (
 )
 from assistant_agent.agent_server.media_session import MediaConnectionSession
 from assistant_agent.native_agent.context import (
+    ASSISTANT_RUNTIME_METADATA_KEY,
     AssistantRunContext,
     AssistantRuntimeFacts,
     assistant_runtime_facts,
@@ -146,7 +148,9 @@ def test_current_clients_reject_legacy_and_unknown_checkpoint_and_thread_graphs(
 def test_agent_server_auth_accepts_only_current_graph_identities(monkeypatch) -> None:
     monkeypatch.setenv("REDIS_URI", "redis://localhost:6379")
     monkeypatch.setenv("DATABASE_URI", "postgres://localhost/test")
-    ctx = SimpleNamespace(user=SimpleNamespace(identity="studio-user"))
+    ctx = SimpleNamespace(
+        user=SimpleNamespace(identity="studio-user", permissions=())
+    )
     created = {"metadata": {}}
     assert asyncio.run(authorize_thread_create(ctx, created)) is None
     assert created["metadata"] == {
@@ -170,7 +174,24 @@ def test_agent_server_auth_accepts_only_current_graph_identities(monkeypatch) ->
         "graph_id": WORKER_GRAPH_ID,
         "metadata": dict(worker_metadata),
     }
-    assert asyncio.run(authorize_thread_create(ctx, worker_create)) is None
+    assert asyncio.run(authorize_thread_create(ctx, worker_create)) is False
+    internal_user = asyncio.run(
+        authenticate(
+            None,
+            {
+                key.lower().encode(): value.encode()
+                for key, value in auth_module._internal_worker_headers(
+                    "studio-user"
+                ).items()
+            },
+        )
+    )
+    internal_ctx = SimpleNamespace(user=SimpleNamespace(**internal_user))
+    worker_create = {
+        "graph_id": WORKER_GRAPH_ID,
+        "metadata": dict(worker_metadata),
+    }
+    assert asyncio.run(authorize_thread_create(internal_ctx, worker_create)) is None
     assert worker_create["metadata"]["assistant_graph_id"] == WORKER_GRAPH_ID
 
     updated = {
@@ -210,10 +231,45 @@ def test_agent_server_auth_accepts_only_current_graph_identities(monkeypatch) ->
         "assistant_id": SYSTEM_ASSISTANT_IDS[WORKER_GRAPH_ID],
         "metadata": dict(worker_metadata),
     }
-    assert asyncio.run(authorize_run_create(ctx, worker_run)) == {
+    assert asyncio.run(authorize_run_create(ctx, worker_run)) is False
+    worker_run = {
+        "assistant_id": SYSTEM_ASSISTANT_IDS[WORKER_GRAPH_ID],
+        "metadata": dict(worker_metadata),
+    }
+    assert asyncio.run(authorize_run_create(internal_ctx, worker_run)) == {
         "owner": "studio-user",
         "assistant_graph_id": WORKER_GRAPH_ID,
     }
+    injected_snapshot = {
+        ASSISTANT_RUNTIME_METADATA_KEY: {
+            "entry_profile": "async_worker",
+            "repository_snapshot_sha": "a" * 40,
+        }
+    }
+    assert (
+        asyncio.run(
+            authorize_thread_create(
+                ctx,
+                {
+                    "graph_id": ASSISTANT_GRAPH_ID,
+                    "metadata": dict(injected_snapshot),
+                },
+            )
+        )
+        is False
+    )
+    assert (
+        asyncio.run(
+            authorize_run_create(
+                ctx,
+                {
+                    "assistant_id": SYSTEM_ASSISTANT_IDS[MEMORY_GRAPH_ID],
+                    "metadata": dict(injected_snapshot),
+                },
+            )
+        )
+        is False
+    )
     custom_run = {
         "assistant_id": UUID("123e4567-e89b-12d3-a456-426614174000"),
         "metadata": {},
@@ -298,14 +354,18 @@ def test_assistant_context_is_public_configuration_not_private_run_facts() -> No
                 AssistantRuntimeFacts(
                     entry_profile="agent_service",
                     visual_capability_token="opaque-capability",
-                    repository_snapshot_sha="a" * 40,
                 )
             )
         }
     )
     assert facts.entry_profile == "agent_service"
     assert facts.visual_capability_token == "opaque-capability"
-    assert facts.repository_snapshot_sha == "a" * 40
+    assert facts.repository_snapshot_sha is None
+    with pytest.raises(ValidationError):
+        AssistantRuntimeFacts(
+            entry_profile="agent_service",
+            repository_snapshot_sha="a" * 40,
+        )
 
 
 @pytest.mark.core_invariant("IDENT-001")

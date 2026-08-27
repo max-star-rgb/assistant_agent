@@ -7,7 +7,7 @@ from typing import Any, Sequence
 import pytest
 from deepagents.backends import FilesystemBackend, LocalShellBackend
 from deepagents.middleware import FilesystemMiddleware
-from langchain.agents.middleware import TodoListMiddleware
+from langchain.agents.middleware import SummarizationMiddleware, TodoListMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableLambda
@@ -109,6 +109,64 @@ def test_main_uses_factory_filesystem_and_unified_hitl(monkeypatch, tmp_path) ->
         "general-purpose"
     ]
     assert captured["name"] == "AssistantAgent"
+
+
+def test_main_and_worker_use_the_configured_summarization_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, dict[str, Any]] = {}
+
+    def capture_worker(**kwargs: Any) -> RunnableLambda:
+        captured["worker"] = kwargs
+        return RunnableLambda(lambda state: state)
+
+    monkeypatch.setattr(assistant_agent, "create_agent", capture_worker)
+    monkeypatch.setattr(
+        assistant_agent,
+        "create_deep_agent",
+        lambda **kwargs: captured.setdefault("main", kwargs) or object(),
+    )
+    def token_counter(messages: Any) -> int:
+        return len(tuple(messages))
+
+    options = {
+        "context_window_tokens": 90_000,
+        "compaction_trigger_ratio": 0.62,
+        "compaction_target_ratio": 0.21,
+        "token_counter": token_counter,
+    }
+    skills_backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+    worker = build_read_only_worker(
+        MockAssistantChatModel(),
+        [],
+        backend=ReadOnlyCodingWorkspaceBackend(object(), "repo-sentinel"),
+        skills_backend=skills_backend,
+        **options,
+    )
+    build_assistant_agent(
+        MockAssistantChatModel(),
+        [],
+        backend=object(),
+        worker_graph=worker,
+        skills_backend=skills_backend,
+        **options,
+    )
+
+    for key in ("main", "worker"):
+        summarizer = next(
+            item
+            for item in captured[key]["middleware"]
+            if isinstance(item, SummarizationMiddleware)
+        )
+        assert summarizer.trigger == ("tokens", 55_800)
+        assert summarizer.keep == ("tokens", 18_900)
+        assert summarizer.token_counter is token_counter
+    assert next(
+        item
+        for item in captured["worker"]["middleware"]
+        if isinstance(item, SummarizationMiddleware)
+    ).model is captured["worker"]["model"]
 
 
 def test_parent_graph_has_one_execution_route() -> None:

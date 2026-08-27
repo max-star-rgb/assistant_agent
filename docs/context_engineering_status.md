@@ -43,6 +43,8 @@ worker 的只读 worktree backend 相互分离；Skills 不授予 Tool，也不�
 Todo、`async_tasks`、Provider search profile、Tool Profile、Skill metadata、文件读取 transcript 和未知未来字段都不会
 跨越该边界。worker 内部 transcript 也不回灌父级。middleware 自有 channel 使用 `PrivateStateAttr`，包括
 `ToolProfileMiddleware.active_tool_profile_ids` 和递归收尾的 `remaining_steps`；它们不是 task 或公开 context 合同。
+若 worker 既没有非空 `AIMessage`，也没有非空 structured response，输出投影会生成一条有界的明确失败报告，
+不会用空 `AIMessage` 伪装成功；已有非空文本或 structured response 的投影语义不变。
 
 异步 delegation 的父会话只持久化有界 task handle。创建任务时冻结的 repository snapshot SHA 随 handle、child
 thread/run metadata 传递，后续 update 继续使用同一 SHA。异步 worker 的业务输入仍只有模型生成的 description；
@@ -61,6 +63,12 @@ Tool observation 使用标准 `ToolMessage(content, artifact)`；runtime-owned �
 统一 Agent 与只读 worker 都使用官方 summarization、同一 model superstep 内每 Tool 最多并行 12 次，并在
 `recursion_limit` 只剩 8 个 superstep 时关闭 Tool 生成自然综合。所有非只读 Tool 的审批由 Runtime/Tool authority
 统一定义，不通过上下文模式切换。
+
+summarization 的绝对 token trigger/keep 分别由
+`ProviderConfig.context_input_token_limit * context_compaction_trigger_ratio/target_ratio` 计算，不写死模型窗口。
+composition 启动时先创建配置的离线 token counter，并把同一个 `count_messages` 同时传给 main 与 worker；worker
+仍使用关闭 Provider-native search 的只读模型视图生成摘要。real DeepSeek V4 或 native LLM compactor 缺少本地
+tokenizer 时启动直接失败，不回退近似计数或发起网络调用。
 
 旧 `ContextService`、prompt-json compiler、动态 catalog/exposure 与 renderer 已删除。仍保留的 context 代码只服务
 明确的离线报告、媒体压缩或中立 token/model DTO；生产 Agent Server/native graph 不导入平行 context runtime。

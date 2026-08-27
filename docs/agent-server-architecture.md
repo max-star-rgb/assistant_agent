@@ -68,11 +68,21 @@ composition 使用三类独立 backend：main Agent 的可写 `CodingWorkspaceBa
 `ReadOnlyCodingWorkspaceBackend`、以及只服务 Skills discovery 的 `FilesystemBackend`。当前不使用组合 backend。
 main 和 worker 使用同一基础模型与 Prompt Builder；worker 模型视图关闭 Provider-native search，业务 Tool 与
 filesystem backend 也只保留 read 能力，形成模型面与 backend 面双层只读。
+两者的官方 summarization 从同一 Provider 配置取得 context window、trigger/target ratio 与可选离线 token counter；
+real DeepSeek/native compactor 缺 tokenizer 时在模型 composition 前启动失败。
 
 每个 `user.identity + thread_id + internal repo ID` 解析到独立临时 detached Git worktree。`start_async_task` 在
 创建 child thread 前读取一次 repository HEAD，并把 snapshot SHA 写入 task handle、child thread metadata 和每个
-worker run metadata。后续 update 必须复用创建时 SHA；worker auth 与 backend 都拒绝缺失或非法 snapshot，不能
-fallback 到当前 HEAD。
+worker run metadata。后续 update 必须复用创建时 SHA。只有进程内 async adapter 会在 start/update 的 loopback SDK
+请求中附加随机 internal capability；auth 将其转换为 worker-only permission，并同时严格校验 worker metadata。普通
+`X-Assistant-User` caller 即使提交形状完整的 async metadata 也不能创建 worker thread/run。main v4 与 Memory 的
+thread/run 明确拒绝 `entry_profile=async_worker`、任何 repository snapshot SHA 和 worker-only permission，合法的
+media/system-eval 非 snapshot facts 保持可用。
+
+backend 再读取 thread 已有的 `assistant_graph_id` 独立复核：只有实际 `assistant-worker-v2` graph 配合严格 async
+facts 才把 SHA 传给 worktree `base_commit`；main/sync nested 固定传 `None`，注入 worker snapshot fail closed。
+internal capability 是当前本地单进程部署的进程内随机 secret，不进入 state、thread/run metadata、日志、`.env` 或
+仓库；多进程部署前必须升级为共享 secret 或正式 service identity。
 
 统一 Agent 的全部副作用 Tool 由官方 HITL 在 handler 前 interrupt。HITL 是审批治理，不是进程隔离；批准
 `execute` 等价于授权 Agent Server 的 OS identity 在 worktree cwd 下执行完整 command，仍可能访问宿主路径、网络和

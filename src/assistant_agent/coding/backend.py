@@ -11,6 +11,8 @@ from langgraph.config import get_config
 from langgraph.runtime import get_runtime
 from pydantic import ValidationError
 
+from assistant_agent.agent_server.client import THREAD_GRAPH_METADATA_KEY
+from assistant_agent.agent_server.config import WORKER_GRAPH_ID
 from assistant_agent.coding.workspace import (
     CodingWorkspace,
     CodingWorkspaceError,
@@ -20,7 +22,6 @@ from assistant_agent.native_agent.context import (
     ASSISTANT_RUNTIME_METADATA_KEY,
     AssistantRunContext,
     AssistantRuntimeFacts,
-    assistant_runtime_facts,
     authenticated_user_identity,
 )
 
@@ -38,9 +39,15 @@ def _workspace(
         if isinstance(metadata, Mapping)
         else None
     )
-    if isinstance(raw_facts, Mapping) and raw_facts.get("entry_profile") == "async_worker":
+    graph_id = (
+        metadata.get(THREAD_GRAPH_METADATA_KEY)
+        if isinstance(metadata, Mapping)
+        else None
+    )
+    if graph_id == WORKER_GRAPH_ID:
         if (
-            "repository_snapshot_sha" not in raw_facts
+            not isinstance(raw_facts, Mapping)
+            or "repository_snapshot_sha" not in raw_facts
             or raw_facts["repository_snapshot_sha"] is None
         ):
             raise CodingWorkspaceError("workspace_snapshot_required")
@@ -48,13 +55,21 @@ def _workspace(
             facts = AssistantRuntimeFacts.model_validate(dict(raw_facts))
         except ValidationError as exc:
             raise CodingWorkspaceError("workspace_snapshot_invalid") from exc
+        if facts.entry_profile != "async_worker":
+            raise CodingWorkspaceError("workspace_snapshot_invalid")
+        base_commit = facts.repository_snapshot_sha
     else:
-        facts = assistant_runtime_facts(config)
+        if isinstance(raw_facts, Mapping) and (
+            raw_facts.get("entry_profile") == "async_worker"
+            or "repository_snapshot_sha" in raw_facts
+        ):
+            raise CodingWorkspaceError("workspace_snapshot_invalid")
+        base_commit = None
     return service.resolve(
         authenticated_user_identity(runtime),
         thread_id,
         repo_id,
-        base_commit=facts.repository_snapshot_sha,
+        base_commit=base_commit,
     )
 
 

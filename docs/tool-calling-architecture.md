@@ -77,7 +77,9 @@ allowlist、read-only 集合与确定性 `<namespace>_<server>_<tool>` 命名；
 
 Deep Agents `AsyncSubAgentMiddleware` 的 `start/check/update/cancel/list_async_task(s)` 归入 `async-tasks` Profile。
 start、update 与 cancel 都是副作用并进入 HITL；check/list 是 read。start 创建 `assistant-worker-v2` thread/run 时
-冻结 repository snapshot SHA，worker 只读且不能递归 delegation。
+冻结 repository snapshot SHA，update 沿用同一 SHA。start/update 的 loopback SDK 请求还携带进程内 internal
+capability；只有 auth 转换出的 worker permission 配合严格 metadata 才能创建 worker run，外部 shape-only 请求被
+拒绝。该 capability 不进入 Tool 参数、state、task handle 或 thread/run metadata。worker 只读且不能递归 delegation。
 
 ## Provider-native 能力
 

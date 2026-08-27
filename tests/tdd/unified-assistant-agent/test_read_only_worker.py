@@ -25,6 +25,9 @@ from assistant_agent.coding.backend import (
 from assistant_agent.coding.config import CodingConfig
 from assistant_agent.coding.workspace import CodingWorkspaceError
 from assistant_agent.agent_server import services
+from assistant_agent.agent_server.client import THREAD_GRAPH_METADATA_KEY
+from assistant_agent.agent_server.config import ASSISTANT_GRAPH_ID, WORKER_GRAPH_ID
+from assistant_agent.config import ProviderConfig
 from assistant_agent.native_agent import assistant_agent as assistant_agent_module
 from assistant_agent.native_agent.assistant_agent import (
     build_assistant_agent,
@@ -178,6 +181,42 @@ def test_task_projection_returns_only_nonempty_structured_response() -> None:
     assert result["structured_response"] == {"answer": "sentinel"}
 
 
+def test_task_projection_returns_explicit_failure_for_empty_worker_result() -> None:
+    runnable = isolated_read_only_worker(
+        RunnableLambda(
+            lambda state: {
+                "messages": [AIMessage(content=" \n")],
+                "structured_response": {},
+            }
+        )
+    )
+
+    result = runnable.invoke({"messages": [HumanMessage(content="task-description")]})
+
+    message = result["messages"][0]
+    assert isinstance(message, AIMessage)
+    assert message.text.strip()
+    assert len(message.text) <= 200
+    assert message.response_metadata["error_code"] == "empty_worker_result"
+    assert result["structured_response"] == {}
+
+
+def test_task_projection_keeps_nonempty_structured_only_result_valid() -> None:
+    runnable = isolated_read_only_worker(
+        RunnableLambda(
+            lambda state: {
+                "messages": [],
+                "structured_response": {"answer": "structured-sentinel"},
+            }
+        )
+    )
+
+    result = runnable.invoke({"messages": [HumanMessage(content="task-description")]})
+
+    assert result["structured_response"] == {"answer": "structured-sentinel"}
+    assert "error_code" not in result["messages"][0].response_metadata
+
+
 def test_task_projection_forwards_runnable_config_sync_and_async() -> None:
     observed: list[tuple[str, set[str], str]] = []
 
@@ -237,9 +276,8 @@ def test_read_only_backend_has_no_mutation_or_execute_capability() -> None:
     assert not hasattr(backend, "execute")
 
 
-@pytest.mark.parametrize("snapshot", [None, "a" * 40])
-def test_backend_passes_trusted_snapshot_to_workspace(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, snapshot: str | None
+def test_main_backend_forces_base_commit_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     calls: list[dict[str, Any]] = []
 
@@ -255,7 +293,7 @@ def test_backend_passes_trusted_snapshot_to_workspace(
             )
             return SimpleNamespace(root=tmp_path)
 
-    facts = AssistantRuntimeFacts(repository_snapshot_sha=snapshot)
+    facts = AssistantRuntimeFacts(entry_profile="system_eval")
     monkeypatch.setattr(
         backend_module,
         "get_runtime",
@@ -268,7 +306,10 @@ def test_backend_passes_trusted_snapshot_to_workspace(
         "get_config",
         lambda: {
             "configurable": {"thread_id": "thread-sentinel"},
-            "metadata": assistant_runtime_metadata(facts),
+            "metadata": {
+                THREAD_GRAPH_METADATA_KEY: ASSISTANT_GRAPH_ID,
+                **assistant_runtime_metadata(facts),
+            },
         },
     )
 
@@ -279,9 +320,82 @@ def test_backend_passes_trusted_snapshot_to_workspace(
             "identity": "user-sentinel",
             "thread_id": "thread-sentinel",
             "repo_id": "repo-sentinel",
-            "base_commit": snapshot,
+            "base_commit": None,
         }
     ]
+
+
+def test_worker_backend_passes_exact_snapshot_for_worker_graph(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    service = SimpleNamespace(
+        resolve=Mock(return_value=SimpleNamespace(root=tmp_path))
+    )
+    monkeypatch.setattr(
+        backend_module,
+        "get_runtime",
+        lambda context_schema: SimpleNamespace(
+            server_info=SimpleNamespace(user=StudioUser("user-sentinel"))
+        ),
+    )
+    monkeypatch.setattr(
+        backend_module,
+        "get_config",
+        lambda: {
+            "configurable": {"thread_id": "worker-thread"},
+            "metadata": {
+                THREAD_GRAPH_METADATA_KEY: WORKER_GRAPH_ID,
+                **assistant_runtime_metadata(
+                    AssistantRuntimeFacts(
+                        entry_profile="async_worker",
+                        repository_snapshot_sha="a" * 40,
+                    )
+                ),
+            },
+        },
+    )
+
+    ReadOnlyCodingWorkspaceBackend(service, "repo-sentinel").ls("/")
+
+    service.resolve.assert_called_once_with(
+        "user-sentinel",
+        "worker-thread",
+        "repo-sentinel",
+        base_commit="a" * 40,
+    )
+
+
+def test_main_backend_rejects_injected_worker_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = SimpleNamespace(resolve=Mock())
+    monkeypatch.setattr(
+        backend_module,
+        "get_runtime",
+        lambda context_schema: SimpleNamespace(
+            server_info=SimpleNamespace(user=StudioUser("user-sentinel"))
+        ),
+    )
+    monkeypatch.setattr(
+        backend_module,
+        "get_config",
+        lambda: {
+            "configurable": {"thread_id": "main-thread"},
+            "metadata": {
+                THREAD_GRAPH_METADATA_KEY: ASSISTANT_GRAPH_ID,
+                ASSISTANT_RUNTIME_METADATA_KEY: {
+                    "entry_profile": "async_worker",
+                    "repository_snapshot_sha": "a" * 40,
+                },
+            },
+        },
+    )
+
+    with pytest.raises(CodingWorkspaceError) as exc_info:
+        CodingWorkspaceBackend(service, "repo-sentinel").ls("/")
+
+    assert exc_info.value.code == "workspace_snapshot_invalid"
+    service.resolve.assert_not_called()
 
 
 def test_async_worker_never_falls_back_without_snapshot(
@@ -301,6 +415,7 @@ def test_async_worker_never_falls_back_without_snapshot(
         lambda: {
             "configurable": {"thread_id": "worker-thread"},
             "metadata": {
+                THREAD_GRAPH_METADATA_KEY: WORKER_GRAPH_ID,
                 ASSISTANT_RUNTIME_METADATA_KEY: {"entry_profile": "async_worker"}
             },
         },
@@ -330,6 +445,7 @@ def test_async_worker_rejects_malformed_snapshot_before_workspace_resolution(
         lambda: {
             "configurable": {"thread_id": "worker-thread"},
             "metadata": {
+                THREAD_GRAPH_METADATA_KEY: WORKER_GRAPH_ID,
                 ASSISTANT_RUNTIME_METADATA_KEY: {
                     "entry_profile": "async_worker",
                     "repository_snapshot_sha": "invalid",
@@ -364,6 +480,7 @@ def test_async_worker_classifies_present_invalid_snapshot_as_invalid(
         lambda: {
             "configurable": {"thread_id": "worker-thread"},
             "metadata": {
+                THREAD_GRAPH_METADATA_KEY: WORKER_GRAPH_ID,
                 ASSISTANT_RUNTIME_METADATA_KEY: {
                     "entry_profile": "async_worker",
                     "repository_snapshot_sha": snapshot,
@@ -426,11 +543,18 @@ def test_worker_factory_uses_read_only_worktree_backend(
     config = SimpleNamespace(
         current_location=None,
         memory_extraction_delay_seconds=0,
+        context_input_token_limit=96_000,
+        context_compaction_trigger_ratio=0.64,
+        context_compaction_target_ratio=0.22,
     )
     resources = SimpleNamespace(
         visual_history_probe=None,
         live_view_resolver=None,
     )
+    def counter(messages: Any) -> int:
+        return len(tuple(messages))
+
+    counter_factory_calls: list[object] = []
 
     def build_worker(*args: Any, **kwargs: Any) -> object:
         worker_calls.append({"args": args, **kwargs})
@@ -445,6 +569,14 @@ def test_worker_factory_uses_read_only_worktree_backend(
         return []
 
     monkeypatch.setattr(services.ProviderConfig, "from_env", lambda: config)
+    monkeypatch.setattr(
+        services,
+        "create_context_token_counter",
+        lambda candidate: (
+            counter_factory_calls.append(candidate)
+            or SimpleNamespace(count_messages=counter)
+        ),
+    )
     monkeypatch.setattr(
         services,
         "_compose_sync",
@@ -486,3 +618,37 @@ def test_worker_factory_uses_read_only_worktree_backend(
     assert isinstance(assistant_calls[0]["backend"], CodingWorkspaceBackend)
     assert assistant_calls[0]["worker_graph"] is worker
     assert root_kwargs["assistant_agent"] is assistant
+    assert counter_factory_calls == [config]
+    for call in (worker_calls[0], assistant_calls[0]):
+        assert call["context_window_tokens"] == 96_000
+        assert call["compaction_trigger_ratio"] == 0.64
+        assert call["compaction_target_ratio"] == 0.22
+        assert call["token_counter"] is counter
+
+
+def test_real_deepseek_without_tokenizer_fails_before_provider_composition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = ProviderConfig(
+        provider_mode="real",
+        chat_provider="deepseek",
+        chat_api_key="test-only-key",
+        chat_base_url="https://example.invalid/v1",
+        chat_model="deepseek-v4",
+        context_compactor_mode="llm",
+        context_tokenizer_path=None,
+    )
+    compose_sync_called = False
+
+    def compose_sync(*args: Any, **kwargs: Any) -> None:
+        nonlocal compose_sync_called
+        del args, kwargs
+        compose_sync_called = True
+
+    monkeypatch.setattr(services.ProviderConfig, "from_env", lambda: config)
+    monkeypatch.setattr(services, "_compose_sync", compose_sync)
+
+    with pytest.raises(ValueError, match="CONTEXT_TOKENIZER_PATH"):
+        asyncio.run(services.AgentServerExecutionOwner.compose(store=None))
+
+    assert compose_sync_called is False

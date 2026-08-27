@@ -13,6 +13,7 @@ from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 from langgraph_sdk import get_client, get_sync_client
 
+from assistant_agent.agent_server.auth import _internal_worker_headers
 from assistant_agent.agent_server.config import WORKER_GRAPH_ID
 from assistant_agent.coding.workspace import CodingWorkspaceService
 from assistant_agent.native_agent.context import (
@@ -137,7 +138,7 @@ def _authenticated_start_tool(
     ) -> str | Command:
         if subagent_type != BACKGROUND_AGENT_NAME:
             return _unknown_agent(subagent_type)
-        headers = _identity_headers(runtime)
+        headers = _internal_worker_headers(authenticated_user_identity(runtime))
         client = get_sync_client(url=_agent_server_url(), api_key=None)
         try:
             thread_id = str(uuid4())
@@ -185,7 +186,7 @@ def _authenticated_start_tool(
     ) -> str | Command:
         if subagent_type != BACKGROUND_AGENT_NAME:
             return _unknown_agent(subagent_type)
-        headers = _identity_headers(runtime)
+        headers = _internal_worker_headers(authenticated_user_identity(runtime))
         client = get_client(url=_agent_server_url(), api_key=None)
         try:
             thread_id = str(uuid4())
@@ -299,7 +300,7 @@ async def _update_async_task(
         ).repository_snapshot_sha
     except ValueError as exc:
         return f"Failed to update async subagent snapshot: {exc}"
-    headers = _identity_headers(runtime)
+    headers = _internal_worker_headers(authenticated_user_identity(runtime))
     client = get_client(url=_agent_server_url(), api_key=None)
     try:
         metadata = _correlation_metadata(

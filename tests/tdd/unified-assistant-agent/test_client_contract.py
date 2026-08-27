@@ -10,7 +10,9 @@ from uuid import UUID
 import pytest
 from pydantic import ValidationError
 
+from assistant_agent.agent_server import auth as auth_module
 from assistant_agent.agent_server.auth import (
+    authenticate,
     authorize_run_create,
     authorize_thread_create,
 )
@@ -35,6 +37,8 @@ from scripts.media_simulator import chat_body
 
 
 WORKER_ASSISTANT_ID = UUID("ad895394-eb31-5aa1-a5ac-d24c4050ca05")
+MAIN_ASSISTANT_ID = UUID("8d030b92-89be-5d58-918d-ff35e996429a")
+MEMORY_ASSISTANT_ID = UUID("b209df74-50ea-53ce-89ad-cc13d3c44e1b")
 LEGACY_SYSTEM_ASSISTANT_IDS = (
     UUID("5d65b3ea-e849-5e47-afde-ed71e133b9da"),
     UUID("46ed656d-0f2d-5320-a380-0bea189fc304"),
@@ -62,8 +66,20 @@ def _chat_envelope() -> MediaEnvelope:
     )
 
 
-def _auth_context() -> SimpleNamespace:
-    return SimpleNamespace(user=SimpleNamespace(identity="worker-user"))
+def _auth_context(*, internal_worker: bool = False) -> SimpleNamespace:
+    headers = {"X-Assistant-User": "worker-user"}
+    if internal_worker:
+        headers = auth_module._internal_worker_headers("worker-user")
+    user = asyncio.run(
+        authenticate(
+            None,
+            {
+                key.lower().encode(): value.encode()
+                for key, value in headers.items()
+            },
+        )
+    )
+    return SimpleNamespace(user=SimpleNamespace(**user))
 
 
 def test_graph_ids_and_public_context_are_v4_only() -> None:
@@ -223,12 +239,42 @@ def test_worker_authorization_rejects_invalid_runtime_facts(
         authorize_thread_create if operation == "thread" else authorize_run_create
     )
 
+    assert asyncio.run(authorize(_auth_context(internal_worker=True), value)) is False
+
+
+@pytest.mark.parametrize("snapshot_length", [40, 64])
+@pytest.mark.parametrize("operation", ["thread", "run"])
+def test_worker_authorization_rejects_shape_only_external_caller(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    snapshot_length: int,
+) -> None:
+    monkeypatch.setenv("REDIS_URI", "redis://localhost:6379")
+    monkeypatch.setenv("DATABASE_URI", "postgres://localhost/test")
+    metadata = assistant_runtime_metadata(
+        AssistantRuntimeFacts(
+            entry_profile="async_worker",
+            repository_snapshot_sha="a" * snapshot_length,
+        )
+    )
+    value = {
+        "metadata": metadata,
+        **(
+            {"graph_id": WORKER_GRAPH_ID}
+            if operation == "thread"
+            else {"assistant_id": WORKER_ASSISTANT_ID}
+        ),
+    }
+    authorize = (
+        authorize_thread_create if operation == "thread" else authorize_run_create
+    )
+
     assert asyncio.run(authorize(_auth_context(), value)) is False
 
 
 @pytest.mark.parametrize("snapshot_length", [40, 64])
 @pytest.mark.parametrize("operation", ["thread", "run"])
-def test_worker_authorization_accepts_complete_snapshot(
+def test_worker_authorization_accepts_internal_capability(
     monkeypatch: pytest.MonkeyPatch,
     operation: str,
     snapshot_length: int,
@@ -261,7 +307,95 @@ def test_worker_authorization_accepts_complete_snapshot(
             "assistant_graph_id": WORKER_GRAPH_ID,
         }
     )
-    assert asyncio.run(authorize(_auth_context(), value)) == expected
+    assert asyncio.run(authorize(_auth_context(internal_worker=True), value)) == expected
+
+
+@pytest.mark.parametrize("graph_id", [ASSISTANT_GRAPH_ID, MEMORY_GRAPH_ID])
+@pytest.mark.parametrize("operation", ["thread", "run"])
+@pytest.mark.parametrize(
+    ("metadata", "internal_worker"),
+    [
+        (
+            {
+                ASSISTANT_RUNTIME_METADATA_KEY: {
+                    "entry_profile": "async_worker",
+                    "repository_snapshot_sha": "a" * 40,
+                }
+            },
+            False,
+        ),
+        (
+            {
+                ASSISTANT_RUNTIME_METADATA_KEY: {
+                    "entry_profile": "system_eval",
+                    "repository_snapshot_sha": "a" * 40,
+                }
+            },
+            False,
+        ),
+        (
+            assistant_runtime_metadata(
+                AssistantRuntimeFacts(entry_profile="system_eval")
+            ),
+            True,
+        ),
+    ],
+)
+def test_non_worker_authorization_rejects_worker_only_facts_and_capability(
+    graph_id: str,
+    operation: str,
+    metadata: dict[str, Any],
+    internal_worker: bool,
+) -> None:
+    assistant_ids = {
+        ASSISTANT_GRAPH_ID: MAIN_ASSISTANT_ID,
+        MEMORY_GRAPH_ID: MEMORY_ASSISTANT_ID,
+    }
+    value = {
+        "metadata": dict(metadata),
+        **(
+            {"graph_id": graph_id}
+            if operation == "thread"
+            else {"assistant_id": assistant_ids[graph_id]}
+        ),
+    }
+    authorize = (
+        authorize_thread_create if operation == "thread" else authorize_run_create
+    )
+
+    assert asyncio.run(
+        authorize(_auth_context(internal_worker=internal_worker), value)
+    ) is False
+
+
+@pytest.mark.parametrize(
+    "facts",
+    [
+        AssistantRuntimeFacts(
+            entry_profile="agent_service",
+            visual_capability_token="media-capability",
+        ),
+        AssistantRuntimeFacts(entry_profile="system_eval"),
+    ],
+)
+@pytest.mark.parametrize("operation", ["thread", "run"])
+def test_main_authorization_keeps_legal_non_snapshot_runtime_facts(
+    facts: AssistantRuntimeFacts,
+    operation: str,
+) -> None:
+    value = {
+        "metadata": assistant_runtime_metadata(facts),
+        **(
+            {"graph_id": ASSISTANT_GRAPH_ID}
+            if operation == "thread"
+            else {"assistant_id": MAIN_ASSISTANT_ID}
+        ),
+    }
+    authorize = (
+        authorize_thread_create if operation == "thread" else authorize_run_create
+    )
+
+    assert asyncio.run(authorize(_auth_context(), value)) is not False
 
 
 @pytest.mark.parametrize("assistant_id", LEGACY_SYSTEM_ASSISTANT_IDS)

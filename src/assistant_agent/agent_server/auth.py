@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import hmac
+import secrets
 from uuid import UUID, uuid5
 
 from langgraph_sdk import Auth
@@ -21,6 +23,12 @@ from assistant_agent.native_agent.context import (
 
 auth = Auth()
 
+_INTERNAL_WORKER_HEADER = "X-Assistant-Internal-Worker"
+_INTERNAL_WORKER_PERMISSION = "assistant:internal-worker"
+# ponytail: process-local capability fits the current single-process server; use a
+# shared secret or service identity before enabling multi-process workers.
+_INTERNAL_WORKER_CAPABILITY = secrets.token_urlsafe(32)
+
 
 @auth.on
 async def deny_all(ctx: Auth.types.AuthContext, value: object) -> bool:
@@ -35,10 +43,27 @@ async def authenticate(
 ) -> Auth.types.MinimalUserDict:
     del authorization
     identity = _header_text(headers, b"x-assistant-user")
+    permissions = ["assistant:developer"]
+    worker_capability = _header_text(
+        headers,
+        _INTERNAL_WORKER_HEADER.lower().encode(),
+    )
+    if worker_capability is not None and hmac.compare_digest(
+        worker_capability.encode(),
+        _INTERNAL_WORKER_CAPABILITY.encode(),
+    ):
+        permissions.append(_INTERNAL_WORKER_PERMISSION)
     return {
         "identity": identity or "local-developer",
-        "permissions": ["assistant:developer"],
+        "permissions": permissions,
         "is_authenticated": True,
+    }
+
+
+def _internal_worker_headers(identity: str) -> dict[str, str]:
+    return {
+        "X-Assistant-User": identity,
+        _INTERNAL_WORKER_HEADER: _INTERNAL_WORKER_CAPABILITY,
     }
 
 
@@ -129,7 +154,10 @@ async def authorize_thread_create(
     graph_id = str(requested_graph_id or ASSISTANT_GRAPH_ID)
     if graph_id not in {ASSISTANT_GRAPH_ID, MEMORY_GRAPH_ID, WORKER_GRAPH_ID}:
         return False
-    if graph_id == WORKER_GRAPH_ID and not _authorized_worker_metadata(metadata):
+    if graph_id == WORKER_GRAPH_ID:
+        if not _is_internal_worker(ctx) or not _authorized_worker_metadata(metadata):
+            return False
+    elif _is_internal_worker(ctx) or not _authorized_non_worker_metadata(metadata):
         return False
     metadata["owner"] = str(ctx.user.identity)
     metadata[THREAD_GRAPH_METADATA_KEY] = graph_id
@@ -193,15 +221,18 @@ async def authorize_run_create(
     graph_id = _run_graph_id(assistant_id)
     if graph_id is None:
         return False
-    metadata["owner"] = str(ctx.user.identity)
     if graph_id == MEMORY_GRAPH_ID:
+        if _is_internal_worker(ctx) or not _authorized_non_worker_metadata(metadata):
+            return False
+        metadata["owner"] = str(ctx.user.identity)
         return {
             "owner": str(ctx.user.identity),
             THREAD_GRAPH_METADATA_KEY: MEMORY_GRAPH_ID,
         }
     if graph_id == WORKER_GRAPH_ID:
-        if not _authorized_worker_metadata(metadata):
+        if not _is_internal_worker(ctx) or not _authorized_worker_metadata(metadata):
             return False
+        metadata["owner"] = str(ctx.user.identity)
         return {
             "owner": str(ctx.user.identity),
             THREAD_GRAPH_METADATA_KEY: WORKER_GRAPH_ID,
@@ -209,6 +240,9 @@ async def authorize_run_create(
     context = value.setdefault("context", {})
     if not isinstance(context, dict):
         return False
+    if _is_internal_worker(ctx) or not _authorized_non_worker_metadata(metadata):
+        return False
+    metadata["owner"] = str(ctx.user.identity)
     return {
         "owner": str(ctx.user.identity),
         THREAD_GRAPH_METADATA_KEY: ASSISTANT_GRAPH_ID,
@@ -244,6 +278,27 @@ def _authorized_worker_metadata(metadata: Mapping[str, object]) -> bool:
         facts.entry_profile == "async_worker"
         and facts.repository_snapshot_sha is not None
     )
+
+
+def _authorized_non_worker_metadata(metadata: Mapping[str, object]) -> bool:
+    if ASSISTANT_RUNTIME_METADATA_KEY not in metadata:
+        return True
+    payload = metadata.get(ASSISTANT_RUNTIME_METADATA_KEY)
+    if not isinstance(payload, Mapping):
+        return False
+    try:
+        facts = AssistantRuntimeFacts.model_validate(dict(payload))
+    except ValueError:
+        return False
+    return (
+        facts.entry_profile != "async_worker"
+        and facts.repository_snapshot_sha is None
+    )
+
+
+def _is_internal_worker(ctx: Auth.types.AuthContext) -> bool:
+    permissions = getattr(ctx.user, "permissions", ()) or ()
+    return _INTERNAL_WORKER_PERMISSION in permissions
 
 
 @auth.on.store

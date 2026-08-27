@@ -45,9 +45,11 @@ class AssistantRuntimeFacts(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _async_worker_requires_snapshot(self) -> "AssistantRuntimeFacts":
+    def _snapshot_is_worker_only(self) -> "AssistantRuntimeFacts":
         if self.entry_profile == "async_worker" and self.repository_snapshot_sha is None:
             raise ValueError("async worker requires repository snapshot sha")
+        if self.entry_profile != "async_worker" and self.repository_snapshot_sha is not None:
+            raise ValueError("repository snapshot sha is reserved for async workers")
         return self
 
 

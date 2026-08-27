@@ -149,6 +149,11 @@ def _tool(middleware: Any, name: str) -> Any:
     return next(tool for tool in middleware.tools if tool.name == name)
 
 
+def _assert_internal_worker_headers(headers: Mapping[str, str]) -> None:
+    assert headers["X-Assistant-User"] == "user-sentinel"
+    assert len(headers["X-Assistant-Internal-Worker"]) >= 32
+
+
 def test_start_keeps_creation_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
     service = SimpleNamespace(repository_head=lambda repo_id: "a" * 40)
     client = _async_client()
@@ -171,6 +176,10 @@ def test_start_keeps_creation_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
         "messages": [{"role": "user", "content": "background work"}],
         "memory_context": ["memory-sentinel"],
     }
+    thread_headers = client.threads.create.await_args.kwargs["headers"]
+    run_headers = client.runs.create.await_args.kwargs["headers"]
+    _assert_internal_worker_headers(thread_headers)
+    assert run_headers == thread_headers
 
 
 def test_update_reuses_handle_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -201,6 +210,7 @@ def test_update_reuses_handle_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
     assert client.runs.create.await_args.kwargs["input"] == {
         "messages": [{"role": "user", "content": "follow up"}]
     }
+    _assert_internal_worker_headers(client.runs.create.await_args.kwargs["headers"])
 
 
 @pytest.mark.parametrize("repository_snapshot_sha", [None, "invalid"])
