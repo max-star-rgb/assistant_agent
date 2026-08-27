@@ -17,15 +17,12 @@ from assistant_agent.agent_server.client import (
     require_thread_graph_identity,
 )
 from assistant_agent.agent_server.config import ASSISTANT_GRAPH_ID
+from assistant_agent.native_agent.context import (
+    AssistantRuntimeFacts,
+    assistant_runtime_metadata,
+)
 
 ASSISTANT_ID = ASSISTANT_GRAPH_ID
-
-
-def _context() -> dict[str, object]:
-    return {
-        "entry_profile": "cli",
-        "media_capabilities": [],
-    }
 
 
 def _response_text(state: Mapping[str, Any]) -> str:
@@ -58,7 +55,7 @@ def _ensure_thread(client: Any, thread_id: str | None) -> str:
     return str(thread["thread_id"])
 
 
-def _run_once(client: Any, *, text: str, thread_id: str, mode: str) -> int:
+def _run_once(client: Any, *, text: str, thread_id: str) -> int:
     try:
         require_thread_graph_identity(
             client.threads.get(thread_id),
@@ -72,9 +69,10 @@ def _run_once(client: Any, *, text: str, thread_id: str, mode: str) -> int:
         ASSISTANT_ID,
         input={
             "messages": [{"role": "user", "content": text}],
-            "execution_mode": mode,
         },
-        context=_context(),
+        metadata=assistant_runtime_metadata(
+            AssistantRuntimeFacts(entry_profile="cli")
+        ),
         multitask_strategy="interrupt",
     )
     print(_response_text(result))
@@ -149,7 +147,9 @@ def _replay_checkpoint(
         ASSISTANT_ID,
         input=None,
         checkpoint_id=checkpoint_id,
-        context=_context(),
+        metadata=assistant_runtime_metadata(
+            AssistantRuntimeFacts(entry_profile="cli")
+        ),
         multitask_strategy="enqueue",
     )
     print(_response_text(result))
@@ -202,11 +202,10 @@ def main() -> int:
         text = " ".join(args.text).strip()
         if not text:
             raise SystemExit("text is required unless --interactive is used")
-        return _run_once(client, text=text, thread_id=thread_id, mode=args.assistant_mode)
-    mode = args.assistant_mode
+        return _run_once(client, text=text, thread_id=thread_id)
     print(f"Agent Server thread: {thread_id}")
     print(
-        "Commands: /fast, /planning, /new, /history, "
+        "Commands: /new, /history, "
         "/replay <checkpoint_id>, /rollback <run_id>, /exit"
     )
     while True:
@@ -219,12 +218,6 @@ def main() -> int:
             continue
         if text in {"/exit", "/quit"}:
             return 0
-        if text == "/fast":
-            mode = "fast"
-            continue
-        if text == "/planning":
-            mode = "planning"
-            continue
         if text == "/new":
             thread_id = _ensure_thread(client, None)
             print(f"Agent Server thread: {thread_id}")
@@ -256,7 +249,7 @@ def main() -> int:
                 continue
             _rollback_run(client, thread_id=thread_id, run_id=run_id)
             continue
-        _run_once(client, text=text, thread_id=thread_id, mode=mode)
+        _run_once(client, text=text, thread_id=thread_id)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -265,7 +258,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--server", default="http://127.0.0.1:8000")
     parser.add_argument("--identity", default="local-cli")
     parser.add_argument("--thread-id")
-    parser.add_argument("--assistant-mode", choices=("fast", "planning"), default="fast")
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--interactive", action="store_true")
     return parser

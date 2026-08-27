@@ -12,7 +12,6 @@ from pydantic import BaseModel, ConfigDict, JsonValue
 
 from assistant_agent.native_agent.models import ProviderSearchProfile
 
-ExecutionMode = Literal["fast", "planning", "coding"]
 MemoryStatus = Literal["ready", "empty", "degraded"]
 
 
@@ -54,16 +53,6 @@ class AssistantRootState(MessagesState):
     async_tasks: NotRequired[AsyncTasks]
 
 
-class FastAgentState(AgentState):
-    """State consumed inside the reusable create_agent subgraph."""
-
-    memory_context: NotRequired[tuple[str, ...]]
-    memory_status: NotRequired[MemoryStatus]
-    execution_mode: NotRequired[ExecutionMode]
-    provider_search_profile: NotRequired[ProviderSearchProfile]
-    async_tasks: NotRequired[AsyncTasks]
-
-
 class AssistantAgentState(DeepAgentState):
     """State used by the main assistant agent."""
 
@@ -91,8 +80,6 @@ __all__ = [
     "AssistantReadOnlyWorkerState",
     "AssistantRootInput",
     "AssistantRootState",
-    "ExecutionMode",
-    "FastAgentState",
     "MemoryExtractionInput",
     "MemoryExtractionState",
     "MemoryStatus",

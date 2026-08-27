@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from langgraph_sdk import Auth
 from langgraph_sdk.auth import is_studio_user
 
@@ -11,20 +13,10 @@ from assistant_agent.agent_server.config import (
     WORKER_GRAPH_ID,
 )
 from assistant_agent.agent_server.client import THREAD_GRAPH_METADATA_KEY
-from assistant_agent.agent_server.attestation import (
-    execution_attestation_digest,
-    issue_evaluation_context_token,
-    verify_evaluation_context_token,
-)
-from assistant_agent.agent_server.graph import get_native_assistant_execution_attestation
 from assistant_agent.native_agent.context import (
+    ASSISTANT_RUNTIME_METADATA_KEY,
     AssistantRuntimeFacts,
-    assistant_runtime_metadata,
 )
-
-
-_EVALUATION_TOKEN_KEY = "coding_eval_context_token"
-
 
 auth = Auth()
 
@@ -128,35 +120,18 @@ async def authorize_thread_create(
     value: Auth.types.on.threads.create.value,
 ) -> bool | None:
     metadata = value.setdefault("metadata", {})
+    if not isinstance(metadata, dict):
+        return False
     requested_graph_id = value.get("graph_id") or metadata.get(
         THREAD_GRAPH_METADATA_KEY
     )
     graph_id = str(requested_graph_id or ASSISTANT_GRAPH_ID)
     if graph_id not in {ASSISTANT_GRAPH_ID, MEMORY_GRAPH_ID, WORKER_GRAPH_ID}:
         return False
+    if graph_id == WORKER_GRAPH_ID and not _authorized_worker_metadata(metadata):
+        return False
     metadata["owner"] = str(ctx.user.identity)
     metadata[THREAD_GRAPH_METADATA_KEY] = graph_id
-    eval_identity = metadata.get("coding_eval_identity")
-    eval_repository = metadata.get("coding_eval_repo_id")
-    eval_case = metadata.get("coding_eval_case_id")
-    if any(value is not None for value in (eval_identity, eval_repository, eval_case)):
-        if not all(
-            isinstance(value, str) and bool(value) and len(value) <= 160
-            for value in (eval_identity, eval_repository, eval_case)
-        ) or eval_identity != str(ctx.user.identity):
-            return False
-        try:
-            digest = execution_attestation_digest(
-                get_native_assistant_execution_attestation()
-            )
-        except RuntimeError:
-            return False
-        metadata[_EVALUATION_TOKEN_KEY] = issue_evaluation_context_token(
-            identity=eval_identity,
-            repository_id=eval_repository,
-            case_id=eval_case,
-            attestation_digest=digest,
-        )
     return None
 
 
@@ -209,6 +184,8 @@ async def authorize_run_create(
     value: Auth.types.on.threads.create_run.value,
 ) -> Auth.types.FilterType | bool:
     metadata = value.setdefault("metadata", {})
+    if not isinstance(metadata, dict):
+        return False
     metadata["owner"] = str(ctx.user.identity)
     if str(value.get("assistant_id")) == MEMORY_GRAPH_ID:
         return {
@@ -216,6 +193,8 @@ async def authorize_run_create(
             THREAD_GRAPH_METADATA_KEY: MEMORY_GRAPH_ID,
         }
     if str(value.get("assistant_id")) == WORKER_GRAPH_ID:
+        if not _authorized_worker_metadata(metadata):
+            return False
         return {
             "owner": str(ctx.user.identity),
             THREAD_GRAPH_METADATA_KEY: WORKER_GRAPH_ID,
@@ -223,52 +202,24 @@ async def authorize_run_create(
     context = value.setdefault("context", {})
     if not isinstance(context, dict):
         return False
-    evaluation_fields = {
-        _EVALUATION_TOKEN_KEY,
-        "evaluation_repository_id",
-        "evaluation_case_id",
-        "evaluation_execution_attestation_digest",
-    }
-    requested_evaluation = bool(evaluation_fields.intersection(metadata))
-    if requested_evaluation:
-        if not evaluation_fields.issuperset(
-            key for key in metadata if key.startswith("evaluation_")
-        ):
-            return False
-        token = metadata.get(_EVALUATION_TOKEN_KEY)
-        repository_id = metadata.get("evaluation_repository_id")
-        case_id = metadata.get("evaluation_case_id")
-        if not (
-            isinstance(token, str)
-            and isinstance(repository_id, str)
-            and isinstance(case_id, str)
-        ):
-            return False
-        try:
-            digest = execution_attestation_digest(
-                get_native_assistant_execution_attestation()
-            )
-        except RuntimeError:
-            return False
-        if not verify_evaluation_context_token(
-            token,
-            identity=str(ctx.user.identity),
-            repository_id=repository_id,
-            case_id=case_id,
-            attestation_digest=digest,
-        ):
-            return False
-        for key in evaluation_fields:
-            metadata.pop(key, None)
-        metadata.update(
-            assistant_runtime_metadata(
-                AssistantRuntimeFacts(entry_profile="evaluation")
-            )
-        )
     return {
         "owner": str(ctx.user.identity),
         THREAD_GRAPH_METADATA_KEY: ASSISTANT_GRAPH_ID,
     }
+
+
+def _authorized_worker_metadata(metadata: Mapping[str, object]) -> bool:
+    payload = metadata.get(ASSISTANT_RUNTIME_METADATA_KEY)
+    if not isinstance(payload, Mapping):
+        return False
+    try:
+        facts = AssistantRuntimeFacts.model_validate(dict(payload))
+    except ValueError:
+        return False
+    return (
+        facts.entry_profile == "async_worker"
+        and facts.repository_snapshot_sha is not None
+    )
 
 
 @auth.on.store

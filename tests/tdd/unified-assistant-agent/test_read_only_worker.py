@@ -471,7 +471,6 @@ def test_worker_factory_uses_read_only_worktree_backend(
     )
     monkeypatch.setattr(services, "build_read_only_worker", build_worker)
     monkeypatch.setattr(services, "build_assistant_agent", build_assistant)
-    monkeypatch.setattr(services, "build_execution_attestation", lambda *args: object())
     monkeypatch.setattr(
         services,
         "build_assistant_root_graph",

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Literal
+from typing import Any
 
 from langgraph.runtime import Runtime
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -18,19 +18,8 @@ class AssistantRunContext(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    execution_mode: Literal["fast", "planning", "coding"] = Field(
-        default="fast",
-        description=(
-            "Execution route for this Assistant or an overriding run context."
-        ),
-        json_schema_extra={"langgraph_nodes": ["execution_router"]},
-    )
     enable_memory: bool = Field(
         default=True,
-        description=(
-            "Recall and refresh long-term memory for this Assistant or an "
-            "overriding run context."
-        ),
         json_schema_extra={
             "langgraph_nodes": ["memory_recall", "refresh_memory_extraction"]
         },

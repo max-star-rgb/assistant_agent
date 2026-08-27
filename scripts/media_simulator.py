@@ -82,7 +82,6 @@ async def run_media_console(
         citations=citations,
     )
     chat_counter = 0
-    assistant_mode = "fast"
     try:
         if initial_text:
             chat_counter += 1
@@ -96,7 +95,6 @@ async def run_media_console(
                     stream=stream,
                     chat_response_ack=chat_response_ack,
                     citation_debug=citation_debug,
-                    assistant_mode=assistant_mode,
                 )
             except websockets.exceptions.ConnectionClosed as exc:
                 _print_interrupted_turn(exc)
@@ -118,11 +116,7 @@ async def run_media_console(
                 except Exception as reconnect_exc:
                     _print_reconnect_error(reconnect_exc)
                     return 1
-                print(
-                    f"Reconnected session {current_session_id}; "
-                    f"assistant mode remains {assistant_mode}.",
-                    flush=True,
-                )
+                print(f"Reconnected session {current_session_id}.", flush=True)
                 outcome = MediaChatOutcome(ok=False)
             ok = outcome.ok
             if ok:
@@ -159,7 +153,7 @@ async def run_media_console(
             if not interactive:
                 return 0 if ok else 1
 
-        _print_console_help(current_session_id, assistant_mode=assistant_mode)
+        _print_console_help(current_session_id)
         while True:
             try:
                 line = await asyncio.to_thread(input, f"[{current_session_id}]> ")
@@ -172,7 +166,7 @@ async def run_media_console(
             if command == "quit":
                 return 0
             if command == "help":
-                _print_console_help(current_session_id, assistant_mode=assistant_mode)
+                _print_console_help(current_session_id)
                 continue
             if command == "unknown":
                 print(f"Unknown command: {value}. Type /help for commands.", flush=True)
@@ -194,11 +188,6 @@ async def run_media_console(
                 chat_counter = 0
                 print(f"Opened session {current_session_id}.", flush=True)
                 continue
-            if command == "mode":
-                assistant_mode = str(value)
-                print(f"Assistant mode: {assistant_mode}.", flush=True)
-                continue
-
             chat_counter += 1
             try:
                 outcome = await _send_chat_and_print_responses(
@@ -210,7 +199,6 @@ async def run_media_console(
                     stream=stream,
                     chat_response_ack=chat_response_ack,
                     citation_debug=citation_debug,
-                    assistant_mode=assistant_mode,
                 )
             except websockets.exceptions.ConnectionClosed as exc:
                 _print_interrupted_turn(exc)
@@ -230,11 +218,7 @@ async def run_media_console(
                 except Exception as reconnect_exc:
                     _print_reconnect_error(reconnect_exc)
                     return 1
-                print(
-                    f"Reconnected session {current_session_id}; "
-                    f"assistant mode remains {assistant_mode}.",
-                    flush=True,
-                )
+                print(f"Reconnected session {current_session_id}.", flush=True)
                 continue
             if outcome.ok:
                 await _tail_submitted_workflows(
@@ -323,7 +307,6 @@ async def _send_chat_and_print_responses(
     stream: bool,
     chat_response_ack: bool,
     citation_debug: bool = False,
-    assistant_mode: str = "fast",
 ) -> MediaChatOutcome:
     await websocket.send(
         json.dumps(
@@ -335,7 +318,6 @@ async def _send_chat_and_print_responses(
                     user_number=user_number,
                     speaker_number=user_number,
                     stream=stream,
-                    assistant_mode=assistant_mode,
                 ),
                 session_id=session_id,
             ),
@@ -870,7 +852,6 @@ def chat_body(
     user_number: str,
     speaker_number: str,
     stream: bool,
-    assistant_mode: str = "fast",
     now: Callable[[], str] | None = None,
 ) -> JsonObject:
     timestamp = now() if now is not None else _now_iso()
@@ -885,7 +866,6 @@ def chat_body(
             }
         ],
         "stream": stream,
-        "assistantMode": assistant_mode,
     }
 
 
@@ -904,8 +884,6 @@ def parse_console_command(line: str) -> tuple[str, str | None]:
         return "new", value
     if normalized in {"/help", "/h", "/?"}:
         return "help", None
-    if normalized in {"/fast", "/planning"}:
-        return "mode", normalized.removeprefix("/")
     return "unknown", stripped
 
 
@@ -1096,11 +1074,11 @@ def _intent_status(body: JsonObject) -> str | None:
     return None
 
 
-def _print_console_help(session_id: str, *, assistant_mode: str = "fast") -> None:
+def _print_console_help(session_id: str) -> None:
     print(
         "Type text and press Enter to send chat. "
-        f"Current session: {session_id}. Assistant mode: {assistant_mode}. "
-        "Commands: /fast, /planning, /new [sessionId], "
+        f"Current session: {session_id}. "
+        "Commands: /new [sessionId], "
         "/session <sessionId>, /help, /quit.",
         flush=True,
     )

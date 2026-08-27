@@ -18,10 +18,6 @@ from assistant_agent.coding.backend import (
     ReadOnlyCodingWorkspaceBackend,
 )
 from assistant_agent.coding.workspace import CodingWorkspaceService
-from assistant_agent.agent_server.attestation import (
-    AgentServerExecutionAttestation,
-    build_execution_attestation,
-)
 from assistant_agent.agent_server.async_delegation import (
     async_task_tool_profile,
     build_async_subagent_middleware,
@@ -56,7 +52,6 @@ class AgentServerExecutionOwner:
     graph: Any
     worker_graph: Any
     memory_graph: Any
-    execution_attestation: AgentServerExecutionAttestation
 
     @classmethod
     async def compose(
@@ -84,7 +79,6 @@ class AgentServerExecutionOwner:
             resources=tool_resources,
             mcp_server_configs=load_mcp_server_configs_from_env(),
         )
-        execution_attestation = build_execution_attestation(config, coding_config)
         coding_workspace_service = CodingWorkspaceService(coding_config)
         skills_backend = await asyncio.to_thread(
             create_project_skills_backend,
@@ -142,7 +136,6 @@ class AgentServerExecutionOwner:
             graph=graph,
             worker_graph=worker_graph,
             memory_graph=memory_graph,
-            execution_attestation=execution_attestation,
         )
 
     async def aclose(self) -> None:

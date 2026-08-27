@@ -7,11 +7,15 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
+from langchain.agents import AgentState
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 
-from assistant_agent.native_agent.context import AssistantRunContext
-from assistant_agent.native_agent.state import FastAgentState
+from assistant_agent.native_agent.context import (
+    AssistantRunContext,
+    AssistantRuntimeFacts,
+    assistant_runtime_metadata,
+)
 
 
 @dataclass(frozen=True)
@@ -47,7 +51,7 @@ def invoke_native_tool(
 ) -> NativeToolInvocation:
     """Execute one real BaseTool through LangGraph's standard ToolNode."""
 
-    builder = StateGraph(FastAgentState, context_schema=AssistantRunContext)
+    builder = StateGraph(AgentState, context_schema=AssistantRunContext)
     builder.add_node("tools", ToolNode([tool], handle_tool_errors=False))
     builder.add_edge(START, "tools")
     builder.add_edge("tools", END)
@@ -73,14 +77,17 @@ def invoke_native_tool(
             **(state or {}),
             "messages": messages,
         },
-        context=(run_context or AssistantRunContext(entry_profile="system_eval")),
+        context=(run_context or AssistantRunContext()),
         config={
             "configurable": {
                 "assistant_id": "system-eval-assistant",
                 "graph_id": "system-eval-tool-graph",
                 "thread_id": thread_id,
                 "langgraph_auth_user": _EvalUser(user_identity),
-            }
+            },
+            "metadata": assistant_runtime_metadata(
+                AssistantRuntimeFacts(entry_profile="system_eval")
+            ),
         },
     )
     message = result["messages"][-1]

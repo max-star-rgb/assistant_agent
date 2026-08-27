@@ -32,7 +32,6 @@ class MediaChat:
     user_id: str
     text: str
     stream: bool
-    execution_mode: str
 
 
 def parse_envelope(value: Mapping[str, Any]) -> MediaEnvelope:
@@ -55,6 +54,8 @@ def parse_chat(envelope: MediaEnvelope) -> MediaChat:
     if envelope.message != "chat":
         raise MediaProtocolError("expected chat frame")
     body = envelope.body
+    if "assistantMode" in body:
+        raise MediaProtocolError("assistantMode is not supported")
     chat_index = _required_text(body, "chatIndex")
     user_id = _required_text(body, "userNumber")
     contents = body.get("contents")
@@ -79,7 +80,6 @@ def parse_chat(envelope: MediaEnvelope) -> MediaChat:
         user_id=user_id,
         text=latest_speech,
         stream=body.get("stream", True) is True,
-        execution_mode=_execution_mode(body.get("assistantMode")),
     )
 
 
@@ -320,13 +320,6 @@ def _optional_text(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
-
-
-def _execution_mode(value: Any) -> str:
-    mode = "fast" if value is None else str(value)
-    if mode not in {"fast", "planning"}:
-        raise MediaProtocolError("assistantMode must be fast or planning")
-    return mode
 
 
 __all__ = [

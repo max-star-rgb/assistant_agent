@@ -15,7 +15,6 @@ from assistant_agent.native_agent.context import (
     AssistantRuntimeFacts,
     assistant_runtime_metadata,
 )
-from assistant_agent.native_agent.state import ExecutionMode
 
 
 @dataclass(frozen=True)
@@ -67,10 +66,9 @@ class NativeGraphEvaluationTarget:
         thread_id: str,
         run_id: str,
         text: str,
-        execution_mode: ExecutionMode = "fast",
         metadata: dict[str, Any] | None = None,
     ) -> NativeGraphEvaluationResult:
-        context = AssistantRunContext(execution_mode=execution_mode)
+        context = AssistantRunContext()
         run_metadata = dict(metadata or {})
         run_metadata.update(
             assistant_runtime_metadata(

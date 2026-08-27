@@ -7,8 +7,8 @@
   ],
   "env": ".env",
   "graphs": {
-    "assistant-native-v3": "assistant_agent.agent_server.graph:native_assistant_graph",
-    "assistant-worker-v1": "assistant_agent.agent_server.graph:native_worker_graph",
+    "assistant-native-v4": "assistant_agent.agent_server.graph:native_assistant_graph",
+    "assistant-worker-v2": "assistant_agent.agent_server.graph:native_worker_graph",
     "assistant-memory-v1": "assistant_agent.agent_server.graph:native_memory_graph"
   },
   "auth": {
