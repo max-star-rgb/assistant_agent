@@ -190,18 +190,12 @@ Runtime 使用 `onnx` 解析图中真实 external-data 引用并核对 manifest�
 旧 provider/model-dir 环境变量是迁移 alias，计划不早于 `0.3.0` 删除。完整平台边界见
 `docs/visual-perception-architecture.md`。
 
-### Website guidance real backend setup
+### Playwright MCP setup
 
-Website guidance 的 real backend 依赖 `pyproject.toml` 中的 `browser` extra 和 Playwright Chromium：
-
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pip install -e ".[browser]"
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m playwright install chromium
-```
-
-运行时还必须显式设置 `MULTIMODAL_AGENT_PROVIDER_MODE=real` 和
-`MULTIMODAL_AGENT_WEBSITE_GUIDANCE_ENABLED=true`。`WEBSITE_GUIDANCE_NAVIGATION_TIMEOUT_SECONDS` 可选，
-只接受 `(0, 30]` 秒，默认 10 秒。依赖或 Chromium 未就绪时 plugin fail closed，不注册真实 browser Tool。
+浏览器能力由 `deploy/mcp_servers.example.json` 中固定版本的官方 Playwright MCP 提供，不再安装 Python
+Playwright 或注册项目内建 Website guidance plugin。运行环境需要 Node.js 20+；把示例 server 合并到未跟踪的
+`.local/mcp_servers.json`，并设置 `MULTIMODAL_AGENT_MCP_ENABLED=1`。启动时 MCP discovery 成功后，`browser`
+Profile 才会出现；交互类 Tool 统一进入 HITL。
 
 新增脚本必须对应当前权威文档中的稳定入口或无法由现有 pytest/eval 表达的 operator 流程；
 临时诊断优先使用不提交的一次性命令。

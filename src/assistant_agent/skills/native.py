@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, TypedDict
 
 from deepagents.backends import FilesystemBackend
 from deepagents.backends.protocol import BackendProtocol, LsResult
@@ -31,11 +31,54 @@ _PROJECT_SKILLS_SYSTEM_PROMPT = """## Skills
 
 {skills_list}
 
-当请求匹配某项 Skill，先激活 `filesystem` Tool Profile，再使用 `read_file` 读取对应的 `SKILL.md`。
+当请求匹配某项 Skill，先使用`activate_tool_profile`激活 `filesystem` Tool Profile，再使用 `read_file` 读取对应的 `SKILL.md`。
 
 不向用户介绍 Skill、文件读取或内部流程。
 """
 _SKILL_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
+
+
+class _ProjectSkillMetadata(TypedDict):
+    name: str
+    description: str
+    path: str
+
+
+def _project_skills_update(
+    update: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    if update is None:
+        return None
+    return {
+        **update,
+        "skills_metadata": [
+            {
+                "name": skill["name"],
+                "description": skill["description"],
+                "path": skill["path"],
+            }
+            for skill in update["skills_metadata"]
+        ],
+    }
+
+
+class _ProjectSkillsMiddleware(SkillsMiddleware):
+    def _format_skills_list(self, skills: list[SkillMetadata]) -> str:
+        if not skills:
+            return super()._format_skills_list(skills)
+        return "\n".join(
+            f"- **{skill['name']}**: {skill['description']}\n"
+            f"  -> Read `{skill['path']}` for full instructions"
+            for skill in skills
+        )
+
+    def before_agent(self, state, runtime, config):
+        return _project_skills_update(super().before_agent(state, runtime, config))
+
+    async def abefore_agent(self, state, runtime, config):
+        return _project_skills_update(
+            await super().abefore_agent(state, runtime, config)
+        )
 
 
 def create_project_skills_backend(project_root: str | Path) -> FilesystemBackend:
@@ -48,7 +91,7 @@ def create_project_skills_middleware(
 ) -> SkillsMiddleware:
     """Create the upstream middleware that owns Skill discovery and prompting."""
 
-    return SkillsMiddleware(
+    return _ProjectSkillsMiddleware(
         backend=backend,
         sources=[(PROJECT_SKILLS_SOURCE, "Project")],
         system_prompt=_PROJECT_SKILLS_SYSTEM_PROMPT,
@@ -79,13 +122,15 @@ def create_project_filesystem_middleware(
     return middleware
 
 
-def native_skill_metadata(state: Mapping[str, Any]) -> tuple[SkillMetadata, ...]:
+def native_skill_metadata(
+    state: Mapping[str, Any],
+) -> tuple[_ProjectSkillMetadata, ...]:
     """Return validated Agent Skills metadata from middleware-private state."""
 
     raw = state.get("skills_metadata")
     if not isinstance(raw, list):
         return ()
-    result: list[SkillMetadata] = []
+    result: list[_ProjectSkillMetadata] = []
     for item in raw:
         if not isinstance(item, dict):
             continue
@@ -99,13 +144,13 @@ def native_skill_metadata(state: Mapping[str, Any]) -> tuple[SkillMetadata, ...]
         skill_path = PurePosixPath(path)
         if skill_path.name != "SKILL.md" or skill_path.parent.name != name:
             continue
-        result.append(item)  # type: ignore[arg-type]
+        result.append({"name": name, "path": path, "description": description})
     return tuple(result)
 
 
 def list_skill_reference_ids(
     backend: BackendProtocol,
-    metadata: SkillMetadata,
+    metadata: _ProjectSkillMetadata,
 ) -> list[str]:
     """Discover flat Markdown references under one native Skill directory."""
 

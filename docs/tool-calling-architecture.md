@@ -46,7 +46,8 @@ worker 不提供 shell，也不装配异步 delegation Tool。
 不进入模型上下文或 artifact。只读 Tool 使用官方 `ToolRetryMiddleware` 有界重试；`live_view_inspect` 为避免重复
 当前画面推理不进入自动 retry 清单。
 
-`ToolProfileMiddleware` 只在受信静态 catalog 内把 profile ID 映射到已注册 Tool。模型调用
+`ToolProfileMiddleware` 先用当前 Graph 的真实 Tool inventory 裁剪受信静态 catalog，只保留非空 Profile 和其中
+实际注册的 Tool；没有可用 Profile 时不暴露 `activate_tool_profile`。模型调用
 `activate_tool_profile` 后，middleware 从私有 `active_tool_profile_ids` 缩小后续 `ModelRequest.tools`，并在执行
 边界复核历史消息中的 ToolCall；Skill、Todo、worker 文本和 artifact 都不能声明 profile 或授权 Tool。
 
@@ -74,6 +75,9 @@ worker 不提供 shell，也不装配异步 delegation Tool。
 本地和 MCP Tool 进入同一 native inventory。外部 MCP 只通过官方 `MultiServerMCPClient`，配置必须提供显式
 allowlist、read-only 集合与确定性 `<namespace>_<server>_<tool>` 命名；缺失 effect 时按可能写入 fail closed。
 生产不建立 MCP proxy、ToolSpec 镜像、plugin-private runner 或旧远端 Tool 映射。
+浏览器能力只由固定版本的官方 Playwright MCP 提供；项目不再维护内建 Playwright backend。MCP discovery 成功后
+`mcp_playwright_browser_*` 才进入 `browser` Profile，官方 read-only annotation 对应的查询类 Tool 标为 `read`，
+其余页面交互按 `dangerous` 进入统一 HITL。
 
 Deep Agents `AsyncSubAgentMiddleware` 的 `start/check/update/cancel/list_async_task(s)` 归入 `async-tasks` Profile。
 start、update 与 cancel 都是副作用并进入 HITL；check/list 是 read。start 创建 `assistant-worker-v2` thread/run 时

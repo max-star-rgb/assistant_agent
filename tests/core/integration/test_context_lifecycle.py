@@ -55,6 +55,28 @@ def _tool_names(raw_tools: object) -> set[str]:
     }
 
 
+@pytest.mark.core_invariant("CTX-001")
+def test_tool_profiles_only_keep_tools_registered_in_the_graph() -> None:
+    middleware = ToolProfileMiddleware(
+        project_tool_profiles(),
+        available_tool_names={"read_file"},
+    )
+
+    assert [profile.profile_id for profile in middleware.profiles] == ["filesystem"]
+    assert middleware.profiles[0].tool_names == ("read_file",)
+
+
+@pytest.mark.core_invariant("CTX-001")
+def test_empty_tool_profile_catalog_does_not_expose_activation_tool() -> None:
+    middleware = ToolProfileMiddleware(
+        project_tool_profiles(),
+        available_tool_names=set(),
+    )
+
+    assert middleware.profiles == ()
+    assert middleware.tools == []
+
+
 def _worker() -> Runnable:
     return RunnableLambda(
         lambda state: {"messages": [AIMessage(content="worker-sentinel")]}

@@ -66,7 +66,7 @@ def create_image_generation_tool(
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """根据文本中的内容、构图和风格要求生成图片。
 
-        返回可供后续展示或处理的 image_id 及生成结果。会调用图片生成服务；
+        返回可供后续展示或处理的`image_id`和`url`及生成结果。会调用图片生成服务；
         不用于理解、检索或修改现有图片。
         """
 

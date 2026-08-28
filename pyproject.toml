@@ -25,7 +25,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-browser = ["playwright>=1.62,<2"]
 dev = ["pytest>=8.0"]
 eval = ["langsmith>=0.9.8,<1", "PyYAML>=6.0,<7"]
 local-vision-embedding = [
@@ -56,5 +55,4 @@ testpaths = ["tests/core"]
 pythonpath = ["src"]
 markers = [
     "core_invariant(id): stable core-framework invariant identifier",
-    "playwright_smoke: controlled local Chromium integration test",
 ]

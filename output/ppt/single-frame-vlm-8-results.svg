@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080" style="position:absolute;left:0;top:0">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F8FAFF"/>
+      <stop offset="1" stop-color="#EEF3FF"/>
+    </linearGradient>
+    <linearGradient id="llm" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5B63E8"/>
+      <stop offset="1" stop-color="#8B5CF6"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="10" stdDeviation="15" flood-color="#243B6B" flood-opacity="0.13"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#7185C7"/>
+    </marker>
+    <marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#735BE5"/>
+    </marker>
+  </defs>
+
+  <rect width="1920" height="1080" fill="url(#bg)"/>
+  <circle cx="1800" cy="55" r="220" fill="#DFDBFF" opacity="0.34"/>
+  <circle cx="70" cy="1060" r="250" fill="#D9E8FF" opacity="0.38"/>
+
+  <text x="110" y="104" fill="#18233D" font-family="Microsoft YaHei, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="54" font-weight="700">单帧独立理解，LLM 汇总最近 8 帧</text>
+  <text x="110" y="158" fill="#68748C" font-family="Microsoft YaHei, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="26">每帧单独进入 VLM，不共享视觉上下文；LLM 接收按时间排序的 8 份结果</text>
+
+  <g filter="url(#shadow)">
+    <rect x="90" y="210" width="1740" height="730" rx="34" fill="#FFFFFF"/>
+  </g>
+
+  <g font-family="Microsoft YaHei, PingFang SC, Noto Sans CJK SC, sans-serif">
+    <text x="130" y="272" fill="#7B879F" font-size="21" font-weight="700">视频帧</text>
+    <text x="130" y="472" fill="#7B879F" font-size="21" font-weight="700">独立推理</text>
+    <text x="130" y="660" fill="#7B879F" font-size="21" font-weight="700">文本结果</text>
+
+    <g fill="#F8FAFF" stroke="#9CB1E8" stroke-width="3">
+      <rect x="205" y="292" width="165" height="118" rx="18"/>
+      <rect x="405" y="292" width="165" height="118" rx="18"/>
+      <rect x="605" y="292" width="165" height="118" rx="18"/>
+      <rect x="805" y="292" width="165" height="118" rx="18"/>
+      <rect x="1005" y="292" width="165" height="118" rx="18"/>
+      <rect x="1205" y="292" width="165" height="118" rx="18"/>
+      <rect x="1405" y="292" width="165" height="118" rx="18"/>
+      <rect x="1605" y="292" width="165" height="118" rx="18"/>
+    </g>
+
+    <g fill="#DCE6FF">
+      <path d="M225 384 L264 346 L291 369 L320 333 L350 384 Z"/><path d="M425 384 L464 346 L491 369 L520 333 L550 384 Z"/>
+      <path d="M625 384 L664 346 L691 369 L720 333 L750 384 Z"/><path d="M825 384 L864 346 L891 369 L920 333 L950 384 Z"/>
+      <path d="M1025 384 L1064 346 L1091 369 L1120 333 L1150 384 Z"/><path d="M1225 384 L1264 346 L1291 369 L1320 333 L1350 384 Z"/>
+      <path d="M1425 384 L1464 346 L1491 369 L1520 333 L1550 384 Z"/><path d="M1625 384 L1664 346 L1691 369 L1720 333 L1750 384 Z"/>
+    </g>
+    <g fill="#F5C65D">
+      <circle cx="247" cy="326" r="11"/><circle cx="447" cy="326" r="11"/><circle cx="647" cy="326" r="11"/><circle cx="847" cy="326" r="11"/>
+      <circle cx="1047" cy="326" r="11"/><circle cx="1247" cy="326" r="11"/><circle cx="1447" cy="326" r="11"/><circle cx="1647" cy="326" r="11"/>
+    </g>
+    <g fill="#53617A" font-size="21" font-weight="700" text-anchor="middle">
+      <text x="287" y="438">F1</text><text x="487" y="438">F2</text><text x="687" y="438">F3</text><text x="887" y="438">F4</text>
+      <text x="1087" y="438">F5</text><text x="1287" y="438">F6</text><text x="1487" y="438">F7</text><text x="1687" y="438">F8</text>
+    </g>
+
+    <g stroke="#7185C7" stroke-width="4" marker-end="url(#arrow)">
+      <line x1="287" y1="446" x2="287" y2="492"/><line x1="487" y1="446" x2="487" y2="492"/>
+      <line x1="687" y1="446" x2="687" y2="492"/><line x1="887" y1="446" x2="887" y2="492"/>
+      <line x1="1087" y1="446" x2="1087" y2="492"/><line x1="1287" y1="446" x2="1287" y2="492"/>
+      <line x1="1487" y1="446" x2="1487" y2="492"/><line x1="1687" y1="446" x2="1687" y2="492"/>
+    </g>
+
+    <g fill="#EEF0FF" stroke="#7E6CE4" stroke-width="2">
+      <rect x="215" y="500" width="145" height="72" rx="24"/><rect x="415" y="500" width="145" height="72" rx="24"/>
+      <rect x="615" y="500" width="145" height="72" rx="24"/><rect x="815" y="500" width="145" height="72" rx="24"/>
+      <rect x="1015" y="500" width="145" height="72" rx="24"/><rect x="1215" y="500" width="145" height="72" rx="24"/>
+      <rect x="1415" y="500" width="145" height="72" rx="24"/><rect x="1615" y="500" width="145" height="72" rx="24"/>
+    </g>
+    <g fill="#624CCB" font-size="20" font-weight="700" text-anchor="middle">
+      <text x="287" y="544">单帧 VLM</text><text x="487" y="544">单帧 VLM</text><text x="687" y="544">单帧 VLM</text><text x="887" y="544">单帧 VLM</text>
+      <text x="1087" y="544">单帧 VLM</text><text x="1287" y="544">单帧 VLM</text><text x="1487" y="544">单帧 VLM</text><text x="1687" y="544">单帧 VLM</text>
+    </g>
+
+    <g stroke="#7185C7" stroke-width="4" marker-end="url(#arrow)">
+      <line x1="287" y1="578" x2="287" y2="620"/><line x1="487" y1="578" x2="487" y2="620"/>
+      <line x1="687" y1="578" x2="687" y2="620"/><line x1="887" y1="578" x2="887" y2="620"/>
+      <line x1="1087" y1="578" x2="1087" y2="620"/><line x1="1287" y1="578" x2="1287" y2="620"/>
+      <line x1="1487" y1="578" x2="1487" y2="620"/><line x1="1687" y1="578" x2="1687" y2="620"/>
+    </g>
+
+    <g fill="#F2F6FF" stroke="#B5C4E8" stroke-width="2">
+      <rect x="215" y="630" width="145" height="68" rx="16"/><rect x="415" y="630" width="145" height="68" rx="16"/>
+      <rect x="615" y="630" width="145" height="68" rx="16"/><rect x="815" y="630" width="145" height="68" rx="16"/>
+      <rect x="1015" y="630" width="145" height="68" rx="16"/><rect x="1215" y="630" width="145" height="68" rx="16"/>
+      <rect x="1415" y="630" width="145" height="68" rx="16"/><rect x="1615" y="630" width="145" height="68" rx="16"/>
+    </g>
+    <g fill="#52617C" font-size="20" text-anchor="middle">
+      <text x="287" y="672">结果 R1</text><text x="487" y="672">结果 R2</text><text x="687" y="672">结果 R3</text><text x="887" y="672">结果 R4</text>
+      <text x="1087" y="672">结果 R5</text><text x="1287" y="672">结果 R6</text><text x="1487" y="672">结果 R7</text><text x="1687" y="672">结果 R8</text>
+    </g>
+
+    <path d="M287 716 V750 H1687 V716" fill="none" stroke="#735BE5" stroke-width="5"/>
+    <text x="987" y="786" text-anchor="middle" fill="#6550D1" font-size="22" font-weight="700">按时间顺序汇总最近 8 份独立结果</text>
+    <line x1="987" y1="798" x2="987" y2="830" stroke="#735BE5" stroke-width="5" marker-end="url(#arrow-purple)"/>
+
+    <g filter="url(#shadow)">
+      <rect x="675" y="838" width="625" height="82" rx="28" fill="url(#llm)"/>
+    </g>
+    <text x="987" y="890" text-anchor="middle" fill="#FFFFFF" font-size="28" font-weight="700">LLM 输入：[R1, R2, R3, R4, R5, R6, R7, R8]</text>
+
+    <rect x="90" y="976" width="1740" height="72" rx="24" fill="#18233D"/>
+    <circle cx="137" cy="1012" r="19" fill="#FFCE5C"/>
+    <text x="137" y="1020" text-anchor="middle" fill="#18233D" font-size="21" font-weight="800">!</text>
+    <text x="175" y="1021" fill="#FFFFFF" font-size="25" font-weight="700">核心：VLM 每帧独立理解；跨帧关联与最终回答由 LLM 完成</text>
+  </g>
+</svg>

@@ -184,16 +184,11 @@ def _builtin_plugins() -> tuple[Any, ...]:
     from assistant_agent.tools.plugins.builtin.visual_image_search.plugin import (
         VisualImageSearchPlugin,
     )
-    from assistant_agent.tools.plugins.builtin.website_guidance.plugin import (
-        WebsiteGuidancePlugin,
-    )
-
     return (
         EmailAccessPlugin(),
         LodgingToolPlugin(),
         MediaInspectionPlugin(),
         VisualImageSearchPlugin(),
-        WebsiteGuidancePlugin(),
         ShoppingToolPlugin(),
         CalendarContactsPlugin(),
         ImageGenerationToolPlugin(),

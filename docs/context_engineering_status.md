@@ -32,8 +32,9 @@ Tool observation 当作本轮证据。`visual_memory_search` 只查当前 VIDEO 
 ## Skill、filesystem 与 task state
 
 Deep Agents `SkillsMiddleware` 从独立的普通 `FilesystemBackend` 的 `/skills/` 发现标准 `SKILL.md` L0 元数据，
-并只将它用于只读发现；正文只在模型实际调用 `read_file` 时进入当前角色 transcript。这个 backend 与主 Agent 的可写 worktree backend、
-worker 的只读 worktree backend 相互分离；Skills 不授予 Tool，也不扩大文件访问或 task state。
+项目 state 与 Prompt 只投影 `name`、`description`、`path`；上游可选的 `allowed_tools`、`compatibility`、`license`、
+`metadata` 不进入项目运行时。正文只在模型实际调用 `read_file` 时进入当前角色 transcript。这个 backend 与主 Agent 的可写 worktree
+backend、worker 的只读 worktree backend 相互分离；Skills 不授予 Tool，也不扩大文件访问或 task state。
 
 同步 `task` 使用双向显式 allowlist，而不是传递整个 Deep Agent state：
 

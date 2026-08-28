@@ -215,8 +215,6 @@ class ProviderConfig:
     web_search_base_url: str | None = None
     web_search_api_key: str | None = None
     web_search_timeout_seconds: float = 10.0
-    website_guidance_enabled: bool = False
-    website_guidance_navigation_timeout_seconds: float = 10.0
     tavily_api_key: str | None = None
     tavily_base_url: str = "https://api.tavily.com"
     visual_image_search_provider: VisualImageSearchProviderName = "mock"
@@ -422,11 +420,6 @@ class ProviderConfig:
         conversation_history_path = source.get(
             "MULTIMODAL_AGENT_CONVERSATION_HISTORY_PATH"
         ) or (".local/memory/conversation_history.jsonl")
-        website_guidance_navigation_timeout_seconds = (
-            _website_guidance_navigation_timeout(
-                source.get("WEBSITE_GUIDANCE_NAVIGATION_TIMEOUT_SECONDS")
-            )
-        )
         config = cls(
             provider_mode=provider_mode,
             openai_api_key=source.get("OPENAI_API_KEY"),
@@ -857,18 +850,6 @@ class ProviderConfig:
             web_search_api_key=source.get("WEB_SEARCH_API_KEY"),
             web_search_timeout_seconds=_float_env(
                 source.get("WEB_SEARCH_TIMEOUT_SECONDS"), 10.0
-            ),
-            website_guidance_enabled=(
-                _bool_env(
-                    source.get("MULTIMODAL_AGENT_WEBSITE_GUIDANCE_ENABLED"),
-                    False,
-                )
-                and website_guidance_navigation_timeout_seconds is not None
-            ),
-            website_guidance_navigation_timeout_seconds=(
-                website_guidance_navigation_timeout_seconds
-                if website_guidance_navigation_timeout_seconds is not None
-                else 10.0
             ),
             tavily_api_key=source.get("TAVILY_API_KEY"),
             tavily_base_url=source.get("TAVILY_BASE_URL", "https://api.tavily.com"),
@@ -1430,18 +1411,6 @@ def _float_env(value: str | None, default: float) -> float:
         return float(value)
     except ValueError:
         return default
-
-
-def _website_guidance_navigation_timeout(value: str | None) -> float | None:
-    if value is None:
-        return 10.0
-    try:
-        parsed = float(value)
-    except ValueError:
-        return None
-    if 0.0 < parsed <= 30.0:
-        return parsed
-    return None
 
 
 def _int_env(value: str | None, default: int) -> int:

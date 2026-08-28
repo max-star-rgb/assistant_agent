@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from typing import Annotated, Any, Literal, NotRequired
 
 from langchain.agents import AgentState
@@ -95,9 +95,26 @@ class ToolProfileMiddleware(AgentMiddleware[ToolProfileState, Any]):
 
     state_schema = ToolProfileState
 
-    def __init__(self, profiles: Sequence[ToolProfile]) -> None:
+    def __init__(
+        self,
+        profiles: Sequence[ToolProfile],
+        *,
+        available_tool_names: Collection[str],
+    ) -> None:
         super().__init__()
-        catalog = _ToolProfileCatalog(profiles=tuple(profiles))
+        available = frozenset(available_tool_names)
+        configured = _ToolProfileCatalog(profiles=tuple(profiles))
+        catalog = _ToolProfileCatalog(
+            profiles=tuple(
+                profile.model_copy(update={"tool_names": tool_names})
+                for profile in configured.profiles
+                if (
+                    tool_names := tuple(
+                        name for name in profile.tool_names if name in available
+                    )
+                )
+            )
+        )
         self._profiles_by_id = {
             profile.profile_id: profile for profile in catalog.profiles
         }
@@ -109,7 +126,7 @@ class ToolProfileMiddleware(AgentMiddleware[ToolProfileState, Any]):
         self._claimed_tool_names = frozenset(
             self._profile_id_by_tool_name
         )
-        self.tools = [self._create_activate_tool()]
+        self.tools = [self._create_activate_tool()] if catalog.profiles else []
 
     @property
     def profiles(self) -> tuple[ToolProfile, ...]:
