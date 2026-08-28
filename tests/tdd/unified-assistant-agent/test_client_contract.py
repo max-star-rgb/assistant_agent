@@ -227,14 +227,11 @@ def test_worker_authorization_rejects_invalid_runtime_facts(
     del case
     monkeypatch.setenv("REDIS_URI", "redis://localhost:6379")
     monkeypatch.setenv("DATABASE_URI", "postgres://localhost/test")
-    value = {
-        "metadata": dict(metadata),
-        **(
-            {"graph_id": WORKER_GRAPH_ID}
-            if operation == "thread"
-            else {"assistant_id": WORKER_ASSISTANT_ID}
-        ),
-    }
+    value = {"metadata": dict(metadata)}
+    if operation == "thread":
+        value["metadata"]["graph_id"] = WORKER_GRAPH_ID
+    else:
+        value["assistant_id"] = WORKER_ASSISTANT_ID
     authorize = (
         authorize_thread_create if operation == "thread" else authorize_run_create
     )
@@ -257,14 +254,11 @@ def test_worker_authorization_rejects_shape_only_external_caller(
             repository_snapshot_sha="a" * snapshot_length,
         )
     )
-    value = {
-        "metadata": metadata,
-        **(
-            {"graph_id": WORKER_GRAPH_ID}
-            if operation == "thread"
-            else {"assistant_id": WORKER_ASSISTANT_ID}
-        ),
-    }
+    value = {"metadata": metadata}
+    if operation == "thread":
+        value["metadata"]["graph_id"] = WORKER_GRAPH_ID
+    else:
+        value["assistant_id"] = WORKER_ASSISTANT_ID
     authorize = (
         authorize_thread_create if operation == "thread" else authorize_run_create
     )
@@ -287,14 +281,11 @@ def test_worker_authorization_accepts_internal_capability(
             repository_snapshot_sha="a" * snapshot_length,
         )
     )
-    value = {
-        "metadata": metadata,
-        **(
-            {"graph_id": WORKER_GRAPH_ID}
-            if operation == "thread"
-            else {"assistant_id": WORKER_ASSISTANT_ID}
-        ),
-    }
+    value = {"metadata": metadata}
+    if operation == "thread":
+        value["metadata"]["graph_id"] = WORKER_GRAPH_ID
+    else:
+        value["assistant_id"] = WORKER_ASSISTANT_ID
     authorize = (
         authorize_thread_create if operation == "thread" else authorize_run_create
     )
@@ -351,14 +342,11 @@ def test_non_worker_authorization_rejects_worker_only_facts_and_capability(
         ASSISTANT_GRAPH_ID: MAIN_ASSISTANT_ID,
         MEMORY_GRAPH_ID: MEMORY_ASSISTANT_ID,
     }
-    value = {
-        "metadata": dict(metadata),
-        **(
-            {"graph_id": graph_id}
-            if operation == "thread"
-            else {"assistant_id": assistant_ids[graph_id]}
-        ),
-    }
+    value = {"metadata": dict(metadata)}
+    if operation == "thread":
+        value["metadata"]["graph_id"] = graph_id
+    else:
+        value["assistant_id"] = assistant_ids[graph_id]
     authorize = (
         authorize_thread_create if operation == "thread" else authorize_run_create
     )
@@ -383,14 +371,11 @@ def test_main_authorization_keeps_legal_non_snapshot_runtime_facts(
     facts: AssistantRuntimeFacts,
     operation: str,
 ) -> None:
-    value = {
-        "metadata": assistant_runtime_metadata(facts),
-        **(
-            {"graph_id": ASSISTANT_GRAPH_ID}
-            if operation == "thread"
-            else {"assistant_id": MAIN_ASSISTANT_ID}
-        ),
-    }
+    value = {"metadata": assistant_runtime_metadata(facts)}
+    if operation == "thread":
+        value["metadata"]["graph_id"] = ASSISTANT_GRAPH_ID
+    else:
+        value["assistant_id"] = MAIN_ASSISTANT_ID
     authorize = (
         authorize_thread_create if operation == "thread" else authorize_run_create
     )

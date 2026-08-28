@@ -148,7 +148,7 @@ async def authorize_thread_create(
     metadata = value.setdefault("metadata", {})
     if not isinstance(metadata, dict):
         return False
-    requested_graph_id = value.get("graph_id") or metadata.get(
+    requested_graph_id = metadata.get("graph_id") or metadata.get(
         THREAD_GRAPH_METADATA_KEY
     )
     graph_id = str(requested_graph_id or ASSISTANT_GRAPH_ID)

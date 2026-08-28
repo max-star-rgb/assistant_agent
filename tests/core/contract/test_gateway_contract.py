@@ -174,10 +174,10 @@ def test_agent_server_auth_accepts_only_current_graph_identities(monkeypatch) ->
         "owner": "studio-user",
     }
     for graph_id in (*LEGACY_GRAPH_IDS, "unknown-graph"):
-        value = {"metadata": {"assistant_graph_id": graph_id}}
+        value = {"metadata": {"graph_id": graph_id}}
         assert asyncio.run(authorize_thread_create(ctx, value)) is False
 
-    memory_create = {"graph_id": MEMORY_GRAPH_ID, "metadata": {}}
+    memory_create = {"metadata": {"graph_id": MEMORY_GRAPH_ID}}
     assert asyncio.run(authorize_thread_create(ctx, memory_create)) is None
     assert memory_create["metadata"]["assistant_graph_id"] == MEMORY_GRAPH_ID
     worker_metadata = assistant_runtime_metadata(
@@ -187,14 +187,12 @@ def test_agent_server_auth_accepts_only_current_graph_identities(monkeypatch) ->
         )
     )
     worker_create = {
-        "graph_id": WORKER_GRAPH_ID,
-        "metadata": dict(worker_metadata),
+        "metadata": {**worker_metadata, "graph_id": WORKER_GRAPH_ID},
     }
     assert asyncio.run(authorize_thread_create(ctx, worker_create)) is False
     internal_ctx = _authenticated_context(internal_worker=True)
     worker_create = {
-        "graph_id": WORKER_GRAPH_ID,
-        "metadata": dict(worker_metadata),
+        "metadata": {**worker_metadata, "graph_id": WORKER_GRAPH_ID},
     }
     assert asyncio.run(authorize_thread_create(internal_ctx, worker_create)) is None
     assert worker_create["metadata"]["assistant_graph_id"] == WORKER_GRAPH_ID
@@ -265,8 +263,10 @@ def test_agent_server_auth_accepts_only_current_graph_identities(monkeypatch) ->
             authorize_thread_create(
                 ctx,
                 {
-                    "graph_id": ASSISTANT_GRAPH_ID,
-                    "metadata": dict(injected_snapshot),
+                    "metadata": {
+                        **injected_snapshot,
+                        "graph_id": ASSISTANT_GRAPH_ID,
+                    },
                 },
             )
         )
