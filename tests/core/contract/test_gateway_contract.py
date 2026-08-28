@@ -63,6 +63,22 @@ LEGACY_ASSISTANT_IDS = (
 )
 
 
+def _authenticated_context(*, internal_worker: bool = False) -> SimpleNamespace:
+    headers = {"X-Assistant-User": "studio-user"}
+    if internal_worker:
+        headers = auth_module._internal_worker_headers("studio-user")
+    user = asyncio.run(
+        authenticate(
+            None,
+            {
+                key.lower().encode(): value.encode()
+                for key, value in headers.items()
+            },
+        )
+    )
+    return SimpleNamespace(user=SimpleNamespace(**user))
+
+
 @pytest.mark.core_invariant("GATE-001")
 def test_agent_server_registers_only_current_graph_identities() -> None:
     root = Path(__file__).resolve().parents[3]
@@ -175,18 +191,7 @@ def test_agent_server_auth_accepts_only_current_graph_identities(monkeypatch) ->
         "metadata": dict(worker_metadata),
     }
     assert asyncio.run(authorize_thread_create(ctx, worker_create)) is False
-    internal_user = asyncio.run(
-        authenticate(
-            None,
-            {
-                key.lower().encode(): value.encode()
-                for key, value in auth_module._internal_worker_headers(
-                    "studio-user"
-                ).items()
-            },
-        )
-    )
-    internal_ctx = SimpleNamespace(user=SimpleNamespace(**internal_user))
+    internal_ctx = _authenticated_context(internal_worker=True)
     worker_create = {
         "graph_id": WORKER_GRAPH_ID,
         "metadata": dict(worker_metadata),
@@ -202,16 +207,25 @@ def test_agent_server_auth_accepts_only_current_graph_identities(monkeypatch) ->
         "owner": "studio-user",
         "assistant_graph_id": ASSISTANT_GRAPH_ID,
     }
+    for state_update in (
+        {"thread_id": "thread-v4"},
+        {"thread_id": "thread-v4", "metadata": None},
+        {"thread_id": "thread-v4", "metadata": {"label": "kept"}},
+    ):
+        assert asyncio.run(authorize_thread_update(ctx, state_update)) == {
+            "owner": "studio-user"
+        }
     for graph_id in (*LEGACY_GRAPH_IDS, "unknown-graph"):
         legacy_update = {
             "thread_id": "legacy-thread",
             "metadata": {"assistant_graph_id": graph_id},
         }
         assert asyncio.run(authorize_thread_update(ctx, legacy_update)) is False
-    rollback = {"thread_id": "legacy-thread", "action": "rollback"}
-    assert asyncio.run(authorize_thread_update(ctx, rollback)) == {
-        "owner": "studio-user"
-    }
+    for action in ("interrupt", "rollback"):
+        action_update = {"thread_id": "legacy-thread", "action": action}
+        assert asyncio.run(authorize_thread_update(ctx, action_update)) == {
+            "owner": "studio-user"
+        }
 
     run = {"assistant_id": SYSTEM_ASSISTANT_IDS[ASSISTANT_GRAPH_ID], "metadata": {}}
     assert asyncio.run(authorize_run_create(ctx, run)) == {
@@ -288,6 +302,36 @@ def test_agent_server_auth_accepts_only_current_graph_identities(monkeypatch) ->
             )
             is False
         )
+
+
+@pytest.mark.core_invariant("GATE-001")
+@pytest.mark.core_invariant("IDENT-001")
+@pytest.mark.parametrize(
+    ("graph_id", "internal_worker"),
+    [
+        (ASSISTANT_GRAPH_ID, False),
+        (MEMORY_GRAPH_ID, False),
+        (WORKER_GRAPH_ID, False),
+        (WORKER_GRAPH_ID, True),
+    ],
+)
+def test_thread_update_rejects_changes_to_server_issued_runtime_facts(
+    graph_id: str,
+    internal_worker: bool,
+) -> None:
+    update = {
+        "thread_id": "existing-thread",
+        "metadata": {
+            "assistant_graph_id": graph_id,
+            ASSISTANT_RUNTIME_METADATA_KEY: {
+                "entry_profile": "async_worker",
+                "repository_snapshot_sha": "a" * 40,
+            },
+        },
+    }
+    ctx = _authenticated_context(internal_worker=internal_worker)
+
+    assert asyncio.run(authorize_thread_update(ctx, update)) is False
 
 
 @pytest.mark.core_invariant("GATE-001")

@@ -181,7 +181,11 @@ async def authorize_thread_update(
     if value.get("action") in {"interrupt", "rollback"}:
         return {"owner": str(ctx.user.identity)}
     metadata = value.get("metadata")
-    if not isinstance(metadata, dict) or THREAD_GRAPH_METADATA_KEY not in metadata:
+    if not isinstance(metadata, dict):
+        return {"owner": str(ctx.user.identity)}
+    if ASSISTANT_RUNTIME_METADATA_KEY in metadata:
+        return False
+    if THREAD_GRAPH_METADATA_KEY not in metadata:
         return {"owner": str(ctx.user.identity)}
     graph_id = str(metadata[THREAD_GRAPH_METADATA_KEY])
     if graph_id not in {ASSISTANT_GRAPH_ID, MEMORY_GRAPH_ID, WORKER_GRAPH_ID}:

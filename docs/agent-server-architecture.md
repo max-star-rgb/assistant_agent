@@ -50,6 +50,10 @@ Assistant 复制成项目配置或另一套 Runtime。
 run create 与 SDK stream 边界都复核 owner 和精确 graph identity。v4 custom Assistant 仍绑定 main graph identity；
 worker 和 Memory 使用自己的 identity。
 
+thread metadata 中服务端签发的 `assistant_agent_runtime` 只允许在 thread create 时写入，创建后保持冻结；任何
+identity（包括 internal worker）的 thread metadata update 只要包含该保留 key 都直接拒绝。普通 label update、
+不携带 metadata 的 state update 以及 owner-scoped interrupt/rollback 保持可用。
+
 retired native v1/v2/v3、worker-v1 或缺失 identity 的 thread/checkpoint 只读，不能进入 v4
 run/resume/replay/stream，也不能靠 metadata update 伪装升级。旧 run 的 interrupt/rollback 仍按 owner 开放，供部署
 前 drain/cancel。迁移不转换旧 checkpoint；Studio、CLI 与媒体客户端必须新建 v4 thread。
