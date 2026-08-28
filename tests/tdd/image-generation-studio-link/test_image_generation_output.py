@@ -34,6 +34,7 @@ def test_model_observation_exposes_only_backend_owned_image_url() -> None:
     content, artifact = native_tool_response("image_generation", result)
     observation = json.loads(content[0]["text"])
 
+    assert "image_id" not in observation
     assert observation["images"] == [
         {
             "image_id": "cake",
