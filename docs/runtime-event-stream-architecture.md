@@ -7,30 +7,26 @@
 | 字段 | 内容 |
 | --- | --- |
 | 定位 | 统一生产 Assistant、只读 worker 与原生 stream 的当前权威 |
-| Owns | 父图拓扑、统一 Agent loop、标准 messages、task state 边界、原生 stream/interrupt/checkpoint |
+| Owns | 统一 Agent 拓扑、Memory middleware、标准 messages、task state 边界、原生 stream/interrupt/checkpoint |
 | Does not own | Agent Server HTTP 生命周期、Tool schema、Memory 后端、媒体 wire、Provider 凭据 |
-| 源码与 schema 入口 | `src/assistant_agent/native_agent/root_graph.py`、`native_agent/assistant_agent.py`、`native_agent/state.py`、`coding/backend.py` |
+| 源码与 schema 入口 | `src/assistant_agent/native_agent/assistant_agent.py`、`native_agent/memory_middleware.py`、`native_agent/state.py`、`coding/backend.py` |
 | 验证入口 | `docs/authority.toml` 中 `runtime-event-stream.verification` |
 | 相邻 authority | Agent Server 见 [`agent-server-architecture.md`](agent-server-architecture.md)；Tool 见 [`tool-calling-architecture.md`](tool-calling-architecture.md)；视觉能力见 [`visual-perception-architecture.md`](visual-perception-architecture.md) |
 
 ## 统一生产图
 
-每个用户会话只有一个 `AssistantRootGraph`，没有公开或内部的 fast、planning、coding 模式路由：
+每个用户会话直接运行一个 `AssistantAgent`，没有外层 wrapper graph，也没有公开或内部的 fast、planning、coding 模式路由：
 
 ```text
-AssistantRootGraph
-  -> memory_recall
-  -> AssistantAgent
-  -> refresh_memory_extraction
-  -> END
-
 AssistantAgent
+  -> MemoryLifecycleMiddleware.before_agent (recall)
   -> direct answer | write_todos | task(read-only) | tools | worktree FS | execute
+  -> MemoryLifecycleMiddleware.after_agent (delayed extraction refresh)
 ```
 
 公开 Graph input 只有标准 `messages`。公开 `AssistantRunContext` 只有 `enable_memory`，默认 true，同时控制本轮
 recall 与 delayed extraction。身份、入口、视觉 capability 和 repository snapshot SHA 只存在于 Agent Server
-签发的 namespaced metadata，不是 Assistant 配置。父图不绑定 saver；thread、run、checkpoint、interrupt、resume、
+签发的 namespaced metadata，不是 Assistant 配置。主图不绑定 saver；thread、run、checkpoint、interrupt、resume、
 cancel 和 Store 均由 Agent Server 注入。
 
 `AssistantAgent` 由 Deep Agents `create_deep_agent` 编译，直接拥有官方 Todo、filesystem、同步 `task`、
@@ -60,14 +56,15 @@ Skill 根与模型可见 worktree 根合并。
 thread metadata 和首个 run metadata。后续 `update_async_task` 必须复用 handle 中同一 SHA；缺失或非法 SHA 会在
 auth/backend 边界 fail closed，不能退回当时最新 HEAD。worker thread/run 还必须来自进程内 async adapter 签发的
 internal capability；普通外部身份即使伪造完整 metadata 也会被拒绝。backend 只有同时看到 thread 的
-`assistant_graph_id=assistant-worker-v2` 与严格 `entry_profile=async_worker` 时才把 SHA 作为 `base_commit`；main 与
+原生 `graph_id=assistant-worker-v2` 与严格 `entry_profile=async_worker` 时才把 SHA 作为 `base_commit`；main 与
 同步 nested task 固定使用 `base_commit=None`，注入 worker snapshot 会失败。因此异步 worker 的所有 run 都读取创建
 任务时的 snapshot。
 
 internal capability 当前是进程内随机 secret，适配本地单进程部署且不会写入 state、thread/run metadata、日志或
 配置文件。多进程 Agent Server 启用前必须改为共享 secret 或正式 service identity。
 
-父图以标准 messages 为事实源，只增加冻结的 `memory_context/memory_status` 与按 task ID 合并的 `async_tasks`。
+主图以标准 messages 为事实源，只增加冻结的 `memory_context/memory_status` 与按 task ID 合并的 `async_tasks`；
+这些字段通过官方 schema metadata 从公开 input 隐藏。
 Tool Profile 和递归步数属于 middleware 私有 state。当前生产图是 `assistant-native-v4`；retired native v1/v2/v3
 和 worker-v1 的 thread/checkpoint 只能检查或 drain/cancel，不能进入 v4 run/resume/replay/stream。
 
@@ -84,8 +81,8 @@ container 或 remote sandbox backend。
 
 ## 原生流与视觉边界
 
-生产消费者直接使用 Agent Server 的 messages/updates/custom/values 和原生生命周期协议。`AssistantAgent` 是父图
-子图；需要模型 token 的消费者必须启用 subgraph stream。媒体入口只订阅 messages/values，并只投影标准 assistant
+生产消费者直接使用 Agent Server 的 messages/updates/custom/values 和原生生命周期协议。`AssistantAgent` 是顶层
+graph；主模型 token 不再依赖 subgraph stream，媒体入口仍可启用 subgraph stream 以接收并过滤内部 task worker，且只投影标准 assistant
 正文；同步 task 与只读 worker 的内部消息、Tool 参数和 ToolMessage 正文不进入媒体 wire。
 
 `ToolProgressMiddleware` 通过原生 custom stream 发送 `tool_name`、`tool_call_id` 和
@@ -95,7 +92,7 @@ main 与 worker 的官方 summarization 从同一 `ProviderConfig` 取得窗口�
 real DeepSeek/native compactor 缺 tokenizer 时 composition 启动失败。
 
 实时摄像头的进程级并行流水线与 namespaced capability facts 仍会运行和冻结；SigLIP2
-latest-wins、关键帧窗口和并行 VLM 始终由视觉 authority 负责，不进入父图或 task。但当前 media custom route
+latest-wins、关键帧窗口和并行 VLM 始终由视觉 authority 负责，不进入主图 state 或 task。但当前 media custom route
 的 `media_graph_input()` 只投影文本，不把 `source=live_camera` block 注入标准 message；因此依赖
 `latest_runtime_media(...).live_video_ids` 的实时视觉 Tool 不会由该入口条件暴露。恢复这些能力需要另立受信的非消息投影
 和 coverage，不得让主 LLM 直接感知摄像头。

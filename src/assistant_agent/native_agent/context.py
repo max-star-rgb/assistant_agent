@@ -21,7 +21,10 @@ class AssistantRunContext(BaseModel):
     enable_memory: bool = Field(
         default=True,
         json_schema_extra={
-            "langgraph_nodes": ["memory_recall", "refresh_memory_extraction"]
+            "langgraph_nodes": [
+                "MemoryLifecycleMiddleware.before_agent",
+                "MemoryLifecycleMiddleware.after_agent",
+            ]
         },
     )
 

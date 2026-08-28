@@ -1,0 +1,8 @@
+{
+  "dependencies": [
+    "."
+  ],
+  "graphs": {
+    "studio-evolution-showcase": "./showcases/studio_evolution/graph.py:graph"
+  }
+}

@@ -23,8 +23,9 @@ assistant-worker-v2 -> assistant_agent.agent_server.graph:native_worker_graph
 assistant-memory-v1 -> assistant_agent.agent_server.graph:native_memory_graph
 ```
 
-用户会话只运行 v4 `AssistantRootGraph`：`memory_recall -> AssistantAgent -> refresh_memory_extraction`。同步 task
-在主 run 内调用只读 worker；异步 delegation 才创建 v2 worker thread/run。Memory 延迟提取使用 v1 Memory graph。
+用户会话直接运行 v4 `AssistantAgent`；Memory recall 与 delayed extraction 调度由其
+`MemoryLifecycleMiddleware.before_agent/after_agent` 接入。同步 task 在主 run 内调用只读 worker；异步 delegation
+才创建 v2 worker thread/run。Memory 延迟提取使用 v1 Memory graph。
 Agent Server 原生拥有 assistant、thread、run、queue、checkpoint、interrupt/resume、cancel、stream 和 Store；
 项目不维护第二套 run manager、checkpoint facade 或产品状态机。
 
@@ -41,13 +42,14 @@ auth 将这三个 UUID 精确映射到各自 graph。retired `assistant-native-v
 `assistant-native-v3` 与 `assistant-worker-v1` 的系统 Assistant UUID 明确拒绝，不能借旧 identity 创建当前 run。
 其他合法 UUID 只可能作为 Agent Server 已持久化的 v4 custom Assistant 进入 main graph：custom Assistant 的创建
 只能选择 v4；name、description、config、context、版本和 active 状态由原生 Assistant API 持久化。read/search
-沿用原生可见性；普通 API update/delete 受 owner filter 治理，Studio 身份沿用官方 Studio 权限。auth 不把 custom
-Assistant 复制成项目配置或另一套 Runtime。
+对普通 API 身份按 owner filter 隔离，三个当前 system Assistant UUID 与 Studio 身份保持可见；update/delete 同样
+受 owner filter 治理。run 创建时 Agent Server 会复用 Assistant read filter 校验 custom Assistant 所有权，不能在自己的
+thread 上运行其他 owner 的 custom Assistant。auth 不把 custom Assistant 复制成项目配置或另一套 Runtime。
 
 ## Thread、checkpoint 与迁移
 
-项目控制的 thread 在创建时同时写 SDK 原生 `graph_id` 和 metadata `assistant_graph_id`。thread create/update、
-run create 与 SDK stream 边界都复核 owner 和精确 graph identity。v4 custom Assistant 仍绑定 main graph identity；
+项目控制的 thread 只使用 SDK 原生 `metadata.graph_id` 作为 graph identity。thread create、run create 与 SDK stream
+边界都复核 owner 和精确 graph identity，thread metadata update 禁止改写该字段。v4 custom Assistant 仍绑定 main graph identity；
 worker 和 Memory 使用自己的 identity。
 
 thread metadata 中服务端签发的 `assistant_agent_runtime` 只允许在 thread create 时写入，创建后保持冻结；任何
@@ -83,7 +85,7 @@ worker run metadata。后续 update 必须复用创建时 SHA。只有进程内 
 thread/run 明确拒绝 `entry_profile=async_worker`、任何 repository snapshot SHA 和 worker-only permission，合法的
 media/system-eval 非 snapshot facts 保持可用。
 
-backend 再读取 thread 已有的 `assistant_graph_id` 独立复核：只有实际 `assistant-worker-v2` graph 配合严格 async
+backend 再读取 runtime metadata 中 Agent Server 原生 `graph_id` 独立复核：只有实际 `assistant-worker-v2` graph 配合严格 async
 facts 才把 SHA 传给 worktree `base_commit`；main/sync nested 固定传 `None`，注入 worker snapshot fail closed。
 internal capability 是当前本地单进程部署的进程内随机 secret，不进入 state、thread/run metadata、日志、`.env` 或
 仓库；多进程部署前必须升级为共享 secret 或正式 service identity。
@@ -95,7 +97,7 @@ sandbox backend。
 
 ## 公开输入、认证与媒体 custom route
 
-公开 Graph input 是严格 `AssistantRootInput`：
+公开 Graph input 使用原生 Agent input schema，只有标准 `messages`：
 
 ```json
 {"messages":[{"role":"user","content":"hello"}]}
@@ -109,9 +111,9 @@ developer hook 从 `X-Assistant-User` 取得 identity，省略时为 `local-deve
 stream/cancel/join、终态 `AIMessage` 投影、视觉引用接入和 callback。它不读取 checkpoint，不执行 Tool/Memory，
 不选择 Assistant 模式，也不构造第二套 Runtime。旧 coding behavior attestation route 已删除。
 
-回答后父图在确定性 companion thread 上 rollback 自己标记的旧 pending Memory run，再 enqueue 新的
+回答后 `MemoryLifecycleMiddleware.after_agent` 在确定性 companion thread 上 rollback 自己标记的旧 pending Memory run，再 enqueue 新的
 `assistant-memory-v1` delayed run。普通 chat 使用 Agent Server 原生 `multitask_strategy="interrupt"`；显式
-checkpoint replay 使用 enqueue。主动投递使用独立 Store，不进入 `AssistantRootGraph`。
+checkpoint replay 使用 enqueue。主动投递使用独立 Store，不进入 `AssistantAgent` run。
 
 进程级 `VisualPerceptionModule` 由 custom-app lifespan 持有；Graph Tool 只消费其窄接口。媒体接入不得合并、
 串行化或删除视觉 authority 定义的 SigLIP2 latest-wins 和并行关键帧 VLM 流水线。

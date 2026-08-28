@@ -26,7 +26,7 @@ prompt。`entry_profile`、视觉 capability token 与 repository snapshot SHA �
 `Runtime.server_info.user.identity`。公开 context 不包含模式、prompt、身份、仓库选择或 Tool 授权。
 
 实时 VIDEO 的当前画面是瞬时事实；若受信入口暴露 `live_view_inspect`，每个新的指示性视觉问题都必须重新调用，不能把历史视觉
-Tool observation 当作本轮证据。`visual_memory_search` 只查当前 VIDEO thread 的短期视觉时间线；父图自动召回的
+Tool observation 当作本轮证据。`visual_memory_search` 只查当前 VIDEO thread 的短期视觉时间线；Memory middleware 自动召回的
 跨会话长期视觉文本以 `[长期视觉记忆]` 标记进入临时 Memory message。
 
 ## Skill、filesystem 与 task state
@@ -52,7 +52,7 @@ thread/run metadata 传递，后续 update 继续使用同一 SHA。异步 worke
 
 ## Memory、预算与历史
 
-父图冻结的 `memory_context` 不进入 system prompt。位于 summarization 内层的 model-call middleware 在最新真实
+`before_agent` 冻结的 `memory_context` 不进入 system prompt。位于 summarization 内层的 model-call middleware 在最新真实
 `HumanMessage` 前临时插入一条引用格式的 Memory `HumanMessage`，明确它可能过时且不是本轮指令。这条消息不写入
 state、checkpoint messages 或摘要，不能用于确认身份、权限、当前事实和操作参数。
 

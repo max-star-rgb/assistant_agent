@@ -15,7 +15,7 @@
 
 ## 生产 tracing
 
-`assistant-native-v4` 直接依赖 LangChain/LangGraph callback。Agent Server、父图、子图、node、LLM 与 Tool 的
+`assistant-native-v4` 直接依赖 LangChain/LangGraph callback。Agent Server、主图、子图、node、LLM 与 Tool 的
 实际执行树由 LangSmith native tracing 观察；生产 composition 不创建 `ProductEventProjector`、canonical
 run tree、JSONL lifecycle shadow tree 或 OTel 重建层。
 
@@ -35,7 +35,7 @@ Tool artifact 和 message content 是否记录遵循 LangSmith/部署脱敏配�
 
 ## 旧本地观测边界
 
-历史 canonical reader、ledger、trace query 与诊断工具不是新父图的执行依赖，也不得反向决定 graph
+历史 canonical reader、ledger、trace query 与诊断工具不是当前主图的执行依赖，也不得反向决定 graph
 route、resume、cancel 或 terminal。历史 trace 诊断按
 [`observability-diagnosis-runbook.md`](observability-diagnosis-runbook.md) 的独立 owner 执行。
 

@@ -28,7 +28,6 @@ from assistant_agent.native_agent.providers import (
     MockAssistantChatModel,
     read_only_worker_model_view,
 )
-from assistant_agent.native_agent.root_graph import build_assistant_root_graph
 from assistant_agent.native_agent.state import AssistantAgentState
 from assistant_agent.native_agent.tool_profiles import project_tool_profiles
 
@@ -44,10 +43,6 @@ def _tool(name: str, effect: str) -> BaseTool:
         name=name,
         metadata={"effect": effect},
     )
-
-
-class _Memory:
-    backend_id = "disabled"
 
 
 def test_main_uses_factory_filesystem_and_unified_hitl(monkeypatch, tmp_path) -> None:
@@ -169,15 +164,22 @@ def test_main_and_worker_use_the_configured_summarization_budget(
     ).model is captured["worker"]["model"]
 
 
-def test_parent_graph_has_one_execution_route() -> None:
-    graph = build_assistant_root_graph(
-        memory_backend=_Memory(),
-        assistant_agent=RunnableLambda(lambda state: {"messages": state["messages"]}),
-        extraction_delay_seconds=0,
+def test_main_graph_has_memory_lifecycle_without_parent_wrapper(tmp_path: Path) -> None:
+    graph = build_assistant_agent(
+        MockAssistantChatModel(),
+        [],
+        backend=object(),
+        worker_graph=RunnableLambda(lambda state: state),
+        skills_backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
     )
     nodes = set(graph.get_graph().nodes)
 
-    assert {"memory_recall", "assistant_agent", "refresh_memory_extraction"} <= nodes
+    assert {
+        "MemoryLifecycleMiddleware.before_agent",
+        "model",
+        "MemoryLifecycleMiddleware.after_agent",
+    } <= nodes
+    assert "assistant_agent" not in nodes
     assert not {"execution_router", "fast_agent", "planning_agent", "coding_agent"} & nodes
 
 

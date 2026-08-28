@@ -6,6 +6,7 @@ from typing import Annotated, Literal, NotRequired
 
 from deepagents import DeepAgentState
 from langchain.agents import AgentState
+from langchain.agents.middleware.types import OmitFromInput, PrivateStateAttr
 from langchain_core.messages import AnyMessage
 from langgraph.graph import MessagesState
 from pydantic import BaseModel, ConfigDict, JsonValue
@@ -27,14 +28,8 @@ def merge_async_tasks(
 AsyncTasks = Annotated[
     dict[str, dict[str, JsonValue]],
     merge_async_tasks,
+    OmitFromInput,
 ]
-
-class AssistantRootInput(BaseModel):
-    """Strict public input for a new native assistant run."""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    messages: list[AnyMessage]
 
 
 class MemoryExtractionInput(BaseModel):
@@ -45,20 +40,20 @@ class MemoryExtractionInput(BaseModel):
     messages: list[AnyMessage]
 
 
-class AssistantRootState(MessagesState):
-    """State shared across the parent graph and assistant subgraph."""
-
-    memory_context: NotRequired[tuple[str, ...]]
-    memory_status: NotRequired[MemoryStatus]
-    async_tasks: NotRequired[AsyncTasks]
-
-
 class AssistantAgentState(DeepAgentState):
     """State used by the main assistant agent."""
 
-    memory_context: NotRequired[tuple[str, ...]]
-    memory_status: NotRequired[MemoryStatus]
-    provider_search_profile: NotRequired[ProviderSearchProfile]
+    memory_context: NotRequired[Annotated[tuple[str, ...], OmitFromInput]]
+    memory_status: NotRequired[Annotated[MemoryStatus, OmitFromInput]]
+    provider_search_profile: NotRequired[
+        Annotated[ProviderSearchProfile, PrivateStateAttr]
+    ]
+    async_tasks: NotRequired[AsyncTasks]
+
+
+class AssistantAsyncTaskState(AgentState):
+    """Keep upstream async task state out of the public input schema."""
+
     async_tasks: NotRequired[AsyncTasks]
 
 
@@ -77,9 +72,8 @@ class MemoryExtractionState(MessagesState):
 __all__ = [
     "AsyncTasks",
     "AssistantAgentState",
+    "AssistantAsyncTaskState",
     "AssistantReadOnlyWorkerState",
-    "AssistantRootInput",
-    "AssistantRootState",
     "MemoryExtractionInput",
     "MemoryExtractionState",
     "MemoryStatus",

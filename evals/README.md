@@ -18,7 +18,7 @@ Memory 或媒体真实能力，并把有限、脱敏的结果写入 `.data/evals
 冒烟：每个当前业务 Tool 通过标准 `ToolNode` 执行固定输入，只检查成功返回，不复制 Deep Agents filesystem 等
 框架 Tool 的集成覆盖。`run_all.py` 递归运行该目录的非 helper 冒烟脚本。
 
-仓库继续提供 `NativeGraphEvaluationTarget`，它直接调用生产 `AssistantRootGraph`，不经过旧 Runtime facade 或
+仓库继续提供 `NativeGraphEvaluationTarget`，它直接调用生产 `AssistantAgent` graph，不经过旧 Runtime facade 或
 mock fallback。旧 Runtime Regression、Workflow Regression、Release Review 和 CodingGraph behavior baseline
 runner 均已删除；当前没有上线前统一 Agent 行为门禁。
 

@@ -2,21 +2,21 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import nullcontext
+import importlib
 import json
 from pathlib import Path
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
+from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableLambda
-from langgraph.graph import END, START, StateGraph
 import pytest
 
 from assistant_agent.native_agent import memory_graph as memory_graph_module
-from assistant_agent.native_agent import root_graph as root_graph_module
 from assistant_agent.native_agent.assistant_agent import isolated_read_only_worker
 from assistant_agent.native_agent.context import AssistantRunContext
-from assistant_agent.native_agent.root_graph import build_assistant_root_graph
+from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.native_agent.state import AssistantAgentState
 from scripts import run_server
 
@@ -41,8 +41,6 @@ class _Memory:
 
 
 class _FailingMemory(_Memory):
-    backend_id = "disabled"
-
     async def recall(self, **_kwargs: Any):
         self.events.append("recall")
         raise ConnectionError("recall-failure-sentinel")
@@ -113,21 +111,49 @@ class _FailingRefreshClient(_Client):
         self.threads = _FailingThreads()
 
 
-def _assistant_branch():
-    def answer(_state):
-        return {"messages": [AIMessage(content="answer-sentinel")]}
+class _PagedRuns(_Runs):
+    def __init__(self) -> None:
+        super().__init__()
+        self.pending = [
+            {
+                "run_id": f"memory-{index}",
+                "metadata": {"assistant_agent_run_kind": "memory_extraction"},
+            }
+            for index in range(101)
+        ]
 
-    builder = StateGraph(AssistantAgentState, context_schema=AssistantRunContext)
-    builder.add_node("answer", answer)
-    builder.add_edge(START, "answer")
-    builder.add_edge("answer", END)
-    return builder.compile(name="AssistantAgent")
+    async def list(
+        self,
+        _thread_id: str,
+        *,
+        limit: int,
+        offset: int,
+        **_kwargs: Any,
+    ) -> list[dict[str, Any]]:
+        return self.pending[offset : offset + limit]
+
+    async def cancel(self, thread_id: str, run_id: str, **kwargs: Any) -> None:
+        await super().cancel(thread_id, run_id, **kwargs)
+        self.pending = [run for run in self.pending if run["run_id"] != run_id]
 
 
-def _root_graph(backend: _Memory):
-    return build_assistant_root_graph(
-        memory_backend=backend,
-        assistant_agent=_assistant_branch(),
+class _PagedClient(_Client):
+    def __init__(self) -> None:
+        super().__init__()
+        self.runs = _PagedRuns()
+
+
+def _assistant_graph(backend: _Memory):
+    middleware_module = importlib.import_module(
+        "assistant_agent.native_agent.memory_middleware"
+    )
+    return create_agent(
+        model=MockAssistantChatModel(),
+        tools=[],
+        state_schema=AssistantAgentState,
+        context_schema=AssistantRunContext,
+        middleware=[middleware_module.MemoryLifecycleMiddleware(backend)],
+        name="AssistantAgent",
     )
 
 
@@ -137,8 +163,11 @@ def test_unified_chat_recall_once_then_rolls_back_and_enqueues_extraction(
 ) -> None:
     client = _Client()
     backend = _Memory()
-    monkeypatch.setattr(root_graph_module, "get_client", lambda: client, raising=False)
-    graph = _root_graph(backend)
+    middleware_module = importlib.import_module(
+        "assistant_agent.native_agent.memory_middleware"
+    )
+    monkeypatch.setattr(middleware_module, "get_client", lambda: client)
+    graph = _assistant_graph(backend)
 
     result = asyncio.run(
         graph.ainvoke(
@@ -186,11 +215,41 @@ def test_unified_chat_recall_once_then_rolls_back_and_enqueues_extraction(
 
 
 @pytest.mark.core_invariant("MEMORY-001")
+def test_memory_refresh_rolls_back_every_pending_page_before_enqueue(
+    monkeypatch,
+) -> None:
+    client = _PagedClient()
+    middleware_module = importlib.import_module(
+        "assistant_agent.native_agent.memory_middleware"
+    )
+    monkeypatch.setattr(middleware_module, "get_client", lambda: client)
+
+    asyncio.run(
+        _assistant_graph(_Memory()).ainvoke(
+            {"messages": [HumanMessage(content="request-sentinel")]},
+            context=AssistantRunContext(),
+            config={
+                "configurable": {
+                    "thread_id": "thread-paged-sentinel",
+                    "langgraph_auth_user": _User(),
+                }
+            },
+        )
+    )
+
+    assert len(client.runs.cancellations) == 101
+    assert len(client.runs.requests) == 1
+
+
+@pytest.mark.core_invariant("MEMORY-001")
 def test_disable_memory_skips_recall_and_extraction(monkeypatch) -> None:
     client = _Client()
     backend = _Memory()
-    monkeypatch.setattr(root_graph_module, "get_client", lambda: client, raising=False)
-    graph = _root_graph(backend)
+    middleware_module = importlib.import_module(
+        "assistant_agent.native_agent.memory_middleware"
+    )
+    monkeypatch.setattr(middleware_module, "get_client", lambda: client)
+    graph = _assistant_graph(backend)
 
     result = asyncio.run(
         graph.ainvoke(
@@ -211,7 +270,7 @@ def test_disable_memory_skips_recall_and_extraction(monkeypatch) -> None:
 @pytest.mark.core_invariant("MEMORY-001")
 def test_recall_reports_error_after_native_retries() -> None:
     backend = _FailingMemory()
-    graph = _root_graph(backend)
+    graph = _assistant_graph(backend)
 
     with pytest.raises(ConnectionError, match="recall-failure-sentinel"):
         asyncio.run(
@@ -235,8 +294,11 @@ def test_recall_reports_error_after_native_retries() -> None:
 @pytest.mark.core_invariant("MEMORY-001")
 def test_refresh_reports_error_after_native_retries(monkeypatch) -> None:
     client = _FailingRefreshClient()
-    monkeypatch.setattr(root_graph_module, "get_client", lambda: client, raising=False)
-    graph = _root_graph(_Memory())
+    middleware_module = importlib.import_module(
+        "assistant_agent.native_agent.memory_middleware"
+    )
+    monkeypatch.setattr(middleware_module, "get_client", lambda: client)
+    graph = _assistant_graph(_Memory())
 
     with pytest.raises(ConnectionError, match="refresh-failure-sentinel"):
         asyncio.run(

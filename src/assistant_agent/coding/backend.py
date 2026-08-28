@@ -11,7 +11,6 @@ from langgraph.config import get_config
 from langgraph.runtime import get_runtime
 from pydantic import ValidationError
 
-from assistant_agent.agent_server.client import THREAD_GRAPH_METADATA_KEY
 from assistant_agent.agent_server.config import WORKER_GRAPH_ID
 from assistant_agent.coding.workspace import (
     CodingWorkspace,
@@ -39,11 +38,7 @@ def _workspace(
         if isinstance(metadata, Mapping)
         else None
     )
-    graph_id = (
-        metadata.get(THREAD_GRAPH_METADATA_KEY)
-        if isinstance(metadata, Mapping)
-        else None
-    )
+    graph_id = metadata.get("graph_id") if isinstance(metadata, Mapping) else None
     if graph_id == WORKER_GRAPH_ID:
         if (
             not isinstance(raw_facts, Mapping)

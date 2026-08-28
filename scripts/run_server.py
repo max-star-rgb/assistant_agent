@@ -37,6 +37,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=LANGGRAPH_CONFIG,
+        help="LangGraph config used by the dev backend.",
+    )
     parser.add_argument("--no-reload", action="store_true")
     parser.add_argument("--no-browser", action="store_true", default=True)
     parser.add_argument(
@@ -187,12 +193,13 @@ def build_server_env(
 @contextmanager
 def materialize_dev_config(
     *,
+    source_config: Path = LANGGRAPH_CONFIG,
     env_file: str,
     use_env_file: bool,
 ) -> Iterator[Path]:
     """Create a dev config whose env source matches the wrapper CLI flags."""
 
-    config = json.loads(LANGGRAPH_CONFIG.read_text(encoding="utf-8"))
+    config = json.loads(source_config.read_text(encoding="utf-8"))
     config["env"] = (
         str((REPO_ROOT / env_file).resolve()) if use_env_file else {}
     )
@@ -275,6 +282,9 @@ def _run_postgres_backend(
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    source_config = (
+        args.config if args.config.is_absolute() else REPO_ROOT / args.config
+    )
     env = build_server_env(
         os.environ.copy(),
         server_port=args.port,
@@ -285,10 +295,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         backend=args.backend,
     )
     if args.backend == "postgres":
+        if source_config.resolve() != LANGGRAPH_CONFIG.resolve():
+            raise SystemExit("--config is supported only by the dev backend")
         return _run_postgres_backend(args, env=env, log_path=log_path)
 
     require_dev_log_outside_repo(log_path)
     with materialize_dev_config(
+        source_config=source_config,
         env_file=args.env_file,
         use_env_file=not args.no_env_file,
     ) as config_path:

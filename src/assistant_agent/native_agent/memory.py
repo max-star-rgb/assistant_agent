@@ -1,4 +1,4 @@
-"""Minimal long-term memory protocol and fixed native graph nodes."""
+"""Minimal long-term memory protocol and native lifecycle operations."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from assistant_agent.native_agent.context import (
 )
 from assistant_agent.native_agent.providers import create_chat_model
 from assistant_agent.native_agent.state import (
-    AssistantRootState,
+    AssistantAgentState,
     MemoryExtractionState,
 )
 
@@ -57,7 +57,7 @@ _LANGMEM_MEMORY_INSTRUCTIONS = """\
 
 @runtime_checkable
 class MemoryBackend(Protocol):
-    """Only the two operations owned by the parent graph memory nodes."""
+    """Only the two operations owned by Memory middleware and extraction graph."""
 
     backend_id: str
 
@@ -374,8 +374,8 @@ def create_memory_backend(
     )
 
 
-async def memory_recall_node(
-    state: AssistantRootState,
+async def recall_memory(
+    state: AssistantAgentState,
     runtime: Runtime[AssistantRunContext],
     *,
     backend: MemoryBackend,
@@ -544,5 +544,5 @@ __all__ = [
     "MemoryBackendConfigurationError",
     "create_memory_backend",
     "memory_extract_node",
-    "memory_recall_node",
+    "recall_memory",
 ]

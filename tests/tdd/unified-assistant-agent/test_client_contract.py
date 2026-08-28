@@ -295,7 +295,7 @@ def test_worker_authorization_accepts_internal_capability(
         if operation == "thread"
         else {
             "owner": "worker-user",
-            "assistant_graph_id": WORKER_GRAPH_ID,
+            "graph_id": WORKER_GRAPH_ID,
         }
     )
     assert asyncio.run(authorize(_auth_context(internal_worker=True), value)) == expected

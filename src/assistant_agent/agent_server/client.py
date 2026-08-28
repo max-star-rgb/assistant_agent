@@ -11,9 +11,6 @@ from langgraph_sdk import get_client
 from assistant_agent.agent_server.config import ASSISTANT_GRAPH_ID
 
 
-THREAD_GRAPH_METADATA_KEY = "assistant_graph_id"
-
-
 class IncompatibleCheckpointGraphError(ValueError):
     """A checkpoint belongs to a graph definition that cannot be resumed here."""
 
@@ -30,35 +27,13 @@ def require_thread_graph_identity(
     """Fail closed unless thread metadata binds the expected runnable graph."""
 
     metadata = thread.get("metadata")
-    graph_id = (
-        metadata.get(THREAD_GRAPH_METADATA_KEY)
-        if isinstance(metadata, Mapping)
-        else None
-    )
+    graph_id = metadata.get("graph_id") if isinstance(metadata, Mapping) else None
     if graph_id != expected_graph_id:
         actual = graph_id if isinstance(graph_id, str) and graph_id else "unknown"
         raise IncompatibleThreadGraphError(
             f"thread graph {actual!r} cannot run under {expected_graph_id!r}"
         )
     return expected_graph_id
-
-
-def bind_thread_graph_identity(
-    metadata: Mapping[str, object],
-    *,
-    expected_graph_id: str,
-) -> dict[str, object]:
-    """Return create metadata with one immutable runnable graph binding."""
-
-    bound = dict(metadata)
-    configured = bound.get(THREAD_GRAPH_METADATA_KEY)
-    if configured is not None and configured != expected_graph_id:
-        actual = configured if isinstance(configured, str) and configured else "unknown"
-        raise IncompatibleThreadGraphError(
-            f"thread graph {actual!r} cannot run under {expected_graph_id!r}"
-        )
-    bound[THREAD_GRAPH_METADATA_KEY] = expected_graph_id
-    return bound
 
 
 def require_current_checkpoint_graph(
@@ -129,12 +104,8 @@ class SdkAgentServerClient:
         thread_id: str | None = None,
         graph_id: str,
     ) -> str:
-        bound_metadata = bind_thread_graph_identity(
-            metadata,
-            expected_graph_id=graph_id,
-        )
         thread = await self._client.threads.create(
-            metadata=bound_metadata,
+            metadata=dict(metadata),
             thread_id=thread_id,
             if_exists="do_nothing" if thread_id is not None else None,
             graph_id=graph_id,
@@ -204,10 +175,8 @@ class SdkAgentServerClient:
 
 __all__ = [
     "AgentServerClient",
-    "bind_thread_graph_identity",
     "IncompatibleCheckpointGraphError",
     "IncompatibleThreadGraphError",
-    "THREAD_GRAPH_METADATA_KEY",
     "require_thread_graph_identity",
     "require_current_checkpoint_graph",
     "SdkAgentServerClient",

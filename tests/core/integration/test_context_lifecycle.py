@@ -20,6 +20,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
+from langgraph_sdk.auth.types import StudioUser
 from pydantic import PrivateAttr
 
 from assistant_agent.agent_server.services import AgentServerExecutionOwner
@@ -254,17 +255,53 @@ class _BrowserModel(MockAssistantChatModel):
 
 @pytest.mark.core_invariant("CTX-001")
 def test_frozen_memory_is_transient_context_before_the_current_request(
+    monkeypatch,
     tmp_path: Path,
 ) -> None:
+    class Memory:
+        backend_id = "probe"
+
+        async def recall(self, **_kwargs: Any):
+            return ("memory-sentinel",)
+
+        async def commit(self, **_kwargs: Any) -> None:
+            return None
+
+    class Threads:
+        async def create(self, **kwargs: Any) -> dict[str, Any]:
+            return {"thread_id": kwargs["thread_id"]}
+
+    class Runs:
+        async def list(self, *_args: Any, **_kwargs: Any) -> list[Any]:
+            return []
+
+        async def create(self, **_kwargs: Any) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "assistant_agent.native_agent.memory_middleware.get_client",
+        lambda: SimpleNamespace(threads=Threads(), runs=Runs()),
+    )
     model = _CaptureMessagesModel()
     model.observed_messages = []
-    graph = _agent(tmp_path, model)
+    graph = build_assistant_agent(
+        model,
+        [],
+        backend=LocalShellBackend(root_dir=tmp_path, virtual_mode=True),
+        worker_graph=_worker(),
+        skills_backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
+        memory_backend=Memory(),
+        memory_extraction_delay_seconds=0,
+    )
     result = graph.invoke(
-        {
-            "messages": [HumanMessage(content="request-sentinel")],
-            "memory_context": ("memory-sentinel",),
-        },
+        {"messages": [HumanMessage(content="request-sentinel")]},
         context=AssistantRunContext(),
+        config={
+            "configurable": {
+                "thread_id": "memory-context-thread",
+                "langgraph_auth_user": StudioUser("user-sentinel"),
+            }
+        },
     )
 
     model_humans = [
@@ -301,6 +338,12 @@ def test_task_uses_narrow_read_only_worker_state_and_preserves_parent_handles(
         }
 
     parent_tasks = {"parent-task-sentinel": {"status": "running"}}
+    parent_state = {
+        "messages": [HumanMessage(content="task-sentinel")],
+        "memory_context": ("memory-sentinel",),
+        "provider_search_profile": "travel_general",
+        "async_tasks": parent_tasks,
+    }
     projected = isolated_read_only_worker(
         RunnableLambda(
             lambda state: {
@@ -308,17 +351,12 @@ def test_task_uses_narrow_read_only_worker_state_and_preserves_parent_handles(
                 "structured_response": {"answer": "structured-sentinel"},
             }
         )
-    ).invoke(
-        {
-            "messages": [HumanMessage(content="task-sentinel")],
-            "memory_context": ("memory-sentinel",),
-            "provider_search_profile": "travel_general",
-            "async_tasks": parent_tasks,
-        }
-    )
+    ).invoke(parent_state)
     assert set(projected) == {"messages", "structured_response"}
     assert [message.id for message in projected["messages"]] == ["worker-final"]
     assert projected["structured_response"] == {"answer": "structured-sentinel"}
+    assert parent_state["async_tasks"] == parent_tasks
+    assert parent_state["provider_search_profile"] == "travel_general"
     observed_worker_states.clear()
 
     graph = _agent(
@@ -327,13 +365,7 @@ def test_task_uses_narrow_read_only_worker_state_and_preserves_parent_handles(
         worker=RunnableLambda(worker),
     )
     result = graph.invoke(
-        {
-            "messages": [HumanMessage(content="request-sentinel")],
-            "memory_context": ("memory-sentinel",),
-            "memory_status": "ready",
-            "provider_search_profile": "travel_general",
-            "async_tasks": parent_tasks,
-        },
+        {"messages": [HumanMessage(content="request-sentinel")]},
         context=AssistantRunContext(),
     )
 
@@ -344,8 +376,6 @@ def test_task_uses_narrow_read_only_worker_state_and_preserves_parent_handles(
     ]
     assert "provider_search_profile" not in worker_state
     assert "async_tasks" not in worker_state
-    assert result["async_tasks"] == parent_tasks
-    assert result["provider_search_profile"] == "travel_general"
     assert "active_tool_profile_ids" not in result
     assert not {
         "worker-draft",

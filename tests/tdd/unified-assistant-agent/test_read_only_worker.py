@@ -25,7 +25,6 @@ from assistant_agent.coding.backend import (
 from assistant_agent.coding.config import CodingConfig
 from assistant_agent.coding.workspace import CodingWorkspaceError
 from assistant_agent.agent_server import services
-from assistant_agent.agent_server.client import THREAD_GRAPH_METADATA_KEY
 from assistant_agent.agent_server.config import ASSISTANT_GRAPH_ID, WORKER_GRAPH_ID
 from assistant_agent.config import ProviderConfig
 from assistant_agent.native_agent import assistant_agent as assistant_agent_module
@@ -307,7 +306,7 @@ def test_main_backend_forces_base_commit_none(
         lambda: {
             "configurable": {"thread_id": "thread-sentinel"},
             "metadata": {
-                THREAD_GRAPH_METADATA_KEY: ASSISTANT_GRAPH_ID,
+                "graph_id": ASSISTANT_GRAPH_ID,
                 **assistant_runtime_metadata(facts),
             },
         },
@@ -344,7 +343,7 @@ def test_worker_backend_passes_exact_snapshot_for_worker_graph(
         lambda: {
             "configurable": {"thread_id": "worker-thread"},
             "metadata": {
-                THREAD_GRAPH_METADATA_KEY: WORKER_GRAPH_ID,
+                "graph_id": WORKER_GRAPH_ID,
                 **assistant_runtime_metadata(
                     AssistantRuntimeFacts(
                         entry_profile="async_worker",
@@ -382,7 +381,7 @@ def test_main_backend_rejects_injected_worker_snapshot(
         lambda: {
             "configurable": {"thread_id": "main-thread"},
             "metadata": {
-                THREAD_GRAPH_METADATA_KEY: ASSISTANT_GRAPH_ID,
+                "graph_id": ASSISTANT_GRAPH_ID,
                 ASSISTANT_RUNTIME_METADATA_KEY: {
                     "entry_profile": "async_worker",
                     "repository_snapshot_sha": "a" * 40,
@@ -415,7 +414,7 @@ def test_async_worker_never_falls_back_without_snapshot(
         lambda: {
             "configurable": {"thread_id": "worker-thread"},
             "metadata": {
-                THREAD_GRAPH_METADATA_KEY: WORKER_GRAPH_ID,
+                "graph_id": WORKER_GRAPH_ID,
                 ASSISTANT_RUNTIME_METADATA_KEY: {"entry_profile": "async_worker"}
             },
         },
@@ -445,7 +444,7 @@ def test_async_worker_rejects_malformed_snapshot_before_workspace_resolution(
         lambda: {
             "configurable": {"thread_id": "worker-thread"},
             "metadata": {
-                THREAD_GRAPH_METADATA_KEY: WORKER_GRAPH_ID,
+                "graph_id": WORKER_GRAPH_ID,
                 ASSISTANT_RUNTIME_METADATA_KEY: {
                     "entry_profile": "async_worker",
                     "repository_snapshot_sha": "invalid",
@@ -480,7 +479,7 @@ def test_async_worker_classifies_present_invalid_snapshot_as_invalid(
         lambda: {
             "configurable": {"thread_id": "worker-thread"},
             "metadata": {
-                THREAD_GRAPH_METADATA_KEY: WORKER_GRAPH_ID,
+                "graph_id": WORKER_GRAPH_ID,
                 ASSISTANT_RUNTIME_METADATA_KEY: {
                     "entry_profile": "async_worker",
                     "repository_snapshot_sha": snapshot,
@@ -534,7 +533,7 @@ def test_worker_factory_uses_read_only_worktree_backend(
     assistant_calls: list[dict[str, Any]] = []
     worker = object()
     assistant = object()
-    root_kwargs: dict[str, Any] = {}
+    memory_backend = object()
     model_view = object()
     model = SimpleNamespace(
         _llm_type="assistant-agent-dashscope-native",
@@ -583,7 +582,7 @@ def test_worker_factory_uses_read_only_worktree_backend(
         lambda config, store: (
             model,
             resources,
-            object(),
+            memory_backend,
             tmp_path,
             "repo-sentinel",
             CodingConfig(),
@@ -603,21 +602,18 @@ def test_worker_factory_uses_read_only_worktree_backend(
     )
     monkeypatch.setattr(services, "build_read_only_worker", build_worker)
     monkeypatch.setattr(services, "build_assistant_agent", build_assistant)
-    monkeypatch.setattr(
-        services,
-        "build_assistant_root_graph",
-        lambda **kwargs: root_kwargs.update(kwargs) or object(),
-    )
     monkeypatch.setattr(services, "build_memory_extraction_graph", lambda **kwargs: object())
 
-    asyncio.run(services.AgentServerExecutionOwner.compose(store=None))
+    owner = asyncio.run(services.AgentServerExecutionOwner.compose(store=None))
 
     assert len(worker_calls) == len(assistant_calls) == 1
     assert worker_calls[0]["args"][0] is model
     assert isinstance(worker_calls[0]["backend"], ReadOnlyCodingWorkspaceBackend)
     assert isinstance(assistant_calls[0]["backend"], CodingWorkspaceBackend)
     assert assistant_calls[0]["worker_graph"] is worker
-    assert root_kwargs["assistant_agent"] is assistant
+    assert assistant_calls[0]["memory_backend"] is memory_backend
+    assert assistant_calls[0]["memory_extraction_delay_seconds"] == 0
+    assert owner.graph is assistant
     assert counter_factory_calls == [config]
     for call in (worker_calls[0], assistant_calls[0]):
         assert call["context_window_tokens"] == 96_000

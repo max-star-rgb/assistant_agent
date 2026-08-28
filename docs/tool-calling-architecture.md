@@ -8,7 +8,7 @@
 | --- | --- |
 | 定位 | 统一生产 Agent 的 Tool schema、filesystem、执行、HITL、MCP 与 Provider-native 能力权威 |
 | Owns | `BaseTool`、`ToolRuntime` 注入、`ToolNode`、effect metadata、Deep Agents filesystem、官方 MCP 与 Tool middleware |
-| Does not own | 父图拓扑、Memory、Provider HTTP wire、媒体 WebSocket、后台感知和 durable 状态机 |
+| Does not own | 主图拓扑、Memory、Provider HTTP wire、媒体 WebSocket、后台感知和 durable 状态机 |
 | 源码与 schema 入口 | `src/assistant_agent/native_agent/assistant_agent.py`、`native_agent/tools.py`、`coding/backend.py`、`tools/`、`mcp/` |
 | 验证入口 | `docs/authority.toml` 中 `tool-calling.verification` |
 | 相邻 authority | Runtime 见 [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md)；Memory 见 [`memory-service-architecture.md`](memory-service-architecture.md)；视觉能力见 [`visual-perception-architecture.md`](visual-perception-architecture.md) |

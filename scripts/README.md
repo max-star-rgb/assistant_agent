@@ -10,7 +10,8 @@ eval、Agent Server 主链路覆盖的 probe 不应继续沉积到本目录。
 
 - `scripts/run_server.py`：启动 `langgraph.json` 所声明的 Agent Server、原生 Graph 与 media custom route，
   dev backend 默认允许 10 个并发 job，避免延迟 Memory 提取占满唯一 worker 后阻塞实时聊天；可用
-  `--n-jobs-per-worker` 显式调整。
+  `--n-jobs-per-worker` 显式调整。dev backend 可用 `--config` 显式选择独立配置；例如 Studio 演进展示使用
+  `langgraph.showcase.json`，仍复用同一个单实例锁与严格端口检查。PostgreSQL backend 只接受默认配置。
   不构造项目自有 Runtime。`--backend dev`（默认）调用 `langgraph dev`，状态落在仓库共享的
   `.langgraph_api/`，只适合单个本地开发实例。wrapper 使用工作目录级单实例锁，并在启动前检查请求端口；
   端口被占用时直接失败，不允许 `langgraph dev` 自动改用随机端口。PyCharm 共享配置 **Agent Server (Real)**

@@ -122,8 +122,8 @@ capability token 放入 namespaced run metadata；token 按认证身份与 threa
 }
 ```
 
-媒体入口创建原生 run 时开启 `stream_subgraphs=true`，因为统一 `AssistantAgent` 是父图中的原生子图；否则 Provider
-虽已产生 token，顶层 Agent Server stream 仍看不到子图消息。模型在 ToolCall 前生成的普通文本按上述结构
+媒体入口创建原生 run 时继续开启 `stream_subgraphs=true`，用于接收并过滤同步 task worker 的内部流；统一
+`AssistantAgent` 已是顶层 graph，主模型 token 不依赖子图流。模型在 ToolCall 前生成的普通文本按上述结构
 原样增量发送；若模型直接产生 ToolCall 而没有任何前导正文，媒体适配器不合成提示语，等待模型后续正文或
 终态。ToolCall name/arguments、ToolMessage、原生 updates 与 custom Tool 生命周期均不进入媒体正文。
 
@@ -188,7 +188,7 @@ WebSocket 挂断也不承担 Memory 语义。
 
 ### 主动 `chatResponse`
 
-主动消息由显式产品 publisher 写入 durable Store，不经过当前 `AssistantRootGraph`。媒体连接按 native
+主动消息由显式产品 publisher 写入 durable Store，不经过当前 `AssistantAgent` run。媒体连接按 native
 thread 主动 pull，无需先收到对应 `chat` 请求，仍复用现有
 `chatResponse` envelope：
 
@@ -274,8 +274,8 @@ run/checkpoint，也不宣称跨进程、离线或 exactly-once 投递；没有 
 
 相同 `assistant graph ID + user + vendor sessionId` 通过确定性 UUID 映射到同一个 native thread；同一
 `assistant-native-v4` connection 重连不会创建第二份对话轴，且 v4 UUID 不会碰撞旧版 native v1/v2/v3 UUID。
-创建请求以 `if_exists="do_nothing"` 返回 existing thread 时，中央 SDK 边界仍会验证稳定 metadata
-`assistant_graph_id=assistant-native-v4`；retired native v1/v2/v3、worker-v1 或缺失字段的 thread 在 session bind
+创建请求以 `if_exists="do_nothing"` 返回 existing thread 时，中央 SDK 边界仍会验证 Agent Server 原生 metadata
+`graph_id=assistant-native-v4`；retired native v1/v2/v3、worker-v1 或缺失字段的 thread 在 session bind
 和 run 创建前拒绝。
 custom route 创建 run 时使用 `stream_resumable=true` 与 `on_disconnect=continue`，内部订阅临时断开后从最后
 event ID 调用 `threads.join_stream`，而不是重建项目自有 session/runtime。同一连接的重复 `chatIndex` 在创建

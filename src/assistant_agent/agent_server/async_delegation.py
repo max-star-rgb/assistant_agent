@@ -21,6 +21,7 @@ from assistant_agent.native_agent.context import (
     assistant_runtime_metadata,
     authenticated_user_identity,
 )
+from assistant_agent.native_agent.state import AssistantAsyncTaskState
 from assistant_agent.native_agent.tool_profiles import ToolProfile
 
 
@@ -85,6 +86,7 @@ def build_async_subagent_middleware(
             }
         ]
     )
+    middleware.state_schema = AssistantAsyncTaskState
     middleware.tools = [
         _authenticated_tool(tool, workspace_service, repo_id)
         for tool in middleware.tools

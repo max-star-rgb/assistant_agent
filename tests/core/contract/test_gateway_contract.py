@@ -12,6 +12,8 @@ from pydantic import ValidationError
 
 from assistant_agent.agent_server import auth as auth_module
 from assistant_agent.agent_server.auth import (
+    allow_assistant_read,
+    allow_assistant_search,
     authenticate,
     authorize_run_create,
     authorize_thread_create,
@@ -102,6 +104,29 @@ def test_agent_server_registers_only_current_graph_identities() -> None:
 
 
 @pytest.mark.core_invariant("GATE-001")
+def test_custom_assistant_reads_and_searches_are_owner_scoped(monkeypatch) -> None:
+    monkeypatch.setenv("REDIS_URI", "redis://localhost:6379")
+    monkeypatch.setenv("DATABASE_URI", "postgres://localhost/test")
+    ctx = _authenticated_context()
+
+    for assistant_id in SYSTEM_ASSISTANT_IDS.values():
+        assert asyncio.run(
+            allow_assistant_read(ctx, {"assistant_id": assistant_id})
+        ) is True
+
+    custom_assistant_id = UUID("11111111-1111-4111-8111-111111111111")
+    assert asyncio.run(
+        allow_assistant_read(ctx, {"assistant_id": custom_assistant_id})
+    ) == {"owner": "studio-user"}
+    assert asyncio.run(
+        allow_assistant_search(
+            ctx,
+            {"graph_id": None, "metadata": {}, "limit": 10, "offset": 0},
+        )
+    ) == {"owner": "studio-user"}
+
+
+@pytest.mark.core_invariant("GATE-001")
 def test_current_clients_reject_legacy_and_unknown_checkpoint_and_thread_graphs(
     monkeypatch,
 ) -> None:
@@ -128,7 +153,7 @@ def test_current_clients_reject_legacy_and_unknown_checkpoint_and_thread_graphs(
         async def get(self, _thread_id: str) -> dict[str, Any]:
             return {
                 "thread_id": "legacy-thread",
-                "metadata": {"assistant_graph_id": self.graph_id},
+                "metadata": {"graph_id": self.graph_id},
             }
 
     class Runs:
@@ -161,6 +186,39 @@ def test_current_clients_reject_legacy_and_unknown_checkpoint_and_thread_graphs(
 
 
 @pytest.mark.core_invariant("GATE-001")
+def test_sdk_client_uses_only_native_thread_graph_identity() -> None:
+    class Threads:
+        def __init__(self) -> None:
+            self.request: dict[str, Any] | None = None
+
+        async def create(self, **kwargs: Any) -> dict[str, Any]:
+            self.request = kwargs
+            return {
+                "thread_id": "thread-sentinel",
+                "metadata": {"graph_id": kwargs["graph_id"]},
+            }
+
+    threads = Threads()
+    client = object.__new__(SdkAgentServerClient)
+    client._client = SimpleNamespace(threads=threads)
+
+    thread_id = asyncio.run(
+        client.create_thread(
+            metadata={"label": "kept"},
+            graph_id=ASSISTANT_GRAPH_ID,
+        )
+    )
+
+    assert thread_id == "thread-sentinel"
+    assert threads.request == {
+        "metadata": {"label": "kept"},
+        "thread_id": None,
+        "if_exists": None,
+        "graph_id": ASSISTANT_GRAPH_ID,
+    }
+
+
+@pytest.mark.core_invariant("GATE-001")
 def test_agent_server_auth_accepts_only_current_graph_identities(monkeypatch) -> None:
     monkeypatch.setenv("REDIS_URI", "redis://localhost:6379")
     monkeypatch.setenv("DATABASE_URI", "postgres://localhost/test")
@@ -170,7 +228,7 @@ def test_agent_server_auth_accepts_only_current_graph_identities(monkeypatch) ->
     created = {"metadata": {}}
     assert asyncio.run(authorize_thread_create(ctx, created)) is None
     assert created["metadata"] == {
-        "assistant_graph_id": ASSISTANT_GRAPH_ID,
+        "graph_id": ASSISTANT_GRAPH_ID,
         "owner": "studio-user",
     }
     for graph_id in (*LEGACY_GRAPH_IDS, "unknown-graph"):
@@ -179,7 +237,7 @@ def test_agent_server_auth_accepts_only_current_graph_identities(monkeypatch) ->
 
     memory_create = {"metadata": {"graph_id": MEMORY_GRAPH_ID}}
     assert asyncio.run(authorize_thread_create(ctx, memory_create)) is None
-    assert memory_create["metadata"]["assistant_graph_id"] == MEMORY_GRAPH_ID
+    assert memory_create["metadata"]["graph_id"] == MEMORY_GRAPH_ID
     worker_metadata = assistant_runtime_metadata(
         AssistantRuntimeFacts(
             entry_profile="async_worker",
@@ -195,16 +253,13 @@ def test_agent_server_auth_accepts_only_current_graph_identities(monkeypatch) ->
         "metadata": {**worker_metadata, "graph_id": WORKER_GRAPH_ID},
     }
     assert asyncio.run(authorize_thread_create(internal_ctx, worker_create)) is None
-    assert worker_create["metadata"]["assistant_graph_id"] == WORKER_GRAPH_ID
+    assert worker_create["metadata"]["graph_id"] == WORKER_GRAPH_ID
 
     updated = {
         "thread_id": "thread-v4",
-        "metadata": {"assistant_graph_id": ASSISTANT_GRAPH_ID, "label": "kept"},
+        "metadata": {"graph_id": ASSISTANT_GRAPH_ID, "label": "kept"},
     }
-    assert asyncio.run(authorize_thread_update(ctx, updated)) == {
-        "owner": "studio-user",
-        "assistant_graph_id": ASSISTANT_GRAPH_ID,
-    }
+    assert asyncio.run(authorize_thread_update(ctx, updated)) is False
     for state_update in (
         {"thread_id": "thread-v4"},
         {"thread_id": "thread-v4", "metadata": None},
@@ -216,7 +271,7 @@ def test_agent_server_auth_accepts_only_current_graph_identities(monkeypatch) ->
     for graph_id in (*LEGACY_GRAPH_IDS, "unknown-graph"):
         legacy_update = {
             "thread_id": "legacy-thread",
-            "metadata": {"assistant_graph_id": graph_id},
+            "metadata": {"graph_id": graph_id},
         }
         assert asyncio.run(authorize_thread_update(ctx, legacy_update)) is False
     for action in ("interrupt", "rollback"):
@@ -228,7 +283,7 @@ def test_agent_server_auth_accepts_only_current_graph_identities(monkeypatch) ->
     run = {"assistant_id": SYSTEM_ASSISTANT_IDS[ASSISTANT_GRAPH_ID], "metadata": {}}
     assert asyncio.run(authorize_run_create(ctx, run)) == {
         "owner": "studio-user",
-        "assistant_graph_id": ASSISTANT_GRAPH_ID,
+        "graph_id": ASSISTANT_GRAPH_ID,
     }
     assert run["context"] == {}
     memory_run = {
@@ -237,7 +292,7 @@ def test_agent_server_auth_accepts_only_current_graph_identities(monkeypatch) ->
     }
     assert asyncio.run(authorize_run_create(ctx, memory_run)) == {
         "owner": "studio-user",
-        "assistant_graph_id": MEMORY_GRAPH_ID,
+        "graph_id": MEMORY_GRAPH_ID,
     }
     worker_run = {
         "assistant_id": SYSTEM_ASSISTANT_IDS[WORKER_GRAPH_ID],
@@ -250,7 +305,7 @@ def test_agent_server_auth_accepts_only_current_graph_identities(monkeypatch) ->
     }
     assert asyncio.run(authorize_run_create(internal_ctx, worker_run)) == {
         "owner": "studio-user",
-        "assistant_graph_id": WORKER_GRAPH_ID,
+        "graph_id": WORKER_GRAPH_ID,
     }
     injected_snapshot = {
         ASSISTANT_RUNTIME_METADATA_KEY: {
@@ -290,7 +345,7 @@ def test_agent_server_auth_accepts_only_current_graph_identities(monkeypatch) ->
     }
     assert asyncio.run(authorize_run_create(ctx, custom_run)) == {
         "owner": "studio-user",
-        "assistant_graph_id": ASSISTANT_GRAPH_ID,
+        "graph_id": ASSISTANT_GRAPH_ID,
     }
     for assistant_id in LEGACY_ASSISTANT_IDS:
         assert (
@@ -322,7 +377,7 @@ def test_thread_update_rejects_changes_to_server_issued_runtime_facts(
     update = {
         "thread_id": "existing-thread",
         "metadata": {
-            "assistant_graph_id": graph_id,
+            "graph_id": graph_id,
             ASSISTANT_RUNTIME_METADATA_KEY: {
                 "entry_profile": "async_worker",
                 "repository_snapshot_sha": "a" * 40,

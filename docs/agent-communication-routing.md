@@ -8,14 +8,14 @@
 | --- | --- |
 | 定位 | Multi-agent instance routing、delegation 与 A2A adapter 的当前权威 |
 | Owns | AgentDirectory、routing/delegation policy、transport、control plane、A2A JSON-RPC 与隔离边界 |
-| Does not own | 生产父图、Agent Server/media wire、Tool 执行、Memory/context 策略 |
+| Does not own | 生产主图、Agent Server/media wire、Tool 执行、Memory/context 策略 |
 | 源码与 schema 入口 | `src/assistant_agent/multi_agent/`；当前无生产 A2A HTTP route |
 | 验证入口 | `docs/authority.toml` 中 `agent-communication.verification` |
 | 相邻 authority | Runtime 见 [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md)；Agent Server 见 [`agent-server-architecture.md`](agent-server-architecture.md) |
 
 ## 当前边界
 
-生产用户会话路径只有 Agent Server 托管的 `AssistantRootGraph`。统一 `AssistantAgent` 静态装配 Deep Agents
+生产用户会话路径只有 Agent Server 托管的统一 `AssistantAgent`。该 Agent 静态装配 Deep Agents
 `AsyncSubAgentMiddleware` 的 model-callable 后台 delegation Tool，并只允许启动注册的只读
 `assistant-worker-v2` 兄弟图；它不经过关键词 router，也不启用本目录的 transport runtime。multi-agent 包仍是可选协议与
 路由组件，不在 production custom route 中自动启用。

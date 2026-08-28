@@ -78,12 +78,12 @@ exclusive_allowlist = []
 id = "runtime-event-stream"
 authority = "docs/runtime-event-stream-architecture.md"
 read_when = [
-  "AssistantRootGraph、统一 AssistantAgent、Deep Agents task、只读 worker 或原生 state channel",
+  "统一 AssistantAgent、Memory lifecycle middleware、Deep Agents task、只读 worker 或原生 state channel",
   "LangGraph stream、interrupt/resume、checkpoint 或 terminal messages",
 ]
 source_globs = [
-  "src/assistant_agent/native_agent/root_graph.py",
   "src/assistant_agent/native_agent/assistant_agent.py",
+  "src/assistant_agent/native_agent/memory_middleware.py",
   "src/assistant_agent/native_agent/state.py",
   "src/assistant_agent/native_agent/models.py",
   "src/assistant_agent/coding/backend.py",
@@ -138,7 +138,7 @@ read_when = [
 source_globs = [
   "src/assistant_agent/native_agent/memory.py",
   "src/assistant_agent/native_agent/memory_graph.py",
-  "src/assistant_agent/native_agent/root_graph.py",
+  "src/assistant_agent/native_agent/memory_middleware.py",
   "src/assistant_agent/native_agent/state.py",
   "src/assistant_agent/memory/**",
   "tests/core/integration/test_memory_lifecycle.py",

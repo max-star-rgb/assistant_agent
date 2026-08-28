@@ -33,7 +33,6 @@ from assistant_agent.native_agent.context import (
     AssistantRunContext,
 )
 from assistant_agent.native_agent.providers import MockAssistantChatModel
-from assistant_agent.native_agent.state import AssistantRootInput
 from assistant_agent.native_agent.tool_call_limits import PerToolCallLimitMiddleware
 
 
@@ -69,16 +68,17 @@ def test_mock_composition_opens_without_real_provider(monkeypatch) -> None:
 
 
 @pytest.mark.core_invariant("LOOP-001")
-def test_parent_graph_has_one_native_deep_agent_route(monkeypatch) -> None:
+def test_main_graph_is_the_native_deep_agent(monkeypatch) -> None:
     monkeypatch.setenv("MULTIMODAL_AGENT_PROVIDER_MODE", "mock")
     owner = asyncio.run(_open_owner())
     try:
         graph = owner.graph.get_graph()
         nodes = set(graph.nodes)
         assert {
-            "memory_recall",
-            "assistant_agent",
-            "refresh_memory_extraction",
+            "MemoryLifecycleMiddleware.before_agent",
+            "model",
+            "tools",
+            "MemoryLifecycleMiddleware.after_agent",
         } <= nodes
         assert (
             not {
@@ -89,8 +89,8 @@ def test_parent_graph_has_one_native_deep_agent_route(monkeypatch) -> None:
             }
             & nodes
         )
-        assistant = graph.nodes["assistant_agent"].data
-        tools = set(assistant.get_graph().nodes["tools"].data.tools_by_name)
+        assert "assistant_agent" not in nodes
+        tools = set(graph.nodes["tools"].data.tools_by_name)
         assert {
             "write_todos",
             "task",
@@ -103,8 +103,7 @@ def test_parent_graph_has_one_native_deep_agent_route(monkeypatch) -> None:
             "grep",
             "execute",
         } <= tools
-        assert owner.graph.name == "AssistantRootGraph"
-        assert assistant.name == "AssistantAgent"
+        assert owner.graph.name == "AssistantAgent"
         assert owner.worker_graph.name == "AssistantReadOnlyWorker"
         assert owner.graph.checkpointer is None
     finally:
@@ -171,25 +170,25 @@ def test_unified_run_finishes_with_standard_ai_message(monkeypatch) -> None:
 @pytest.mark.core_invariant("RUN-001")
 @pytest.mark.core_invariant("IDENT-001")
 def test_public_input_and_context_expose_no_private_run_facts() -> None:
-    value = AssistantRootInput.model_validate(
-        {"messages": [HumanMessage(content="request-sentinel")]}
-    )
     context = AssistantRunContext.model_validate({"enable_memory": False})
-
-    assert len(value.messages) == 1
-    assert set(type(value).model_fields) == {"messages"}
     assert set(type(context).model_fields) == {"enable_memory"}
     assert context.enable_memory is False
-    assert (
-        AssistantRunContext.model_json_schema()["properties"]["enable_memory"][
-            "default"
-        ]
-        is True
-    )
-    with pytest.raises(ValidationError):
-        AssistantRootInput.model_validate({"messages": [], "execution_mode": "fast"})
+    assert AssistantRunContext.model_json_schema()["properties"]["enable_memory"]["default"] is True
     with pytest.raises(ValidationError):
         AssistantRunContext.model_validate({"execution_mode": "fast"})
+
+
+@pytest.mark.core_invariant("RUN-001")
+@pytest.mark.core_invariant("IDENT-001")
+def test_native_assistant_input_schema_exposes_only_messages(monkeypatch) -> None:
+    monkeypatch.setenv("MULTIMODAL_AGENT_PROVIDER_MODE", "mock")
+    owner = asyncio.run(_open_owner())
+    try:
+        schema = owner.graph.get_input_jsonschema()
+        assert set(schema["properties"]) == {"messages"}
+        assert schema["required"] == ["messages"]
+    finally:
+        asyncio.run(owner.aclose())
 
 
 @pytest.mark.core_invariant("LOOP-001")

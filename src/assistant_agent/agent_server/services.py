@@ -33,7 +33,6 @@ from assistant_agent.native_agent.assistant_agent import (
 from assistant_agent.native_agent.memory import MemoryBackend, create_memory_backend
 from assistant_agent.native_agent.memory_graph import build_memory_extraction_graph
 from assistant_agent.native_agent.providers import create_chat_model
-from assistant_agent.native_agent.root_graph import build_assistant_root_graph
 from assistant_agent.native_agent.tool_profiles import project_tool_profiles
 from assistant_agent.native_agent.tools import (
     NativeToolResources,
@@ -138,11 +137,8 @@ class AgentServerExecutionOwner:
             visual_history_probe=tool_resources.visual_history_probe,
             live_view_resolver=tool_resources.live_view_resolver,
             current_location=config.current_location,
-        )
-        graph = build_assistant_root_graph(
             memory_backend=memory_backend,
-            assistant_agent=assistant_agent,
-            extraction_delay_seconds=config.memory_extraction_delay_seconds,
+            memory_extraction_delay_seconds=config.memory_extraction_delay_seconds,
         )
         memory_graph = build_memory_extraction_graph(backend=memory_backend)
         return cls(
@@ -150,7 +146,7 @@ class AgentServerExecutionOwner:
             tools=tools,
             coding_workspace_service=coding_workspace_service,
             memory_backend=memory_backend,
-            graph=graph,
+            graph=assistant_agent,
             worker_graph=worker_graph,
             memory_graph=memory_graph,
         )

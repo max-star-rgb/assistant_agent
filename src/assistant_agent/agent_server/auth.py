@@ -15,7 +15,6 @@ from assistant_agent.agent_server.config import (
     MEMORY_GRAPH_ID,
     WORKER_GRAPH_ID,
 )
-from assistant_agent.agent_server.client import THREAD_GRAPH_METADATA_KEY
 from assistant_agent.native_agent.context import (
     ASSISTANT_RUNTIME_METADATA_KEY,
     AssistantRuntimeFacts,
@@ -79,18 +78,27 @@ def _header_text(headers: dict[bytes, bytes], name: bytes) -> str | None:
 async def allow_assistant_read(
     ctx: Auth.types.AuthContext,
     value: Auth.types.on.assistants.read.value,
-) -> bool:
-    _ = ctx, value
-    return True
+) -> Auth.types.FilterType | bool:
+    if is_studio_user(ctx.user):
+        return True
+    try:
+        assistant_id = UUID(str(value.get("assistant_id")))
+    except (TypeError, ValueError):
+        return False
+    if assistant_id in _current_system_assistant_graphs():
+        return True
+    return {"owner": str(ctx.user.identity)}
 
 
 @auth.on.assistants.search
 async def allow_assistant_search(
     ctx: Auth.types.AuthContext,
     value: Auth.types.on.assistants.search.value,
-) -> bool:
-    _ = ctx, value
-    return True
+) -> Auth.types.FilterType | bool:
+    _ = value
+    if is_studio_user(ctx.user):
+        return True
+    return {"owner": str(ctx.user.identity)}
 
 
 @auth.on.assistants.create
@@ -148,9 +156,7 @@ async def authorize_thread_create(
     metadata = value.setdefault("metadata", {})
     if not isinstance(metadata, dict):
         return False
-    requested_graph_id = metadata.get("graph_id") or metadata.get(
-        THREAD_GRAPH_METADATA_KEY
-    )
+    requested_graph_id = metadata.get("graph_id")
     graph_id = str(requested_graph_id or ASSISTANT_GRAPH_ID)
     if graph_id not in {ASSISTANT_GRAPH_ID, MEMORY_GRAPH_ID, WORKER_GRAPH_ID}:
         return False
@@ -160,7 +166,7 @@ async def authorize_thread_create(
     elif _is_internal_worker(ctx) or not _authorized_non_worker_metadata(metadata):
         return False
     metadata["owner"] = str(ctx.user.identity)
-    metadata[THREAD_GRAPH_METADATA_KEY] = graph_id
+    metadata["graph_id"] = graph_id
     return None
 
 
@@ -185,12 +191,9 @@ async def authorize_thread_update(
         return {"owner": str(ctx.user.identity)}
     if ASSISTANT_RUNTIME_METADATA_KEY in metadata:
         return False
-    if THREAD_GRAPH_METADATA_KEY not in metadata:
-        return {"owner": str(ctx.user.identity)}
-    graph_id = str(metadata[THREAD_GRAPH_METADATA_KEY])
-    if graph_id not in {ASSISTANT_GRAPH_ID, MEMORY_GRAPH_ID, WORKER_GRAPH_ID}:
+    if "graph_id" in metadata:
         return False
-    return {"owner": str(ctx.user.identity), THREAD_GRAPH_METADATA_KEY: graph_id}
+    return {"owner": str(ctx.user.identity)}
 
 
 @auth.on.threads.delete
@@ -231,7 +234,7 @@ async def authorize_run_create(
         metadata["owner"] = str(ctx.user.identity)
         return {
             "owner": str(ctx.user.identity),
-            THREAD_GRAPH_METADATA_KEY: MEMORY_GRAPH_ID,
+            "graph_id": MEMORY_GRAPH_ID,
         }
     if graph_id == WORKER_GRAPH_ID:
         if not _is_internal_worker(ctx) or not _authorized_worker_metadata(metadata):
@@ -239,7 +242,7 @@ async def authorize_run_create(
         metadata["owner"] = str(ctx.user.identity)
         return {
             "owner": str(ctx.user.identity),
-            THREAD_GRAPH_METADATA_KEY: WORKER_GRAPH_ID,
+            "graph_id": WORKER_GRAPH_ID,
         }
     context = value.setdefault("context", {})
     if not isinstance(context, dict):
@@ -249,7 +252,7 @@ async def authorize_run_create(
     metadata["owner"] = str(ctx.user.identity)
     return {
         "owner": str(ctx.user.identity),
-        THREAD_GRAPH_METADATA_KEY: ASSISTANT_GRAPH_ID,
+        "graph_id": ASSISTANT_GRAPH_ID,
     }
 
 
@@ -263,11 +266,17 @@ def _run_graph_id(assistant_id: UUID) -> str | None:
         uuid5(NAMESPACE_GRAPH, "assistant-worker-v1"),
     }:
         return None
+    return _current_system_assistant_graphs().get(assistant_id, ASSISTANT_GRAPH_ID)
+
+
+def _current_system_assistant_graphs() -> dict[UUID, str]:
+    from langgraph_api.graph import NAMESPACE_GRAPH  # noqa: PLC0415
+
     return {
         uuid5(NAMESPACE_GRAPH, ASSISTANT_GRAPH_ID): ASSISTANT_GRAPH_ID,
         uuid5(NAMESPACE_GRAPH, MEMORY_GRAPH_ID): MEMORY_GRAPH_ID,
         uuid5(NAMESPACE_GRAPH, WORKER_GRAPH_ID): WORKER_GRAPH_ID,
-    }.get(assistant_id, ASSISTANT_GRAPH_ID)
+    }
 
 
 def _authorized_worker_metadata(metadata: Mapping[str, object]) -> bool:

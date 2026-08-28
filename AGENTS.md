@@ -33,8 +33,9 @@
 
 硬边界：
 
-- 入口层只负责接入和归一化请求；生产主运行时是 `native_agent.AssistantRootGraph`，父图在 Memory recall 与
-  refresh 之间只执行一个由 `create_deep_agent` 编译的 `AssistantAgent`，不按请求切换执行模式。
+- 入口层只负责接入和归一化请求；生产主运行时是由 `create_deep_agent` 直接编译的统一
+  `native_agent.AssistantAgent`，Memory lifecycle 通过官方 Agent middleware 接入，不按请求切换执行模式，
+  也不保留外层 Assistant wrapper graph。
 - LangGraph Agent Server 负责 assistant/thread/run/checkpoint/cancel/interrupt/resume/stream 生命周期；媒体
   custom route 只做协议归一化与连接关联，不承担主大脑职责。
 - 生产主链的本地显式工具调用使用标准 `BaseTool -> ToolNode` 与 `ToolRuntime` 注入；可安全重试的 read Tool 使用官方
@@ -44,7 +45,10 @@
   Provider-native 只读联网属于模型生成能力，不投影为本地 Tool，也不进入该执行链。
 - Provider 运行只分 `mock` 和 `real`。mock 模式下主 LLM 与 Provider-backed tools 强制使用 mock；real 模式下主 LLM 必须完整配置，Provider-backed tools 只注册已完整配置的真实实现，禁止静默回退到 mock。
 - Tool exposure 和入口路由不得用关键词、正则、高信号话术或手写请求规则推断用户意图；候选 Tool 由受信静态装配、MCP allowlist、entry/media/env 等结构化事实决定，具体调用与参数由 LLM 判断。
-- 长期 Memory recall 发生在父图固定节点并冻结为 `memory_context`；回答后父图通过官方 Agent Server SDK rollback 旧 pending Memory run 并 enqueue 独立 `assistant-memory-v1`，extract 只在该后台图执行。后端只实现最小 `MemoryBackend` 协议，可接 LangMem、Mem0 或第三方服务。
+- 长期 Memory recall 发生在 `before_agent` middleware 并冻结为 `memory_context`；回答后
+  `after_agent` middleware 通过官方 Agent Server SDK rollback 旧 pending Memory run 并 enqueue 独立
+  `assistant-memory-v1`，extract 只在该后台图执行。后端只实现最小 `MemoryBackend` 协议，可接 LangMem、Mem0
+  或第三方服务。
 - MCP、A2A、API、CLI、demo、eval 等交互入口应复用 Agent Server/native graph；不属于对话 run 的 durable task 与后台感知只使用窄业务 service/adapter，不得重建第二套 Agent Runtime。
 - 非 Python 的 Web UI、BFF、vendor adapter 或边缘入口只能做薄适配器；不要把旧 `runTime` agent loop 引入本项目。
 
