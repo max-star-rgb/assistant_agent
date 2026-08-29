@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { test } from "node:test";
 import vm from "node:vm";
 
 const context = vm.createContext({ AbortSignal, URL, console, structuredClone });
 context.globalThis = context;
 vm.runInContext(
-  readFileSync(new URL("./core.js", import.meta.url), "utf8"),
+  readFileSync(new URL("./extension/core.js", import.meta.url), "utf8"),
   context,
 );
 context.importScripts = () => {};
 vm.runInContext(
-  readFileSync(new URL("./background.js", import.meta.url), "utf8"),
+  readFileSync(new URL("./extension/background.js", import.meta.url), "utf8"),
   context,
 );
 
@@ -259,10 +259,10 @@ test("fails closed when the interrupt identity is stale", async () => {
 
 test("keeps the MV3 extension narrow and avoids unsafe DOM sinks", () => {
   const manifest = JSON.parse(
-    readFileSync(new URL("./manifest.json", import.meta.url), "utf8"),
+    readFileSync(new URL("./extension/manifest.json", import.meta.url), "utf8"),
   );
   const content = readFileSync(
-    new URL("./content.js", import.meta.url),
+    new URL("./extension/content.js", import.meta.url),
     "utf8",
   );
 
@@ -282,6 +282,13 @@ test("keeps the MV3 extension narrow and avoids unsafe DOM sinks", () => {
   });
   assert.equal(content.includes("innerHTML"), false);
   assert.equal(content.includes("eval("), false);
+});
+
+test("keeps the loadable Chrome bundle isolated from caches and source files", () => {
+  assert.deepEqual(
+    readdirSync(new URL("./extension/", import.meta.url)).sort(),
+    ["background.js", "content.js", "core.js", "manifest.json"],
+  );
 });
 
 test("shows args and requires an explicit decision, then recovers after failure", async () => {
@@ -424,11 +431,11 @@ async function contentHarness(resumeResponse) {
   });
   uiContext.globalThis = uiContext;
   vm.runInContext(
-    readFileSync(new URL("./core.js", import.meta.url), "utf8"),
+    readFileSync(new URL("./extension/core.js", import.meta.url), "utf8"),
     uiContext,
   );
   vm.runInContext(
-    readFileSync(new URL("./content.js", import.meta.url), "utf8"),
+    readFileSync(new URL("./extension/content.js", import.meta.url), "utf8"),
     uiContext,
   );
   await settle();
