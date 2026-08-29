@@ -3,15 +3,25 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import vm from "node:vm";
 
-const context = vm.createContext({ URL, console, structuredClone });
+const context = vm.createContext({ AbortSignal, URL, console, structuredClone });
 context.globalThis = context;
 vm.runInContext(
   readFileSync(new URL("./core.js", import.meta.url), "utf8"),
   context,
 );
+context.importScripts = () => {};
+vm.runInContext(
+  readFileSync(new URL("./background.js", import.meta.url), "utf8"),
+  context,
+);
 
 const core = context.StudioHitlCore;
+const bridge = context.StudioHitlBackground;
 const plain = (value) => JSON.parse(JSON.stringify(value));
+const threadId = "11111111-1111-4111-8111-111111111111";
+const sender = {
+  url: `https://smith.langchain.com/studio/thread/${threadId}?baseUrl=http%3A%2F%2F127.0.0.1%3A8089`,
+};
 const request = {
   action_requests: [
     {
@@ -168,3 +178,89 @@ test("matches review config by action name and compares identity", () => {
     false,
   );
 });
+
+test("revalidates state and resumes the newest interrupted assistant", async () => {
+  const calls = [];
+  const fakeFetch = async (url, options = {}) => {
+    calls.push({ url, options });
+    if (url.endsWith(`/threads/${threadId}/state`)) {
+      return jsonResponse(state);
+    }
+    if (url.includes(`/threads/${threadId}/runs?`)) {
+      return jsonResponse([
+        {
+          run_id: "22222222-2222-4222-8222-222222222222",
+          assistant_id: "assistant-old",
+          created_at: "2026-08-29T01:00:00Z",
+        },
+        {
+          run_id: "33333333-3333-4333-8333-333333333333",
+          assistant_id: "assistant-new",
+          created_at: "2026-08-29T02:00:00Z",
+        },
+      ]);
+    }
+    return jsonResponse({
+      run_id: "44444444-4444-4444-8444-444444444444",
+    });
+  };
+  const decisions = [
+    { type: "approve" },
+    { type: "reject", message: "不需要写文件" },
+  ];
+
+  const result = await bridge.handleMessage(
+    {
+      type: "studio_hitl.resume",
+      threadId,
+      expectedIdentity: "checkpoint-1:interrupt-1",
+      decisions,
+    },
+    sender,
+    fakeFetch,
+  );
+
+  assert.deepEqual(plain(result), {
+    ok: true,
+    runId: "44444444-4444-4444-8444-444444444444",
+  });
+  assert.equal(calls.length, 3);
+  assert.equal(calls[2].options.method, "POST");
+  assert.deepEqual(JSON.parse(calls[2].options.body), {
+    assistant_id: "assistant-new",
+    command: { resume: { decisions } },
+    multitask_strategy: "reject",
+  });
+});
+
+test("fails closed when the interrupt identity is stale", async () => {
+  const changed = structuredClone(state);
+  changed.checkpoint.checkpoint_id = "checkpoint-2";
+  const calls = [];
+  const fakeFetch = async (url, options = {}) => {
+    calls.push({ url, options });
+    return jsonResponse(changed);
+  };
+
+  const result = await bridge.handleMessage(
+    {
+      type: "studio_hitl.resume",
+      threadId,
+      expectedIdentity: "checkpoint-1:interrupt-1",
+      decisions: [{ type: "approve" }, { type: "approve" }],
+    },
+    sender,
+    fakeFetch,
+  );
+
+  assert.deepEqual(plain(result), { ok: false, code: "stale_interrupt" });
+  assert.equal(calls.length, 1);
+});
+
+function jsonResponse(body, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => structuredClone(body),
+  };
+}
