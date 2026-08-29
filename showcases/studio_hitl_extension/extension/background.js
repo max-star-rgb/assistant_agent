@@ -4,7 +4,6 @@ importScripts("core.js");
   "use strict";
 
   const core = root.StudioHitlCore;
-  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
   class BridgeError extends Error {
     constructor(code) {
@@ -28,7 +27,7 @@ importScripts("core.js");
     if (
       !location ||
       !message ||
-      !UUID.test(message.threadId || "") ||
+      !core.isUuid(message.threadId) ||
       location.threadId !== message.threadId
     ) {
       throw new BridgeError("forbidden");
@@ -84,7 +83,7 @@ importScripts("core.js");
       }
 
       if (message.type === "studio_hitl.run") {
-        if (!UUID.test(message.runId || "")) throw new BridgeError("invalid_request");
+        if (!core.isUuid(message.runId)) throw new BridgeError("invalid_request");
         const run = await requestJson(
           `${threadPath}/runs/${message.runId}`,
           {},
@@ -133,7 +132,7 @@ importScripts("core.js");
         },
         fetchImpl,
       );
-      if (!run || !UUID.test(run.run_id || "")) throw new BridgeError("server_error");
+      if (!run || !core.isUuid(run.run_id)) throw new BridgeError("server_error");
       return { ok: true, runId: run.run_id };
     } catch (error) {
       return {

@@ -2,22 +2,36 @@
   "use strict";
 
   const API_ORIGIN = "http://127.0.0.1:8089";
-  const THREAD_ROUTE = /^\/studio\/thread\/([0-9a-f-]{36})\/?$/i;
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const LEGACY_THREAD_ROUTE = /^\/studio\/thread\/([^/]+)\/?$/;
+  const ORGANIZATION_THREAD_ROUTE = /^\/o\/([^/]+)\/studio\/thread\/?$/;
   const isRecord = (value) =>
     value !== null && typeof value === "object" && !Array.isArray(value);
+  const isUuid = (value) => typeof value === "string" && UUID.test(value);
 
   function parseStudioLocation(href) {
     try {
       const url = new URL(href);
-      const match = url.pathname.match(THREAD_ROUTE);
+      const legacy = url.pathname.match(LEGACY_THREAD_ROUTE);
+      const organization = url.pathname.match(ORGANIZATION_THREAD_ROUTE);
       if (
         url.origin !== "https://smith.langchain.com" ||
-        !match ||
+        (!legacy && !organization) ||
         url.searchParams.get("baseUrl") !== API_ORIGIN
       ) {
         return null;
       }
-      return { baseUrl: API_ORIGIN, threadId: match[1] };
+      if (organization) {
+        const organizationId = url.searchParams.get("organizationId");
+        if (
+          !isUuid(organization[1]) ||
+          (organizationId && organizationId !== organization[1])
+        ) {
+          return null;
+        }
+      }
+      const threadId = legacy ? legacy[1] : url.searchParams.get("threadId");
+      return isUuid(threadId) ? { baseUrl: API_ORIGIN, threadId } : null;
     } catch {
       return null;
     }
@@ -147,6 +161,7 @@
     buildDecision,
     extractHitlSnapshot,
     fieldKind,
+    isUuid,
     parseStudioLocation,
     reviewConfigFor,
     sameIdentity,

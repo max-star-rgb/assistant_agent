@@ -18,9 +18,10 @@ vm.runInContext(
 const core = context.StudioHitlCore;
 const bridge = context.StudioHitlBackground;
 const plain = (value) => JSON.parse(JSON.stringify(value));
-const threadId = "11111111-1111-4111-8111-111111111111";
+const organizationId = "53510e38-f838-45fb-86ac-84fa3bf258a3";
+const threadId = "01a04c9f-ea6b-7991-a3ec-e064b9be7ade";
 const sender = {
-  url: `https://smith.langchain.com/studio/thread/${threadId}?baseUrl=http%3A%2F%2F127.0.0.1%3A8089`,
+  url: `https://smith.langchain.com/o/${organizationId}/studio/thread?organizationId=${organizationId}&render=interact&baseUrl=http%3A%2F%2F127.0.0.1%3A8089&mode=chat&assistantId=8d030b92-89be-5d58-918d-ff35e996429a&threadId=${threadId}`,
 };
 const request = {
   action_requests: [
@@ -77,7 +78,11 @@ const state = {
   tasks: [{ id: "task-1", name: "review", interrupts: [interrupt] }],
 };
 
-test("parses only the fixed Studio route", () => {
+test("parses current and legacy Studio thread routes", () => {
+  assert.deepEqual(plain(core.parseStudioLocation(sender.url)), {
+    baseUrl: "http://127.0.0.1:8089",
+    threadId,
+  });
   assert.deepEqual(
     plain(
       core.parseStudioLocation(
@@ -272,7 +277,10 @@ test("keeps the MV3 extension narrow and avoids unsafe DOM sinks", () => {
   ]);
   assert.deepEqual(plain(manifest.content_scripts), [
     {
-      matches: ["https://smith.langchain.com/studio/*"],
+      matches: [
+        "https://smith.langchain.com/studio/*",
+        "https://smith.langchain.com/o/*/studio/*",
+      ],
       js: ["core.js", "content.js"],
       run_at: "document_idle",
     },
