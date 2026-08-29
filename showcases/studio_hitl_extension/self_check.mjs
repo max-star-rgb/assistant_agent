@@ -257,6 +257,33 @@ test("fails closed when the interrupt identity is stale", async () => {
   assert.equal(calls.length, 1);
 });
 
+test("keeps the MV3 extension narrow and avoids unsafe DOM sinks", () => {
+  const manifest = JSON.parse(
+    readFileSync(new URL("./manifest.json", import.meta.url), "utf8"),
+  );
+  const content = readFileSync(
+    new URL("./content.js", import.meta.url),
+    "utf8",
+  );
+
+  assert.equal(manifest.manifest_version, 3);
+  assert.deepEqual(plain(manifest.host_permissions), [
+    "http://127.0.0.1:8089/*",
+  ]);
+  assert.deepEqual(plain(manifest.content_scripts), [
+    {
+      matches: ["https://smith.langchain.com/studio/*"],
+      js: ["core.js", "content.js"],
+      run_at: "document_idle",
+    },
+  ]);
+  assert.deepEqual(plain(manifest.background), {
+    service_worker: "background.js",
+  });
+  assert.equal(content.includes("innerHTML"), false);
+  assert.equal(content.includes("eval("), false);
+});
+
 function jsonResponse(body, status = 200) {
   return {
     ok: status >= 200 && status < 300,
