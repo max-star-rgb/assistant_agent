@@ -321,6 +321,8 @@ test("blocks invalid edits and lets the user fall back to Studio", async () => {
 
   harness.button("使用 Studio 原界面").fire("click");
   assert.equal(harness.document.documentElement.children.length, 0);
+  await harness.pollWith({ ok: false, code: "network_error" });
+  assert.equal(harness.document.documentElement.children.length, 0);
 });
 
 async function contentHarness(resumeResponse) {
@@ -392,9 +394,11 @@ async function contentHarness(resumeResponse) {
     hidden: false,
   };
   const sent = [];
+  const timers = [];
   const uiSnapshot = plain(core.extractHitlSnapshot(state));
   uiSnapshot.request.action_requests = [uiSnapshot.request.action_requests[0]];
   uiSnapshot.request.review_configs = [uiSnapshot.request.review_configs[0]];
+  let getResponse = { ok: true, snapshot: uiSnapshot };
   const uiContext = vm.createContext({
     URL,
     chrome: {
@@ -404,7 +408,7 @@ async function contentHarness(resumeResponse) {
           sent.push(plain(message));
           callback(
             message.type === "studio_hitl.get"
-              ? { ok: true, snapshot: uiSnapshot }
+              ? getResponse
               : resumeResponse,
           );
         },
@@ -413,7 +417,9 @@ async function contentHarness(resumeResponse) {
     console,
     document: fakeDocument,
     location: { href: sender.url, reload() {} },
-    setTimeout() {},
+    setTimeout(callback) {
+      timers.push(callback);
+    },
     structuredClone,
   });
   uiContext.globalThis = uiContext;
@@ -432,6 +438,11 @@ async function contentHarness(resumeResponse) {
     button: (text) => all().find((node) => node.tag === "button" && node.textContent === text),
     document: fakeDocument,
     find: (predicate) => all().find(predicate),
+    async pollWith(response) {
+      getResponse = response;
+      timers.shift()();
+      await settle();
+    },
     sent,
   };
 }

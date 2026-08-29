@@ -235,7 +235,7 @@
   }
 
   function paint() {
-    if (!snapshot) {
+    if (!snapshot || snapshot.identity === dismissedIdentity) {
       removeUi();
       return;
     }
