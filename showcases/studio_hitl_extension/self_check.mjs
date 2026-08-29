@@ -284,6 +284,171 @@ test("keeps the MV3 extension narrow and avoids unsafe DOM sinks", () => {
   assert.equal(content.includes("eval("), false);
 });
 
+test("shows args and requires an explicit decision, then recovers after failure", async () => {
+  const harness = await contentHarness({ ok: false, code: "network_error" });
+
+  assert.ok(harness.find((node) => node.textContent === "python -m pytest -q"));
+  assert.equal(harness.button("提交全部决定").disabled, true);
+
+  harness.button("批准").fire("click");
+  assert.equal(harness.button("提交全部决定").disabled, false);
+  harness.button("提交全部决定").fire("click");
+  await settle();
+
+  assert.equal(
+    harness.sent.filter((message) => message.type === "studio_hitl.resume").length,
+    1,
+  );
+  assert.equal(harness.button("提交全部决定").disabled, false);
+  assert.match(harness.find((node) => node.attributes.role === "alert").textContent, /network_error/);
+});
+
+test("blocks invalid edits and lets the user fall back to Studio", async () => {
+  const harness = await contentHarness({ ok: true, runId: "unused" });
+
+  harness.button("编辑参数").fire("click");
+  const numberInput = harness.find((node) => node.type === "number");
+  numberInput.value = "";
+  numberInput.fire("change");
+  harness.button("提交全部决定").fire("click");
+  await settle();
+
+  assert.equal(
+    harness.sent.filter((message) => message.type === "studio_hitl.resume").length,
+    0,
+  );
+  assert.match(harness.find((node) => node.attributes.role === "alert").textContent, /有效/);
+
+  harness.button("使用 Studio 原界面").fire("click");
+  assert.equal(harness.document.documentElement.children.length, 0);
+});
+
+async function contentHarness(resumeResponse) {
+  class FakeNode {
+    constructor(tag) {
+      this.tag = tag;
+      this.children = [];
+      this.listeners = {};
+      this.attributes = {};
+      this.className = "";
+      this.textContent = "";
+      this.value = "";
+      this.disabled = false;
+      this.checked = false;
+      this.classList = {
+        add: (name) => {
+          this.className = `${this.className} ${name}`.trim();
+        },
+      };
+    }
+
+    append(...nodes) {
+      for (const node of nodes) {
+        node.parent = this;
+        this.children.push(node);
+      }
+    }
+
+    attachShadow() {
+      this.shadowRoot = new FakeNode("shadow");
+      return this.shadowRoot;
+    }
+
+    addEventListener(type, listener) {
+      this.listeners[type] = listener;
+    }
+
+    fire(type) {
+      return this.listeners[type] && this.listeners[type]();
+    }
+
+    setAttribute(name, value) {
+      this.attributes[name] = value;
+    }
+
+    setCustomValidity(message) {
+      this.validationMessage = message;
+    }
+
+    querySelectorAll(selector) {
+      const classes = selector.split(",").map((item) => item.slice(1));
+      return walk(this).filter((node) =>
+        classes.some((name) => node.className.split(" ").includes(name)),
+      );
+    }
+
+    remove() {
+      if (this.parent) {
+        this.parent.children = this.parent.children.filter((node) => node !== this);
+        this.parent = null;
+      }
+    }
+  }
+
+  const documentElement = new FakeNode("html");
+  const fakeDocument = {
+    createElement: (tag) => new FakeNode(tag),
+    documentElement,
+    hidden: false,
+  };
+  const sent = [];
+  const uiSnapshot = plain(core.extractHitlSnapshot(state));
+  uiSnapshot.request.action_requests = [uiSnapshot.request.action_requests[0]];
+  uiSnapshot.request.review_configs = [uiSnapshot.request.review_configs[0]];
+  const uiContext = vm.createContext({
+    URL,
+    chrome: {
+      runtime: {
+        lastError: null,
+        sendMessage(message, callback) {
+          sent.push(plain(message));
+          callback(
+            message.type === "studio_hitl.get"
+              ? { ok: true, snapshot: uiSnapshot }
+              : resumeResponse,
+          );
+        },
+      },
+    },
+    console,
+    document: fakeDocument,
+    location: { href: sender.url, reload() {} },
+    setTimeout() {},
+    structuredClone,
+  });
+  uiContext.globalThis = uiContext;
+  vm.runInContext(
+    readFileSync(new URL("./core.js", import.meta.url), "utf8"),
+    uiContext,
+  );
+  vm.runInContext(
+    readFileSync(new URL("./content.js", import.meta.url), "utf8"),
+    uiContext,
+  );
+  await settle();
+
+  const all = () => walk(documentElement);
+  return {
+    button: (text) => all().find((node) => node.tag === "button" && node.textContent === text),
+    document: fakeDocument,
+    find: (predicate) => all().find(predicate),
+    sent,
+  };
+}
+
+function walk(root) {
+  const result = [];
+  const visit = (node) => {
+    result.push(node);
+    for (const child of node.children || []) visit(child);
+    if (node.shadowRoot) visit(node.shadowRoot);
+  };
+  visit(root);
+  return result;
+}
+
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+
 function jsonResponse(body, status = 200) {
   return {
     ok: status >= 200 && status < 300,

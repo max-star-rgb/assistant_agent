@@ -6,6 +6,7 @@
   let drafts = [];
   let activeRunId = null;
   let pageThreadId = null;
+  let dismissedIdentity = null;
   let host = null;
   let shadow = null;
   let submitting = false;
@@ -71,7 +72,15 @@
     cursor[path[path.length - 1]] = value;
   }
 
-  function renderField(container, actionIndex, label, value, path, rootSchema) {
+  function renderField(
+    container,
+    actionIndex,
+    label,
+    value,
+    path,
+    rootSchema,
+    editable,
+  ) {
     const schema = core.schemaAtPath(rootSchema, path);
     const kind = core.fieldKind(value, schema);
     const nested = kind === "array" || kind === "object";
@@ -88,6 +97,7 @@
           child,
           [...path, Array.isArray(value) ? Number(key) : key],
           rootSchema,
+          editable,
         );
       }
     } else {
@@ -99,7 +109,7 @@
           : element("input");
       const inputId = `assistant-agent-hitl-${actionIndex}-${path.join("-")}`;
       input.id = inputId;
-      input.disabled = submitting;
+      input.disabled = submitting || !editable;
       labelNode.htmlFor = inputId;
 
       if (hasEnum) {
@@ -120,28 +130,44 @@
         input.value = kind === "null" ? "null" : value;
       }
 
-      input.addEventListener("change", () => {
-        let next;
-        if (hasEnum) next = JSON.parse(input.value);
-        else if (kind === "boolean") next = input.checked;
-        else if (kind === "number") {
-          next = Number(input.value);
-          if (!Number.isFinite(next)) {
-            input.setCustomValidity("请输入有效数字");
-            return;
-          }
-        } else if (kind === "null") {
-          try {
-            next = JSON.parse(input.value);
-          } catch {
-            input.setCustomValidity("请输入有效 JSON 值");
-            return;
-          }
-        } else next = input.value;
-        input.setCustomValidity("");
-        setPath(drafts[actionIndex].args, path, next);
-        input.classList.add("changed");
-      });
+      if (editable) {
+        input.addEventListener("change", () => {
+          const fieldKey = JSON.stringify(path);
+          const invalid = (message) => {
+            drafts[actionIndex].invalidFields.add(fieldKey);
+            input.setCustomValidity(message);
+          };
+          let next;
+          if (hasEnum) next = JSON.parse(input.value);
+          else if (kind === "boolean") next = input.checked;
+          else if (kind === "number") {
+            if (!input.value.trim()) {
+              invalid("请输入有效数字");
+              return;
+            }
+            next = Number(input.value);
+            if (!Number.isFinite(next)) {
+              invalid("请输入有效数字");
+              return;
+            }
+            if (schema && schema.type === "integer" && !Number.isInteger(next)) {
+              invalid("请输入整数");
+              return;
+            }
+          } else if (kind === "null") {
+            try {
+              next = JSON.parse(input.value);
+            } catch {
+              invalid("请输入有效 JSON 值");
+              return;
+            }
+          } else next = input.value;
+          input.setCustomValidity("");
+          drafts[actionIndex].invalidFields.delete(fieldKey);
+          setPath(drafts[actionIndex].args, path, next);
+          input.classList.add("changed");
+        });
+      }
       row.append(input);
     }
     container.append(row);
@@ -149,6 +175,7 @@
 
   function choose(actionIndex, type) {
     drafts[actionIndex].type = type;
+    drafts[actionIndex].invalidFields.clear();
     errorText = "";
     paint();
   }
@@ -176,17 +203,18 @@
     }
     card.append(choices);
 
-    if (drafts[actionIndex].type === "edit") {
-      for (const [key, value] of Object.entries(drafts[actionIndex].args)) {
-        renderField(
-          card,
-          actionIndex,
-          key,
-          value,
-          [key],
-          config && config.args_schema ? config.args_schema : null,
-        );
-      }
+    const editing = drafts[actionIndex].type === "edit";
+    const visibleArgs = editing ? drafts[actionIndex].args : action.args;
+    for (const [key, value] of Object.entries(visibleArgs)) {
+      renderField(
+        card,
+        actionIndex,
+        key,
+        value,
+        [key],
+        config && config.args_schema ? config.args_schema : null,
+        editing,
+      );
     }
     if (drafts[actionIndex].type === "reject") {
       const row = element("div", "field");
@@ -236,17 +264,31 @@
       submitting ? "正在提交…" : "提交全部决定",
     );
     button.type = "button";
-    button.disabled = submitting;
+    button.disabled = submitting || drafts.some((draft) => !draft.type);
     button.addEventListener("click", submit);
     footer.append(button);
+    const fallback = element("button", null, "使用 Studio 原界面");
+    fallback.type = "button";
+    fallback.disabled = submitting;
+    fallback.addEventListener("click", () => {
+      dismissedIdentity = snapshot.identity;
+      removeUi();
+    });
+    footer.append(fallback);
     panel.append(footer);
     backdrop.append(panel);
     root.append(backdrop);
   }
 
   function render(nextSnapshot) {
+    if (nextSnapshot.identity === dismissedIdentity) {
+      snapshot = nextSnapshot;
+      removeUi();
+      return;
+    }
     if (core.sameIdentity(snapshot, nextSnapshot)) return;
     snapshot = nextSnapshot;
+    dismissedIdentity = null;
     errorText = "";
     drafts = snapshot.request.action_requests.map((action, index) => {
       const config = core.reviewConfigFor(snapshot.request, index);
@@ -254,14 +296,16 @@
         ? config.allowed_decisions
         : [];
       return {
-        type: allowed.includes("approve")
-          ? "approve"
-          : allowed.find((item) => item === "edit" || item === "reject"),
+        type: null,
         args: structuredClone(action.args),
         reason: "",
+        invalidFields: new Set(),
+        supported: allowed.some((item) =>
+          ["approve", "edit", "reject"].includes(item),
+        ),
       };
     });
-    if (drafts.some((draft) => !draft.type)) {
+    if (drafts.some((draft) => !draft.supported)) {
       snapshot = null;
       removeUi();
       return;
@@ -276,9 +320,7 @@
 
   async function submit() {
     if (submitting || !snapshot) return;
-    submitting = true;
     errorText = "";
-    paint();
     try {
       const decisions = snapshot.request.action_requests.map((action, index) => {
         const draft = drafts[index];
@@ -287,16 +329,27 @@
           ? config.allowed_decisions
           : [];
         if (!allowed.includes(draft.type)) throw new TypeError("该操作不允许当前决定");
+        if (draft.type === "edit" && draft.invalidFields.size) {
+          throw new TypeError("参数输入无效，已恢复上次有效值");
+        }
         return core.buildDecision(action, draft.type, draft.args, draft.reason);
       });
       const context = core.parseStudioLocation(location.href);
       if (!context) throw new TypeError("当前页面不是受支持的 Studio thread");
+      submitting = true;
+      paint();
       const response = await send({
         type: "studio_hitl.resume",
         threadId: context.threadId,
         expectedIdentity: snapshot.identity,
         decisions,
       });
+      if (response && response.code === "stale_interrupt") {
+        snapshot = null;
+        drafts = [];
+        showStatus("审批状态已变化，正在重新读取…");
+        return;
+      }
       if (!response || !response.ok) {
         throw new Error(responseError(response, "审批提交失败"));
       }
@@ -305,9 +358,10 @@
       showStatus("审批已提交，Agent 正在继续执行…");
     } catch (error) {
       errorText = error instanceof Error ? error.message : "审批提交失败";
-      paint();
+      for (const draft of drafts) draft.invalidFields.clear();
     } finally {
       submitting = false;
+      if (snapshot) paint();
     }
   }
 
@@ -316,6 +370,7 @@
     snapshot = null;
     drafts = [];
     activeRunId = null;
+    dismissedIdentity = null;
     errorText = "";
     removeUi();
   }

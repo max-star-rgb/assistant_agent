@@ -9,7 +9,7 @@
    `/home/lenovo1/pycharm_project/assistant_agent/showcases/studio_hitl_extension`
 3. 刷新已经打开的 Studio thread 页面。
 
-扩展只匹配 `https://smith.langchain.com/studio/*`，并且只在页面 URL 的 `baseUrl` 为 `http://127.0.0.1:8089` 时工作。遇到恰好一个标准原生 HITL interrupt 后，页面中央会出现“需要你的批准”表单；原 Studio JSON 仍可作为兜底。
+扩展只匹配 `https://smith.langchain.com/studio/*`，并且只在页面 URL 的 `baseUrl` 为 `http://127.0.0.1:8089` 时工作。遇到恰好一个标准原生 HITL interrupt 后，页面中央会出现“需要你的批准”表单；参数始终可见，每个 action 都要显式选择决定，也可点击“使用 Studio 原界面”回到 JSON 兜底。
 
 ## 离线演示
 
