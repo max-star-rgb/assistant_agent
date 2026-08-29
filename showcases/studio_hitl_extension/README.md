@@ -45,6 +45,6 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
 ## 边界与卸载
 
 - 同时出现多个原生 interrupt、非标准 interrupt 或不受支持的参数形态时，扩展保持静默，继续使用 Studio 原界面。
-- 后台只访问 `http://127.0.0.1:8089`，提交前会重新核对 `checkpoint_id + interrupt_id`。
+- 后台只访问 `http://127.0.0.1:8089`，使用本地 Agent Server 固定的 `langgraph-studio-user` 开发身份，提交前会重新核对 `checkpoint_id + interrupt_id`。
 - 数组和对象按现有结构递归编辑；需要增删字段或数组项时使用 Studio 原始 JSON。
 - 卸载时在 `chrome://extensions` 中移除或停用 **Assistant Agent Studio HITL** 即可。

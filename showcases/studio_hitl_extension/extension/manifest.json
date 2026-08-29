@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Assistant Agent Studio HITL",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Render local LangGraph HITL interrupts as forms inside Studio.",
   "host_permissions": ["http://127.0.0.1:8089/*"],
   "background": { "service_worker": "background.js" },

@@ -15,7 +15,10 @@ importScripts("core.js");
   async function requestJson(path, options = {}, fetchImpl = fetch) {
     const response = await fetchImpl(`${core.API_ORIGIN}${path}`, {
       ...options,
-      headers: options.body ? { "Content-Type": "application/json" } : undefined,
+      headers: {
+        "X-Assistant-User": "langgraph-studio-user",
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+      },
       signal: AbortSignal.timeout(10_000),
     });
     if (!response.ok) throw new BridgeError("server_error");
