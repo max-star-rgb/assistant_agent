@@ -89,6 +89,7 @@ def test_showcase_uses_the_single_instance_server_wrapper(monkeypatch) -> None:
         ]
     ) == 0
     assert captured["config"]["graphs"] == {
-        "studio-evolution-showcase": "./showcases/studio_evolution/graph.py:graph"
+        "studio-evolution-showcase": "./showcases/studio_evolution/graph.py:graph",
+        "studio-hitl-showcase": "./showcases/studio_hitl_extension/graph.py:graph",
     }
     assert captured["config"]["env"] == {}
