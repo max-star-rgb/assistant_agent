@@ -149,7 +149,6 @@ def create_live_view_inspect_tool(
 
     return configure_builtin_tool(
         live_view_inspect,
-        "read",
         availability=ToolAvailability.VISUAL_KEYFRAME_AVAILABLE.value,
         bounded_expected_errors=True,
     )

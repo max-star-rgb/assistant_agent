@@ -99,7 +99,7 @@ def create_shopping_search_tool(
             ),
         )
 
-    return configure_builtin_tool(shopping_search, "read")
+    return configure_builtin_tool(shopping_search)
 
 
 def _execute_shopping_search(

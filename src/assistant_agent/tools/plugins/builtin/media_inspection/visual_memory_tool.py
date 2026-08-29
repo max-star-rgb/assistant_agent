@@ -333,7 +333,6 @@ def create_visual_memory_search_tool(
 
     return configure_builtin_tool(
         visual_memory_search,
-        "read",
         availability=ToolAvailability.VISUAL_HISTORY_AVAILABLE.value,
     )
 

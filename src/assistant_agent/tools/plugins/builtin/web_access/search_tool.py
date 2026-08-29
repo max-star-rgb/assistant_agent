@@ -64,7 +64,7 @@ def create_web_search_tool(adapter: WebSearchAdapter | None = None) -> BaseTool:
             ),
         )
 
-    return configure_builtin_tool(web_search, "read")
+    return configure_builtin_tool(web_search)
 
 
 def _execute_web_search(

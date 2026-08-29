@@ -16,6 +16,7 @@ MCP_ENABLED_ENV = "MULTIMODAL_AGENT_MCP_ENABLED"
 MCP_CONFIG_PATH_ENV = "MULTIMODAL_AGENT_MCP_CONFIG_PATH"
 DEFAULT_MCP_CONFIG_PATH = ".local/mcp_servers.json"
 MCPTransport = Literal["stdio"]
+MCPSessionScope = Literal["call", "thread"]
 MCPServerPreset = Literal["google_workspace", "todoist", "notion", "slack"]
 _PARENT_ENV_REFERENCE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 
@@ -32,11 +33,12 @@ class MCPServerConfig(BaseModel):
     server_name: str = Field(min_length=1)
     preset: MCPServerPreset | None = None
     transport: MCPTransport = "stdio"
+    session_scope: MCPSessionScope = "call"
     command: list[str] = Field(default_factory=list)
     cwd: str | None = None
     env: dict[str, str] = Field(default_factory=dict)
     allowed_tools: list[str] = Field(default_factory=list)
-    read_only_tools: list[str] = Field(default_factory=list)
+    auto_approved_tools: list[str] = Field(default_factory=list)
     namespace_prefix: str = "mcp"
 
     @model_validator(mode="before")
@@ -44,11 +46,19 @@ class MCPServerConfig(BaseModel):
     def apply_preset_defaults(cls, data: object) -> object:
         if not isinstance(data, dict):
             return data
-        preset = data.get("preset")
+        merged = dict(data)
+        legacy_auto_approved = merged.pop("read_only_tools", None)
+        if legacy_auto_approved is not None:
+            configured = merged.get("auto_approved_tools")
+            if configured and configured != legacy_auto_approved:
+                raise ValueError(
+                    "read_only_tools conflicts with auto_approved_tools"
+                )
+            merged["auto_approved_tools"] = legacy_auto_approved
+        preset = merged.get("preset")
         preset_defaults = _MCP_SERVER_PRESETS.get(str(preset)) if preset else None
         if not preset_defaults:
-            return data
-        merged = dict(data)
+            return merged
         for key, value in preset_defaults.items():
             if not merged.get(key):
                 merged[key] = list(value) if isinstance(value, list) else value
@@ -57,15 +67,22 @@ class MCPServerConfig(BaseModel):
     @model_validator(mode="after")
     def validate_tool_sets(self) -> "MCPServerConfig":
         self.allowed_tools = _dedupe(self.allowed_tools)
-        self.read_only_tools = _dedupe(self.read_only_tools)
+        self.auto_approved_tools = _dedupe(self.auto_approved_tools)
         allowed = set(self.allowed_tools)
-        unknown = sorted(set(self.read_only_tools) - allowed)
+        unknown = sorted(set(self.auto_approved_tools) - allowed)
         if unknown:
             raise ValueError(
-                f"read_only_tools contains tools outside allowed_tools: {unknown}"
+                f"auto_approved_tools contains tools outside allowed_tools: {unknown}"
             )
         if self.transport == "stdio" and not self.command:
             raise ValueError("stdio MCP server requires command.")
+        values = [*self.command, self.cwd or ""]
+        if self.session_scope == "call" and any(
+            token in value
+            for value in values
+            for token in ("{workspace_root}", "{repo_root}", "{artifact_root}")
+        ):
+            raise ValueError("thread MCP path token requires thread session scope")
         return self
 
 
@@ -111,10 +128,7 @@ def load_mcp_server_configs_from_env(
             configs.append(MCPServerConfig.model_validate(item))
         except ValidationError as exc:
             fields = sorted(
-                {
-                    ".".join(str(part) for part in error["loc"])
-                    for error in exc.errors()
-                }
+                {".".join(str(part) for part in error["loc"]) for error in exc.errors()}
             )
             detail = ", ".join(fields) or "server"
             raise MCPConfigurationError(
@@ -172,18 +186,18 @@ _MCP_SERVER_PRESETS: dict[str, dict[str, object]] = {
             "search_contacts",
             "search_files",
         ],
-        "read_only_tools": ["search_events", "search_contacts", "search_files"],
+        "auto_approved_tools": ["search_events", "search_contacts", "search_files"],
     },
     "todoist": {
         "allowed_tools": ["search_tasks", "create_task"],
-        "read_only_tools": ["search_tasks"],
+        "auto_approved_tools": ["search_tasks"],
     },
     "notion": {
         "allowed_tools": ["search_pages", "fetch_page", "create_page"],
-        "read_only_tools": ["search_pages", "fetch_page"],
+        "auto_approved_tools": ["search_pages", "fetch_page"],
     },
     "slack": {
         "allowed_tools": ["search_messages", "list_channels", "post_message"],
-        "read_only_tools": ["search_messages", "list_channels"],
+        "auto_approved_tools": ["search_messages", "list_channels"],
     },
 }

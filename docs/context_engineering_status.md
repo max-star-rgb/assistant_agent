@@ -1,6 +1,6 @@
 # LangChain-native Context Engineering
 
-最后更新：2026-08-28
+最后更新：2026-08-29
 
 ## Authority contract
 
@@ -18,10 +18,11 @@
 生产上下文以 LangChain 标准 `messages` channel 为事实源。统一 `AssistantAgent` 使用一个分层 Prompt Builder：
 provider-neutral 的稳定核心策略在前，Deep Agents Skills L0 目录随后注入，dynamic prompt 最后追加北京时间自然日、
 可信用户地区与本轮媒体事实。稳定策略要求直接推进结果，只在缺少阻塞信息或关键选择会改变结果时询问，并区分
-已核验事实、失败和模型判断。
+已核验事实、失败和模型判断；Git 操作按目标路径使用 `git -C <path> rev-parse --show-toplevel` 动态识别仓库，
+不依赖 Agent Server cwd，也不启动时扫描用户 Home。
 
 公开 `AssistantRunContext` 只有 `enable_memory`，默认 true；它控制本轮 recall 与 delayed extraction，但不进入
-prompt。`entry_profile`、视觉 capability token 与 repository snapshot SHA 属于服务端签发的
+prompt。`entry_profile` 与视觉 capability token 属于服务端签发的
 `AssistantRuntimeFacts`，只放在 namespaced run metadata。用户身份只来自 Agent Server
 `Runtime.server_info.user.identity`。公开 context 不包含模式、prompt、身份、仓库选择或 Tool 授权。
 
@@ -33,8 +34,8 @@ Tool observation 当作本轮证据。`visual_memory_search` 只查当前 VIDEO 
 
 Deep Agents `SkillsMiddleware` 从独立的普通 `FilesystemBackend` 的 `/skills/` 发现标准 `SKILL.md` L0 元数据，
 项目 state 与 Prompt 只投影 `name`、`description`、`path`；上游可选的 `allowed_tools`、`compatibility`、`license`、
-`metadata` 不进入项目运行时。正文只在模型实际调用 `read_file` 时进入当前角色 transcript。这个 backend 与主 Agent 的可写 worktree
-backend、worker 的只读 worktree backend 相互分离；Skills 不授予 Tool，也不扩大文件访问或 task state。
+`metadata` 不进入项目运行时。正文只在模型实际调用 `read_file` 时进入当前角色 transcript。这个 backend 与主 Agent 的可写 Home
+backend、worker 的只读 OS backend 相互分离；Skills 不授予 Tool，也不扩大文件访问或 task state。
 
 同步 `task` 使用双向显式 allowlist，而不是传递整个 Deep Agent state：
 
@@ -47,8 +48,8 @@ Todo、`async_tasks`、Provider search profile、Tool Profile、Skill metadata�
 若 worker 既没有非空 `AIMessage`，也没有非空 structured response，输出投影会生成一条有界的明确失败报告，
 不会用空 `AIMessage` 伪装成功；已有非空文本或 structured response 的投影语义不变。
 
-异步 delegation 的父会话只持久化有界 task handle。创建任务时冻结的 repository snapshot SHA 随 handle、child
-thread/run metadata 传递，后续 update 继续使用同一 SHA。异步 worker 的业务输入仍只有模型生成的 description；
+异步 delegation 的父会话只持久化有界 task handle 和父子 thread/run correlation，不保存 Workspace 或 repository snapshot。
+异步 worker 的业务输入仍只有模型生成的 description；
 父 conversation、Todo、Skill/Profile state 与完整 Tool transcript 不自动复制。
 
 ## Memory、预算与历史

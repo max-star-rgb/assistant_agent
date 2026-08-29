@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from assistant_agent.config import ProviderConfig
 
 if TYPE_CHECKING:
+    from assistant_agent.runtime.thread_resources import ThreadResourceManager
     from assistant_agent.automation.durable_tasks.service import DurableTaskService
     from assistant_agent.media.video.realtime_video_memory import (
         RealtimeVideoMemoryStore,
@@ -43,6 +44,7 @@ class ToolPluginContext:
     visual_reminder_registry: VisualReminderRegistry | None = None
     visual_memory_text_index: VisualMemoryTextIndex | None = None
     live_view_resolver: Callable[[str, str, str], Any] | None = None
+    thread_resource_manager: ThreadResourceManager | None = None
 
     @property
     def mock_mode(self) -> bool:

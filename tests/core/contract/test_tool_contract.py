@@ -67,7 +67,7 @@ def _create_probe_tool() -> BaseTool:
             {"value": value, "user_id": user_id},
         )
 
-    probe.metadata = builtin_tool_metadata("read")
+    probe.metadata = builtin_tool_metadata()
     return probe
 
 
@@ -122,7 +122,7 @@ def test_toolnode_injects_identity_and_returns_standard_tool_message() -> None:
 
 
 @pytest.mark.core_invariant("TOOL-001")
-def test_non_read_expected_failure_uses_default_toolnode_error_message() -> None:
+def test_sensitive_expected_failure_uses_default_toolnode_error_message() -> None:
     @tool("write_failure_probe", response_format="content_and_artifact")
     def write_failure_probe(value: str):
         """Return a deterministic expected write failure."""
@@ -136,7 +136,10 @@ def test_non_read_expected_failure_uses_default_toolnode_error_message() -> None
             ),
         )
 
-    configured = _configure_builtin_probe(write_failure_probe, "write")
+    configured = _configure_builtin_probe(
+        write_failure_probe,
+        bounded_expected_errors=True,
+    )
     message = _invoke_default_toolnode(configured, {"value": "sentinel"})
 
     assert message.status == "error"
@@ -144,7 +147,7 @@ def test_non_read_expected_failure_uses_default_toolnode_error_message() -> None
 
 
 @pytest.mark.core_invariant("TOOL-001")
-def test_non_read_unknown_failure_is_sanitized_by_default_toolnode() -> None:
+def test_sensitive_unknown_failure_is_sanitized_by_default_toolnode() -> None:
     @tool("unknown_failure_probe", response_format="content_and_artifact")
     def unknown_failure_probe():
         """Raise one unexpected implementation failure."""
@@ -156,7 +159,10 @@ def test_non_read_unknown_failure_is_sanitized_by_default_toolnode() -> None:
 
         return invoke_native_tool("unknown_failure_probe", fail)
 
-    configured = _configure_builtin_probe(unknown_failure_probe, "write")
+    configured = _configure_builtin_probe(
+        unknown_failure_probe,
+        bounded_expected_errors=True,
+    )
     message = _invoke_default_toolnode(configured, {})
     content = str(message.content)
 
@@ -184,7 +190,7 @@ def test_read_failure_retries_before_becoming_a_tool_message(tmp_path: Path) -> 
 
         return invoke_native_tool("read_failure_probe", fail)
 
-    configured = _configure_builtin_probe(read_failure_probe, "read")
+    configured = _configure_builtin_probe(read_failure_probe)
     graph = build_assistant_agent(
         _SingleToolCallModel(
             tool_name="read_failure_probe",
@@ -195,6 +201,8 @@ def test_read_failure_retries_before_becoming_a_tool_message(tmp_path: Path) -> 
         worker_graph=RunnableLambda(lambda state: state),
         skills_backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
         tool_profiles=(),
+        general_purpose_tool_names={"read_failure_probe"},
+        auto_approved_tool_names={"read_failure_probe"},
     )
     result = graph.invoke(
         {"messages": [HumanMessage(content="read-failure-request")]},
@@ -209,10 +217,17 @@ def test_read_failure_retries_before_becoming_a_tool_message(tmp_path: Path) -> 
     assert "expected-read-failure:sentinel" in str(message.content)
 
 
-def _configure_builtin_probe(tool: BaseTool, effect: str) -> BaseTool:
+def _configure_builtin_probe(
+    tool: BaseTool,
+    *,
+    bounded_expected_errors: bool = False,
+) -> BaseTool:
     configure = getattr(native_boundary, "configure_builtin_tool", None)
     assert callable(configure)
-    return configure(tool, effect)
+    return configure(
+        tool,
+        bounded_expected_errors=bounded_expected_errors,
+    )
 
 
 def _invoke_default_toolnode(

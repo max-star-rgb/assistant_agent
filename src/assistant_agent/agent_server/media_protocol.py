@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from assistant_agent.media.generated_artifacts import (
+from assistant_agent.runtime.generated_artifacts import (
     MAX_DELIVERED_IMAGE_COUNT,
-    generated_artifact_payload,
+    GeneratedArtifactPayload,
 )
 from assistant_agent.media.artifact_delivery import ArtifactCompleted
 from assistant_agent.proactive_delivery import ProactiveMessage
@@ -142,7 +143,9 @@ def success_chat_response(
     response: Mapping[str, Any],
     delivery_id: str,
     capabilities: Mapping[str, bool] | None = None,
-    artifact_dir: Path | None = None,
+    artifact_payload_resolver: Callable[
+        [str], GeneratedArtifactPayload | None
+    ],
     sequence: int = 1,
     full_text: str | None = None,
     display_only: bool | None = None,
@@ -163,7 +166,7 @@ def success_chat_response(
     for output_ref in response.get("output_refs", [])[:MAX_DELIVERED_IMAGE_COUNT]:
         if not isinstance(output_ref, str):
             continue
-        artifact = generated_artifact_payload(output_ref, artifact_dir=artifact_dir)
+        artifact = artifact_payload_resolver(output_ref)
         if artifact is not None:
             image_details.append(
                 {

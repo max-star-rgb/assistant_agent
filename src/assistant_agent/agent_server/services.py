@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import inspect
 from pathlib import Path
 from typing import Any
@@ -12,19 +12,15 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from langgraph.store.base import BaseStore
 
-from assistant_agent.coding.config import CodingConfig, CodingRepositoryConfig
-from assistant_agent.coding.backend import (
-    CodingWorkspaceBackend,
-    ReadOnlyCodingWorkspaceBackend,
-)
-from assistant_agent.coding.workspace import CodingWorkspaceService
 from assistant_agent.agent_server.async_delegation import (
+    ASYNC_TASK_AUTO_APPROVED_TOOL_NAMES,
     async_task_tool_profile,
     build_async_subagent_middleware,
 )
 from assistant_agent.config import ProviderConfig
 from assistant_agent.context.token_counter import create_context_token_counter
 from assistant_agent.mcp.config import load_mcp_server_configs_from_env
+from assistant_agent.mcp.stateful_sessions import ThreadMcpSessionPool
 from assistant_agent.media.visual_perception import get_visual_perception_module
 from assistant_agent.native_agent.assistant_agent import (
     build_assistant_agent,
@@ -36,9 +32,40 @@ from assistant_agent.native_agent.providers import create_chat_model
 from assistant_agent.native_agent.tool_profiles import project_tool_profiles
 from assistant_agent.native_agent.tools import (
     NativeToolResources,
+    auto_approved_tool_names,
     create_native_tool_inventory,
 )
 from assistant_agent.skills.native import create_project_skills_backend
+from assistant_agent.runtime.local_backend import (
+    ReadOnlyHomeBackend,
+    create_browser_backend,
+    create_local_backend,
+)
+from assistant_agent.runtime.thread_resources import (
+    ThreadResourceConfig,
+    ThreadResourceManager,
+)
+
+
+async def reap_thread_resources(
+    pool: ThreadMcpSessionPool,
+    manager: ThreadResourceManager,
+) -> None:
+    """Close thread MCP sessions before deleting expired thread directories."""
+
+    thread_refs = await asyncio.to_thread(manager.expired_thread_refs)
+    for thread_ref in thread_refs:
+        await pool.aclose_thread(thread_ref)
+        await asyncio.to_thread(manager.remove_expired, thread_ref)
+
+
+async def _run_thread_resource_reaper(
+    pool: ThreadMcpSessionPool,
+    manager: ThreadResourceManager,
+) -> None:
+    while True:
+        await asyncio.sleep(60)
+        await reap_thread_resources(pool, manager)
 
 
 @dataclass
@@ -47,11 +74,13 @@ class AgentServerExecutionOwner:
 
     model: BaseChatModel
     tools: list[BaseTool]
-    coding_workspace_service: CodingWorkspaceService
+    thread_resource_manager: ThreadResourceManager
+    mcp_session_pool: ThreadMcpSessionPool
     memory_backend: MemoryBackend
     graph: Any
     worker_graph: Any
     memory_graph: Any
+    thread_resource_reaper_task: asyncio.Task[None] | None = None
 
     @classmethod
     async def compose(
@@ -71,19 +100,43 @@ class AgentServerExecutionOwner:
             tool_resources,
             memory_backend,
             project_root,
-            coding_repo_id,
-            coding_config,
+            thread_resource_config,
         ) = await asyncio.to_thread(
             _compose_sync,
             config,
             store,
         )
+        thread_resource_manager = ThreadResourceManager(thread_resource_config)
+        tool_resources = replace(
+            tool_resources,
+            thread_resource_manager=thread_resource_manager,
+        )
+        mcp_server_configs = load_mcp_server_configs_from_env()
+        mcp_session_pool = ThreadMcpSessionPool(
+            mcp_server_configs,
+            manager=thread_resource_manager,
+        )
+        await reap_thread_resources(mcp_session_pool, thread_resource_manager)
         tools = await create_native_tool_inventory(
             config,
             resources=tool_resources,
-            mcp_server_configs=load_mcp_server_configs_from_env(),
+            mcp_server_configs=mcp_server_configs,
+            mcp_session_pool=mcp_session_pool,
         )
-        coding_workspace_service = CodingWorkspaceService(coding_config)
+        auto_approved_names = auto_approved_tool_names(tools, mcp_server_configs)
+        browser_profile = next(
+            profile
+            for profile in project_tool_profiles()
+            if profile.profile_id == "browser"
+        )
+        browser_tool_names = set(browser_profile.tool_names)
+        browser_tools = [tool for tool in tools if tool.name in browser_tool_names]
+        general_purpose_tools = [
+            tool
+            for tool in tools
+            if tool.name in auto_approved_names
+            and tool.name not in browser_tool_names
+        ]
         skills_backend = await asyncio.to_thread(
             create_project_skills_backend,
             project_root,
@@ -100,13 +153,13 @@ class AgentServerExecutionOwner:
                 else None
             ),
         }
-        read_only_backend = ReadOnlyCodingWorkspaceBackend(
-            coding_workspace_service,
-            coding_repo_id,
+        agent_home = thread_resource_config.root.parent
+        read_only_backend = ReadOnlyHomeBackend(
+            agent_home=agent_home,
         )
         worker_graph = build_read_only_worker(
             model,
-            tools,
+            general_purpose_tools,
             backend=read_only_backend,
             skills_backend=skills_backend,
             **context_options,
@@ -115,13 +168,10 @@ class AgentServerExecutionOwner:
             live_view_resolver=tool_resources.live_view_resolver,
             current_location=config.current_location,
         )
-        async_middleware = build_async_subagent_middleware(
-            coding_workspace_service,
-            coding_repo_id,
-        )
-        writable_backend = CodingWorkspaceBackend(
-            coding_workspace_service,
-            coding_repo_id,
+        async_middleware = build_async_subagent_middleware()
+        writable_backend = create_local_backend(
+            thread_resource_manager,
+            agent_home=agent_home,
         )
         assistant_agent = build_assistant_agent(
             model,
@@ -131,9 +181,16 @@ class AgentServerExecutionOwner:
             skills_backend=skills_backend,
             **context_options,
             tool_profiles=(*business_tool_profiles, async_tool_profile),
-            additional_middleware=(
-                async_middleware,
-            ),
+            general_purpose_tool_names={
+                tool.name for tool in general_purpose_tools
+            },
+            auto_approved_tool_names={
+                *auto_approved_names,
+                *ASYNC_TASK_AUTO_APPROVED_TOOL_NAMES,
+            },
+            browser_tools=browser_tools,
+            browser_backend=create_browser_backend(thread_resource_manager),
+            additional_middleware=(async_middleware,),
             visual_history_probe=tool_resources.visual_history_probe,
             live_view_resolver=tool_resources.live_view_resolver,
             current_location=config.current_location,
@@ -141,21 +198,35 @@ class AgentServerExecutionOwner:
             memory_extraction_delay_seconds=config.memory_extraction_delay_seconds,
         )
         memory_graph = build_memory_extraction_graph(backend=memory_backend)
-        return cls(
+        owner = cls(
             model=model,
             tools=tools,
-            coding_workspace_service=coding_workspace_service,
+            thread_resource_manager=thread_resource_manager,
+            mcp_session_pool=mcp_session_pool,
             memory_backend=memory_backend,
             graph=assistant_agent,
             worker_graph=worker_graph,
             memory_graph=memory_graph,
         )
+        owner.thread_resource_reaper_task = asyncio.create_task(
+            _run_thread_resource_reaper(mcp_session_pool, thread_resource_manager),
+            name="thread-resource-reaper",
+        )
+        return owner
 
     async def aclose(self) -> None:
+        if self.thread_resource_reaper_task is not None:
+            self.thread_resource_reaper_task.cancel()
+            await asyncio.gather(
+                self.thread_resource_reaper_task,
+                return_exceptions=True,
+            )
+            self.thread_resource_reaper_task = None
         seen: set[int] = set()
         for target in (
+            self.mcp_session_pool,
             self.memory_backend,
-            self.coding_workspace_service,
+            self.thread_resource_manager,
             self.model,
             *self.tools,
         ):
@@ -173,8 +244,7 @@ def _compose_sync(
     NativeToolResources,
     MemoryBackend,
     Path,
-    str,
-    CodingConfig,
+    ThreadResourceConfig,
 ]:
     model = create_chat_model(config)
     visual_perception = get_visual_perception_module(config)
@@ -195,24 +265,15 @@ def _compose_sync(
         langmem_store=store,
     )
     project_root = Path(__file__).resolve().parents[3]
-    coding_repo_id = "assistant-agent"
-    coding_config = CodingConfig(
-        enabled=True,
-        repositories={
-            coding_repo_id: CodingRepositoryConfig(
-                repo_id=coding_repo_id,
-                path=project_root,
-                target_branch="assistant-local",
-            )
-        },
+    thread_resource_config = ThreadResourceConfig(
+        root=Path.home() / "assistant_agent" / "threads",
     )
     return (
         model,
         tool_resources,
         memory_backend,
         project_root,
-        coding_repo_id,
-        coding_config,
+        thread_resource_config,
     )
 
 

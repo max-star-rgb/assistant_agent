@@ -11,10 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from assistant_agent.runtime.generated_artifacts import (
-    GENERATED_ARTIFACT_PUBLIC_PREFIX,
-    generated_artifact_payload,
-)
+from assistant_agent.runtime.generated_artifacts import generated_artifact_payload
 from assistant_agent.runtime.image_to_3d_jobs import (
     ImageTo3DJobRegistry,
     get_image_to_3d_job_registry,
@@ -27,7 +24,6 @@ RequestJson = Callable[[str, str, bytes | None, dict[str, str]], dict[str, Any]]
 class ImageTo3DSettings:
     td_gen_url: str
     public_base_url: str
-    generated_artifact_path: Path
     timeout_seconds: float = 5.0
 
 
@@ -47,10 +43,12 @@ class ImageTo3DAdapter:
         self,
         settings: ImageTo3DSettings,
         *,
+        artifact_root_resolver: Callable[[str, str], Path],
         request_json: RequestJson | None = None,
         job_registry: ImageTo3DJobRegistry | None = None,
     ) -> None:
         self.settings = settings
+        self._artifact_root_resolver = artifact_root_resolver
         self._request_json = request_json or self._urlopen_json
         self._job_registry = job_registry or get_image_to_3d_job_registry()
 
@@ -65,7 +63,11 @@ class ImageTo3DAdapter:
         image_id = src_image.strip()
         if not image_id or Path(image_id).name != image_id:
             raise ImageTo3DError(f"图片不存在：{src_image}")
-        artifact = self._resolve_artifact(image_id)
+        artifact = self._resolve_artifact(
+            user_id or session_id,
+            session_id,
+            image_id,
+        )
         job = self._job_registry.register(
             user_id=user_id or session_id,
             session_id=session_id,
@@ -86,7 +88,9 @@ class ImageTo3DAdapter:
             self._request_json(
                 "POST",
                 self.settings.td_gen_url,
-                json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(
+                    "utf-8"
+                ),
                 {
                     "Content-Type": "application/json",
                     "User-Agent": "AgentService/1.0",
@@ -101,15 +105,26 @@ class ImageTo3DAdapter:
             source_image_id=image_id,
         )
 
-    def _resolve_artifact(self, image_id: str):
-        root = self.settings.generated_artifact_path.resolve()
+    def _resolve_artifact(
+        self,
+        user_id: str,
+        session_id: str,
+        image_id: str,
+    ):
+        root = (
+            self._artifact_root_resolver(user_id, session_id) / "generated"
+        ).resolve()
         for suffix in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
             filename = f"{image_id}{suffix}"
             candidate = (root / filename).resolve()
             if candidate.parent != root or not candidate.is_file():
                 continue
-            output_ref = f"{GENERATED_ARTIFACT_PUBLIC_PREFIX}/{filename}"
-            artifact = generated_artifact_payload(output_ref, artifact_dir=root)
+            output_ref = f"/generated/{filename}"
+            artifact = generated_artifact_payload(
+                output_ref,
+                artifact_dir=root,
+                public_prefix="/generated",
+            )
             if artifact is not None:
                 return artifact
         raise ImageTo3DError(f"图片不存在：{image_id}")

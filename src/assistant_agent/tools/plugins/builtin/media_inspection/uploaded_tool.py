@@ -223,7 +223,6 @@ def create_uploaded_media_inspect_tool(
 
     return configure_builtin_tool(
         uploaded_media_inspect,
-        "read",
         availability=ToolAvailability.UPLOADED_MEDIA_PRESENT.value,
     )
 

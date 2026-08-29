@@ -115,7 +115,7 @@ def create_lodging_search_tool(adapter: LodgingSearchAdapter | None = None) -> B
             ),
         )
 
-    return configure_builtin_tool(lodging_search, "read")
+    return configure_builtin_tool(lodging_search)
 
 
 def _execute_lodging_search(

@@ -6,7 +6,9 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from typing import Annotated, Any, NotRequired
 
 from deepagents import create_deep_agent
+from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendProtocol
+from deepagents.middleware import FilesystemMiddleware
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
     SummarizationMiddleware,
@@ -89,12 +91,12 @@ _WRITE_TODOS_SYSTEM_PROMPT_ZH = """## write_todos
 对于只需少量步骤的简单目标，应直接完成，不要调用 `write_todos`。创建和维护 Todo 会消耗时间与 token，
 仅在它确实有助于管理复杂任务时使用。
 
-# Todo 使用规则
+### Todo 使用规则
 
 - 同一个 model turn 中不得并行调用多个 `write_todos`。
 - 执行过程中可以修订 Todo 列表；新信息可能带来新事项，也可能使旧事项不再相关。
 
-# 完成任务
+### 完成任务
 
 全部工作完成后，必须在最后一次 `write_todos` 调用之后的下一条消息中给出最终答复，不能把最终答复放在
 同一次 Tool 调用中。最终答复应直接从用户要求的实际结果开始，例如数据、计算、总结或分析，而不是只确认任务已完成。"""
@@ -102,6 +104,14 @@ _GENERAL_PURPOSE_DESCRIPTION_ZH = (
     "只读分析与研究 Agent；可以读取文件并使用只读业务 Tool，不能写入文件、执行命令或实施任何副作用。"
     "需要副作用的步骤必须由主助理执行。"
 )
+_CODER_DESCRIPTION_ZH = (
+    "代码执行 Agent；负责文件修改、命令执行、Git 和测试，不使用业务或浏览器 Tool。"
+)
+_CODER_SYSTEM_PROMPT_ZH = """你是代码执行 Agent。只完成主助理委派的代码任务，修改后运行必要验证并返回简洁结果。"""
+_BROWSER_OPERATOR_DESCRIPTION_ZH = (
+    "浏览器操作 Agent；通过已配置的 Playwright Tool 完成多步骤网页读取与交互。"
+)
+_BROWSER_OPERATOR_SYSTEM_PROMPT_ZH = """你是浏览器操作 Agent。只使用已提供的浏览器 Tool 完成任务，并返回最终结果。"""
 _RESERVED_WORKER_TOOL_NAMES = frozenset(
     {
         "ls",
@@ -257,25 +267,24 @@ def _tool_progress_event(
     }
 
 
-def _retryable_read_tool_names(tools: Sequence[BaseTool]) -> list[str]:
+def _retryable_tool_names(tools: Sequence[BaseTool]) -> list[str]:
     """Keep current-view failures out of automatic retries and extra VLM work."""
 
     return [
         tool.name
         for tool in tools
-        if (tool.metadata or {}).get("effect") == "read"
-        and tool.name != LIVE_VIEW_INSPECT_TOOL_NAME
+        if tool.name != LIVE_VIEW_INSPECT_TOOL_NAME
     ]
 
 
-def _interrupt_on(tools: Sequence[BaseTool]) -> dict[str, object]:
+def _interrupt_on(
+    tools: Sequence[BaseTool],
+    *,
+    auto_approved_tool_names: set[str] | frozenset[str],
+) -> dict[str, object]:
     result = {name: _APPROVAL for name in _FILESYSTEM_SIDE_EFFECTS}
     for tool in tools:
-        metadata = tool.metadata or {}
-        effect = metadata.get("effect")
-        if effect in {"write", "dangerous", "generate"} or (
-            metadata.get("source") == "mcp" and effect != "read"
-        ):
+        if tool.name not in auto_approved_tool_names:
             result[tool.name] = _APPROVAL
     return result
 
@@ -317,6 +326,10 @@ def build_assistant_agent(
     compaction_target_ratio: float = 0.15,
     token_counter: Callable[[Iterable[MessageLikeRepresentation]], int] | None = None,
     tool_profiles: Sequence[ToolProfile] = (),
+    general_purpose_tool_names: set[str] | frozenset[str] = frozenset(),
+    auto_approved_tool_names: set[str] | frozenset[str] = frozenset(),
+    browser_tools: Sequence[BaseTool] = (),
+    browser_backend: BackendProtocol | None = None,
     additional_middleware: Sequence[AgentMiddleware] = (),
     visual_history_probe: VisualObservationHistoryProbe | None = None,
     live_view_resolver: Callable[[str, str, str], Any] | None = None,
@@ -332,21 +345,24 @@ def build_assistant_agent(
         for item in additional_middleware
         for tool in getattr(item, "tools", ())
     )
-    read_tool_names = tuple(
+    retryable_tool_names = tuple(
         sorted(
             {
                 "ls",
                 "read_file",
                 "glob",
                 "grep",
-                *(
-                    tool.name
-                    for tool in (*tools, *middleware_tools)
-                    if (tool.metadata or {}).get("effect") == "read"
-                ),
+                *general_purpose_tool_names,
             }
         )
     )
+    all_runtime_tools = [*tools, *middleware_tools]
+    browser_interrupt_on = _interrupt_on(
+        browser_tools,
+        auto_approved_tool_names=set(auto_approved_tool_names),
+    )
+    for name in _FILESYSTEM_SIDE_EFFECTS:
+        browser_interrupt_on.pop(name, None)
     return create_deep_agent(
         model=model,
         tools=list(tools),
@@ -356,7 +372,31 @@ def build_assistant_agent(
                 "name": "general-purpose",
                 "description": _GENERAL_PURPOSE_DESCRIPTION_ZH,
                 "runnable": isolated_read_only_worker(worker_graph),
-            }
+            },
+            {
+                "name": "coder",
+                "description": _CODER_DESCRIPTION_ZH,
+                "system_prompt": _CODER_SYSTEM_PROMPT_ZH,
+                "model": model,
+                "tools": [],
+                "interrupt_on": {
+                    name: _APPROVAL for name in _FILESYSTEM_SIDE_EFFECTS
+                },
+            },
+            {
+                "name": "browser-operator",
+                "description": _BROWSER_OPERATOR_DESCRIPTION_ZH,
+                "system_prompt": _BROWSER_OPERATOR_SYSTEM_PROMPT_ZH,
+                "model": model,
+                "tools": list(browser_tools),
+                "middleware": [
+                    FilesystemMiddleware(
+                        backend=browser_backend or StateBackend(),
+                        tools=["ls", "read_file", "glob", "grep"],
+                    )
+                ],
+                "interrupt_on": browser_interrupt_on,
+            },
         ],
         state_schema=AssistantAgentState,
         context_schema=AssistantRunContext,
@@ -400,13 +440,16 @@ def build_assistant_agent(
             ToolProgressMiddleware(),
             ToolRetryMiddleware(
                 max_retries=2,
-                tools=read_tool_names,
+                tools=retryable_tool_names,
                 initial_delay=0,
                 backoff_factor=0,
                 jitter=False,
             ),
         ],
-        interrupt_on=_interrupt_on([*tools, *middleware_tools]),
+        interrupt_on=_interrupt_on(
+            all_runtime_tools,
+            auto_approved_tool_names=set(auto_approved_tool_names),
+        ),
         checkpointer=checkpointer,
         name="AssistantAgent",
     )
@@ -474,7 +517,7 @@ def build_read_only_worker(
     """Compile one non-delegating worker with read-only Tool capabilities."""
 
     worker_model = read_only_worker_model_view(model)
-    read_tools: list[BaseTool] = []
+    worker_tools: list[BaseTool] = []
     business_tool_names: set[str] = set()
     for tool in tools:
         if tool.name in _RESERVED_WORKER_TOOL_NAMES:
@@ -482,15 +525,14 @@ def build_read_only_worker(
         if tool.name in business_tool_names:
             raise ValueError(f"duplicate business tool name: {tool.name}")
         business_tool_names.add(tool.name)
-        if (tool.metadata or {}).get("effect") == "read":
-            read_tools.append(tool)
+        worker_tools.append(tool)
     skills_middleware = create_project_skills_middleware(skills_backend)
     filesystem_middleware = create_project_filesystem_middleware(
         backend,
         tools=PROJECT_FILESYSTEM_READ_TOOL_NAMES,
     )
     filesystem_tools = tuple(filesystem_middleware.tools)
-    retryable_tools = _retryable_read_tool_names([*read_tools, *filesystem_tools])
+    retryable_tools = _retryable_tool_names([*worker_tools, *filesystem_tools])
     middleware: list[AgentMiddleware] = [
         create_assistant_base_prompt(),
         skills_middleware,
@@ -501,7 +543,7 @@ def build_read_only_worker(
             ToolProfileMiddleware(
                 tool_profiles,
                 available_tool_names={
-                    tool.name for tool in (*read_tools, *filesystem_tools)
+                    tool.name for tool in (*worker_tools, *filesystem_tools)
                 },
             )
         )
@@ -536,7 +578,7 @@ def build_read_only_worker(
     )
     return create_agent(
         model=worker_model,
-        tools=read_tools,
+        tools=worker_tools,
         state_schema=AssistantReadOnlyWorkerState,
         context_schema=AssistantRunContext,
         middleware=middleware,

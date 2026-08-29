@@ -28,7 +28,7 @@ def create_probe_tool() -> BaseTool:
             ),
         )
 
-    probe_tool.metadata = builtin_tool_metadata("read")
+    probe_tool.metadata = builtin_tool_metadata()
     return probe_tool
 
 

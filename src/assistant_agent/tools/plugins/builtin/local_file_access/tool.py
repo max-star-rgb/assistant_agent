@@ -102,7 +102,7 @@ def create_local_file_read_tool(
             ),
         )
 
-    return configure_builtin_tool(file_read, "read")
+    return configure_builtin_tool(file_read)
 
 
 def _execute_local_file_read(

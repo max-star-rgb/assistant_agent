@@ -31,8 +31,7 @@ read_when = [
 source_globs = [
   "langgraph.json",
   "src/assistant_agent/agent_server/**",
-  "src/assistant_agent/coding/config.py",
-  "src/assistant_agent/coding/workspace.py",
+  "src/assistant_agent/runtime/thread_resources.py",
   "src/assistant_agent/proactive_delivery.py",
   "patches/langgraph-runtime-inmem/**",
   "scripts/install_patched_inmem_runtime.py",
@@ -63,7 +62,7 @@ source_globs = [
   "src/assistant_agent/agent_server/media_session.py",
   "src/assistant_agent/api/rendering_3d_callback.py",
   "src/assistant_agent/media/artifact_delivery.py",
-  "src/assistant_agent/media/generated_artifacts.py",
+  "src/assistant_agent/runtime/generated_artifacts.py",
   "src/assistant_agent/media/video/**",
   "scripts/media_simulator.py",
 ]
@@ -86,8 +85,8 @@ source_globs = [
   "src/assistant_agent/native_agent/memory_middleware.py",
   "src/assistant_agent/native_agent/state.py",
   "src/assistant_agent/native_agent/models.py",
-  "src/assistant_agent/coding/backend.py",
-  "src/assistant_agent/coding/models.py",
+  "src/assistant_agent/runtime/local_backend.py",
+  "src/assistant_agent/runtime/thread_resources.py",
 ]
 thin_references = ["README.md", "docs/agent-server-architecture.md"]
 verification = [
@@ -111,7 +110,9 @@ source_globs = [
   "src/assistant_agent/native_agent/providers.py",
   "src/assistant_agent/native_agent/tool_profiles.py",
   "src/assistant_agent/native_agent/tools.py",
-  "src/assistant_agent/coding/backend.py",
+  "src/assistant_agent/runtime/local_backend.py",
+  "src/assistant_agent/runtime/thread_resources.py",
+  "src/assistant_agent/runtime/generated_artifacts.py",
   "src/assistant_agent/skills/**",
   "src/assistant_agent/tools/**",
   "src/assistant_agent/improvement/evaluator.py",

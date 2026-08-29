@@ -138,8 +138,8 @@ def create_visual_reminder_manage_tool(
 
     return configure_builtin_tool(
         visual_reminder_manage,
-        "write",
         availability=ToolAvailability.VIDEO_FRAME_RECEIVED.value,
+        bounded_expected_errors=True,
     )
 
 

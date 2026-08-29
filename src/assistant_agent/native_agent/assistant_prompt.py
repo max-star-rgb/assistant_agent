@@ -67,6 +67,7 @@ def render_assistant_core_prompt() -> str:
         "## 任务\n\n"
         "- 能直接完成就直接完成；只有无法继续或关键选择影响结果时才询问。\n"
         "- 不确定的事实先核验；只把已确认的事实和成功动作说成确定结果。\n"
+        "- 操作 Git 时按目标路径使用 `git -C <path> rev-parse --show-toplevel` 识别仓库，不假设当前目录，也不全盘扫描。\n"
         "## 回复\n\n"
         "- 简单问题简洁回答，复杂问题充分展开。\n"
         "- 用户前提有误时，清楚指出并给出依据。\n"
@@ -126,7 +127,9 @@ def _append_sections(
     if system_message is None:
         return SystemMessage(content=suffix)
     return system_message.model_copy(
-        update={"content": _merge_content(suffix, system_message.content, prepend=False)}
+        update={
+            "content": _merge_content(suffix, system_message.content, prepend=False)
+        }
     )
 
 

@@ -41,7 +41,7 @@
         "browser_tabs",
         "browser_wait_for"
       ],
-      "read_only_tools": [
+      "auto_approved_tools": [
         "browser_console_messages",
         "browser_find",
         "browser_network_requests",
@@ -72,7 +72,7 @@
         "maps_text_search",
         "maps_around_search"
       ],
-      "read_only_tools": [
+      "auto_approved_tools": [
         "maps_geo",
         "maps_weather",
         "maps_bicycling",
@@ -96,7 +96,7 @@
         "search_gmail_messages",
         "get_gmail_messages_content_batch"
       ],
-      "read_only_tools": [
+      "auto_approved_tools": [
         "search_gmail_messages",
         "get_gmail_messages_content_batch"
       ],

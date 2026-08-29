@@ -15,7 +15,6 @@ from langgraph_sdk import get_client, get_sync_client
 
 from assistant_agent.agent_server.auth import _internal_worker_headers
 from assistant_agent.agent_server.config import WORKER_GRAPH_ID
-from assistant_agent.coding.workspace import CodingWorkspaceService
 from assistant_agent.native_agent.context import (
     AssistantRuntimeFacts,
     assistant_runtime_metadata,
@@ -32,6 +31,9 @@ ASYNC_TASK_TOOL_NAMES = (
     "update_async_task",
     "cancel_async_task",
     "list_async_tasks",
+)
+ASYNC_TASK_AUTO_APPROVED_TOOL_NAMES = frozenset(
+    {"check_async_task", "list_async_tasks"}
 )
 _ASYNC_TASK_TOOL_DESCRIPTIONS = {
     "start_async_task": f"""启动异步子 Agent，在独立 thread 中后台执行任务，并立即返回 task_id。
@@ -69,10 +71,7 @@ def async_task_tool_profile() -> ToolProfile:
     )
 
 
-def build_async_subagent_middleware(
-    workspace_service: CodingWorkspaceService,
-    repo_id: str,
-) -> AsyncSubAgentMiddleware:
+def build_async_subagent_middleware() -> AsyncSubAgentMiddleware:
     """Expose the upstream background-task contract for the shared worker graph."""
 
     middleware = AsyncSubAgentMiddleware(
@@ -87,23 +86,18 @@ def build_async_subagent_middleware(
         ]
     )
     middleware.state_schema = AssistantAsyncTaskState
-    middleware.tools = [
-        _authenticated_tool(tool, workspace_service, repo_id)
-        for tool in middleware.tools
-    ]
+    middleware.tools = [_authenticated_tool(tool) for tool in middleware.tools]
     return middleware
 
 
 def _authenticated_tool(
     tool,
-    workspace_service: CodingWorkspaceService,
-    repo_id: str,
 ):
     description = _ASYNC_TASK_TOOL_DESCRIPTIONS.get(tool.name)
     if description is not None:
         tool = tool.model_copy(update={"description": description})
     if tool.name == "start_async_task":
-        return _authenticated_start_tool(tool, workspace_service, repo_id)
+        return _authenticated_start_tool(tool)
     coroutines = {
         "check_async_task": _check_async_task,
         "update_async_task": _update_async_task,
@@ -113,25 +107,16 @@ def _authenticated_tool(
     coroutine = coroutines.get(tool.name)
     if coroutine is None:
         return tool
-    effects = {
-        "check_async_task": "read",
-        "list_async_tasks": "read",
-        "update_async_task": "write",
-        "cancel_async_task": "write",
-    }
     return tool.model_copy(
         update={
             "func": _async_only,
             "coroutine": coroutine,
-            "metadata": {**(tool.metadata or {}), "effect": effects[tool.name]},
         }
     )
 
 
 def _authenticated_start_tool(
     tool,
-    workspace_service: CodingWorkspaceService,
-    repo_id: str,
 ):
     def start_async_task(
         description: str,
@@ -145,12 +130,10 @@ def _authenticated_start_tool(
         try:
             thread_id = str(uuid4())
             parent_thread_id, parent_run_id = _parent_run(runtime)
-            repository_snapshot_sha = workspace_service.repository_head(repo_id)
             metadata = _correlation_metadata(
                 thread_id,
                 parent_thread_id,
                 parent_run_id,
-                repository_snapshot_sha,
             )
             thread = client.threads.create(
                 thread_id=thread_id,
@@ -178,7 +161,6 @@ def _authenticated_start_tool(
             runtime,
             parent_thread_id=parent_thread_id,
             parent_run_id=parent_run_id,
-            repository_snapshot_sha=repository_snapshot_sha,
         )
 
     async def astart_async_task(
@@ -193,12 +175,10 @@ def _authenticated_start_tool(
         try:
             thread_id = str(uuid4())
             parent_thread_id, parent_run_id = _parent_run(runtime)
-            repository_snapshot_sha = workspace_service.repository_head(repo_id)
             metadata = _correlation_metadata(
                 thread_id,
                 parent_thread_id,
                 parent_run_id,
-                repository_snapshot_sha,
             )
             thread = await client.threads.create(
                 thread_id=thread_id,
@@ -226,14 +206,12 @@ def _authenticated_start_tool(
             runtime,
             parent_thread_id=parent_thread_id,
             parent_run_id=parent_run_id,
-            repository_snapshot_sha=repository_snapshot_sha,
         )
 
     return tool.model_copy(
         update={
             "func": start_async_task,
             "coroutine": astart_async_task,
-            "metadata": {**(tool.metadata or {}), "effect": "write"},
         }
     )
 
@@ -295,13 +273,6 @@ async def _update_async_task(
     task = _tracked_task(task_id, runtime)
     if isinstance(task, str):
         return task
-    try:
-        repository_snapshot_sha = AssistantRuntimeFacts(
-            entry_profile="async_worker",
-            repository_snapshot_sha=task.get("repository_snapshot_sha"),
-        ).repository_snapshot_sha
-    except ValueError as exc:
-        return f"Failed to update async subagent snapshot: {exc}"
     headers = _internal_worker_headers(authenticated_user_identity(runtime))
     client = get_client(url=_agent_server_url(), api_key=None)
     try:
@@ -309,7 +280,6 @@ async def _update_async_task(
             task["task_id"],
             task["parent_thread_id"],
             task["parent_run_id"],
-            repository_snapshot_sha,
         )
         run = await client.runs.create(
             thread_id=task["thread_id"],
@@ -378,7 +348,13 @@ async def _list_async_tasks(
         # ponytail: sequential polling; use gather if per-thread task counts make this slow.
         for task in tasks:
             status = task["status"]
-            if status not in {"cancelled", "success", "error", "timeout", "interrupted"}:
+            if status not in {
+                "cancelled",
+                "success",
+                "error",
+                "timeout",
+                "interrupted",
+            }:
                 try:
                     run = await client.runs.get(
                         thread_id=task["thread_id"],
@@ -414,7 +390,6 @@ def _started_task_command(
     *,
     parent_thread_id: str,
     parent_run_id: str,
-    repository_snapshot_sha: str,
 ) -> Command:
     now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     task = {
@@ -424,7 +399,6 @@ def _started_task_command(
         "run_id": run_id,
         "parent_thread_id": parent_thread_id,
         "parent_run_id": parent_run_id,
-        "repository_snapshot_sha": repository_snapshot_sha,
         "status": "running",
         "created_at": now,
         "last_checked_at": now,
@@ -467,9 +441,7 @@ def _task_command(
     )
     return Command(
         update={
-            "messages": [
-                ToolMessage(content, tool_call_id=runtime.tool_call_id)
-            ],
+            "messages": [ToolMessage(content, tool_call_id=runtime.tool_call_id)],
             "async_tasks": {task["task_id"]: updated},
         }
     )
@@ -513,7 +485,6 @@ def _correlation_metadata(
     task_id: str,
     parent_thread_id: str,
     parent_run_id: str,
-    repository_snapshot_sha: str,
 ) -> dict[str, object]:
     return {
         "assistant_agent_task_id": task_id,
@@ -522,7 +493,6 @@ def _correlation_metadata(
         **assistant_runtime_metadata(
             AssistantRuntimeFacts(
                 entry_profile="async_worker",
-                repository_snapshot_sha=repository_snapshot_sha,
             )
         ),
     }

@@ -70,7 +70,7 @@ def create_visual_image_search_tool(
             ),
         )
 
-    return configure_builtin_tool(visual_image_search, "read")
+    return configure_builtin_tool(visual_image_search)
 
 
 def _execute_visual_image_search(

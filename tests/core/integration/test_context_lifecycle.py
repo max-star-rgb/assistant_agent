@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Sequence
@@ -24,7 +25,7 @@ from langgraph_sdk.auth.types import StudioUser
 from pydantic import PrivateAttr
 
 from assistant_agent.agent_server.services import AgentServerExecutionOwner
-from assistant_agent.coding.backend import ReadOnlyCodingWorkspaceBackend
+from assistant_agent.runtime.local_backend import ReadOnlyHomeBackend
 from assistant_agent.native_agent import assistant_agent as assistant_agent_module
 from assistant_agent.native_agent.assistant_agent import (
     RecursionFinalSynthesisMiddleware,
@@ -91,6 +92,7 @@ def _agent(
     worker: Runnable | None = None,
     tool_profiles=(),
     checkpointer=None,
+    auto_approved_tool_names=frozenset(),
 ):
     return build_assistant_agent(
         model,
@@ -100,6 +102,7 @@ def _agent(
         skills_backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
         tool_profiles=tool_profiles,
         checkpointer=checkpointer,
+        auto_approved_tool_names=auto_approved_tool_names,
     )
 
 
@@ -415,6 +418,17 @@ def test_task_uses_narrow_read_only_worker_state_and_preserves_parent_handles(
         worker_tools = set(
             owner.worker_graph.get_graph().nodes["tools"].data.tools_by_name
         )
+        assert {
+            "calendar_search",
+            "contacts_search",
+            "email_read",
+            "email_search",
+            "live_view_inspect",
+            "lodging_search",
+            "uploaded_media_inspect",
+            "visual_image_search",
+            "visual_memory_search",
+        } <= worker_tools
         assert (
             not {
                 "write_file",
@@ -426,8 +440,8 @@ def test_task_uses_narrow_read_only_worker_state_and_preserves_parent_handles(
             }
             & worker_tools
         )
-        read_only_backend = ReadOnlyCodingWorkspaceBackend(
-            SimpleNamespace(), "repo-sentinel"
+        read_only_backend = ReadOnlyHomeBackend(
+            agent_home=Path.home() / "assistant_agent",
         )
         with pytest.raises(NotImplementedError):
             read_only_backend.write("/blocked.txt", "blocked")
@@ -443,19 +457,28 @@ def test_deep_agent_owns_summary_retry_todo_hitl_and_tool_policy(
     def probe(value: str) -> str:
         return value
 
-    write_tool = StructuredTool.from_function(
+    sensitive_tool = StructuredTool.from_function(
         probe,
-        name="write_probe",
+        name="sensitive_probe",
         description="probe",
-        metadata={"effect": "write"},
     )
-    read_tool = StructuredTool.from_function(
+    delegated_tool = StructuredTool.from_function(
         probe,
-        name="read_probe",
+        name="delegated_probe",
         description="probe",
-        metadata={"effect": "read"},
+    )
+    browser_snapshot = StructuredTool.from_function(
+        probe,
+        name="mcp_playwright_browser_snapshot",
+        description="probe",
+    )
+    browser_click = StructuredTool.from_function(
+        probe,
+        name="mcp_playwright_browser_click",
+        description="probe",
     )
     captured: dict[str, Any] = {}
+    browser_backend = object()
 
     def recording_create_deep_agent(*args: Any, **kwargs: Any):
         del args
@@ -469,11 +492,18 @@ def test_deep_agent_owns_summary_retry_todo_hitl_and_tool_policy(
     )
     build_assistant_agent(
         MockAssistantChatModel(),
-        [write_tool, read_tool],
+        [sensitive_tool, delegated_tool, browser_snapshot, browser_click],
         backend=object(),
         worker_graph=_worker(),
         skills_backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
         tool_profiles=project_tool_profiles(),
+        general_purpose_tool_names={"delegated_probe"},
+        auto_approved_tool_names={
+            "delegated_probe",
+            "mcp_playwright_browser_snapshot",
+        },
+        browser_tools=[browser_snapshot, browser_click],
+        browser_backend=browser_backend,
     )
     middleware = captured["middleware"]
 
@@ -500,10 +530,29 @@ def test_deep_agent_owns_summary_retry_todo_hitl_and_tool_policy(
         "edit_file",
         "delete",
         "execute",
-        "write_probe",
+        "sensitive_probe",
+        "mcp_playwright_browser_click",
     }
-    assert "read_probe" not in captured["interrupt_on"]
-    assert [item["name"] for item in captured["subagents"]] == ["general-purpose"]
+    assert "delegated_probe" not in captured["interrupt_on"]
+    assert "mcp_playwright_browser_snapshot" not in captured["interrupt_on"]
+    subagents = {item["name"]: item for item in captured["subagents"]}
+    assert set(subagents) == {"general-purpose", "coder", "browser-operator"}
+    assert subagents["coder"]["tools"] == []
+    assert {tool.name for tool in subagents["browser-operator"]["tools"]} == {
+        "mcp_playwright_browser_snapshot",
+        "mcp_playwright_browser_click",
+    }
+    assert set(subagents["browser-operator"]["interrupt_on"]) == {
+        "mcp_playwright_browser_click"
+    }
+    browser_filesystem = subagents["browser-operator"]["middleware"][0]
+    assert browser_filesystem.backend is browser_backend
+    assert [tool.name for tool in browser_filesystem.tools] == [
+        "ls",
+        "read_file",
+        "glob",
+        "grep",
+    ]
     filesystem_profile = next(
         profile
         for profile in project_tool_profiles()
@@ -554,9 +603,13 @@ def test_tool_policy_allows_twelve_parallel_calls_per_tool(tmp_path: Path) -> No
         read_probe,
         name="read_probe",
         description="probe",
-        metadata={"effect": "read"},
     )
-    result = _agent(tmp_path, ParallelModel(), [tool]).invoke(
+    result = _agent(
+        tmp_path,
+        ParallelModel(),
+        [tool],
+        auto_approved_tool_names={"read_probe"},
+    ).invoke(
         {"messages": [HumanMessage(content="parallel-request")]},
         context=AssistantRunContext(),
     )
@@ -597,9 +650,13 @@ def test_tool_policy_allows_identical_arguments_across_turns(tmp_path: Path) -> 
         read_probe,
         name="read_probe",
         description="probe",
-        metadata={"effect": "read"},
     )
-    _agent(tmp_path, RepeatModel(), [tool]).invoke(
+    _agent(
+        tmp_path,
+        RepeatModel(),
+        [tool],
+        auto_approved_tool_names={"read_probe"},
+    ).invoke(
         {"messages": [HumanMessage(content="duplicate-request")]},
         context=AssistantRunContext(),
     )
@@ -616,10 +673,14 @@ def test_remaining_graph_steps_force_tool_free_final_synthesis(tmp_path: Path) -
         budget_probe,
         name="budget_probe",
         description="probe",
-        metadata={"effect": "read"},
     )
     model = _FinalSynthesisModel()
-    result = _agent(tmp_path, model, [tool]).invoke(
+    result = _agent(
+        tmp_path,
+        model,
+        [tool],
+        auto_approved_tool_names={"budget_probe"},
+    ).invoke(
         {"messages": [HumanMessage(content="budget-request")]},
         context=AssistantRunContext(),
         config={"recursion_limit": 12},
@@ -649,7 +710,6 @@ def test_unified_write_interrupt_resume_executes_at_most_once(
         write_probe,
         name="write_probe",
         description="probe",
-        metadata={"effect": "write"},
     )
     graph = _agent(
         tmp_path,
@@ -721,6 +781,23 @@ def test_filesystem_profile_hides_tools_then_interrupts_write(tmp_path: Path) ->
     assert "write_file" not in model.visible_tools[0]
     assert "read_file" not in model.visible_tools[1]
     assert "write_file" in model.visible_tools[2]
+    assert "execute" in model.visible_tools[2]
+    activated = next(
+        item
+        for item in result["messages"]
+        if isinstance(item, ToolMessage)
+        and item.tool_call_id == "activate-filesystem-sentinel"
+    )
+    assert json.loads(str(activated.content))["activated_tool_names"] == [
+        "ls",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "delete",
+        "glob",
+        "grep",
+        "execute",
+    ]
     blocked = next(
         item
         for item in result["messages"]
@@ -743,7 +820,7 @@ def test_browser_profile_hides_tool_then_interrupts_side_effect(tmp_path: Path) 
         navigate,
         name="mcp_playwright_browser_navigate",
         description="probe",
-        metadata={"effect": "dangerous", "source": "mcp"},
+        metadata={"source": "mcp"},
     )
     model = _BrowserModel()
     result = _agent(

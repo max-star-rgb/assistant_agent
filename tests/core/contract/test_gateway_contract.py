@@ -72,10 +72,7 @@ def _authenticated_context(*, internal_worker: bool = False) -> SimpleNamespace:
     user = asyncio.run(
         authenticate(
             None,
-            {
-                key.lower().encode(): value.encode()
-                for key, value in headers.items()
-            },
+            {key.lower().encode(): value.encode() for key, value in headers.items()},
         )
     )
     return SimpleNamespace(user=SimpleNamespace(**user))
@@ -110,9 +107,10 @@ def test_custom_assistant_reads_and_searches_are_owner_scoped(monkeypatch) -> No
     ctx = _authenticated_context()
 
     for assistant_id in SYSTEM_ASSISTANT_IDS.values():
-        assert asyncio.run(
-            allow_assistant_read(ctx, {"assistant_id": assistant_id})
-        ) is True
+        assert (
+            asyncio.run(allow_assistant_read(ctx, {"assistant_id": assistant_id}))
+            is True
+        )
 
     custom_assistant_id = UUID("11111111-1111-4111-8111-111111111111")
     assert asyncio.run(
@@ -222,9 +220,7 @@ def test_sdk_client_uses_only_native_thread_graph_identity() -> None:
 def test_agent_server_auth_accepts_only_current_graph_identities(monkeypatch) -> None:
     monkeypatch.setenv("REDIS_URI", "redis://localhost:6379")
     monkeypatch.setenv("DATABASE_URI", "postgres://localhost/test")
-    ctx = SimpleNamespace(
-        user=SimpleNamespace(identity="studio-user", permissions=())
-    )
+    ctx = SimpleNamespace(user=SimpleNamespace(identity="studio-user", permissions=()))
     created = {"metadata": {}}
     assert asyncio.run(authorize_thread_create(ctx, created)) is None
     assert created["metadata"] == {
@@ -241,7 +237,6 @@ def test_agent_server_auth_accepts_only_current_graph_identities(monkeypatch) ->
     worker_metadata = assistant_runtime_metadata(
         AssistantRuntimeFacts(
             entry_profile="async_worker",
-            repository_snapshot_sha="a" * 40,
         )
     )
     worker_create = {
@@ -459,7 +454,6 @@ def test_assistant_context_is_public_configuration_not_private_run_facts() -> No
     )
     assert facts.entry_profile == "agent_service"
     assert facts.visual_capability_token == "opaque-capability"
-    assert facts.repository_snapshot_sha is None
     with pytest.raises(ValidationError):
         AssistantRuntimeFacts(
             entry_profile="agent_service",

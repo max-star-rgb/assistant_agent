@@ -251,6 +251,7 @@ class ToolProfileMiddleware(AgentMiddleware[ToolProfileState, Any]):
                 "status": "succeeded",
                 "summary": "Tool Profile 已激活。",
                 "profile_id": profile.profile_id,
+                "activated_tool_names": list(profile.tool_names),
             }
             return Command(
                 update={
@@ -273,7 +274,7 @@ class ToolProfileMiddleware(AgentMiddleware[ToolProfileState, Any]):
                 }
             )
 
-        configured = configure_builtin_tool(activate_tool_profile, "read")
+        configured = configure_builtin_tool(activate_tool_profile)
         configured.metadata = {
             **(configured.metadata or {}),
             "retryable": False,

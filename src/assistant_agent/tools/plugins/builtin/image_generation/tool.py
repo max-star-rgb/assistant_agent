@@ -1,7 +1,7 @@
 """Image generation Tool backed by a Plugin-private adapter."""
 
 from collections.abc import Mapping
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Annotated, Any
 
 from langchain_core.tools import BaseTool, tool
@@ -28,7 +28,6 @@ from assistant_agent.tools.plugins.builtin.image_generation.backend import (
     MockImageGenerationAdapter,
 )
 from assistant_agent.runtime.generated_artifacts import (
-    GENERATED_ARTIFACT_PUBLIC_PREFIX,
     MAX_DELIVERED_IMAGE_COUNT,
     generated_artifact_payload,
     materialize_image_generation_result,
@@ -41,11 +40,13 @@ from assistant_agent.tools.native_boundary import (
     configure_builtin_tool,
     invoke_native_tool,
 )
+from assistant_agent.runtime.thread_resources import ThreadResourceManager
 
 
 def create_image_generation_tool(
     adapter: ImageGenerationAdapter | None = None,
     *,
+    thread_resource_manager: ThreadResourceManager,
     artifact_base_url: str | None = None,
 ) -> BaseTool:
     """Create the native image generation Tool."""
@@ -76,11 +77,12 @@ def create_image_generation_tool(
                 image_adapter,
                 prompt,
                 runtime,
+                thread_resource_manager=thread_resource_manager,
                 artifact_base_url=public_artifact_base_url,
             ),
         )
 
-    return configure_builtin_tool(image_generation, "generate")
+    return configure_builtin_tool(image_generation, bounded_expected_errors=True)
 
 
 def _execute_image_generation_from_runtime(
@@ -88,6 +90,7 @@ def _execute_image_generation_from_runtime(
     prompt: str,
     runtime: ToolRuntime[AssistantRunContext],
     *,
+    thread_resource_manager: ThreadResourceManager,
     artifact_base_url: str = "",
 ) -> ToolResult:
     state = runtime.state if isinstance(runtime.state, Mapping) else {}
@@ -97,9 +100,16 @@ def _execute_image_generation_from_runtime(
         session_id=runtime.execution_info.thread_id,
         memory_context=list(state.get("memory_context", ())),
     )
+    resources = thread_resource_manager.resolve(
+        request.user_id,
+        str(request.session_id or ""),
+    )
+    public_prefix = f"/artifacts/{resources.thread_ref}/generated"
     return _execute_image_generation(
         adapter,
         request,
+        artifact_dir=resources.artifact_root / "generated",
+        public_prefix=public_prefix,
         artifact_base_url=artifact_base_url,
     )
 
@@ -108,13 +118,23 @@ def _execute_image_generation(
     adapter: ImageGenerationAdapter,
     input: ImageGenerationRequest,
     *,
+    artifact_dir: Path,
+    public_prefix: str,
     artifact_base_url: str = "",
 ) -> ToolResult:
     try:
         result = adapter.generate(input)
         if result.status == "succeeded":
-            result = materialize_image_generation_result(result)
-            result = _publish_image_ids(result)
+            result = materialize_image_generation_result(
+                result,
+                artifact_dir=artifact_dir,
+                public_prefix=public_prefix,
+            )
+            result = _publish_image_ids(
+                result,
+                artifact_dir=artifact_dir,
+                public_prefix=public_prefix,
+            )
     except ProviderAdapterError as exc:
         data, contract = _image_generation_provider_error_contract(exc)
         return ToolResult(
@@ -137,6 +157,7 @@ def _execute_image_generation(
         )
     data, contract = _image_generation_output_contract(
         result,
+        public_prefix=public_prefix,
         artifact_base_url=artifact_base_url,
     )
     if result.status == "failed":
@@ -165,6 +186,7 @@ def _execute_image_generation(
 def _image_generation_output_contract(
     result: ImageGenerationResult,
     *,
+    public_prefix: str,
     artifact_base_url: str,
 ) -> tuple[dict, CapabilityOutputContract]:
     data = {
@@ -179,6 +201,7 @@ def _image_generation_output_contract(
             image.model_dump(exclude_none=True)
             for image in _generated_image_artifacts(
                 result,
+                public_prefix=public_prefix,
                 artifact_base_url=artifact_base_url,
             )
         ],
@@ -202,6 +225,7 @@ def _image_generation_output_contract(
 def _generated_image_artifacts(
     result: ImageGenerationResult,
     *,
+    public_prefix: str,
     artifact_base_url: str,
 ) -> list[GeneratedImageArtifact]:
     refs = result.download_urls or (
@@ -212,7 +236,10 @@ def _generated_image_artifacts(
     images: list[GeneratedImageArtifact] = []
     seen: set[str] = set()
     for ref in refs:
-        if not _is_managed_generated_ref(ref) or ref in seen:
+        if (
+            not _is_managed_generated_ref(ref, public_prefix=public_prefix)
+            or ref in seen
+        ):
             continue
         path = PurePosixPath(ref)
         images.append(
@@ -229,10 +256,10 @@ def _generated_image_artifacts(
     return images
 
 
-def _is_managed_generated_ref(value: Any) -> bool:
+def _is_managed_generated_ref(value: Any, *, public_prefix: str) -> bool:
     if not isinstance(value, str):
         return False
-    prefix = GENERATED_ARTIFACT_PUBLIC_PREFIX.rstrip("/") + "/"
+    prefix = public_prefix.rstrip("/") + "/"
     if not value.startswith(prefix):
         return False
     filename = value.removeprefix(prefix)
@@ -285,9 +312,7 @@ def _image_generation_model_observation(data: dict[str, Any]) -> dict[str, Any]:
         "images": [
             {"image_id": image.get("image_id"), "url": image.get("url")}
             for image in data.get("images", [])
-            if isinstance(image, Mapping)
-            and image.get("image_id")
-            and image.get("url")
+            if isinstance(image, Mapping) and image.get("image_id") and image.get("url")
         ],
         "errors": data.get("errors"),
     }
@@ -311,6 +336,9 @@ def _image_generation_summary(data: dict[str, Any]) -> str:
 
 def _publish_image_ids(
     result: ImageGenerationResult,
+    *,
+    artifact_dir: Path,
+    public_prefix: str,
 ) -> ImageGenerationResult:
     refs = result.download_urls or (
         [result.download_url] if result.download_url else []
@@ -319,7 +347,11 @@ def _publish_image_ids(
         refs = [result.output_ref]
     image_ids: list[str] = list(result.image_id)
     for ref in refs:
-        payload = generated_artifact_payload(ref)
+        payload = generated_artifact_payload(
+            ref,
+            artifact_dir=artifact_dir,
+            public_prefix=public_prefix,
+        )
         if payload is None:
             continue
         image_id = payload.image_id.rsplit(".", 1)[0]

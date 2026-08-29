@@ -23,7 +23,10 @@ from httpx import AsyncClient
 from langchain_core.messages import AIMessage
 
 from assistant_agent.agent_server.client import SdkAgentServerClient
-from assistant_agent.agent_server.graph import close_native_assistant_graph
+from assistant_agent.agent_server.graph import (
+    close_native_assistant_graph,
+    current_native_execution_owner,
+)
 from assistant_agent.agent_server.config import ASSISTANT_GRAPH_ID
 from assistant_agent.agent_server.media_protocol import (
     MediaProtocolError,
@@ -73,9 +76,14 @@ from assistant_agent.proactive_delivery import (
 )
 from assistant_agent.runtime.proactive_messages import ProactiveDeliveryAttempt
 from assistant_agent.runtime.generated_artifacts import (
-    GENERATED_ARTIFACT_DIR,
+    GeneratedArtifactFile,
     generated_artifact_file,
+    generated_artifact_payload_for_ref,
     generated_image_output_refs,
+)
+from assistant_agent.runtime.thread_resources import (
+    ThreadResourceError,
+    ThreadResourceManager,
 )
 
 
@@ -417,16 +425,27 @@ async def adapter_health() -> dict[str, str]:
     return {"status": "ok", "execution_owner": "agent_server"}
 
 
-@app.get("/artifacts/generated/{filename}")
-async def generated_artifact(request: Request, filename: str) -> FileResponse:
+@app.get("/artifacts/{thread_ref}/generated/{filename}")
+async def generated_artifact(
+    request: Request,
+    thread_ref: str,
+    filename: str,
+) -> FileResponse:
     """Serve one bounded backend-owned generated image."""
 
-    artifact_dir = getattr(
-        request.app.state,
-        "generated_artifact_dir",
-        GENERATED_ARTIFACT_DIR,
-    )
-    artifact = generated_artifact_file(filename, artifact_dir=artifact_dir)
+    await _await_native_graph_warmup(request.app)
+    try:
+        artifact = await asyncio.to_thread(
+            _resolve_generated_artifact,
+            current_native_execution_owner().thread_resource_manager,
+            thread_ref,
+            filename,
+        )
+    except ThreadResourceError:
+        raise HTTPException(
+            status_code=404,
+            detail="generated artifact not found",
+        ) from None
     if artifact is None:
         raise HTTPException(status_code=404, detail="generated artifact not found")
     return FileResponse(
@@ -434,6 +453,19 @@ async def generated_artifact(request: Request, filename: str) -> FileResponse:
         media_type=artifact.media_type,
         headers={"Cache-Control": "private, max-age=3600"},
     )
+
+
+def _resolve_generated_artifact(
+    manager: ThreadResourceManager,
+    thread_ref: str,
+    filename: str,
+) -> GeneratedArtifactFile | None:
+    artifact_dir = manager.resolve_artifact_root(thread_ref) / "generated"
+    return generated_artifact_file(filename, artifact_dir=artifact_dir)
+
+
+async def _build_success_chat_response(**kwargs: Any) -> dict[str, Any]:
+    return await asyncio.to_thread(success_chat_response, **kwargs)
 
 
 @app.websocket("/agent-service/{version}")
@@ -1053,12 +1085,18 @@ async def _run_chat(
         await _send_json(
             websocket,
             send_lock,
-            success_chat_response(
+            await _build_success_chat_response(
                 session_id=response_session_id,
                 chat=chat,
                 response=response,
                 delivery_id=delivery_id,
                 capabilities=session.client_capabilities,
+                artifact_payload_resolver=lambda output_ref: (
+                    generated_artifact_payload_for_ref(
+                        output_ref,
+                        current_native_execution_owner().thread_resource_manager,
+                    )
+                ),
                 sequence=text_stream.sequence + 1,
                 full_text=full_text,
                 display_only=display_only,

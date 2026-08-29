@@ -1,6 +1,6 @@
 # LangGraph Agent Server 部署架构
 
-最后更新：2026-08-28
+最后更新：2026-08-29
 
 ## Authority contract
 
@@ -64,36 +64,42 @@ run/resume/replay/stream，也不能靠 metadata update 伪装升级。旧 run �
 `SdkAgentServerClient` 对 `if_exists="do_nothing"` 返回的 existing thread 同样复核 identity，并在 stream 前再次读取
 thread；失败时不创建 run、不改变 checkpoint。
 
-## 统一 composition、worktree 与 worker
+## 统一 composition、本机文件系统与 worker
 
 每个 Agent Server worker 进程只创建一个 `AgentServerExecutionOwner`。它持有一个模型、一次发现的业务/MCP
-Tool inventory、一个 `MemoryBackend`、一个 `CodingWorkspaceService`，以及编译后的 main、worker、Memory graph。
+Tool inventory、一个 `MemoryBackend`、一个 `ThreadResourceManager`、线程级 MCP session pool，以及编译后的
+main、worker、Memory graph。
 schema/history/state 请求和 run 都复用该 owner；custom-app lifespan 在进程 shutdown 时关闭一次。
 
-composition 使用三类独立 backend：main Agent 的可写 `CodingWorkspaceBackend`、worker 的
-`ReadOnlyCodingWorkspaceBackend`、以及只服务 Skills discovery 的 `FilesystemBackend`。当前不使用组合 backend。
-main 和 worker 使用同一基础模型与 Prompt Builder；worker 模型视图关闭 Provider-native search，业务 Tool 与
-filesystem backend 也只保留 read 能力，形成模型面与 backend 面双层只读。
+main Agent 使用原生 `CompositeBackend`：默认 `HomeShellBackend` 以
+`/home/lenovo1/assistant_agent` 为 cwd，并用 Deep Agents 原生 `virtual_mode=False` 接受真实绝对路径；filesystem
+将 Deep Agents 传入的 `/.` 兼容映射为 cwd，`/` 和其他绝对路径保持宿主 OS 语义。
+`/artifacts/`、`/scratch/`、`/uploads/` 是当前 thread 的快捷路由。
+worker 使用 `ReadOnlyHomeBackend`，Skills discovery 使用独立 `FilesystemBackend`，因此产品源码只用于内建 Skill
+读取。main 和 worker 使用同一基础模型与 Prompt Builder；worker 模型视图关闭
+Provider-native search，业务 Tool 与 filesystem backend 也只保留 read 能力，形成模型面与 backend 面双层只读。
 两者的官方 summarization 从同一 Provider 配置取得 context window、trigger/target ratio 与可选离线 token counter；
 real DeepSeek/native compactor 缺 tokenizer 时在模型 composition 前启动失败。
 
-每个 `user.identity + thread_id + internal repo ID` 解析到独立临时 detached Git worktree。`start_async_task` 在
-创建 child thread 前读取一次 repository HEAD，并把 snapshot SHA 写入 task handle、child thread metadata 和每个
-worker run metadata。后续 update 必须复用创建时 SHA。只有进程内 async adapter 会在 start/update 的 loopback SDK
+thread 临时资源位于 `/home/lenovo1/assistant_agent/threads/<thread_ref>/`，只包含 `scratch/`、`uploads/` 和
+`artifacts/`。`thread_ref` 由认证 identity 与 Agent Server thread ID 的摘要确定，目录按 24 小时 TTL 回收；不存在
+`workspace_id`、`workspace.json`、project registry、仓库副本、Git worktree 或 patch 回灌层。Agent 直接操作
+Agent Server OS identity 有权访问的真实路径；需要识别 Git 仓库时对目标路径执行
+`git -C <path> rev-parse --show-toplevel`，不预注册或启动时全盘扫描仓库。
+
+`start_async_task` 只把父子 thread/run correlation 写入 task handle、child thread metadata 和 worker run metadata。
+只有进程内 async adapter 会在 start/update 的 loopback SDK
 请求中附加随机 internal capability；auth 将其转换为 worker-only permission，并同时严格校验 worker metadata。普通
 `X-Assistant-User` caller 即使提交形状完整的 async metadata 也不能创建 worker thread/run。main v4 与 Memory 的
-thread/run 明确拒绝 `entry_profile=async_worker`、任何 repository snapshot SHA 和 worker-only permission，合法的
-media/system-eval 非 snapshot facts 保持可用。
-
-backend 再读取 runtime metadata 中 Agent Server 原生 `graph_id` 独立复核：只有实际 `assistant-worker-v2` graph 配合严格 async
-facts 才把 SHA 传给 worktree `base_commit`；main/sync nested 固定传 `None`，注入 worker snapshot fail closed。
+thread/run 明确拒绝 `entry_profile=async_worker` 和 worker-only permission；worker metadata 必须是
+`entry_profile=async_worker`。
 internal capability 是当前本地单进程部署的进程内随机 secret，不进入 state、thread/run metadata、日志、`.env` 或
 仓库；多进程部署前必须升级为共享 secret 或正式 service identity。
 
 统一 Agent 的全部副作用 Tool 由官方 HITL 在 handler 前 interrupt。HITL 是审批治理，不是进程隔离；批准
-`execute` 等价于授权 Agent Server 的 OS identity 在 worktree cwd 下执行完整 command，仍可能访问宿主路径、网络和
-Git。当前 `LocalShellBackend` 只适合受信本地开发；多租户或不可信生产必须使用 thread-scoped container 或 remote
-sandbox backend。
+`execute` 等价于授权以 `lenovo1` 运行的 Agent Server 在 Agent Home cwd 下执行完整 command，可访问该 OS 用户有权
+访问的宿主路径、网络和 Git。filesystem Tool 与 shell 共享这套 OS identity 权限边界。
+当前 `LocalShellBackend` 只适合受信本地个人 Agent；多租户或不可信生产必须使用 container 或 remote sandbox backend。
 
 ## 公开输入、认证与媒体 custom route
 
@@ -103,7 +109,7 @@ sandbox backend。
 {"messages":[{"role":"user","content":"hello"}]}
 ```
 
-公开 `AssistantRunContext` 只有 `enable_memory`。身份、入口、视觉 capability 和 repository snapshot SHA 只在
+公开 `AssistantRunContext` 只有 `enable_memory`。身份、入口和视觉 capability 只在
 服务端签发的 namespaced run metadata 中。认证用户唯一来自 `Runtime.server_info.user.identity`；当前 tokenless
 developer hook 从 `X-Assistant-User` 取得 identity，省略时为 `local-developer`，因此端口不得暴露给不受信网络。
 

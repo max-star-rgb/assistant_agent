@@ -57,7 +57,7 @@ def create_email_search_tool(backend: EmailBackend) -> BaseTool:
             ),
         )
 
-    return configure_builtin_tool(email_search, "read")
+    return configure_builtin_tool(email_search)
 
 
 def create_email_read_tool(backend: EmailBackend) -> BaseTool:
@@ -90,7 +90,7 @@ def create_email_read_tool(backend: EmailBackend) -> BaseTool:
             ),
         )
 
-    return configure_builtin_tool(email_read, "read")
+    return configure_builtin_tool(email_read)
 
 
 def _execute_email_search(

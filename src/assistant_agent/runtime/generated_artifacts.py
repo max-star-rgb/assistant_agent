@@ -20,11 +20,12 @@ from assistant_agent.tools.plugins.builtin.image_generation.models import (
 )
 from assistant_agent.providers.provider_errors import ProviderAdapterError
 from assistant_agent.tools.ids import IMAGE_GENERATION_TOOL_NAME
+from assistant_agent.runtime.thread_resources import (
+    ThreadResourceError,
+    ThreadResourceManager,
+)
 
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-GENERATED_ARTIFACT_DIR = REPO_ROOT / ".local" / "generated"
-GENERATED_ARTIFACT_PUBLIC_PREFIX = "/artifacts/generated"
 MAX_ARTIFACT_BYTES = 25 * 1024 * 1024
 MAX_DELIVERED_IMAGE_COUNT = 4
 
@@ -55,6 +56,40 @@ class GeneratedArtifactFile:
     media_type: str
 
 
+def generated_artifact_location(
+    output_ref: str,
+    manager: ThreadResourceManager,
+) -> GeneratedArtifactFile | None:
+    parsed = _thread_generated_artifact_ref(output_ref)
+    if parsed is None:
+        return None
+    thread_ref, filename = parsed
+    try:
+        root = manager.resolve_artifact_root(thread_ref) / "generated"
+    except ThreadResourceError:
+        return None
+    return generated_artifact_file(filename, artifact_dir=root)
+
+
+def generated_artifact_payload_for_ref(
+    output_ref: str,
+    manager: ThreadResourceManager,
+) -> GeneratedArtifactPayload | None:
+    parsed = _thread_generated_artifact_ref(output_ref)
+    if parsed is None:
+        return None
+    thread_ref, _filename = parsed
+    try:
+        root = manager.resolve_artifact_root(thread_ref) / "generated"
+    except ThreadResourceError:
+        return None
+    return generated_artifact_payload(
+        output_ref,
+        artifact_dir=root,
+        public_prefix=f"/artifacts/{thread_ref}/generated",
+    )
+
+
 def generated_image_output_refs(messages: Sequence[Any]) -> list[str]:
     """Return managed image refs produced by successful tools in the latest turn."""
 
@@ -81,8 +116,8 @@ def generated_image_output_refs(messages: Sequence[Any]) -> list[str]:
 def materialize_image_generation_result(
     result: ImageGenerationResult,
     *,
-    artifact_dir: Path = GENERATED_ARTIFACT_DIR,
-    public_prefix: str = GENERATED_ARTIFACT_PUBLIC_PREFIX,
+    artifact_dir: Path,
+    public_prefix: str,
     timeout_seconds: float = 120.0,
 ) -> ImageGenerationResult:
     """Download provider-hosted images and expose backend-owned download URLs."""
@@ -118,7 +153,8 @@ def materialize_image_generation_result(
 def generated_artifact_data_url(
     output_ref: str,
     *,
-    artifact_dir: Path | None = None,
+    artifact_dir: Path,
+    public_prefix: str,
     max_bytes: int = MAX_ARTIFACT_BYTES,
 ) -> str | None:
     """Read one backend-owned generated image as a bounded data URL."""
@@ -126,7 +162,7 @@ def generated_artifact_data_url(
     if max_bytes <= 0:
         raise ValueError("max_bytes must be positive")
     parsed = urlparse(output_ref)
-    prefix = GENERATED_ARTIFACT_PUBLIC_PREFIX.rstrip("/") + "/"
+    prefix = public_prefix.rstrip("/") + "/"
     if (
         parsed.scheme
         or parsed.netloc
@@ -139,7 +175,7 @@ def generated_artifact_data_url(
     if not filename or Path(filename).name != filename:
         return None
 
-    root = (artifact_dir or GENERATED_ARTIFACT_DIR).resolve()
+    root = artifact_dir.resolve()
     path = (root / filename).resolve()
     if path.parent != root:
         return None
@@ -161,14 +197,14 @@ def generated_artifact_data_url(
 def generated_artifact_file(
     filename: str,
     *,
-    artifact_dir: Path | None = None,
+    artifact_dir: Path,
     max_bytes: int = MAX_ARTIFACT_BYTES,
 ) -> GeneratedArtifactFile | None:
     """Resolve one bounded image filename inside the managed artifact root."""
 
     if max_bytes <= 0 or not filename or Path(filename).name != filename:
         return None
-    root = (artifact_dir or GENERATED_ARTIFACT_DIR).resolve()
+    root = artifact_dir.resolve()
     path = (root / filename).resolve()
     if path.parent != root:
         return None
@@ -188,7 +224,8 @@ def generated_artifact_file(
 def generated_artifact_payload(
     output_ref: str,
     *,
-    artifact_dir: Path | None = None,
+    artifact_dir: Path,
+    public_prefix: str,
     max_bytes: int = MAX_ARTIFACT_BYTES,
 ) -> GeneratedArtifactPayload | None:
     """Read one backend-owned image for the IMAGE rendering detail."""
@@ -196,6 +233,7 @@ def generated_artifact_payload(
     data_url = generated_artifact_data_url(
         output_ref,
         artifact_dir=artifact_dir,
+        public_prefix=public_prefix,
         max_bytes=max_bytes,
     )
     if data_url is None:
@@ -214,8 +252,8 @@ def generated_artifact_payload(
 def store_remote_artifact(
     url: str,
     *,
-    artifact_dir: Path = GENERATED_ARTIFACT_DIR,
-    public_prefix: str = GENERATED_ARTIFACT_PUBLIC_PREFIX,
+    artifact_dir: Path,
+    public_prefix: str,
     filename_seed: str,
     timeout_seconds: float = 120.0,
 ) -> StoredArtifact:
@@ -264,13 +302,29 @@ def _is_remote_http_url(value: str) -> bool:
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
+def _thread_generated_artifact_ref(output_ref: str) -> tuple[str, str] | None:
+    parsed = urlparse(output_ref)
+    if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
+        return None
+    parts = Path(parsed.path).parts
+    if (
+        len(parts) != 5
+        or parts[0] != "/"
+        or parts[1] != "artifacts"
+        or not _valid_thread_ref(parts[2])
+        or parts[3] != "generated"
+        or not parts[4]
+        or Path(parts[4]).name != parts[4]
+    ):
+        return None
+    return parts[2], parts[4]
+
+
 def _artifact_output_ref_candidates(artifact: Mapping[str, Any]) -> list[Any]:
     images = artifact.get("images")
     if isinstance(images, list):
         return [
-            image.get("output_ref")
-            for image in images
-            if isinstance(image, Mapping)
+            image.get("output_ref") for image in images if isinstance(image, Mapping)
         ]
     legacy_urls = artifact.get("download_urls")
     if isinstance(legacy_urls, (list, tuple)) and legacy_urls:
@@ -314,11 +368,23 @@ def _is_successful_image_tool_message(
 def _is_managed_generated_ref(value: Any) -> bool:
     if not isinstance(value, str):
         return False
-    prefix = GENERATED_ARTIFACT_PUBLIC_PREFIX.rstrip("/") + "/"
-    if not value.startswith(prefix):
+    parts = Path(value).parts
+    if (
+        len(parts) != 5
+        or parts[0] != "/"
+        or parts[1] != "artifacts"
+        or not _valid_thread_ref(parts[2])
+        or parts[3] != "generated"
+    ):
         return False
-    filename = value.removeprefix(prefix)
+    filename = parts[4]
     return bool(filename) and Path(filename).name == filename
+
+
+def _valid_thread_ref(value: str) -> bool:
+    return len(value) == 32 and all(
+        character in "0123456789abcdef" for character in value
+    )
 
 
 def _image_media_type(payload: bytes) -> str | None:

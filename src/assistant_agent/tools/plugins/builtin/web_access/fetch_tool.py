@@ -56,7 +56,7 @@ def create_web_fetch_tool(adapter: WebFetchAdapter | None = None) -> BaseTool:
             ),
         )
 
-    return configure_builtin_tool(web_fetch, "read")
+    return configure_builtin_tool(web_fetch)
 
 
 def _execute_web_fetch(

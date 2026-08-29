@@ -73,10 +73,7 @@ def _auth_context(*, internal_worker: bool = False) -> SimpleNamespace:
     user = asyncio.run(
         authenticate(
             None,
-            {
-                key.lower().encode(): value.encode()
-                for key, value in headers.items()
-            },
+            {key.lower().encode(): value.encode() for key, value in headers.items()},
         )
     )
     return SimpleNamespace(user=SimpleNamespace(**user))
@@ -164,41 +161,9 @@ def test_obsolete_coding_attestation_route_is_removed() -> None:
         ({ASSISTANT_RUNTIME_METADATA_KEY: None}, "null payload"),
         ({ASSISTANT_RUNTIME_METADATA_KEY: False}, "false payload"),
         (
-            {ASSISTANT_RUNTIME_METADATA_KEY: {"entry_profile": "async_worker"}},
-            "missing sha",
-        ),
-        (
-            {
-                ASSISTANT_RUNTIME_METADATA_KEY: {
-                    "entry_profile": "async_worker",
-                    "repository_snapshot_sha": "",
-                }
-            },
-            "empty sha",
-        ),
-        (
-            {
-                ASSISTANT_RUNTIME_METADATA_KEY: {
-                    "entry_profile": "async_worker",
-                    "repository_snapshot_sha": "a" * 41,
-                }
-            },
-            "41-char sha",
-        ),
-        (
-            {
-                ASSISTANT_RUNTIME_METADATA_KEY: {
-                    "entry_profile": "async_worker",
-                    "repository_snapshot_sha": "a" * 63,
-                }
-            },
-            "63-char sha",
-        ),
-        (
             {
                 ASSISTANT_RUNTIME_METADATA_KEY: {
                     "entry_profile": "cli",
-                    "repository_snapshot_sha": "a" * 40,
                 }
             },
             "wrong profile",
@@ -208,7 +173,6 @@ def test_obsolete_coding_attestation_route_is_removed() -> None:
             {
                 ASSISTANT_RUNTIME_METADATA_KEY: {
                     "entry_profile": "async_worker",
-                    "repository_snapshot_sha": "a" * 40,
                     "unexpected": True,
                 }
             },
@@ -239,19 +203,16 @@ def test_worker_authorization_rejects_invalid_runtime_facts(
     assert asyncio.run(authorize(_auth_context(internal_worker=True), value)) is False
 
 
-@pytest.mark.parametrize("snapshot_length", [40, 64])
 @pytest.mark.parametrize("operation", ["thread", "run"])
 def test_worker_authorization_rejects_shape_only_external_caller(
     monkeypatch: pytest.MonkeyPatch,
     operation: str,
-    snapshot_length: int,
 ) -> None:
     monkeypatch.setenv("REDIS_URI", "redis://localhost:6379")
     monkeypatch.setenv("DATABASE_URI", "postgres://localhost/test")
     metadata = assistant_runtime_metadata(
         AssistantRuntimeFacts(
             entry_profile="async_worker",
-            repository_snapshot_sha="a" * snapshot_length,
         )
     )
     value = {"metadata": metadata}
@@ -266,19 +227,16 @@ def test_worker_authorization_rejects_shape_only_external_caller(
     assert asyncio.run(authorize(_auth_context(), value)) is False
 
 
-@pytest.mark.parametrize("snapshot_length", [40, 64])
 @pytest.mark.parametrize("operation", ["thread", "run"])
 def test_worker_authorization_accepts_internal_capability(
     monkeypatch: pytest.MonkeyPatch,
     operation: str,
-    snapshot_length: int,
 ) -> None:
     monkeypatch.setenv("REDIS_URI", "redis://localhost:6379")
     monkeypatch.setenv("DATABASE_URI", "postgres://localhost/test")
     metadata = assistant_runtime_metadata(
         AssistantRuntimeFacts(
             entry_profile="async_worker",
-            repository_snapshot_sha="a" * snapshot_length,
         )
     )
     value = {"metadata": metadata}
@@ -298,7 +256,9 @@ def test_worker_authorization_accepts_internal_capability(
             "graph_id": WORKER_GRAPH_ID,
         }
     )
-    assert asyncio.run(authorize(_auth_context(internal_worker=True), value)) == expected
+    assert (
+        asyncio.run(authorize(_auth_context(internal_worker=True), value)) == expected
+    )
 
 
 @pytest.mark.parametrize("graph_id", [ASSISTANT_GRAPH_ID, MEMORY_GRAPH_ID])
@@ -310,7 +270,6 @@ def test_worker_authorization_accepts_internal_capability(
             {
                 ASSISTANT_RUNTIME_METADATA_KEY: {
                     "entry_profile": "async_worker",
-                    "repository_snapshot_sha": "a" * 40,
                 }
             },
             False,
@@ -319,7 +278,7 @@ def test_worker_authorization_accepts_internal_capability(
             {
                 ASSISTANT_RUNTIME_METADATA_KEY: {
                     "entry_profile": "system_eval",
-                    "repository_snapshot_sha": "a" * 40,
+                    "unexpected": True,
                 }
             },
             False,
@@ -351,9 +310,10 @@ def test_non_worker_authorization_rejects_worker_only_facts_and_capability(
         authorize_thread_create if operation == "thread" else authorize_run_create
     )
 
-    assert asyncio.run(
-        authorize(_auth_context(internal_worker=internal_worker), value)
-    ) is False
+    assert (
+        asyncio.run(authorize(_auth_context(internal_worker=internal_worker), value))
+        is False
+    )
 
 
 @pytest.mark.parametrize(

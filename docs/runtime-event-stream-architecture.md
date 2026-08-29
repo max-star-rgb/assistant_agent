@@ -1,15 +1,15 @@
 # LangGraph-native Assistant 运行与流式架构
 
-最后更新：2026-08-28
+最后更新：2026-08-29
 
 ## Authority contract
 
 | 字段 | 内容 |
 | --- | --- |
-| 定位 | 统一生产 Assistant、只读 worker 与原生 stream 的当前权威 |
+| 定位 | 统一生产 Assistant、预装子 Agent 与原生 stream 的当前权威 |
 | Owns | 统一 Agent 拓扑、Memory middleware、标准 messages、task state 边界、原生 stream/interrupt/checkpoint |
 | Does not own | Agent Server HTTP 生命周期、Tool schema、Memory 后端、媒体 wire、Provider 凭据 |
-| 源码与 schema 入口 | `src/assistant_agent/native_agent/assistant_agent.py`、`native_agent/memory_middleware.py`、`native_agent/state.py`、`coding/backend.py` |
+| 源码与 schema 入口 | `src/assistant_agent/native_agent/assistant_agent.py`、`native_agent/memory_middleware.py`、`native_agent/state.py`、`runtime/local_backend.py`、`runtime/thread_resources.py` |
 | 验证入口 | `docs/authority.toml` 中 `runtime-event-stream.verification` |
 | 相邻 authority | Agent Server 见 [`agent-server-architecture.md`](agent-server-architecture.md)；Tool 见 [`tool-calling-architecture.md`](tool-calling-architecture.md)；视觉能力见 [`visual-perception-architecture.md`](visual-perception-architecture.md) |
 
@@ -20,45 +20,45 @@
 ```text
 AssistantAgent
   -> MemoryLifecycleMiddleware.before_agent (recall)
-  -> direct answer | write_todos | task(read-only) | tools | worktree FS | execute
+  -> direct answer | write_todos | task(precompiled roles) | tools | filesystem | execute
   -> MemoryLifecycleMiddleware.after_agent (delayed extraction refresh)
 ```
 
 公开 Graph input 只有标准 `messages`。公开 `AssistantRunContext` 只有 `enable_memory`，默认 true，同时控制本轮
-recall 与 delayed extraction。身份、入口、视觉 capability 和 repository snapshot SHA 只存在于 Agent Server
+recall 与 delayed extraction。身份、入口和视觉 capability 只存在于 Agent Server
 签发的 namespaced metadata，不是 Assistant 配置。主图不绑定 saver；thread、run、checkpoint、interrupt、resume、
 cancel 和 Store 均由 Agent Server 注入。
 
 `AssistantAgent` 由 Deep Agents `create_deep_agent` 编译，直接拥有官方 Todo、filesystem、同步 `task`、
 summarization、HITL 与 `ToolNode`。简单请求可直接回答；复杂请求可由模型自主使用 `write_todos`。主 Agent 的
-业务 Tool、worktree 文件 Tool 与 `execute` 在同一个模型循环和 Tool surface 中，不再切换另一张 coding 子图，
+业务 Tool、本机文件 Tool 与 `execute` 在同一个模型循环和 Tool surface 中，不再切换另一张 coding 子图，
 也不保留项目自研 planner、coding StateGraph、proposal/review/repair ledger 或 execution router。
 
-主 Agent 的 `task(description, subagent_type="general-purpose")` 只调用已经编译的只读 worker。task 输入做显式
-allowlist 投影，只传一条任务 `HumanMessage` 和冻结的 `memory_context`；输出也做显式 allowlist 投影，只返回最终
-非空 `AIMessage` 以及存在时的 `structured_response`。父级 Todo、Tool Profile、async task、Provider search profile
-和未知未来 state 不进入 worker，worker 的内部 transcript 与私有 state 也不回灌父级。middleware 自有 channel，
-例如 `active_tool_profile_ids` 与 `remaining_steps`，使用 `PrivateStateAttr`，不扩大 task 投影合同。
-若两种有效输出都为空，投影返回有界失败报告而不是空 AI 成功结果。
+主 Agent 的同步 `task` 只选择受信 composition 预装的 `general-purpose`、`coder` 和 `browser-operator`，不能在
+task 参数中创建 Tool、backend 或权限。`description` 只帮助模型选择角色，不参与授权。`general-purpose` 使用编译好的
+worker，task 输入做显式 allowlist 投影，只传一条任务 `HumanMessage` 和冻结的 `memory_context`；输出只返回最终非空
+`AIMessage` 以及存在时的 `structured_response`。父级 Todo、Tool Profile、async task、Provider search profile 和未知未来
+state 不进入 worker，worker 的内部 transcript 与私有 state 也不回灌父级。若两种有效输出都为空，投影返回有界失败报告。
 
-同步与异步 worker 都只读：模型视图关闭 Provider-native search；业务 inventory 只保留 `effect=read` 的 Tool；
-文件 backend 只实现 `ls/read_file/glob/grep`，不实现写入或 shell。同步 worker 在主 run 内执行；异步 worker 使用
-独立的 `assistant-worker-v2` thread/run，且自身不装配异步 delegation Tool，避免递归委派。
+`general-purpose` 只接收 composition 明确传入的查询与分析 Tool，并使用只实现 `ls/read_file/glob/grep` 的
+`ReadOnlyHomeBackend`；同步和异步形态复用同一 worker graph，异步形态固定为
+`general-purpose-background`。`coder` 由 Deep Agents 原生 declarative SubAgent 装配，只继承主 backend 的 filesystem
+与 `execute`，不接收业务或浏览器 Tool。`browser-operator` 只接收已发现的 Playwright Tool，filesystem 仅以只读方式
+映射当前 thread 的 `/scratch/` 与 `/artifacts/`，不获得宿主 filesystem 或 shell。`coder` 与 `browser-operator` 当前只支持同步 task；所有子 Agent
+都不装配 async delegation Tool，避免递归委派。
 
-## Worktree、snapshot 与恢复
+## 本机 filesystem、thread 资源与后台 worker
 
-主 Agent 使用可写 `CodingWorkspaceBackend`，同步/异步 worker 使用 `ReadOnlyCodingWorkspaceBackend`；二者都按
-Agent Server 认证 identity、thread 和进程固定 repository ID 解析隔离 worktree。Skill discovery 使用另一份独立的普通
-`FilesystemBackend`，只由 `SkillsMiddleware` 用于 `/skills/` 的只读发现；当前 composition 不使用 `CompositeBackend`，也不把
-Skill 根与模型可见 worktree 根合并。
+主 Agent 使用 `CompositeBackend`。默认 `HomeShellBackend` 以 `/home/lenovo1/assistant_agent` 为 cwd，
+Deep Agents 传入的 `/.` 映射到该 cwd，`/` 和其他绝对路径保持宿主 OS 语义。
+`/artifacts/`、`/scratch/`、`/uploads/` 是上下文快捷路由。同步/异步 `general-purpose` 使用
+`ReadOnlyHomeBackend`。Skill discovery 使用另一份独立 `FilesystemBackend`，只由
+`SkillsMiddleware` 读取产品内建 Skill。
 
-`start_async_task` 在创建 child thread/run 前读取一次 repository HEAD，并把该 SHA 同时冻结到 task handle、child
-thread metadata 和首个 run metadata。后续 `update_async_task` 必须复用 handle 中同一 SHA；缺失或非法 SHA 会在
-auth/backend 边界 fail closed，不能退回当时最新 HEAD。worker thread/run 还必须来自进程内 async adapter 签发的
-internal capability；普通外部身份即使伪造完整 metadata 也会被拒绝。backend 只有同时看到 thread 的
-原生 `graph_id=assistant-worker-v2` 与严格 `entry_profile=async_worker` 时才把 SHA 作为 `base_commit`；main 与
-同步 nested task 固定使用 `base_commit=None`，注入 worker snapshot 会失败。因此异步 worker 的所有 run 都读取创建
-任务时的 snapshot。
+生产没有 Workspace 或 project registry。thread 只在 Agent Home 下拥有摘要命名的 `scratch/`、`uploads/` 和
+`artifacts/` 临时目录；主 Agent 直接操作 Agent Server OS identity 有权访问的真实路径。Git 仓库按当前操作路径通过
+`git -C <path> rev-parse --show-toplevel` 动态识别，不复制仓库、不创建 detached worktree，也不提供 patch 回灌 Tool。
+worker thread/run 必须来自进程内 async adapter 签发的 internal capability；普通外部身份即使伪造完整 metadata 也会被拒绝。
 
 internal capability 当前是进程内随机 secret，适配本地单进程部署且不会写入 state、thread/run metadata、日志或
 配置文件。多进程 Agent Server 启用前必须改为共享 secret 或正式 service identity。
@@ -70,12 +70,13 @@ Tool Profile 和递归步数属于 middleware 私有 state。当前生产图是 
 
 ## HITL 与执行边界
 
-所有副作用统一经过 `HumanInTheLoopMiddleware`：Deep Agents 的 `write_file`、`edit_file`、`delete`、`execute`，
-以及业务或异步 Tool 中 effect 为 `write`、`generate`、`dangerous` 的调用和所有非 read MCP Tool，都会在 handler
-执行前产生原生 interrupt。只读 Tool 不要求审批；恢复统一使用 Agent Server/LangGraph 的原生 resume。
+所有需要审批的具体 Tool 名由受信 composition 直接传给 Deep Agents `interrupt_on`。filesystem 的
+`write_file`、`edit_file`、`delete`、`execute` 固定进入审批；业务、MCP、browser 与异步 Tool 使用各自显式的
+auto-approve/interrupt 名单，不依赖 Tool metadata 分类。interrupt 在 handler 执行前产生，恢复统一使用 Agent
+Server/LangGraph 的原生 resume。
 
-HITL 是审批治理，不是进程或文件系统隔离。当前 `CodingWorkspaceBackend` 最终委托官方 `LocalShellBackend`；
-用户批准 `execute` 等价于允许 Agent Server 的 OS identity 在 worktree cwd 下执行完整 command。command 仍可能访问
+HITL 是审批治理，不是进程或文件系统隔离。当前 `HomeShellBackend` 继承官方 `LocalShellBackend`；
+用户批准 `execute` 等价于允许 Agent Server 的 OS identity 在 Agent Home cwd 下执行完整 command。command 仍可能访问
 宿主路径、网络和 Git。受信本地单用户开发可以使用该 backend；多租户或不可信生产必须替换为 thread-scoped
 container 或 remote sandbox backend。
 

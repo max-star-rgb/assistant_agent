@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
+import tempfile
 from typing import Any
 
 from langchain_core.tools import BaseTool
@@ -13,9 +15,32 @@ from assistant_agent.config import ProviderConfig
 from assistant_agent.mcp.amap_route_links import amap_route_link_interceptor
 from assistant_agent.mcp.config import (
     MCPServerConfig,
-    resolve_mcp_server_env,
+)
+from assistant_agent.mcp.stateful_sessions import (
+    StatefulMcpInterceptor,
+    ThreadMcpSessionPool,
+    resolve_mcp_connection,
 )
 from assistant_agent.tools.plugins.contracts import ToolPluginContext
+
+
+AUTO_APPROVED_BUILTIN_TOOL_NAMES = frozenset(
+    {
+        "calendar_search",
+        "contacts_search",
+        "email_read",
+        "email_search",
+        "file_read",
+        "live_view_inspect",
+        "lodging_search",
+        "shopping_search",
+        "uploaded_media_inspect",
+        "visual_image_search",
+        "visual_memory_search",
+        "web_fetch",
+        "web_search",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -33,6 +58,7 @@ class NativeToolResources:
     visual_memory_text_index: Any | None = None
     visual_history_probe: Any | None = None
     live_view_resolver: Callable[[str, str, str], Any] | None = None
+    thread_resource_manager: Any | None = None
 
 
 def _create_builtin_tools(
@@ -54,6 +80,7 @@ def _create_builtin_tools(
         visual_reminder_registry=resources.visual_reminder_registry,
         visual_memory_text_index=resources.visual_memory_text_index,
         live_view_resolver=resources.live_view_resolver,
+        thread_resource_manager=resources.thread_resource_manager,
     )
     concrete_tools: list[BaseTool] = []
     for plugin in _builtin_plugins():
@@ -69,21 +96,22 @@ def _create_builtin_tools(
 
 def mcp_connections(
     server_configs: Sequence[MCPServerConfig],
+    *,
+    discovery_root: Path | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Translate trusted stdio config to the official adapter schema."""
 
     connections: dict[str, dict[str, Any]] = {}
     for server in server_configs:
-        command, *args = server.command
-        connection: dict[str, Any] = {
-            "transport": "stdio",
-            "command": command,
-            "args": args,
-            "env": resolve_mcp_server_env(server.env),
-        }
-        if server.cwd is not None:
-            connection["cwd"] = server.cwd
-        connections[server.server_name] = connection
+        root = (
+            discovery_root / server.server_name
+            if discovery_root is not None and server.session_scope == "thread"
+            else None
+        )
+        connections[server.server_name] = resolve_mcp_connection(
+            server,
+            discovery_root=root,
+        )
     return connections
 
 
@@ -91,6 +119,7 @@ async def _create_official_mcp_tools(
     server_configs: Sequence[MCPServerConfig],
     *,
     client_factory: Callable[..., Any] | None = None,
+    mcp_session_pool: ThreadMcpSessionPool | None = None,
 ) -> list[BaseTool]:
     """Load allowlisted MCP tools through MultiServerMCPClient."""
 
@@ -100,36 +129,52 @@ async def _create_official_mcp_tools(
         from langchain_mcp_adapters.client import MultiServerMCPClient
 
         client_factory = MultiServerMCPClient
-    client = client_factory(
-        mcp_connections(server_configs),
-        tool_interceptors=[amap_route_link_interceptor],
-        tool_name_prefix=False,
+    if any(server.session_scope == "thread" for server in server_configs):
+        if mcp_session_pool is None:
+            raise ValueError("thread-scoped MCP requires a session pool")
+        interceptors = [
+            StatefulMcpInterceptor(server_configs, mcp_session_pool),
+            amap_route_link_interceptor,
+        ]
+    else:
+        interceptors = [amap_route_link_interceptor]
+    temporary = await asyncio.to_thread(
+        tempfile.TemporaryDirectory,
+        prefix="assistant-agent-mcp-discovery-",
     )
-    assembled: list[BaseTool] = []
-    for server in server_configs:
-        discovered = await client.get_tools(server_name=server.server_name)
-        allowed = set(server.allowed_tools)
-        for tool in discovered:
-            if tool.name not in allowed:
-                continue
-            name = f"{server.namespace_prefix}_{server.server_name}_{tool.name}"
-            assembled.append(
-                tool.model_copy(
-                    update={
-                        "name": name,
-                        "metadata": {
-                            **(tool.metadata or {}),
-                            "effect": (
-                                "read"
-                                if tool.name in set(server.read_only_tools)
-                                else "dangerous"
-                            ),
-                            "source": "mcp",
-                            "mcp_server": server.server_name,
-                        },
-                    }
+    try:
+        connections = await asyncio.to_thread(
+            mcp_connections,
+            server_configs,
+            discovery_root=Path(temporary.name),
+        )
+        client = client_factory(
+            connections,
+            tool_interceptors=interceptors,
+            tool_name_prefix=False,
+        )
+        assembled: list[BaseTool] = []
+        for server in server_configs:
+            discovered = await client.get_tools(server_name=server.server_name)
+            allowed = set(server.allowed_tools)
+            for tool in discovered:
+                if tool.name not in allowed:
+                    continue
+                name = f"{server.namespace_prefix}_{server.server_name}_{tool.name}"
+                assembled.append(
+                    tool.model_copy(
+                        update={
+                            "name": name,
+                            "metadata": {
+                                **(tool.metadata or {}),
+                                "source": "mcp",
+                                "mcp_server": server.server_name,
+                            },
+                        }
+                    )
                 )
-            )
+    finally:
+        await asyncio.to_thread(temporary.cleanup)
     names = [tool.name for tool in assembled]
     if len(names) != len(set(names)):
         raise ValueError("namespaced MCP tool names must be unique")
@@ -142,6 +187,7 @@ async def create_native_tool_inventory(
     resources: NativeToolResources,
     mcp_server_configs: Sequence[MCPServerConfig],
     mcp_client_factory: Callable[..., Any] | None = None,
+    mcp_session_pool: ThreadMcpSessionPool | None = None,
 ) -> list[BaseTool]:
     """Compose the one production inventory from built-ins and official MCP tools."""
 
@@ -153,12 +199,28 @@ async def create_native_tool_inventory(
     mcp_tools = await _create_official_mcp_tools(
         mcp_server_configs,
         client_factory=mcp_client_factory,
+        mcp_session_pool=mcp_session_pool,
     )
     tools = [*builtins, *mcp_tools]
     names = [tool.name for tool in tools]
     if len(names) != len(set(names)):
         raise ValueError("native and MCP tool names must be unique")
     return sorted(tools, key=lambda tool: tool.name)
+
+
+def auto_approved_tool_names(
+    tools: Sequence[BaseTool],
+    server_configs: Sequence[MCPServerConfig],
+) -> frozenset[str]:
+    """Return explicit tool-name grants consumed by native HITL composition."""
+
+    configured = {
+        f"{server.namespace_prefix}_{server.server_name}_{name}"
+        for server in server_configs
+        for name in server.auto_approved_tools
+    }
+    available = {tool.name for tool in tools}
+    return frozenset((AUTO_APPROVED_BUILTIN_TOOL_NAMES | configured) & available)
 
 
 def _builtin_plugins() -> tuple[Any, ...]:
@@ -184,6 +246,7 @@ def _builtin_plugins() -> tuple[Any, ...]:
     from assistant_agent.tools.plugins.builtin.visual_image_search.plugin import (
         VisualImageSearchPlugin,
     )
+
     return (
         EmailAccessPlugin(),
         LodgingToolPlugin(),
@@ -197,7 +260,9 @@ def _builtin_plugins() -> tuple[Any, ...]:
 
 
 __all__ = [
+    "AUTO_APPROVED_BUILTIN_TOOL_NAMES",
     "NativeToolResources",
+    "auto_approved_tool_names",
     "create_native_tool_inventory",
     "mcp_connections",
 ]

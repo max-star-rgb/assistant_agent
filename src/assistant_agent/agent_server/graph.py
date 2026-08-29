@@ -58,8 +58,15 @@ async def close_native_assistant_graph() -> None:
         await owner.aclose()
 
 
+def current_native_execution_owner() -> AgentServerExecutionOwner:
+    if _process_owner is None:
+        raise RuntimeError("native execution owner is not initialized")
+    return _process_owner
+
+
 __all__ = [
     "close_native_assistant_graph",
+    "current_native_execution_owner",
     "native_assistant_graph",
     "native_memory_graph",
     "native_worker_graph",

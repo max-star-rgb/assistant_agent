@@ -22,7 +22,8 @@ from assistant_agent.agent_server.async_delegation import (
     BACKGROUND_AGENT_NAME,
     build_async_subagent_middleware,
 )
-from assistant_agent.coding import config as coding_config_module
+from assistant_agent.runtime import thread_resources as thread_resources_module
+from assistant_agent.runtime.local_backend import HomeShellBackend
 from assistant_agent.native_agent import assistant_agent as assistant_agent_module
 from assistant_agent.native_agent.assistant_agent import (
     RecursionFinalSynthesisMiddleware,
@@ -51,7 +52,7 @@ async def _open_owner() -> AgentServerExecutionOwner:
 
 
 async def _open_owner_without_event_loop_blocking() -> AgentServerExecutionOwner:
-    with blockbuster_ctx(scanned_modules=coding_config_module):
+    with blockbuster_ctx(scanned_modules=thread_resources_module):
         return await AgentServerExecutionOwner.compose(store=InMemoryStore())
 
 
@@ -108,6 +109,24 @@ def test_main_graph_is_the_native_deep_agent(monkeypatch) -> None:
         assert owner.graph.checkpointer is None
     finally:
         asyncio.run(owner.aclose())
+
+
+@pytest.mark.core_invariant("LOOP-001")
+def test_home_backend_resolves_model_cwd_and_os_absolute_paths(tmp_path: Path) -> None:
+    home_root = tmp_path / "home"
+    agent_home = home_root / "assistant_agent"
+    agent_home.mkdir(parents=True)
+    (agent_home / "cwd-sentinel.txt").write_text("cwd", encoding="utf-8")
+    host_file = tmp_path / "host-sentinel.txt"
+    host_file.write_text("host", encoding="utf-8")
+    backend = HomeShellBackend(agent_home=agent_home)
+
+    assert {entry["path"] for entry in backend.ls("/.").entries or []} == {
+        str(agent_home / "cwd-sentinel.txt")
+    }
+    assert "/tmp/" in {entry["path"] for entry in backend.ls("/").entries or []}
+    assert backend.read(str(host_file)).file_data["content"] == "host"
+    assert backend.execute("pwd").output.strip() == str(agent_home)
 
 
 @pytest.mark.core_invariant("LOOP-001")
@@ -173,7 +192,12 @@ def test_public_input_and_context_expose_no_private_run_facts() -> None:
     context = AssistantRunContext.model_validate({"enable_memory": False})
     assert set(type(context).model_fields) == {"enable_memory"}
     assert context.enable_memory is False
-    assert AssistantRunContext.model_json_schema()["properties"]["enable_memory"]["default"] is True
+    assert (
+        AssistantRunContext.model_json_schema()["properties"]["enable_memory"][
+            "default"
+        ]
+        is True
+    )
     with pytest.raises(ValidationError):
         AssistantRunContext.model_validate({"execution_mode": "fast"})
 
@@ -192,21 +216,9 @@ def test_native_assistant_input_schema_exposes_only_messages(monkeypatch) -> Non
 
 
 @pytest.mark.core_invariant("LOOP-001")
-def test_async_task_reuses_the_creation_snapshot_for_later_worker_runs(
+def test_async_task_tracks_parent_correlation_without_workspace_state(
     monkeypatch,
 ) -> None:
-    snapshot = "a" * 40
-    moved_head = "b" * 40
-    observed_heads: list[str] = []
-
-    class WorkspaceService:
-        head = snapshot
-
-        def repository_head(self, repo_id: str) -> str:
-            assert repo_id == "repo-sentinel"
-            observed_heads.append(self.head)
-            return self.head
-
     client = SimpleNamespace(
         threads=SimpleNamespace(
             create=AsyncMock(return_value={"thread_id": "worker-thread"})
@@ -219,8 +231,7 @@ def test_async_task_reuses_the_creation_snapshot_for_later_worker_runs(
         aclose=AsyncMock(),
     )
     monkeypatch.setattr(async_delegation, "get_client", lambda **_kwargs: client)
-    service = WorkspaceService()
-    middleware = build_async_subagent_middleware(service, "repo-sentinel")
+    middleware = build_async_subagent_middleware()
     start = next(tool for tool in middleware.tools if tool.name == "start_async_task")
 
     def runtime(async_tasks=None):
@@ -232,6 +243,11 @@ def test_async_task_reuses_the_creation_snapshot_for_later_worker_runs(
             config={
                 "configurable": {"thread_id": "parent-thread"},
                 "run_id": "parent-run",
+                "metadata": {
+                    ASSISTANT_RUNTIME_METADATA_KEY: {
+                        "entry_profile": "agent_server",
+                    }
+                },
             },
             tool_call_id="tool-call-sentinel",
             server_info=SimpleNamespace(user=SimpleNamespace(identity="user-sentinel")),
@@ -245,7 +261,6 @@ def test_async_task_reuses_the_creation_snapshot_for_later_worker_runs(
         )
     )
     task = next(iter(started.update["async_tasks"].values()))
-    service.head = moved_head
     asyncio.run(
         async_delegation._update_async_task(
             task["task_id"],
@@ -254,13 +269,11 @@ def test_async_task_reuses_the_creation_snapshot_for_later_worker_runs(
         )
     )
 
-    def metadata_snapshot(call) -> str:
-        return call.kwargs["metadata"][ASSISTANT_RUNTIME_METADATA_KEY][
-            "repository_snapshot_sha"
-        ]
-
-    assert observed_heads == [snapshot]
-    assert task["repository_snapshot_sha"] == snapshot
-    assert metadata_snapshot(client.threads.create.await_args) == snapshot
-    assert metadata_snapshot(client.runs.create.await_args_list[0]) == snapshot
-    assert metadata_snapshot(client.runs.create.await_args_list[1]) == snapshot
+    assert "workspace_id" not in task
+    for call in (
+        client.threads.create.await_args,
+        *client.runs.create.await_args_list,
+    ):
+        assert call.kwargs["metadata"][ASSISTANT_RUNTIME_METADATA_KEY] == {
+            "entry_profile": "async_worker"
+        }

@@ -16,7 +16,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
-from assistant_agent.coding.backend import ReadOnlyCodingWorkspaceBackend
+from assistant_agent.runtime.local_backend import ReadOnlyHomeBackend
 from assistant_agent.agent_server import media_app
 from assistant_agent.native_agent import assistant_agent
 from assistant_agent.native_agent.assistant_agent import (
@@ -32,7 +32,7 @@ from assistant_agent.native_agent.state import AssistantAgentState
 from assistant_agent.native_agent.tool_profiles import project_tool_profiles
 
 
-def _tool(name: str, effect: str) -> BaseTool:
+def _tool(name: str) -> BaseTool:
     def probe(value: str) -> str:
         """Return one sentinel value."""
 
@@ -41,7 +41,6 @@ def _tool(name: str, effect: str) -> BaseTool:
     return StructuredTool.from_function(
         probe,
         name=name,
-        metadata={"effect": effect},
     )
 
 
@@ -55,15 +54,15 @@ def test_main_uses_factory_filesystem_and_unified_hitl(monkeypatch, tmp_path) ->
     result = build_assistant_agent(
         MockAssistantChatModel(),
         [
-            _tool("read_probe", "read"),
-            _tool("write_probe", "write"),
-            _tool("dangerous_probe", "dangerous"),
-            _tool("generate_probe", "generate"),
+            _tool("read_probe"),
+            _tool("write_probe"),
+            _tool("dangerous_probe"),
+            _tool("generate_probe"),
             StructuredTool.from_function(
                 lambda value: value,
                 name="mcp_probe",
                 description="Return one MCP sentinel.",
-                metadata={"effect": "external", "source": "mcp"},
+                    metadata={"source": "mcp"},
             ),
         ],
         backend=object(),
@@ -73,17 +72,18 @@ def test_main_uses_factory_filesystem_and_unified_hitl(monkeypatch, tmp_path) ->
         additional_middleware=(
             SimpleNamespace(
                 tools=[
-                    _tool("start_async_task", "write"),
-                    _tool("check_async_task", "read"),
+                    _tool("start_async_task"),
+                    _tool("check_async_task"),
                 ]
             ),
         ),
+        general_purpose_tool_names={"read_probe"},
+        auto_approved_tool_names={"read_probe", "check_async_task"},
     )
 
     assert result == "compiled"
     assert not any(
-        isinstance(item, FilesystemMiddleware)
-        for item in captured["middleware"]
+        isinstance(item, FilesystemMiddleware) for item in captured["middleware"]
     )
     assert captured["interrupt_on"].keys() >= {
         "write_file",
@@ -97,11 +97,14 @@ def test_main_uses_factory_filesystem_and_unified_hitl(monkeypatch, tmp_path) ->
         "start_async_task",
     }
     assert "check_async_task" not in captured["interrupt_on"]
-    assert sum(
-        isinstance(item, TodoListMiddleware) for item in captured["middleware"]
-    ) == 1
+    assert (
+        sum(isinstance(item, TodoListMiddleware) for item in captured["middleware"])
+        == 1
+    )
     assert [item["name"] for item in captured["subagents"]] == [
-        "general-purpose"
+        "general-purpose",
+        "coder",
+        "browser-operator",
     ]
     assert captured["name"] == "AssistantAgent"
 
@@ -122,6 +125,7 @@ def test_main_and_worker_use_the_configured_summarization_budget(
         "create_deep_agent",
         lambda **kwargs: captured.setdefault("main", kwargs) or object(),
     )
+
     def token_counter(messages: Any) -> int:
         return len(tuple(messages))
 
@@ -135,7 +139,7 @@ def test_main_and_worker_use_the_configured_summarization_budget(
     worker = build_read_only_worker(
         MockAssistantChatModel(),
         [],
-        backend=ReadOnlyCodingWorkspaceBackend(object(), "repo-sentinel"),
+        backend=ReadOnlyHomeBackend(agent_home=tmp_path),
         skills_backend=skills_backend,
         **options,
     )
@@ -157,11 +161,14 @@ def test_main_and_worker_use_the_configured_summarization_budget(
         assert summarizer.trigger == ("tokens", 55_800)
         assert summarizer.keep == ("tokens", 18_900)
         assert summarizer.token_counter is token_counter
-    assert next(
-        item
-        for item in captured["worker"]["middleware"]
-        if isinstance(item, SummarizationMiddleware)
-    ).model is captured["worker"]["model"]
+    assert (
+        next(
+            item
+            for item in captured["worker"]["middleware"]
+            if isinstance(item, SummarizationMiddleware)
+        ).model
+        is captured["worker"]["model"]
+    )
 
 
 def test_main_graph_has_memory_lifecycle_without_parent_wrapper(tmp_path: Path) -> None:
@@ -180,7 +187,9 @@ def test_main_graph_has_memory_lifecycle_without_parent_wrapper(tmp_path: Path) 
         "MemoryLifecycleMiddleware.after_agent",
     } <= nodes
     assert "assistant_agent" not in nodes
-    assert not {"execution_router", "fast_agent", "planning_agent", "coding_agent"} & nodes
+    assert (
+        not {"execution_router", "fast_agent", "planning_agent", "coding_agent"} & nodes
+    )
 
 
 def test_media_stream_keeps_unified_assistant_model_public() -> None:
@@ -241,8 +250,8 @@ def _compiled_agent(
     model: BaseChatModel,
     tools: Sequence[BaseTool] = (),
 ):
-    read_only_backend = ReadOnlyCodingWorkspaceBackend(
-        SimpleNamespace(), "repo-sentinel"
+    read_only_backend = ReadOnlyHomeBackend(
+        agent_home=tmp_path,
     )
     worker = build_read_only_worker(
         read_only_worker_model_view(model),
@@ -268,9 +277,7 @@ def test_simple_request_does_not_require_todo_or_task(tmp_path: Path) -> None:
         config={"configurable": {"thread_id": "simple-thread"}},
     )
     assert isinstance(result["messages"][-1], AIMessage)
-    assert not any(
-        isinstance(message, ToolMessage) for message in result["messages"]
-    )
+    assert not any(isinstance(message, ToolMessage) for message in result["messages"])
 
 
 @pytest.mark.parametrize("decision,expected", [("approve", 1), ("reject", 0)])
@@ -290,7 +297,6 @@ def test_write_interrupts_before_handler_and_resumes_once(
     tool = StructuredTool.from_function(
         write_probe,
         name="write_probe",
-        metadata={"effect": "write"},
     )
     assistant = _compiled_agent(tmp_path, _WriteOnceModel(), [tool])
     builder = StateGraph(AssistantAgentState, context_schema=AssistantRunContext)
@@ -306,9 +312,10 @@ def test_write_interrupts_before_handler_and_resumes_once(
         config=config,
     )
     assert executed == []
-    assert interrupted["__interrupt__"][0].value["action_requests"][0][
-        "name"
-    ] == "write_probe"
+    assert (
+        interrupted["__interrupt__"][0].value["action_requests"][0]["name"]
+        == "write_probe"
+    )
 
     resumed = graph.invoke(
         Command(resume={"decisions": [{"type": decision}]}),
@@ -316,10 +323,13 @@ def test_write_interrupts_before_handler_and_resumes_once(
         config=config,
     )
     assert len(executed) == expected
-    assert sum(
-        isinstance(message, ToolMessage) and message.tool_call_id == "write-call"
-        for message in resumed["messages"]
-    ) == 1
+    assert (
+        sum(
+            isinstance(message, ToolMessage) and message.tool_call_id == "write-call"
+            for message in resumed["messages"]
+        )
+        == 1
+    )
 
 
 def test_filesystem_profile_includes_execute() -> None:

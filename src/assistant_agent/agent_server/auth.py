@@ -287,10 +287,7 @@ def _authorized_worker_metadata(metadata: Mapping[str, object]) -> bool:
         facts = AssistantRuntimeFacts.model_validate(dict(payload))
     except ValueError:
         return False
-    return (
-        facts.entry_profile == "async_worker"
-        and facts.repository_snapshot_sha is not None
-    )
+    return facts.entry_profile == "async_worker"
 
 
 def _authorized_non_worker_metadata(metadata: Mapping[str, object]) -> bool:
@@ -303,10 +300,7 @@ def _authorized_non_worker_metadata(metadata: Mapping[str, object]) -> bool:
         facts = AssistantRuntimeFacts.model_validate(dict(payload))
     except ValueError:
         return False
-    return (
-        facts.entry_profile != "async_worker"
-        and facts.repository_snapshot_sha is None
-    )
+    return facts.entry_profile != "async_worker"
 
 
 def _is_internal_worker(ctx: Auth.types.AuthContext) -> bool:

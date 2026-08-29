@@ -75,7 +75,7 @@ def create_calendar_search_tool(adapter: CalendarAdapter | None = None) -> BaseT
             ),
         )
 
-    return configure_builtin_tool(calendar_search, "read")
+    return configure_builtin_tool(calendar_search)
 
 
 def create_calendar_create_tool(adapter: CalendarAdapter | None = None) -> BaseTool:
@@ -121,7 +121,7 @@ def create_calendar_create_tool(adapter: CalendarAdapter | None = None) -> BaseT
             ),
         )
 
-    return configure_builtin_tool(calendar_create, "write")
+    return configure_builtin_tool(calendar_create, bounded_expected_errors=True)
 
 
 def create_contacts_search_tool(adapter: ContactsAdapter | None = None) -> BaseTool:
@@ -151,7 +151,7 @@ def create_contacts_search_tool(adapter: ContactsAdapter | None = None) -> BaseT
             ),
         )
 
-    return configure_builtin_tool(contacts_search, "read")
+    return configure_builtin_tool(contacts_search)
 
 
 def _execute_calendar_search(

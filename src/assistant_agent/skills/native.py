@@ -24,7 +24,6 @@ PROJECT_FILESYSTEM_TOOL_NAMES = (
     "grep",
 )
 PROJECT_FILESYSTEM_READ_TOOL_NAMES = ("ls", "read_file", "glob", "grep")
-_PROJECT_FILESYSTEM_READ_TOOLS = frozenset(PROJECT_FILESYSTEM_READ_TOOL_NAMES)
 _PROJECT_SKILLS_SYSTEM_PROMPT = """## Skills
 
 {skills_locations}{skills_load_warnings}
@@ -112,11 +111,6 @@ def create_project_filesystem_middleware(
     for filesystem_tool in middleware.tools:
         filesystem_tool.metadata = {
             **(filesystem_tool.metadata or {}),
-            "effect": (
-                "read"
-                if filesystem_tool.name in _PROJECT_FILESYSTEM_READ_TOOLS
-                else "write"
-            ),
             "source": "deepagents",
         }
     return middleware

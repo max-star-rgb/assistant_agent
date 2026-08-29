@@ -95,7 +95,7 @@ def create_image_to_3d_tool(
             ),
         )
 
-    return configure_builtin_tool(image_to_3d, "generate")
+    return configure_builtin_tool(image_to_3d, bounded_expected_errors=True)
 
 
 def _execute_image_to_3d_from_runtime(

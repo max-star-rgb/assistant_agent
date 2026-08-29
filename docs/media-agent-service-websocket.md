@@ -293,7 +293,9 @@ producer。citation、生成图片 detail、H.264 显式
 生成图片使用标准 `ToolMessage(content, artifact)` 双通道，公共 Graph 不改写最终 `AIMessage`。媒体入口从
 当前用户轮次成功的 `image_generation` ToolMessage 中优先读取 `artifact.images[].output_ref`；对旧 checkpoint
 兼容读取 `download_urls` / `output_ref`。随后读取有界本地图片，并继续按本协议投影为
-`intentResult.detail[].type=IMAGE` 的 Base64 正文。Studio 当前只显示最终文本，不承诺渲染 Tool artifact。
+`intentResult.detail[].type=IMAGE` 的 Base64 正文。生成文件位于当前 thread 的非 Git
+`artifacts/generated/`，公开引用为 `/artifacts/{thread_ref}/generated/{filename}`，并随 thread TTL 回收。
+Studio 当前只显示最终文本，不承诺渲染 Tool artifact。
 
 媒体连接只关闭自己取得的视觉 session handle，不关闭 Agent Server 进程级视觉 owner；完整资源所有权和
 清理规则见视觉 authority 与 Agent Server authority。

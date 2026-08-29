@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.providers.provider_errors import sanitize_error_message
-from assistant_agent.tools.models import ToolCategory, ToolResult
+from assistant_agent.tools.models import ToolResult
 
 def native_tool_response(
     tool_name: str,
@@ -58,13 +58,12 @@ def invoke_native_tool(
 
 
 def builtin_tool_metadata(
-    effect: ToolCategory,
     *,
     availability: str | None = None,
 ) -> dict[str, Any]:
     """Return the metadata required for a built-in native tool."""
 
-    metadata = {"effect": effect, "source": "builtin"}
+    metadata = {"source": "builtin"}
     if availability is not None:
         metadata["availability"] = availability
     return metadata
@@ -72,7 +71,6 @@ def builtin_tool_metadata(
 
 def configure_builtin_tool(
     tool: BaseTool,
-    effect: ToolCategory,
     *,
     availability: str | None = None,
     bounded_expected_errors: bool = False,
@@ -80,10 +78,9 @@ def configure_builtin_tool(
     """Apply standard metadata and the production ToolException policy."""
 
     tool.metadata = builtin_tool_metadata(
-        effect,
         availability=availability,
     )
-    if effect != "read" or bounded_expected_errors:
+    if bounded_expected_errors:
         tool.handle_tool_error = _bounded_tool_error
     return tool
 
