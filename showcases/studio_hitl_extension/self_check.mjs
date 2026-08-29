@@ -196,11 +196,13 @@ test("revalidates state and resumes the newest interrupted assistant", async () 
         {
           run_id: "22222222-2222-4222-8222-222222222222",
           assistant_id: "assistant-old",
+          status: "success",
           created_at: "2026-08-29T01:00:00Z",
         },
         {
           run_id: "33333333-3333-4333-8333-333333333333",
           assistant_id: "assistant-new",
+          status: "success",
           created_at: "2026-08-29T02:00:00Z",
         },
       ]);
@@ -230,6 +232,10 @@ test("revalidates state and resumes the newest interrupted assistant", async () 
     runId: "44444444-4444-4444-8444-444444444444",
   });
   assert.equal(calls.length, 3);
+  assert.equal(
+    calls[1].url,
+    `http://127.0.0.1:8089/threads/${threadId}/runs?limit=10`,
+  );
   assert.deepEqual(
     calls.map((call) => call.options.headers?.["X-Assistant-User"]),
     ["langgraph-studio-user", "langgraph-studio-user", "langgraph-studio-user"],
@@ -276,7 +282,7 @@ test("keeps the MV3 extension narrow and avoids unsafe DOM sinks", () => {
   );
 
   assert.equal(manifest.manifest_version, 3);
-  assert.equal(manifest.version, "0.1.2");
+  assert.equal(manifest.version, "0.1.3");
   assert.deepEqual(plain(manifest.host_permissions), [
     "http://127.0.0.1:8089/*",
   ]);

@@ -109,7 +109,7 @@ importScripts("core.js");
       }
 
       const listed = await requestJson(
-        `${threadPath}/runs?status=interrupted&limit=10`,
+        `${threadPath}/runs?limit=10`,
         {},
         fetchImpl,
       );
@@ -121,7 +121,7 @@ importScripts("core.js");
               String(right.created_at || "").localeCompare(String(left.created_at || "")),
             )[0]
         : null;
-      if (!latest) throw new BridgeError("interrupted_run_not_found");
+      if (!latest) throw new BridgeError("run_not_found");
 
       const run = await requestJson(
         `${threadPath}/runs`,
