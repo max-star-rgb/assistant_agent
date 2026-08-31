@@ -32,7 +32,7 @@ async def native_memory_graph(runtime: ServerRuntime):
 
 @asynccontextmanager
 async def native_worker_graph(runtime: ServerRuntime):
-    """Yield the independent read-only background worker graph."""
+    """Yield the independent general-purpose background worker graph."""
 
     owner = await _get_process_owner(store=runtime.store)
     yield owner.worker_graph

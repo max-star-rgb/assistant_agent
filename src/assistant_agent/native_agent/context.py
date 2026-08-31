@@ -27,6 +27,10 @@ class AssistantRunContext(BaseModel):
             ]
         },
     )
+    require_tool_approval: bool = Field(
+        default=True,
+        description="工具执行前是否要求人工审批。",
+    )
 
 
 ASSISTANT_RUNTIME_METADATA_KEY = "assistant_agent_runtime"

@@ -24,7 +24,7 @@ from assistant_agent.mcp.stateful_sessions import (
 from assistant_agent.tools.plugins.contracts import ToolPluginContext
 
 
-AUTO_APPROVED_BUILTIN_TOOL_NAMES = frozenset(
+GENERAL_PURPOSE_BUILTIN_TOOL_NAMES = frozenset(
     {
         "calendar_search",
         "contacts_search",
@@ -39,6 +39,15 @@ AUTO_APPROVED_BUILTIN_TOOL_NAMES = frozenset(
         "visual_memory_search",
         "web_fetch",
         "web_search",
+    }
+)
+INTERRUPT_BUILTIN_TOOL_NAMES = frozenset(
+    {
+        "calendar_create",
+        "hotel_price_watch_create",
+        "image_generation",
+        "image_to_3d",
+        "visual_reminder_manage",
     }
 )
 
@@ -208,19 +217,34 @@ async def create_native_tool_inventory(
     return sorted(tools, key=lambda tool: tool.name)
 
 
-def auto_approved_tool_names(
+def general_purpose_tool_names(
     tools: Sequence[BaseTool],
     server_configs: Sequence[MCPServerConfig],
 ) -> frozenset[str]:
-    """Return explicit tool-name grants consumed by native HITL composition."""
+    """Return exact Tool grants for the preassembled general-purpose role."""
 
     configured = {
         f"{server.namespace_prefix}_{server.server_name}_{name}"
         for server in server_configs
-        for name in server.auto_approved_tools
+        for name in server.general_purpose_tools
     }
     available = {tool.name for tool in tools}
-    return frozenset((AUTO_APPROVED_BUILTIN_TOOL_NAMES | configured) & available)
+    return frozenset((GENERAL_PURPOSE_BUILTIN_TOOL_NAMES | configured) & available)
+
+
+def interrupt_tool_names(
+    tools: Sequence[BaseTool],
+    server_configs: Sequence[MCPServerConfig],
+) -> frozenset[str]:
+    """Return exact Tool names explicitly governed by native HITL."""
+
+    configured = {
+        f"{server.namespace_prefix}_{server.server_name}_{name}"
+        for server in server_configs
+        for name in server.interrupt_tools
+    }
+    available = {tool.name for tool in tools}
+    return frozenset((INTERRUPT_BUILTIN_TOOL_NAMES | configured) & available)
 
 
 def _builtin_plugins() -> tuple[Any, ...]:
@@ -260,9 +284,11 @@ def _builtin_plugins() -> tuple[Any, ...]:
 
 
 __all__ = [
-    "AUTO_APPROVED_BUILTIN_TOOL_NAMES",
+    "GENERAL_PURPOSE_BUILTIN_TOOL_NAMES",
+    "INTERRUPT_BUILTIN_TOOL_NAMES",
     "NativeToolResources",
-    "auto_approved_tool_names",
+    "general_purpose_tool_names",
+    "interrupt_tool_names",
     "create_native_tool_inventory",
     "mcp_connections",
 ]

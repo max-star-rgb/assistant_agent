@@ -24,8 +24,9 @@ AssistantAgent
   -> MemoryLifecycleMiddleware.after_agent (delayed extraction refresh)
 ```
 
-公开 Graph input 只有标准 `messages`。公开 `AssistantRunContext` 只有 `enable_memory`，默认 true，同时控制本轮
-recall 与 delayed extraction。身份、入口和视觉 capability 只存在于 Agent Server
+公开 Graph input 只有标准 `messages`。公开 `AssistantRunContext` 包含默认 true 的 `enable_memory` 与
+`require_tool_approval`；前者同时控制本轮 recall 与 delayed extraction，后者允许 Assistant 配置关闭其全部原生 Tool
+审批。身份、入口和视觉 capability 只存在于 Agent Server
 签发的 namespaced metadata，不是 Assistant 配置。主图不绑定 saver；thread、run、checkpoint、interrupt、resume、
 cancel 和 Store 均由 Agent Server 注入。
 
@@ -40,8 +41,8 @@ worker，task 输入做显式 allowlist 投影，只传一条任务 `HumanMessag
 `AIMessage` 以及存在时的 `structured_response`。父级 Todo、Tool Profile、async task、Provider search profile 和未知未来
 state 不进入 worker，worker 的内部 transcript 与私有 state 也不回灌父级。若两种有效输出都为空，投影返回有界失败报告。
 
-`general-purpose` 只接收 composition 明确传入的查询与分析 Tool，并使用只实现 `ls/read_file/glob/grep` 的
-`ReadOnlyHomeBackend`；同步和异步形态复用同一 worker graph，异步形态固定为
+`general-purpose` 接收与主 Agent 相同的业务 Tool inventory、filesystem、`execute`、Skills、Tool Profile 与 HITL
+配置；同步和异步形态复用同一 worker graph，异步形态固定为
 `general-purpose-background`。`coder` 由 Deep Agents 原生 declarative SubAgent 装配，只继承主 backend 的 filesystem
 与 `execute`，不接收业务或浏览器 Tool。`browser-operator` 只接收已发现的 Playwright Tool，filesystem 仅以只读方式
 映射当前 thread 的 `/scratch/` 与 `/artifacts/`，不获得宿主 filesystem 或 shell。`coder` 与 `browser-operator` 当前只支持同步 task；所有子 Agent
@@ -49,10 +50,10 @@ state 不进入 worker，worker 的内部 transcript 与私有 state 也不回�
 
 ## 本机 filesystem、thread 资源与后台 worker
 
-主 Agent 使用 `CompositeBackend`。默认 `HomeShellBackend` 以 `/home/lenovo1/assistant_agent` 为 cwd，
-Deep Agents 传入的 `/.` 映射到该 cwd，`/` 和其他绝对路径保持宿主 OS 语义。
-`/artifacts/`、`/scratch/`、`/uploads/` 是上下文快捷路由。同步/异步 `general-purpose` 使用
-`ReadOnlyHomeBackend`。Skill discovery 使用另一份独立 `FilesystemBackend`，只由
+主 Agent 使用 `CompositeBackend`。默认使用原生 `LocalShellBackend`，以 `/home/lenovo1/assistant_agent` 为 cwd；
+`.` 映射到该 cwd，`/`、`/.` 和其他绝对路径保持宿主 OS 语义。
+`/artifacts/`、`/scratch/`、`/uploads/` 是上下文快捷路由。同步/异步 `general-purpose` 复用同一个
+`CompositeBackend`。Skill discovery 使用另一份独立 `FilesystemBackend`，只由
 `SkillsMiddleware` 读取产品内建 Skill。
 
 生产没有 Workspace 或 project registry。thread 只在 Agent Home 下拥有摘要命名的 `scratch/`、`uploads/` 和
@@ -70,12 +71,13 @@ Tool Profile 和递归步数属于 middleware 私有 state。当前生产图是 
 
 ## HITL 与执行边界
 
-所有需要审批的具体 Tool 名由受信 composition 直接传给 Deep Agents `interrupt_on`。filesystem 的
+所有需要审批的具体 Tool 名由受信 composition 直接传给 Deep Agents `interrupt_on`。每项审批配置通过原生
+`when` 谓词读取 `AssistantRunContext.require_tool_approval`；false 时跳过 interrupt 并直接执行。filesystem 的
 `write_file`、`edit_file`、`delete`、`execute` 固定进入审批；业务、MCP、browser 与异步 Tool 使用各自显式的
-auto-approve/interrupt 名单，不依赖 Tool metadata 分类。interrupt 在 handler 执行前产生，恢复统一使用 Agent
+interrupt 名单，未列入的 Tool 按原生默认执行，不依赖 Tool metadata 分类。interrupt 在 handler 执行前产生，恢复统一使用 Agent
 Server/LangGraph 的原生 resume。
 
-HITL 是审批治理，不是进程或文件系统隔离。当前 `HomeShellBackend` 继承官方 `LocalShellBackend`；
+HITL 是审批治理，不是进程或文件系统隔离。当前主 Agent 直接使用官方 `LocalShellBackend`；
 用户批准 `execute` 等价于允许 Agent Server 的 OS identity 在 Agent Home cwd 下执行完整 command。command 仍可能访问
 宿主路径、网络和 Git。受信本地单用户开发可以使用该 backend；多租户或不可信生产必须替换为 thread-scoped
 container 或 remote sandbox backend。
@@ -84,7 +86,7 @@ container 或 remote sandbox backend。
 
 生产消费者直接使用 Agent Server 的 messages/updates/custom/values 和原生生命周期协议。`AssistantAgent` 是顶层
 graph；主模型 token 不再依赖 subgraph stream，媒体入口仍可启用 subgraph stream 以接收并过滤内部 task worker，且只投影标准 assistant
-正文；同步 task 与只读 worker 的内部消息、Tool 参数和 ToolMessage 正文不进入媒体 wire。
+正文；同步 task 与 worker 的内部消息、Tool 参数和 ToolMessage 正文不进入媒体 wire。
 
 `ToolProgressMiddleware` 通过原生 custom stream 发送 `tool_name`、`tool_call_id` 和
 `started|completed|failed`，不发送参数、结果或异常正文。模型循环不设置 model 或单 Tool 的 run 累计次数上限；

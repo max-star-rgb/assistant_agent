@@ -22,6 +22,7 @@ PROJECT_FILESYSTEM_TOOL_NAMES = (
     "delete",
     "glob",
     "grep",
+    "execute",
 )
 PROJECT_FILESYSTEM_READ_TOOL_NAMES = ("ls", "read_file", "glob", "grep")
 _PROJECT_SKILLS_SYSTEM_PROMPT = """## Skills

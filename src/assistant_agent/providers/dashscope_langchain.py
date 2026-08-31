@@ -18,6 +18,7 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
+from langchain_core.messages.ai import InputTokenDetails, UsageMetadata
 from langchain_core.messages.tool import (
     invalid_tool_call,
     tool_call,
@@ -476,6 +477,7 @@ def _tool_call_chunks(value: Any) -> list[Any]:
             continue
         function = raw.get("function")
         function = function if isinstance(function, Mapping) else {}
+        arguments = function.get("arguments", raw.get("arguments"))
         raw_index = raw.get("index", position)
         provider_index = (
             raw_index
@@ -488,7 +490,7 @@ def _tool_call_chunks(value: Any) -> list[Any]:
         chunks.append(
             tool_call_chunk(
                 name=_optional_text(function.get("name") or raw.get("name")),
-                args=_optional_text(function.get("arguments", raw.get("arguments"))),
+                args=arguments if isinstance(arguments, str) else None,
                 id=_optional_text(raw.get("id")),
                 index=provider_index + 1,
             )
@@ -532,7 +534,7 @@ def _parse_search_sources(value: Any) -> list[dict[str, Any]]:
     return sources
 
 
-def _usage_metadata(value: Any) -> dict[str, int] | None:
+def _usage_metadata(value: Any) -> UsageMetadata | None:
     if not isinstance(value, Mapping):
         return None
     input_tokens = _non_negative_int(
@@ -544,11 +546,42 @@ def _usage_metadata(value: Any) -> dict[str, int] | None:
     total_tokens = _non_negative_int(
         value.get("total_tokens", input_tokens + output_tokens)
     )
-    return {
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "total_tokens": total_tokens,
-    }
+    usage = UsageMetadata(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+    )
+    raw_details = value.get("prompt_tokens_details")
+    if not isinstance(raw_details, Mapping):
+        raw_details = value.get("input_tokens_details")
+    cache_read = (
+        raw_details.get("cached_tokens")
+        if isinstance(raw_details, Mapping)
+        else None
+    )
+    if cache_read is None:
+        cache_read = value.get("cached_tokens")
+    cache_creation = (
+        raw_details.get("cache_creation_input_tokens")
+        if isinstance(raw_details, Mapping)
+        else None
+    )
+    details = InputTokenDetails()
+    if (
+        isinstance(cache_read, int)
+        and not isinstance(cache_read, bool)
+        and cache_read >= 0
+    ):
+        details["cache_read"] = cache_read
+    if (
+        isinstance(cache_creation, int)
+        and not isinstance(cache_creation, bool)
+        and cache_creation >= 0
+    ):
+        details["cache_creation"] = cache_creation
+    if details:
+        usage["input_token_details"] = details
+    return usage
 
 
 def _non_negative_int(value: Any) -> int:

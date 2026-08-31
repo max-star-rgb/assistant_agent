@@ -17,48 +17,15 @@ from assistant_agent.native_agent.context import (
 from assistant_agent.runtime.thread_resources import ThreadResourceManager
 
 
-class HomeShellBackend(LocalShellBackend):
-    def __init__(self, *, agent_home: Path) -> None:
-        super().__init__(
-            root_dir=agent_home,
-            virtual_mode=False,
-            timeout=120,
-            max_output_bytes=100_000,
-            env=_shell_env(),
-            inherit_env=False,
-        )
-
-    def _resolve_path(self, key: str) -> Path:
-        return super()._resolve_path("." if key.rstrip("/") in {".", "/."} else key)
-
-
-class ReadOnlyHomeBackend(BackendProtocol):
-    def __init__(self, *, agent_home: Path) -> None:
-        self._backend = HomeShellBackend(agent_home=agent_home)
-
-    def ls(self, path: str):
-        return self._backend.ls(path)
-
-    def read(self, file_path: str, offset: int = 0, limit: int = 2000):
-        return self._backend.read(file_path, offset, limit)
-
-    def grep(
-        self,
-        pattern: str,
-        path: str | None = None,
-        glob: str | None = None,
-        *,
-        max_count: int | None = None,
-    ):
-        return self._backend.grep(
-            pattern,
-            path=path,
-            glob=glob,
-            max_count=max_count,
-        )
-
-    def glob(self, pattern: str, path: str | None = None):
-        return self._backend.glob(pattern, path)
+def _create_home_shell_backend(agent_home: Path) -> LocalShellBackend:
+    return LocalShellBackend(
+        root_dir=agent_home,
+        virtual_mode=False,
+        timeout=120,
+        max_output_bytes=100_000,
+        env=_shell_env(),
+        inherit_env=False,
+    )
 
 
 class ReadOnlyThreadDirectoryBackend(BackendProtocol):
@@ -156,7 +123,7 @@ def create_local_backend(
     agent_home: Path = Path.home() / "assistant_agent",
 ) -> CompositeBackend:
     return CompositeBackend(
-        default=HomeShellBackend(agent_home=agent_home),
+        default=_create_home_shell_backend(agent_home),
         routes={
             "/artifacts/": ThreadDirectoryBackend(manager, "artifact_root"),
             "/scratch/": ThreadDirectoryBackend(manager, "scratch_root"),
@@ -187,8 +154,6 @@ def _shell_env() -> dict[str, str]:
 
 
 __all__ = [
-    "HomeShellBackend",
-    "ReadOnlyHomeBackend",
     "ReadOnlyThreadDirectoryBackend",
     "ThreadDirectoryBackend",
     "create_browser_backend",

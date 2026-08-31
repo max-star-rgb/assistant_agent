@@ -27,14 +27,14 @@ filesystem surface，项目 middleware 列表不再重复创建它，且 `filesy
 
 当前 composition 的 backend 为：
 
-- 主 Agent：原生 `CompositeBackend`，默认 `HomeShellBackend` 以 Agent Home 为 cwd；Deep Agents 传入的 `/.`
-  映射到 cwd，`/` 和其他绝对路径保持宿主 OS 语义；`/artifacts/`、`/scratch/`、
+- 主 Agent：原生 `CompositeBackend`，默认 `LocalShellBackend` 以 Agent Home 为 cwd；`.` 映射到 cwd，`/`、`/.`
+  和其他绝对路径保持宿主 OS 语义；`/artifacts/`、`/scratch/`、
   `/uploads/` 路由到当前上下文；
-- 同步/异步 worker：`ReadOnlyHomeBackend`，只实现 `ls/read_file/glob/grep`；
+- 同步/异步 worker：复用主 Agent 的 `CompositeBackend` 和完整 filesystem/`execute` surface；
 - Skill discovery：独立 `FilesystemBackend`，只给 `SkillsMiddleware` 发现和读取项目 `/skills/`。
 
-`general-purpose` 在模型层关闭 Provider-native search，只接收 composition 直接传入的查询与分析 Tool，并拒绝业务
-Tool 伪装成 filesystem、Todo、task、async task 或 profile activation 等保留名称。`coder` 只接收 Deep Agents
+`general-purpose` 使用与主 Agent 相同的模型和业务 Tool inventory，并拒绝业务 Tool 伪装成 filesystem、Todo、task、
+async task 或 profile activation 等保留名称。`coder` 只接收 Deep Agents
 filesystem 与 `execute`；`browser-operator` 只接收 Playwright Tool。角色 Tool 集、backend 和 `interrupt_on` 是实际
 授权边界，Tool description、Skill、Profile 与 task 文本均不能扩权。
 
@@ -66,10 +66,12 @@ Skill、Todo、worker 文本和 artifact 都不能声明 profile 或授权 Tool�
 所有显式列入 `interrupt_on` 的操作在 handler 前统一经过 Deep Agents `HumanInTheLoopMiddleware`：
 
 - filesystem 的 `write_file`、`edit_file`、`delete`、`execute`；
-- composition 未列入 `auto_approved_tool_names` 的业务与 MCP Tool；
+- composition 显式列入 `interrupt_tool_names` 的业务与 MCP Tool；
 - `start_async_task`、`update_async_task` 与 `cancel_async_task`。
 
-只读 Tool 无需审批。审批、interrupt、checkpoint 与 resume 使用 LangGraph/Agent Server 原生协议；外部副作用幂等
+`AssistantRunContext.require_tool_approval` 默认为 true；在 Studio 保存为 false 的 Assistant 通过原生 `when`
+谓词跳过上述全部 interrupt，Tool 直接进入执行链，不需要自动提交 approve/resume。
+未列入 `interrupt_on` 的 Tool 按 Deep Agents 原生默认直接执行。审批、interrupt、checkpoint 与 resume 使用 LangGraph/Agent Server 原生协议；外部副作用幂等
 仍属于具体 Tool 或业务 API。HITL 只是治理，不提供进程隔离。批准 `execute` 等价于允许 Agent Server 的 OS identity
 在 Agent Home cwd 下执行完整 command；该命令可能访问宿主路径、网络和 Git。filesystem Tool 与 shell 共享
 Agent Server OS identity 的权限边界。当前 backend 仅适合受信本地个人 Agent，多租户或不可信
@@ -78,28 +80,30 @@ Agent Server OS identity 的权限边界。当前 backend 仅适合受信本地�
 ## MCP、Plugin 与异步任务
 
 本地和 MCP Tool 进入同一 native inventory。外部 MCP 只通过官方 `MultiServerMCPClient`，配置必须提供显式
-`allowed_tools`、`auto_approved_tools` 与确定性 `<namespace>_<server>_<tool>` 命名；未列入 auto-approve 的 Tool
-默认进入 HITL。
-旧字段 `read_only_tools` 仅在配置解析边界作为迁移别名接受，并立即归一化为 `auto_approved_tools`，不再表达 Tool 分类。
+`allowed_tools`、`general_purpose_tools`、`interrupt_tools` 与确定性 `<namespace>_<server>_<tool>` 命名。
+`general_purpose_tools` 只标记可安全自动重试的查询 Tool，不限制 worker 的 Tool surface；`interrupt_tools` 是原生 HITL
+名单，两者互不推导；未列入
+`interrupt_tools` 的 MCP Tool 默认执行。
 生产不建立 MCP proxy、ToolSpec 镜像、plugin-private runner 或旧远端 Tool 映射。
 浏览器能力只由固定版本的官方 Playwright MCP 提供；项目不再维护内建 Playwright backend。MCP discovery 成功后
-`mcp_playwright_browser_*` 才进入 `browser` Profile 和 `browser-operator`；是否免审批由配置中的具体 Tool 名决定，
+`mcp_playwright_browser_*` 才进入 `browser` Profile 和 `browser-operator`；是否审批由配置中的具体 Tool 名决定，
 不从通用读写分类推断。配置为 `session_scope=thread` 的 server 按
 `identity + thread_id + server_name` 复用官方 `ClientSession`；Playwright cwd 是 thread `scratch/`，输出目录是
 同一 thread 的 `artifacts/playwright/`。配置为 `call` 的 server 保持官方逐调用生命周期。thread TTL 到期时先关闭 session，
 进程关闭时统一释放剩余 session。
 
 Deep Agents `AsyncSubAgentMiddleware` 的 `start/check/update/cancel/list_async_task(s)` 归入 `async-tasks` Profile。
-start、update 与 cancel 显式进入 HITL；check/list 显式 auto-approve。start 创建 `assistant-worker-v2` thread/run 时
+start、update 与 cancel 显式进入 HITL；check/list 未列入 `interrupt_on`，按原生默认执行。start 创建 `assistant-worker-v2` thread/run 时
 只保留父子 thread/run correlation。start/update 的 loopback SDK 请求还携带进程内 internal
 capability；只有 auth 转换出的 worker permission 配合严格 metadata 才能创建 worker run，外部 shape-only 请求被
-拒绝。该 capability 不进入 Tool 参数、state、task handle 或 thread/run metadata。worker 只读且不能递归 delegation。
+拒绝。该 capability 不进入 Tool 参数、state、task handle 或 thread/run metadata。worker 不能递归 delegation。
 
 ## Provider-native 能力
 
 Qwen 的原生联网参数属于 `BaseChatModel` 请求能力，不伪装成本地 Tool。real 模式选择 DashScope 协议时使用
 `DashScopeNativeChatModel`；显式选择 OpenAI-compatible 时才使用 `ChatOpenAI`，不得静默回退。统一主 Agent 可按
-结构化配置启用 Provider search；只读 worker 的模型视图强制关闭它。
+结构化配置启用 Provider search；worker 复用主 Agent 的同一模型配置。主 Agent 使用官方 `ModelRetryMiddleware`
+对 DashScope 模型失败重试一次，耗尽后由本地固定 `AIMessage` 结束本轮，不再依赖模型生成故障说明。
 
 Provider 返回的 message content 是唯一正文，来源只保存在同一 `AIMessage.response_metadata`。adapter 不把来源
 改写为 ToolMessage 或追加来源列表；媒体和自定义 UI 可按正文角标与结构化来源自行投影。

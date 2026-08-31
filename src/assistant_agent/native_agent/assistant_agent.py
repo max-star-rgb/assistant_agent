@@ -1,4 +1,4 @@
-"""Shared assistant middleware and the isolated read-only worker."""
+"""Shared assistant middleware and the isolated general-purpose worker."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware import FilesystemMiddleware
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
+    HumanInTheLoopMiddleware,
+    ModelRetryMiddleware,
     SummarizationMiddleware,
     TodoListMiddleware,
     ToolRetryMiddleware,
@@ -53,10 +55,9 @@ from assistant_agent.native_agent.memory_middleware import (
     DEFAULT_EXTRACTION_DELAY_SECONDS,
     MemoryLifecycleMiddleware,
 )
-from assistant_agent.native_agent.providers import read_only_worker_model_view
 from assistant_agent.native_agent.state import (
     AssistantAgentState,
-    AssistantReadOnlyWorkerState,
+    AssistantWorkerState,
 )
 from assistant_agent.native_agent.tool_call_limits import PerToolCallLimitMiddleware
 from assistant_agent.native_agent.tool_profiles import (
@@ -64,18 +65,32 @@ from assistant_agent.native_agent.tool_profiles import (
     ToolProfile,
     ToolProfileMiddleware,
 )
+from assistant_agent.providers.dashscope_langchain import DashScopeProviderError
 from assistant_agent.skills.native import (
     PROJECT_FILESYSTEM_READ_TOOL_NAMES,
     create_project_filesystem_middleware,
     create_project_skills_middleware,
 )
-from assistant_agent.tools.ids import LIVE_VIEW_INSPECT_TOOL_NAME
-
-
 _FINAL_SYNTHESIS_INSTRUCTION = """工具调用阶段已经结束。请基于当前对话中已有的信息和工具结果，
 直接完成对用户的最终答复。不要请求或假设新的工具调用；如果信息仍不完整，请明确说明限制，并交付当前能够确定的内容。"""
 _DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000
-_APPROVAL = {"allowed_decisions": ["approve", "edit", "reject"]}
+_MODEL_UNAVAILABLE_MESSAGE_ZH = "模型服务暂时不可用，请稍后重试。"
+
+
+def _model_failure_message(exc: Exception) -> str:
+    if isinstance(exc, DashScopeProviderError):
+        return _MODEL_UNAVAILABLE_MESSAGE_ZH
+    raise exc
+
+
+def _requires_tool_approval(request: ToolCallRequest) -> bool:
+    return request.runtime.context.require_tool_approval
+
+
+_APPROVAL = {
+    "allowed_decisions": ["approve", "edit", "reject"],
+    "when": _requires_tool_approval,
+}
 _FILESYSTEM_SIDE_EFFECTS = ("write_file", "edit_file", "delete", "execute")
 _WRITE_TODOS_DESCRIPTION_ZH = """创建并管理当前工作会话的结构化待办列表。
 
@@ -101,8 +116,8 @@ _WRITE_TODOS_SYSTEM_PROMPT_ZH = """## write_todos
 全部工作完成后，必须在最后一次 `write_todos` 调用之后的下一条消息中给出最终答复，不能把最终答复放在
 同一次 Tool 调用中。最终答复应直接从用户要求的实际结果开始，例如数据、计算、总结或分析，而不是只确认任务已完成。"""
 _GENERAL_PURPOSE_DESCRIPTION_ZH = (
-    "只读分析与研究 Agent；可以读取文件并使用只读业务 Tool，不能写入文件、执行命令或实施任何副作用。"
-    "需要副作用的步骤必须由主助理执行。"
+    "通用执行 Agent；与主助理使用相同的业务 Tool、filesystem、execute、Skills 和审批配置，"
+    "但不能继续委派其他 Agent。"
 )
 _CODER_DESCRIPTION_ZH = (
     "代码执行 Agent；负责文件修改、命令执行、Git 和测试，不使用业务或浏览器 Tool。"
@@ -267,25 +282,11 @@ def _tool_progress_event(
     }
 
 
-def _retryable_tool_names(tools: Sequence[BaseTool]) -> list[str]:
-    """Keep current-view failures out of automatic retries and extra VLM work."""
-
-    return [
-        tool.name
-        for tool in tools
-        if tool.name != LIVE_VIEW_INSPECT_TOOL_NAME
-    ]
-
-
 def _interrupt_on(
-    tools: Sequence[BaseTool],
-    *,
-    auto_approved_tool_names: set[str] | frozenset[str],
+    interrupt_tool_names: set[str] | frozenset[str],
 ) -> dict[str, object]:
     result = {name: _APPROVAL for name in _FILESYSTEM_SIDE_EFFECTS}
-    for tool in tools:
-        if tool.name not in auto_approved_tool_names:
-            result[tool.name] = _APPROVAL
+    result.update({name: _APPROVAL for name in interrupt_tool_names})
     return result
 
 
@@ -327,7 +328,7 @@ def build_assistant_agent(
     token_counter: Callable[[Iterable[MessageLikeRepresentation]], int] | None = None,
     tool_profiles: Sequence[ToolProfile] = (),
     general_purpose_tool_names: set[str] | frozenset[str] = frozenset(),
-    auto_approved_tool_names: set[str] | frozenset[str] = frozenset(),
+    interrupt_tool_names: set[str] | frozenset[str] = frozenset(),
     browser_tools: Sequence[BaseTool] = (),
     browser_backend: BackendProtocol | None = None,
     additional_middleware: Sequence[AgentMiddleware] = (),
@@ -356,13 +357,13 @@ def build_assistant_agent(
             }
         )
     )
-    all_runtime_tools = [*tools, *middleware_tools]
-    browser_interrupt_on = _interrupt_on(
-        browser_tools,
-        auto_approved_tool_names=set(auto_approved_tool_names),
-    )
-    for name in _FILESYSTEM_SIDE_EFFECTS:
-        browser_interrupt_on.pop(name, None)
+    runtime_tool_names = {tool.name for tool in (*tools, *middleware_tools)}
+    governed_tool_names = set(interrupt_tool_names) & runtime_tool_names
+    browser_tool_names = {tool.name for tool in browser_tools}
+    browser_interrupt_on = {
+        name: _APPROVAL
+        for name in governed_tool_names & browser_tool_names
+    }
     return create_deep_agent(
         model=model,
         tools=list(tools),
@@ -371,7 +372,7 @@ def build_assistant_agent(
             {
                 "name": "general-purpose",
                 "description": _GENERAL_PURPOSE_DESCRIPTION_ZH,
-                "runnable": isolated_read_only_worker(worker_graph),
+                "runnable": isolated_general_purpose_worker(worker_graph),
             },
             {
                 "name": "coder",
@@ -445,11 +446,13 @@ def build_assistant_agent(
                 backoff_factor=0,
                 jitter=False,
             ),
+            ModelRetryMiddleware(
+                max_retries=1,
+                retry_on=(DashScopeProviderError,),
+                on_failure=_model_failure_message,
+            ),
         ],
-        interrupt_on=_interrupt_on(
-            all_runtime_tools,
-            auto_approved_tool_names=set(auto_approved_tool_names),
-        ),
+        interrupt_on=_interrupt_on(governed_tool_names),
         checkpointer=checkpointer,
         name="AssistantAgent",
     )
@@ -499,7 +502,7 @@ def _quote_lines(value: str) -> str:
     return "\n".join(f"> {line}" for line in lines)
 
 
-def build_read_only_worker(
+def build_general_purpose_worker(
     model: BaseChatModel,
     tools: Sequence[BaseTool],
     *,
@@ -510,13 +513,14 @@ def build_read_only_worker(
     compaction_target_ratio: float = 0.15,
     token_counter: Callable[[Iterable[MessageLikeRepresentation]], int] | None = None,
     tool_profiles: Sequence[ToolProfile] = (),
+    general_purpose_tool_names: set[str] | frozenset[str] = frozenset(),
+    interrupt_tool_names: set[str] | frozenset[str] = frozenset(),
     visual_history_probe: VisualObservationHistoryProbe | None = None,
     live_view_resolver: Callable[[str, str, str], Any] | None = None,
     current_location: str | None = None,
 ):
-    """Compile one non-delegating worker with read-only Tool capabilities."""
+    """Compile one non-delegating worker with the main Agent capabilities."""
 
-    worker_model = read_only_worker_model_view(model)
     worker_tools: list[BaseTool] = []
     business_tool_names: set[str] = set()
     for tool in tools:
@@ -529,14 +533,24 @@ def build_read_only_worker(
     skills_middleware = create_project_skills_middleware(skills_backend)
     filesystem_middleware = create_project_filesystem_middleware(
         backend,
-        tools=PROJECT_FILESYSTEM_READ_TOOL_NAMES,
     )
     filesystem_tools = tuple(filesystem_middleware.tools)
-    retryable_tools = _retryable_tool_names([*worker_tools, *filesystem_tools])
+    retryable_tools = tuple(
+        sorted(
+            {
+                *PROJECT_FILESYSTEM_READ_TOOL_NAMES,
+                *general_purpose_tool_names,
+            }
+        )
+    )
     middleware: list[AgentMiddleware] = [
         create_assistant_base_prompt(),
         skills_middleware,
         filesystem_middleware,
+        TodoListMiddleware(
+            system_prompt=_WRITE_TODOS_SYSTEM_PROMPT_ZH,
+            tool_description=_WRITE_TODOS_DESCRIPTION_ZH,
+        ),
     ]
     if tool_profiles:
         middleware.append(
@@ -556,7 +570,7 @@ def build_read_only_worker(
             PerToolCallLimitMiddleware(max_parallel_calls_per_tool=12),
             SummarizationMiddleware(
                 **_summarization_options(
-                    worker_model,
+                    model,
                     context_window_tokens=context_window_tokens,
                     compaction_trigger_ratio=compaction_trigger_ratio,
                     compaction_target_ratio=compaction_target_ratio,
@@ -574,15 +588,18 @@ def build_read_only_worker(
                 backoff_factor=0,
                 jitter=False,
             ),
+            HumanInTheLoopMiddleware(
+                interrupt_on=_interrupt_on(set(interrupt_tool_names))
+            ),
         ]
     )
     return create_agent(
-        model=worker_model,
+        model=model,
         tools=worker_tools,
-        state_schema=AssistantReadOnlyWorkerState,
+        state_schema=AssistantWorkerState,
         context_schema=AssistantRunContext,
         middleware=middleware,
-        name="AssistantReadOnlyWorker",
+        name="AssistantGeneralPurposeWorker",
     )
 
 
@@ -611,7 +628,7 @@ def _worker_output(result: Mapping[str, Any]) -> dict[str, Any]:
             AIMessage(content="")
             if structured_response
             else AIMessage(
-                content="只读 worker 未生成可用结果，任务未完成。",
+                content="general-purpose worker 未生成可用结果，任务未完成。",
                 response_metadata={"error_code": "empty_worker_result"},
             )
         )
@@ -621,7 +638,7 @@ def _worker_output(result: Mapping[str, Any]) -> dict[str, Any]:
     return output
 
 
-def isolated_read_only_worker(worker: Runnable) -> RunnableLambda:
+def isolated_general_purpose_worker(worker: Runnable) -> RunnableLambda:
     """Project one task into and one final answer out of worker-local state."""
 
     def invoke(state: Mapping[str, Any], config: RunnableConfig) -> dict[str, Any]:
@@ -642,7 +659,7 @@ __all__ = [
     "RecursionFinalSynthesisState",
     "ToolProgressMiddleware",
     "build_assistant_agent",
-    "build_read_only_worker",
-    "isolated_read_only_worker",
+    "build_general_purpose_worker",
+    "isolated_general_purpose_worker",
     "memory_context_message",
 ]

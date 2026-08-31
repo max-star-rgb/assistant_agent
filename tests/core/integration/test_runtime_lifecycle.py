@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from blockbuster import blockbuster_ctx
-from deepagents.backends import FilesystemBackend
+from deepagents.backends import FilesystemBackend, LocalShellBackend
 from langchain.agents.middleware import ModelCallLimitMiddleware
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableLambda
@@ -23,7 +23,7 @@ from assistant_agent.agent_server.async_delegation import (
     build_async_subagent_middleware,
 )
 from assistant_agent.runtime import thread_resources as thread_resources_module
-from assistant_agent.runtime.local_backend import HomeShellBackend
+from assistant_agent.runtime.local_backend import create_local_backend
 from assistant_agent.native_agent import assistant_agent as assistant_agent_module
 from assistant_agent.native_agent.assistant_agent import (
     RecursionFinalSynthesisMiddleware,
@@ -105,26 +105,30 @@ def test_main_graph_is_the_native_deep_agent(monkeypatch) -> None:
             "execute",
         } <= tools
         assert owner.graph.name == "AssistantAgent"
-        assert owner.worker_graph.name == "AssistantReadOnlyWorker"
+        assert owner.worker_graph.name == "AssistantGeneralPurposeWorker"
         assert owner.graph.checkpointer is None
     finally:
         asyncio.run(owner.aclose())
 
 
 @pytest.mark.core_invariant("LOOP-001")
-def test_home_backend_resolves_model_cwd_and_os_absolute_paths(tmp_path: Path) -> None:
+def test_local_shell_backend_resolves_cwd_and_os_absolute_paths(tmp_path: Path) -> None:
     home_root = tmp_path / "home"
     agent_home = home_root / "assistant_agent"
     agent_home.mkdir(parents=True)
     (agent_home / "cwd-sentinel.txt").write_text("cwd", encoding="utf-8")
     host_file = tmp_path / "host-sentinel.txt"
     host_file.write_text("host", encoding="utf-8")
-    backend = HomeShellBackend(agent_home=agent_home)
+    manager = thread_resources_module.ThreadResourceManager(
+        thread_resources_module.ThreadResourceConfig(root=tmp_path / "threads")
+    )
+    backend = create_local_backend(manager, agent_home=agent_home).default
 
-    assert {entry["path"] for entry in backend.ls("/.").entries or []} == {
+    assert isinstance(backend, LocalShellBackend)
+    assert {entry["path"] for entry in backend.ls(".").entries or []} == {
         str(agent_home / "cwd-sentinel.txt")
     }
-    assert "/tmp/" in {entry["path"] for entry in backend.ls("/").entries or []}
+    assert "/tmp/" in {entry["path"] for entry in backend.ls("/.").entries or []}
     assert backend.read(str(host_file)).file_data["content"] == "host"
     assert backend.execute("pwd").output.strip() == str(agent_home)
 
@@ -189,13 +193,25 @@ def test_unified_run_finishes_with_standard_ai_message(monkeypatch) -> None:
 @pytest.mark.core_invariant("RUN-001")
 @pytest.mark.core_invariant("IDENT-001")
 def test_public_input_and_context_expose_no_private_run_facts() -> None:
-    context = AssistantRunContext.model_validate({"enable_memory": False})
-    assert set(type(context).model_fields) == {"enable_memory"}
+    context = AssistantRunContext.model_validate(
+        {"enable_memory": False, "require_tool_approval": False}
+    )
+    assert set(type(context).model_fields) == {
+        "enable_memory",
+        "require_tool_approval",
+    }
     assert context.enable_memory is False
+    assert context.require_tool_approval is False
     assert (
         AssistantRunContext.model_json_schema()["properties"]["enable_memory"][
             "default"
         ]
+        is True
+    )
+    assert (
+        AssistantRunContext.model_json_schema()["properties"][
+            "require_tool_approval"
+        ]["default"]
         is True
     )
     with pytest.raises(ValidationError):

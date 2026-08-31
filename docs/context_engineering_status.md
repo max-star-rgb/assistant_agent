@@ -21,8 +21,8 @@ provider-neutral 的稳定核心策略在前，Deep Agents Skills L0 目录随�
 已核验事实、失败和模型判断；Git 操作按目标路径使用 `git -C <path> rev-parse --show-toplevel` 动态识别仓库，
 不依赖 Agent Server cwd，也不启动时扫描用户 Home。
 
-公开 `AssistantRunContext` 只有 `enable_memory`，默认 true；它控制本轮 recall 与 delayed extraction，但不进入
-prompt。`entry_profile` 与视觉 capability token 属于服务端签发的
+公开 `AssistantRunContext` 只有 `enable_memory` 与 `require_tool_approval`，默认均为 true；前者控制本轮 recall 与
+delayed extraction，后者允许单次 run 关闭已配置 Tool 的 HITL interrupt，两者都不进入 prompt。`entry_profile` 与视觉 capability token 属于服务端签发的
 `AssistantRuntimeFacts`，只放在 namespaced run metadata。用户身份只来自 Agent Server
 `Runtime.server_info.user.identity`。公开 context 不包含模式、prompt、身份、仓库选择或 Tool 授权。
 
@@ -34,8 +34,8 @@ Tool observation 当作本轮证据。`visual_memory_search` 只查当前 VIDEO 
 
 Deep Agents `SkillsMiddleware` 从独立的普通 `FilesystemBackend` 的 `/skills/` 发现标准 `SKILL.md` L0 元数据，
 项目 state 与 Prompt 只投影 `name`、`description`、`path`；上游可选的 `allowed_tools`、`compatibility`、`license`、
-`metadata` 不进入项目运行时。正文只在模型实际调用 `read_file` 时进入当前角色 transcript。这个 backend 与主 Agent 的可写 Home
-backend、worker 的只读 OS backend 相互分离；Skills 不授予 Tool，也不扩大文件访问或 task state。
+`metadata` 不进入项目运行时。正文只在模型实际调用 `read_file` 时进入当前角色 transcript。这个 backend 与 main/worker
+共享的可写 Home backend 相互分离；Skills 不授予 Tool，也不扩大文件访问或 task state。
 
 同步 `task` 使用双向显式 allowlist，而不是传递整个 Deep Agent state：
 
@@ -62,14 +62,13 @@ dynamic prompt 只加入 `Asia/Shanghai` 的自然日和可信配置地区，不
 不会反向修改配置。Provider 联网来源只属于产生它的 `AIMessage.response_metadata`，不会变成下一轮上下文消息。
 Tool observation 使用标准 `ToolMessage(content, artifact)`；runtime-owned 字段不进入模型可见 schema。
 
-统一 Agent 与只读 worker 都使用官方 summarization、同一 model superstep 内每 Tool 最多并行 12 次，并在
-`recursion_limit` 只剩 8 个 superstep 时关闭 Tool 生成自然综合。所有非只读 Tool 的审批由 Runtime/Tool authority
+统一 Agent 与通用 worker 都使用官方 summarization、同一 model superstep 内每 Tool 最多并行 12 次，并在
+`recursion_limit` 只剩 8 个 superstep 时关闭 Tool 生成自然综合。所有显式配置 Tool 的审批由 Runtime/Tool authority
 统一定义，不通过上下文模式切换。
 
 summarization 的绝对 token trigger/keep 分别由
 `ProviderConfig.context_input_token_limit * context_compaction_trigger_ratio/target_ratio` 计算，不写死模型窗口。
-composition 启动时先创建配置的离线 token counter，并把同一个 `count_messages` 同时传给 main 与 worker；worker
-仍使用关闭 Provider-native search 的只读模型视图生成摘要。real DeepSeek V4 或 native LLM compactor 缺少本地
+composition 启动时先创建配置的离线 token counter，并把同一个 `count_messages` 和模型配置同时传给 main 与 worker。real DeepSeek V4 或 native LLM compactor 缺少本地
 tokenizer 时启动直接失败，不回退近似计数或发起网络调用。
 
 旧 `ContextService`、prompt-json compiler、动态 catalog/exposure 与 renderer 已删除。仍保留的 context 代码只服务

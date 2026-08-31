@@ -16,18 +16,14 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
-from assistant_agent.runtime.local_backend import ReadOnlyHomeBackend
 from assistant_agent.agent_server import media_app
 from assistant_agent.native_agent import assistant_agent
 from assistant_agent.native_agent.assistant_agent import (
     build_assistant_agent,
-    build_read_only_worker,
+    build_general_purpose_worker,
 )
 from assistant_agent.native_agent.context import AssistantRunContext
-from assistant_agent.native_agent.providers import (
-    MockAssistantChatModel,
-    read_only_worker_model_view,
-)
+from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.native_agent.state import AssistantAgentState
 from assistant_agent.native_agent.tool_profiles import project_tool_profiles
 
@@ -78,7 +74,13 @@ def test_main_uses_factory_filesystem_and_unified_hitl(monkeypatch, tmp_path) ->
             ),
         ),
         general_purpose_tool_names={"read_probe"},
-        auto_approved_tool_names={"read_probe", "check_async_task"},
+        interrupt_tool_names={
+            "write_probe",
+            "dangerous_probe",
+            "generate_probe",
+            "mcp_probe",
+            "start_async_task",
+        },
     )
 
     assert result == "compiled"
@@ -136,10 +138,10 @@ def test_main_and_worker_use_the_configured_summarization_budget(
         "token_counter": token_counter,
     }
     skills_backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
-    worker = build_read_only_worker(
+    worker = build_general_purpose_worker(
         MockAssistantChatModel(),
         [],
-        backend=ReadOnlyHomeBackend(agent_home=tmp_path),
+        backend=LocalShellBackend(root_dir=tmp_path, virtual_mode=True),
         skills_backend=skills_backend,
         **options,
     )
@@ -249,14 +251,13 @@ def _compiled_agent(
     tmp_path: Path,
     model: BaseChatModel,
     tools: Sequence[BaseTool] = (),
+    *,
+    interrupt_tool_names=frozenset(),
 ):
-    read_only_backend = ReadOnlyHomeBackend(
-        agent_home=tmp_path,
-    )
-    worker = build_read_only_worker(
-        read_only_worker_model_view(model),
+    worker = build_general_purpose_worker(
+        model,
         tools,
-        backend=read_only_backend,
+        backend=LocalShellBackend(root_dir=tmp_path, virtual_mode=True),
         skills_backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
     )
     return build_assistant_agent(
@@ -266,6 +267,7 @@ def _compiled_agent(
         worker_graph=worker,
         skills_backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
         tool_profiles=(),
+        interrupt_tool_names=interrupt_tool_names,
     )
 
 
@@ -298,7 +300,12 @@ def test_write_interrupts_before_handler_and_resumes_once(
         write_probe,
         name="write_probe",
     )
-    assistant = _compiled_agent(tmp_path, _WriteOnceModel(), [tool])
+    assistant = _compiled_agent(
+        tmp_path,
+        _WriteOnceModel(),
+        [tool],
+        interrupt_tool_names={"write_probe"},
+    )
     builder = StateGraph(AssistantAgentState, context_schema=AssistantRunContext)
     builder.add_node("assistant", assistant)
     builder.add_edge(START, "assistant")

@@ -13,7 +13,7 @@ from langchain_core.tools import BaseTool
 from langgraph.store.base import BaseStore
 
 from assistant_agent.agent_server.async_delegation import (
-    ASYNC_TASK_AUTO_APPROVED_TOOL_NAMES,
+    ASYNC_TASK_INTERRUPT_TOOL_NAMES,
     async_task_tool_profile,
     build_async_subagent_middleware,
 )
@@ -24,7 +24,7 @@ from assistant_agent.mcp.stateful_sessions import ThreadMcpSessionPool
 from assistant_agent.media.visual_perception import get_visual_perception_module
 from assistant_agent.native_agent.assistant_agent import (
     build_assistant_agent,
-    build_read_only_worker,
+    build_general_purpose_worker,
 )
 from assistant_agent.native_agent.memory import MemoryBackend, create_memory_backend
 from assistant_agent.native_agent.memory_graph import build_memory_extraction_graph
@@ -32,15 +32,12 @@ from assistant_agent.native_agent.providers import create_chat_model
 from assistant_agent.native_agent.tool_profiles import project_tool_profiles
 from assistant_agent.native_agent.tools import (
     NativeToolResources,
-    auto_approved_tool_names,
     create_native_tool_inventory,
+    general_purpose_tool_names,
+    interrupt_tool_names,
 )
 from assistant_agent.skills.native import create_project_skills_backend
-from assistant_agent.runtime.local_backend import (
-    ReadOnlyHomeBackend,
-    create_browser_backend,
-    create_local_backend,
-)
+from assistant_agent.runtime.local_backend import create_browser_backend, create_local_backend
 from assistant_agent.runtime.thread_resources import (
     ThreadResourceConfig,
     ThreadResourceManager,
@@ -123,7 +120,11 @@ class AgentServerExecutionOwner:
             mcp_server_configs=mcp_server_configs,
             mcp_session_pool=mcp_session_pool,
         )
-        auto_approved_names = auto_approved_tool_names(tools, mcp_server_configs)
+        general_purpose_names = general_purpose_tool_names(
+            tools,
+            mcp_server_configs,
+        )
+        interrupt_names = interrupt_tool_names(tools, mcp_server_configs)
         browser_profile = next(
             profile
             for profile in project_tool_profiles()
@@ -134,7 +135,7 @@ class AgentServerExecutionOwner:
         general_purpose_tools = [
             tool
             for tool in tools
-            if tool.name in auto_approved_names
+            if tool.name in general_purpose_names
             and tool.name not in browser_tool_names
         ]
         skills_backend = await asyncio.to_thread(
@@ -154,25 +155,26 @@ class AgentServerExecutionOwner:
             ),
         }
         agent_home = thread_resource_config.root.parent
-        read_only_backend = ReadOnlyHomeBackend(
+        writable_backend = create_local_backend(
+            thread_resource_manager,
             agent_home=agent_home,
         )
-        worker_graph = build_read_only_worker(
+        worker_graph = build_general_purpose_worker(
             model,
-            general_purpose_tools,
-            backend=read_only_backend,
+            tools,
+            backend=writable_backend,
             skills_backend=skills_backend,
             **context_options,
             tool_profiles=business_tool_profiles,
+            general_purpose_tool_names={
+                tool.name for tool in general_purpose_tools
+            },
+            interrupt_tool_names=interrupt_names,
             visual_history_probe=tool_resources.visual_history_probe,
             live_view_resolver=tool_resources.live_view_resolver,
             current_location=config.current_location,
         )
         async_middleware = build_async_subagent_middleware()
-        writable_backend = create_local_backend(
-            thread_resource_manager,
-            agent_home=agent_home,
-        )
         assistant_agent = build_assistant_agent(
             model,
             tools,
@@ -184,9 +186,9 @@ class AgentServerExecutionOwner:
             general_purpose_tool_names={
                 tool.name for tool in general_purpose_tools
             },
-            auto_approved_tool_names={
-                *auto_approved_names,
-                *ASYNC_TASK_AUTO_APPROVED_TOOL_NAMES,
+            interrupt_tool_names={
+                *interrupt_names,
+                *ASYNC_TASK_INTERRUPT_TOOL_NAMES,
             },
             browser_tools=browser_tools,
             browser_backend=create_browser_backend(thread_resource_manager),

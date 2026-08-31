@@ -25,12 +25,11 @@ from langgraph_sdk.auth.types import StudioUser
 from pydantic import PrivateAttr
 
 from assistant_agent.agent_server.services import AgentServerExecutionOwner
-from assistant_agent.runtime.local_backend import ReadOnlyHomeBackend
 from assistant_agent.native_agent import assistant_agent as assistant_agent_module
 from assistant_agent.native_agent.assistant_agent import (
     RecursionFinalSynthesisMiddleware,
     build_assistant_agent,
-    isolated_read_only_worker,
+    isolated_general_purpose_worker,
 )
 from assistant_agent.native_agent.conditional_tool_exposure import (
     ConditionalToolExposureMiddleware,
@@ -92,7 +91,7 @@ def _agent(
     worker: Runnable | None = None,
     tool_profiles=(),
     checkpointer=None,
-    auto_approved_tool_names=frozenset(),
+    interrupt_tool_names=frozenset(),
 ):
     return build_assistant_agent(
         model,
@@ -102,7 +101,7 @@ def _agent(
         skills_backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
         tool_profiles=tool_profiles,
         checkpointer=checkpointer,
-        auto_approved_tool_names=auto_approved_tool_names,
+        interrupt_tool_names=interrupt_tool_names,
     )
 
 
@@ -342,7 +341,7 @@ def test_frozen_memory_is_transient_context_before_the_current_request(
 
 
 @pytest.mark.core_invariant("CTX-001")
-def test_task_uses_narrow_read_only_worker_state_and_preserves_parent_handles(
+def test_task_uses_isolated_general_purpose_worker_and_preserves_parent_handles(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -369,7 +368,7 @@ def test_task_uses_narrow_read_only_worker_state_and_preserves_parent_handles(
         "provider_search_profile": "travel_general",
         "async_tasks": parent_tasks,
     }
-    projected = isolated_read_only_worker(
+    projected = isolated_general_purpose_worker(
         RunnableLambda(
             lambda state: {
                 **worker(state),
@@ -418,33 +417,9 @@ def test_task_uses_narrow_read_only_worker_state_and_preserves_parent_handles(
         worker_tools = set(
             owner.worker_graph.get_graph().nodes["tools"].data.tools_by_name
         )
-        assert {
-            "calendar_search",
-            "contacts_search",
-            "email_read",
-            "email_search",
-            "live_view_inspect",
-            "lodging_search",
-            "uploaded_media_inspect",
-            "visual_image_search",
-            "visual_memory_search",
-        } <= worker_tools
-        assert (
-            not {
-                "write_file",
-                "edit_file",
-                "delete",
-                "execute",
-                "task",
-                "start_async_task",
-            }
-            & worker_tools
-        )
-        read_only_backend = ReadOnlyHomeBackend(
-            agent_home=Path.home() / "assistant_agent",
-        )
-        with pytest.raises(NotImplementedError):
-            read_only_backend.write("/blocked.txt", "blocked")
+        assert {tool.name for tool in owner.tools} <= worker_tools
+        assert {"write_file", "edit_file", "delete", "execute"} <= worker_tools
+        assert not {"task", "start_async_task"} & worker_tools
     finally:
         asyncio.run(owner.aclose())
 
@@ -498,9 +473,9 @@ def test_deep_agent_owns_summary_retry_todo_hitl_and_tool_policy(
         skills_backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
         tool_profiles=project_tool_profiles(),
         general_purpose_tool_names={"delegated_probe"},
-        auto_approved_tool_names={
-            "delegated_probe",
-            "mcp_playwright_browser_snapshot",
+        interrupt_tool_names={
+            "sensitive_probe",
+            "mcp_playwright_browser_click",
         },
         browser_tools=[browser_snapshot, browser_click],
         browser_backend=browser_backend,
@@ -608,7 +583,6 @@ def test_tool_policy_allows_twelve_parallel_calls_per_tool(tmp_path: Path) -> No
         tmp_path,
         ParallelModel(),
         [tool],
-        auto_approved_tool_names={"read_probe"},
     ).invoke(
         {"messages": [HumanMessage(content="parallel-request")]},
         context=AssistantRunContext(),
@@ -655,7 +629,6 @@ def test_tool_policy_allows_identical_arguments_across_turns(tmp_path: Path) -> 
         tmp_path,
         RepeatModel(),
         [tool],
-        auto_approved_tool_names={"read_probe"},
     ).invoke(
         {"messages": [HumanMessage(content="duplicate-request")]},
         context=AssistantRunContext(),
@@ -679,7 +652,6 @@ def test_remaining_graph_steps_force_tool_free_final_synthesis(tmp_path: Path) -
         tmp_path,
         model,
         [tool],
-        auto_approved_tool_names={"budget_probe"},
     ).invoke(
         {"messages": [HumanMessage(content="budget-request")]},
         context=AssistantRunContext(),
@@ -716,6 +688,7 @@ def test_unified_write_interrupt_resume_executes_at_most_once(
         _WriteOnceModel(),
         [tool],
         checkpointer=InMemorySaver(),
+        interrupt_tool_names={"write_probe"},
     )
     config = {"configurable": {"thread_id": f"write-{decision}-sentinel"}}
     interrupted = graph.invoke(
@@ -762,6 +735,36 @@ def test_unified_write_interrupt_resume_executes_at_most_once(
         )
         == 1
     )
+
+
+@pytest.mark.core_invariant("CTX-001")
+def test_assistant_context_can_auto_approve_governed_tool(tmp_path: Path) -> None:
+    executed: list[str] = []
+
+    def write_probe(value: str) -> str:
+        executed.append(value)
+        return value
+
+    graph = _agent(
+        tmp_path,
+        _WriteOnceModel(),
+        [
+            StructuredTool.from_function(
+                write_probe,
+                name="write_probe",
+                description="probe",
+            )
+        ],
+        interrupt_tool_names={"write_probe"},
+    )
+    result = graph.invoke(
+        {"messages": [HumanMessage(content="write-request-sentinel")]},
+        context=AssistantRunContext(require_tool_approval=False),
+    )
+
+    assert executed == ["write-sentinel"]
+    assert "__interrupt__" not in result
+    assert result["messages"][-1].content == "write-complete-sentinel"
 
 
 @pytest.mark.core_invariant("CTX-001")
@@ -828,6 +831,7 @@ def test_browser_profile_hides_tool_then_interrupts_side_effect(tmp_path: Path) 
         model,
         [browser_tool],
         tool_profiles=project_tool_profiles(),
+        interrupt_tool_names={"mcp_playwright_browser_navigate"},
     ).invoke(
         {"messages": [HumanMessage(content="browser-request")]},
         context=AssistantRunContext(),

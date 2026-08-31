@@ -9,10 +9,12 @@ from blockbuster import blockbuster_ctx
 from langchain_mcp_adapters.interceptors import MCPToolCallRequest
 from langchain_core.tools import BaseTool, StructuredTool
 import pytest
+from pydantic import ValidationError
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.mcp.config import MCPServerConfig
 from assistant_agent.mcp.stateful_sessions import ThreadMcpSessionPool
+from assistant_agent.native_agent import tools as native_tools
 from assistant_agent.native_agent.tools import (
     NativeToolResources,
     create_native_tool_inventory,
@@ -65,7 +67,8 @@ def test_mcp_extension_uses_allowlist_and_namespace() -> None:
         server_name="server",
         command=["probe"],
         allowed_tools=["probe"],
-        auto_approved_tools=["probe"],
+        general_purpose_tools=["probe"],
+        interrupt_tools=["probe"],
         namespace_prefix="native",
     )
 
@@ -81,21 +84,30 @@ def test_mcp_extension_uses_allowlist_and_namespace() -> None:
     tool = next(tool for tool in tools if tool.name == "native_server_probe")
     assert tool.metadata["source"] == "mcp"
     assert "effect" not in tool.metadata
+    general_purpose_tool_names = getattr(
+        native_tools,
+        "general_purpose_tool_names",
+        None,
+    )
+    interrupt_tool_names = getattr(native_tools, "interrupt_tool_names", None)
+    assert callable(general_purpose_tool_names)
+    assert callable(interrupt_tool_names)
+    assert "native_server_probe" in general_purpose_tool_names(tools, [config])
+    assert "native_server_probe" in interrupt_tool_names(tools, [config])
 
 
 @pytest.mark.core_invariant("EXT-001")
-def test_mcp_legacy_read_only_list_migrates_to_auto_approve() -> None:
-    config = MCPServerConfig.model_validate(
-        {
-            "server_name": "server",
-            "command": ["probe"],
-            "allowed_tools": ["probe"],
-            "read_only_tools": ["probe"],
-        }
-    )
-
-    assert config.auto_approved_tools == ["probe"]
-    assert not hasattr(config, "read_only_tools")
+@pytest.mark.parametrize("field_name", ["read_only_tools", "auto_approved_tools"])
+def test_mcp_rejects_legacy_tool_classification_fields(field_name: str) -> None:
+    with pytest.raises(ValidationError):
+        MCPServerConfig.model_validate(
+            {
+                "server_name": "server",
+                "command": ["probe"],
+                "allowed_tools": ["probe"],
+                field_name: ["probe"],
+            }
+        )
 
 
 @pytest.mark.core_invariant("EXT-001")

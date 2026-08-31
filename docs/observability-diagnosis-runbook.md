@@ -5,7 +5,7 @@
 | 字段 | 内容 |
 | --- | --- |
 | 定位 | 真实 run/trace 的机器事实诊断与证据降级当前权威 |
-| Owns | trace_id 取证顺序、LangSmith/local 查询、证据降级、归因格式与敏感信息处理 |
+| Owns | run_id / trace_id / thread_id 取证顺序、LangSmith/local 查询、证据降级、归因格式与敏感信息处理 |
 | Does not own | trace schema、Graph 行为、Agent Server/media wire contract、评测准入 |
 | 源码与 schema 入口 | `src/assistant_agent/observability/trace_query.py`、`trace_store.py`、`trajectory_debug.py` |
 | 验证入口 | `docs/authority.toml` 中 `observability-diagnosis.verification` |
@@ -13,7 +13,7 @@
 
 ## 1. 查询模式与诊断顺序
 
-### 1.1 精确 run_id 快速定位与按需追踪
+### 1.1 精确 run_id / thread_id 快速定位与按需追踪
 
 当用户提供合法 UUID 形式的 LangSmith `run_id`，并要求定位、打开、确认、追踪或按执行顺序讨论时，
 先走快速路径：
@@ -34,6 +34,13 @@
 
 “追踪”不能缩减为只返回 root；“定位”也不应预先加载完整 child tree。追踪时应分别报告 root terminal
 与内部 child error，不得因某个 child error 自动把成功 root 表述为失败。
+
+当用户提供合法 UUID 形式的 `thread_id` 时，不把它尝试为 `run_id`，也不先扫描 Agent Server、本地日志或
+整个 LangSmith project。直接在当前 project 中用 root run metadata 精确过滤：同时匹配
+`metadata_key = "thread_id"` 与 `metadata_value = <thread_id>`，并设置 `is_root=true` 和有界 `limit`。
+定位结果按时间列出该 thread 的 root run；统计 token 时只汇总 root runs，或只汇总 LLM runs，禁止把两层相加。
+需要展开时，再按命中的 `trace_id` 分别加载 child runs。若 root 数达到查询上限，基于最早命中时间继续有界分页，
+不得退化成无界 project 扫描。
 
 快速定位与追踪都不读取或输出 prompt、message content、Provider payload、Tool 参数或 Tool 原始结果；
 凭据不得出现在命令、输出或报告中。

@@ -27,7 +27,7 @@ assistant-memory-v1: memory_extract -> END
 backend，不能用运行配置绕过 backend 的 mock/real 与凭据边界。
 
 每个 chat run 都通过单个 `MemoryLifecycleMiddleware.before_agent` hook 重新 recall 一次，并把结果冻结在当前 checkpoint。统一 Assistant 及
-同步只读 task worker 只读取当前 run 冻结的 `memory_context`，不持有 backend，也不重复 recall。独立 Memory Graph
+同步 task worker 只读取当前 run 冻结的 `memory_context`，不持有 Memory backend，也不重复 recall。独立 Memory Graph
 使用 message-only state，不继承主 Agent 的 Memory 快照或 Assistant 私有 Skill channel。recall 使用
 LangChain 原生 `Runnable.with_retry(stop_after_attempt=3)`；三次耗尽后不设置 error handler，由 Agent Server 将 chat run 明确终结为 error。
 从已完成 recall 之后的 checkpoint resume 时沿用冻结快照；从更早 checkpoint replay 并重新执行 recall 时允许

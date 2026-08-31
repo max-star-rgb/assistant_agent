@@ -91,7 +91,10 @@ def test_graph_ids_and_public_context_are_v4_only() -> None:
         "assistant-worker-v2",
         "assistant-memory-v1",
     }
-    assert set(AssistantRunContext.model_fields) == {"enable_memory"}
+    assert set(AssistantRunContext.model_fields) == {
+        "enable_memory",
+        "require_tool_approval",
+    }
     with pytest.raises(ValidationError):
         AssistantRunContext.model_validate({"execution_mode": "fast"})
 
@@ -132,7 +135,7 @@ def test_media_stream_keeps_main_model_and_hides_worker_model() -> None:
             "read-only-worker-message": {
                 "metadata": {
                     "langgraph_node": "model",
-                    "lc_agent_name": "AssistantReadOnlyWorker",
+                    "lc_agent_name": "AssistantGeneralPurposeWorker",
                 }
             },
             "top-level-message": {"metadata": {"langgraph_node": "model"}},

@@ -14,7 +14,7 @@ from langchain_core.runnables import RunnableLambda
 import pytest
 
 from assistant_agent.native_agent import memory_graph as memory_graph_module
-from assistant_agent.native_agent.assistant_agent import isolated_read_only_worker
+from assistant_agent.native_agent.assistant_agent import isolated_general_purpose_worker
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.native_agent.state import AssistantAgentState
@@ -330,7 +330,7 @@ def test_task_worker_cannot_see_parent_memory_status() -> None:
         "memory_context": ("memory-sentinel",),
         "memory_status": "ready",
     }
-    result = isolated_read_only_worker(RunnableLambda(worker)).invoke(parent_state)
+    result = isolated_general_purpose_worker(RunnableLambda(worker)).invoke(parent_state)
 
     assert set(observed[0]) == {"messages", "memory_context"}
     assert "memory_status" not in observed[0]

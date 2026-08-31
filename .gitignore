@@ -29,3 +29,5 @@ htmlcov/
 /.langgraph_api/
 /openclaw-study/
 /tests/tdd/
+/reference/hello-claw/
+/reference/hermes-agent-anatomy/

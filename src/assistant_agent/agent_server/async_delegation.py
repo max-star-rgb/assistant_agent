@@ -32,14 +32,14 @@ ASYNC_TASK_TOOL_NAMES = (
     "cancel_async_task",
     "list_async_tasks",
 )
-ASYNC_TASK_AUTO_APPROVED_TOOL_NAMES = frozenset(
-    {"check_async_task", "list_async_tasks"}
+ASYNC_TASK_INTERRUPT_TOOL_NAMES = frozenset(
+    {"start_async_task", "update_async_task", "cancel_async_task"}
 )
 _ASYNC_TASK_TOOL_DESCRIPTIONS = {
     "start_async_task": f"""启动异步子 Agent，在独立 thread 中后台执行任务，并立即返回 task_id。
 
 可用的 subagent_type：
-- {BACKGROUND_AGENT_NAME}：后台通用只读执行 Agent，适合耗时、可并行且当前回复无需等待结果的任务。
+- {BACKGROUND_AGENT_NAME}：后台通用执行 Agent，适合耗时、可并行且当前回复无需等待结果的任务。
 
 description 必须包含完整上下文、具体目标和期望输出。启动后向用户报告 task_id 并结束当前回复；不要立即调用
 check_async_task。多个互不依赖的任务可以并行启动。""",
@@ -79,7 +79,7 @@ def build_async_subagent_middleware() -> AsyncSubAgentMiddleware:
             {
                 "name": BACKGROUND_AGENT_NAME,
                 "description": (
-                    "后台通用只读执行 Agent；适合耗时、可并行且不需要当前回复等待结果的任务。"
+                    "后台通用执行 Agent；适合耗时、可并行且不需要当前回复等待结果的任务。"
                 ),
                 "graph_id": WORKER_GRAPH_ID,
             }
@@ -517,6 +517,7 @@ def _unknown_agent(subagent_type: str) -> str:
 
 
 __all__ = [
+    "ASYNC_TASK_INTERRUPT_TOOL_NAMES",
     "ASYNC_TASK_TOOL_NAMES",
     "BACKGROUND_AGENT_NAME",
     "async_task_tool_profile",

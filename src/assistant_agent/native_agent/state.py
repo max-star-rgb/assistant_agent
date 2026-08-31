@@ -57,8 +57,8 @@ class AssistantAsyncTaskState(AgentState):
     async_tasks: NotRequired[AsyncTasks]
 
 
-class AssistantReadOnlyWorkerState(AgentState):
-    """Private state available to the isolated read-only worker."""
+class AssistantWorkerState(AgentState):
+    """Private state available to the isolated general-purpose worker."""
 
     memory_context: NotRequired[tuple[str, ...]]
 
@@ -73,7 +73,7 @@ __all__ = [
     "AsyncTasks",
     "AssistantAgentState",
     "AssistantAsyncTaskState",
-    "AssistantReadOnlyWorkerState",
+    "AssistantWorkerState",
     "MemoryExtractionInput",
     "MemoryExtractionState",
     "MemoryStatus",

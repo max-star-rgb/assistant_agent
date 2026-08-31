@@ -202,7 +202,6 @@ def test_read_failure_retries_before_becoming_a_tool_message(tmp_path: Path) -> 
         skills_backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
         tool_profiles=(),
         general_purpose_tool_names={"read_failure_probe"},
-        auto_approved_tool_names={"read_failure_probe"},
     )
     result = graph.invoke(
         {"messages": [HumanMessage(content="read-failure-request")]},

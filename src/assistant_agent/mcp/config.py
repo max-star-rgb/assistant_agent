@@ -38,7 +38,8 @@ class MCPServerConfig(BaseModel):
     cwd: str | None = None
     env: dict[str, str] = Field(default_factory=dict)
     allowed_tools: list[str] = Field(default_factory=list)
-    auto_approved_tools: list[str] = Field(default_factory=list)
+    general_purpose_tools: list[str] = Field(default_factory=list)
+    interrupt_tools: list[str] = Field(default_factory=list)
     namespace_prefix: str = "mcp"
 
     @model_validator(mode="before")
@@ -47,14 +48,6 @@ class MCPServerConfig(BaseModel):
         if not isinstance(data, dict):
             return data
         merged = dict(data)
-        legacy_auto_approved = merged.pop("read_only_tools", None)
-        if legacy_auto_approved is not None:
-            configured = merged.get("auto_approved_tools")
-            if configured and configured != legacy_auto_approved:
-                raise ValueError(
-                    "read_only_tools conflicts with auto_approved_tools"
-                )
-            merged["auto_approved_tools"] = legacy_auto_approved
         preset = merged.get("preset")
         preset_defaults = _MCP_SERVER_PRESETS.get(str(preset)) if preset else None
         if not preset_defaults:
@@ -67,13 +60,15 @@ class MCPServerConfig(BaseModel):
     @model_validator(mode="after")
     def validate_tool_sets(self) -> "MCPServerConfig":
         self.allowed_tools = _dedupe(self.allowed_tools)
-        self.auto_approved_tools = _dedupe(self.auto_approved_tools)
+        self.general_purpose_tools = _dedupe(self.general_purpose_tools)
+        self.interrupt_tools = _dedupe(self.interrupt_tools)
         allowed = set(self.allowed_tools)
-        unknown = sorted(set(self.auto_approved_tools) - allowed)
-        if unknown:
-            raise ValueError(
-                f"auto_approved_tools contains tools outside allowed_tools: {unknown}"
-            )
+        for field_name in ("general_purpose_tools", "interrupt_tools"):
+            unknown = sorted(set(getattr(self, field_name)) - allowed)
+            if unknown:
+                raise ValueError(
+                    f"{field_name} contains tools outside allowed_tools: {unknown}"
+                )
         if self.transport == "stdio" and not self.command:
             raise ValueError("stdio MCP server requires command.")
         values = [*self.command, self.cwd or ""]
@@ -186,18 +181,22 @@ _MCP_SERVER_PRESETS: dict[str, dict[str, object]] = {
             "search_contacts",
             "search_files",
         ],
-        "auto_approved_tools": ["search_events", "search_contacts", "search_files"],
+        "general_purpose_tools": ["search_events", "search_contacts", "search_files"],
+        "interrupt_tools": ["create_event"],
     },
     "todoist": {
         "allowed_tools": ["search_tasks", "create_task"],
-        "auto_approved_tools": ["search_tasks"],
+        "general_purpose_tools": ["search_tasks"],
+        "interrupt_tools": ["create_task"],
     },
     "notion": {
         "allowed_tools": ["search_pages", "fetch_page", "create_page"],
-        "auto_approved_tools": ["search_pages", "fetch_page"],
+        "general_purpose_tools": ["search_pages", "fetch_page"],
+        "interrupt_tools": ["create_page"],
     },
     "slack": {
         "allowed_tools": ["search_messages", "list_channels", "post_message"],
-        "auto_approved_tools": ["search_messages", "list_channels"],
+        "general_purpose_tools": ["search_messages", "list_channels"],
+        "interrupt_tools": ["post_message"],
     },
 }

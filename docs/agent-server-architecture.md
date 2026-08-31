@@ -24,7 +24,7 @@ assistant-memory-v1 -> assistant_agent.agent_server.graph:native_memory_graph
 ```
 
 用户会话直接运行 v4 `AssistantAgent`；Memory recall 与 delayed extraction 调度由其
-`MemoryLifecycleMiddleware.before_agent/after_agent` 接入。同步 task 在主 run 内调用只读 worker；异步 delegation
+`MemoryLifecycleMiddleware.before_agent/after_agent` 接入。同步 task 在主 run 内调用通用 worker；异步 delegation
 才创建 v2 worker thread/run。Memory 延迟提取使用 v1 Memory graph。
 Agent Server 原生拥有 assistant、thread、run、queue、checkpoint、interrupt/resume、cancel、stream 和 Store；
 项目不维护第二套 run manager、checkpoint facade 或产品状态机。
@@ -71,13 +71,13 @@ Tool inventory、一个 `MemoryBackend`、一个 `ThreadResourceManager`、线�
 main、worker、Memory graph。
 schema/history/state 请求和 run 都复用该 owner；custom-app lifespan 在进程 shutdown 时关闭一次。
 
-main Agent 使用原生 `CompositeBackend`：默认 `HomeShellBackend` 以
+main Agent 使用原生 `CompositeBackend`：默认 `LocalShellBackend` 以
 `/home/lenovo1/assistant_agent` 为 cwd，并用 Deep Agents 原生 `virtual_mode=False` 接受真实绝对路径；filesystem
-将 Deep Agents 传入的 `/.` 兼容映射为 cwd，`/` 和其他绝对路径保持宿主 OS 语义。
+将 `.` 映射为 cwd，`/`、`/.` 和其他绝对路径保持宿主 OS 语义。
 `/artifacts/`、`/scratch/`、`/uploads/` 是当前 thread 的快捷路由。
-worker 使用 `ReadOnlyHomeBackend`，Skills discovery 使用独立 `FilesystemBackend`，因此产品源码只用于内建 Skill
-读取。main 和 worker 使用同一基础模型与 Prompt Builder；worker 模型视图关闭
-Provider-native search，业务 Tool 与 filesystem backend 也只保留 read 能力，形成模型面与 backend 面双层只读。
+main 和 worker 复用同一个 `CompositeBackend`、基础模型、完整业务 Tool inventory、Prompt Builder、Skills、
+Tool Profile、filesystem、`execute` 与 HITL 配置。Skills discovery 仍使用独立 `FilesystemBackend`，只读取产品内建
+Skill。worker 不装配同步或异步 delegation middleware，也不运行主 Agent 的 Memory 提取生命周期。
 两者的官方 summarization 从同一 Provider 配置取得 context window、trigger/target ratio 与可选离线 token counter；
 real DeepSeek/native compactor 缺 tokenizer 时在模型 composition 前启动失败。
 
@@ -109,7 +109,8 @@ internal capability 是当前本地单进程部署的进程内随机 secret，�
 {"messages":[{"role":"user","content":"hello"}]}
 ```
 
-公开 `AssistantRunContext` 只有 `enable_memory`。身份、入口和视觉 capability 只在
+公开 `AssistantRunContext` 只有 `enable_memory` 与 `require_tool_approval`；后者默认为 true，保存为 false 的
+Assistant 会让原本受 HITL 管理的 Tool 自动执行。身份、入口和视觉 capability 只在
 服务端签发的 namespaced run metadata 中。认证用户唯一来自 `Runtime.server_info.user.identity`；当前 tokenless
 developer hook 从 `X-Assistant-User` 取得 identity，省略时为 `local-developer`，因此端口不得暴露给不受信网络。
 
