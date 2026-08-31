@@ -12,6 +12,8 @@ from time import time
 from typing import Literal
 from uuid import uuid4
 
+from langsmith import trace
+from langsmith.utils import tracing_is_enabled
 from pydantic import BaseModel, ConfigDict, Field
 
 from assistant_agent.media.embedding.comparator import (
@@ -23,11 +25,6 @@ from assistant_agent.media.embedding.observability import (
     EmbeddingObserver,
     emit_visual_reminder_observation,
 )
-from assistant_agent.media.video.visual_reminder_observability import (
-    VisualReminderTraceContext,
-    record_visual_reminder_lifecycle,
-)
-from assistant_agent.observability.trace_store import TraceStore
 from assistant_agent.runtime.proactive_messages import (
     ProactiveDeliveryAttempt,
     ProactiveMessage,
@@ -105,7 +102,7 @@ class _VisualReminderRecord:
     message: str
     target_embedding: EmbeddingEvent
     created_at_ms: int
-    trace_context: VisualReminderTraceContext | None = None
+    trace_context: "_VisualReminderTraceContext | None" = None
     status: VisualReminderStatus = "pending"
     reservation_id: str | None = None
     last_compared_frame_sequence: int | None = None
@@ -118,6 +115,12 @@ class _VisualReminderConnection:
     sink: ProactiveMessageSink | None = None
     delivery_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     delivery_tasks: set[asyncio.Task[None]] = field(default_factory=set)
+
+
+@dataclass(frozen=True)
+class _VisualReminderTraceContext:
+    trace_id: str
+    run_id: str
 
 
 class VisualReminderManager:
@@ -204,11 +207,9 @@ class VisualReminderManager:
                 target_embedding=target_embedding,
                 created_at_ms=self._clock_ms(),
                 trace_context=(
-                    VisualReminderTraceContext(
+                    _VisualReminderTraceContext(
                         trace_id=trace_id,
                         run_id=run_id,
-                        user_id=self.user_id,
-                        session_id=self.session_id,
                     )
                     if trace_id and run_id
                     else None
@@ -222,6 +223,12 @@ class VisualReminderManager:
             session_id=self.session_id,
             reminder_id=record.reminder_id,
             similarity_threshold=self.similarity_threshold,
+            status="pending",
+        )
+        _trace_visual_reminder_event(
+            "visual_reminder.created",
+            thread_id=self.session_id,
+            reminder_id=record.reminder_id,
             status="pending",
         )
         return public
@@ -276,6 +283,14 @@ class VisualReminderManager:
                 matched=matched,
                 status="reserved" if matched else "pending",
             )
+            if matched:
+                _trace_visual_reminder_event(
+                    "visual_reminder.matched",
+                    thread_id=self.session_id,
+                    reminder_id=reminder_id,
+                    status="reserved",
+                    metadata={"similarity": similarity},
+                )
         return matches
 
     def confirm(
@@ -352,7 +367,7 @@ class VisualReminderManager:
         with self._lock:
             return [_public(record) for record in self._records.values()]
 
-    def trace_context(self, reminder_id: str) -> VisualReminderTraceContext | None:
+    def trace_context(self, reminder_id: str) -> _VisualReminderTraceContext | None:
         with self._lock:
             record = self._records.get(reminder_id)
             return record.trace_context if record is not None else None
@@ -392,20 +407,15 @@ class VisualReminderRegistry:
     def __init__(
         self,
         *,
-        trace_store: TraceStore | None = None,
         delivery_timeout_seconds: float = 2.0,
         session_event_store: ProactiveSessionEventStore | None = None,
     ) -> None:
         if delivery_timeout_seconds <= 0:
             raise ValueError("delivery_timeout_seconds must be positive")
         self._connections: dict[tuple[str, str], _VisualReminderConnection] = {}
-        self._trace_store = trace_store
         self._delivery_timeout_seconds = delivery_timeout_seconds
         self._session_events = session_event_store or ProactiveSessionEventStore()
         self._lock = Lock()
-
-    def set_trace_store(self, trace_store: TraceStore | None) -> None:
-        self._trace_store = trace_store
 
     def register(
         self,
@@ -446,17 +456,6 @@ class VisualReminderRegistry:
         reservations = connection.manager.reserve_matches(event)
         for reservation in reservations:
             context = connection.manager.trace_context(reservation.reminder_id)
-            record_visual_reminder_lifecycle(
-                self._trace_store,
-                context=context,
-                canonical_event="visual_reminder.matched",
-                status="matched",
-                reminder_id=reservation.reminder_id,
-                attributes={
-                    "reminder_status": "reserved",
-                    "similarity": reservation.similarity,
-                },
-            )
             message = ProactiveMessage(
                 message_id=reservation.reminder_id,
                 user_id=user_id,
@@ -468,7 +467,7 @@ class VisualReminderRegistry:
                 source_trace_id=context.trace_id if context is not None else None,
             )
             task = asyncio.create_task(
-                self._deliver(connection, reservation, message, context)
+                self._deliver(connection, reservation, message)
             )
             connection.delivery_tasks.add(task)
             task.add_done_callback(
@@ -493,21 +492,19 @@ class VisualReminderRegistry:
         connection: _VisualReminderConnection,
         reservation: VisualReminderReservation,
         message: ProactiveMessage,
-        context: VisualReminderTraceContext | None,
     ) -> None:
         sink = connection.sink
         if sink is None:
             return
         attempt: ProactiveDeliveryAttempt | None = None
+        cancelled = False
         error_code: str | None = None
-        terminal_status = "failed"
         try:
             async with connection.delivery_lock:
                 async with asyncio.timeout(self._delivery_timeout_seconds):
                     attempt = await sink.publish(message)
         except asyncio.CancelledError:
-            terminal_status = "cancelled"
-            error_code = "delivery_cancelled"
+            cancelled = True
         except TimeoutError:
             error_code = "delivery_timeout"
         except Exception:
@@ -526,7 +523,6 @@ class VisualReminderRegistry:
                     message,
                     delivery_scope=attempt.delivery_scope,
                 )
-            terminal_status = "succeeded"
         else:
             outcome = connection.manager.release(
                 reservation.reminder_id,
@@ -534,24 +530,24 @@ class VisualReminderRegistry:
             )
             if error_code is None:
                 error_code = attempt.error_code if attempt is not None else "delivery_failed"
-        attributes = {
-            "reminder_status": outcome.status,
-            "delivery_status": attempt.status if attempt is not None else "failed",
-            "delivery_scope": (
-                attempt.delivery_scope if attempt is not None else "server_transport"
-            ),
-        }
-        if error_code is not None:
-            attributes["error_code"] = error_code
-        record_visual_reminder_lifecycle(
-            self._trace_store,
-            context=context,
-            canonical_event="visual_reminder.delivery.finished",
-            status=terminal_status,
+        _trace_visual_reminder_event(
+            "visual_reminder.delivery.finished",
+            thread_id=connection.manager.session_id,
             reminder_id=reservation.reminder_id,
-            attributes=attributes,
+            status="cancelled" if cancelled else outcome.status,
+            metadata={
+                "delivery_status": (
+                    attempt.status if attempt is not None else "failed"
+                ),
+                "delivery_scope": (
+                    attempt.delivery_scope
+                    if attempt is not None
+                    else "server_transport"
+                ),
+                **({"error_code": error_code} if error_code else {}),
+            },
         )
-        if terminal_status == "cancelled":
+        if cancelled:
             raise asyncio.CancelledError
 
     async def wait_idle(self, user_id: str, session_id: str) -> None:
@@ -569,20 +565,6 @@ class VisualReminderRegistry:
         session_id: str,
     ) -> list[ProactiveSessionEvent]:
         return self._session_events.recent(user_id, session_id)
-
-    def record_created(
-        self,
-        manager: VisualReminderManager,
-        reminder_id: str,
-    ) -> None:
-        record_visual_reminder_lifecycle(
-            self._trace_store,
-            context=manager.trace_context(reminder_id),
-            canonical_event="visual_reminder.created",
-            status="succeeded",
-            reminder_id=reminder_id,
-            attributes={"reminder_status": "pending"},
-        )
 
     def unregister(
         self,
@@ -605,7 +587,7 @@ class VisualReminderRegistry:
         *,
         manager: VisualReminderManager,
     ) -> bool:
-        """Remove and clear one exact connection while recording pending loss."""
+        """Remove and clear one exact connection and its pending reminders."""
 
         with self._lock:
             current = self._connections.get((user_id, session_id))
@@ -617,21 +599,15 @@ class VisualReminderRegistry:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-        records = manager.list_records()
-        for record in records:
-            if record.status not in {"pending", "reserved"}:
-                continue
-            record_visual_reminder_lifecycle(
-                self._trace_store,
-                context=manager.trace_context(record.reminder_id),
-                canonical_event="visual_reminder.cleared",
-                status="cleared",
-                reminder_id=record.reminder_id,
-                attributes={
-                    "reminder_status": record.status,
-                    "reason": "connection_closed",
-                },
-            )
+        for record in manager.list_records():
+            if record.status in {"pending", "reserved"}:
+                _trace_visual_reminder_event(
+                    "visual_reminder.cleared",
+                    thread_id=session_id,
+                    reminder_id=record.reminder_id,
+                    status="cleared",
+                    metadata={"previous_status": record.status},
+                )
         manager.close()
         self._session_events.clear(user_id, session_id)
         return True
@@ -657,3 +633,32 @@ def _operation(
         status=status,
         changed=changed,
     )
+
+
+def _trace_visual_reminder_event(
+    name: str,
+    *,
+    thread_id: str,
+    reminder_id: str,
+    status: str,
+    metadata: dict[str, object] | None = None,
+) -> None:
+    """Emit one content-free native lifecycle root without affecting delivery."""
+
+    if not tracing_is_enabled():
+        return
+    try:
+        with trace(
+            name,
+            parent="ignore",
+            tags=["visual-reminder"],
+            metadata={
+                "thread_id": thread_id,
+                "trace_kind": "visual_reminder",
+                "reminder_id": reminder_id,
+                **dict(metadata or {}),
+            },
+        ) as run:
+            run.end(outputs={"status": status})
+    except Exception:
+        pass

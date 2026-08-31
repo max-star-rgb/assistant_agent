@@ -15,7 +15,6 @@ from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordina
 from assistant_agent.media.embedding.coordinator_store import (
     SessionEmbeddingCoordinatorStore,
 )
-from assistant_agent.media.embedding.observability import LoggingEmbeddingObserver
 from assistant_agent.media.embedding.provider import (
     MultimodalEmbeddingProvider,
     create_multimodal_embedding_provider,
@@ -315,7 +314,7 @@ class VisualPerceptionModule:
         self.realtime_video_memory_store = (
             realtime_video_memory_store or RealtimeVideoMemoryStore()
         )
-        self.embedding_observer = LoggingEmbeddingObserver()
+        self.embedding_observer = None
         self.embedding_provider = (
             embedding_provider or create_multimodal_embedding_provider(self.config)
         )

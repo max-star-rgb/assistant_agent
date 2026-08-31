@@ -13,17 +13,16 @@ from typing import Any
 from uuid import uuid4
 
 from assistant_agent.config import ProviderConfig
-from assistant_agent.observability.trace_store import (
-    TraceStore,
-    append_observability_event,
-)
 from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
 from assistant_agent.media.embedding.models import EmbeddingEvent
 from assistant_agent.media.embedding.observability import (
     emit_visual_semantic_observation,
 )
 from assistant_agent.media.vision.models import VideoUnderstandingResult
-from assistant_agent.media.vision.observability import VisionInferenceTraceLink
+from assistant_agent.media.vision.observability import (
+    VisionInferenceTraceLink,
+    trace_visual_observation,
+)
 from assistant_agent.media.visual_perception.observation_service import (
     RealtimeVisualObservationRequest,
     RealtimeVisualObservationService,
@@ -118,16 +117,6 @@ class WindowPromotionResult:
     reused_sequences: tuple[int, ...]
 
 
-@dataclass(frozen=True)
-class _BackgroundVisionTraceContext:
-    trace_store: TraceStore
-    trace_id: str
-    run_id: str
-    user_id: str
-    session_id: str
-    parent_span_id: str | None = None
-
-
 class RealtimeVideoObserver:
     """Select and analyze keyframes without blocking the media receive loop."""
 
@@ -142,7 +131,6 @@ class RealtimeVideoObserver:
         embedding_coordinator: SessionEmbeddingCoordinator,
         visual_reminder_registry: VisualReminderRegistry | None = None,
         visual_memory_text_index: VisualMemoryTextIndex | None = None,
-        trace_store: TraceStore | None = None,
         provider_config: ProviderConfig | None = None,
         keyframe_root: Path | str = DEFAULT_KEYFRAME_ROOT,
         close_wait_seconds: float = DEFAULT_CLOSE_WAIT_SECONDS,
@@ -165,7 +153,6 @@ class RealtimeVideoObserver:
                 message="visual memory retrieval service is unavailable",
             )
         )
-        self.trace_store = trace_store
         self.keyframe_root = Path(keyframe_root)
         self.semantic_store = semantic_store or SessionVisualSemanticStore(
             root=self.keyframe_root / "semantic-store",
@@ -877,8 +864,7 @@ class RealtimeVideoObserver:
         self._update_pending_state()
         try:
             video_id = item_video_id(item.record, self.video_id)
-            trace_context = self._trace_context(item.record)
-            outcome = await asyncio.to_thread(
+            outcome, trace_link = await asyncio.to_thread(
                 self._observe_with_isolated_service,
                 RealtimeVisualObservationRequest(
                     user_id=self.user_id,
@@ -897,20 +883,12 @@ class RealtimeVideoObserver:
                     window_role=item.window_role,
                     provider_connection_isolated=True,
                 ),
-                trace_context=trace_context,
             )
             observation_finished_ns = self.clock_ns()
-            self._record_observation_summary(
-                item.record,
-                trace_context=trace_context,
-                succeeded=outcome.succeeded,
-                error=outcome.error,
-            )
             if self.closed:
                 return
             observation = outcome.result if outcome.succeeded else None
             if observation is not None:
-                trace_link = outcome.trace_link
                 publish_outcome = await asyncio.to_thread(
                     self._publish_visual_semantic_record,
                     video_id,
@@ -1013,12 +991,27 @@ class RealtimeVideoObserver:
     def _observe_with_isolated_service(
         self,
         request: RealtimeVisualObservationRequest,
-        *,
-        trace_context: _BackgroundVisionTraceContext | None,
     ):
         service: RealtimeVisualObservationService = self.observation_service_factory()
         try:
-            return service.observe(request, trace_context=trace_context)
+            return trace_visual_observation(
+                lambda trace_context: service.observe(
+                    request,
+                    trace_context=trace_context,
+                ),
+                thread_id=self.session_id,
+                frame_refs=request.frame_refs,
+                frame_sequences=request.frame_sequences,
+                frame_timestamps_ms=request.frame_timestamps_ms,
+                visual_window_id=request.visual_window_id,
+                window_start_sequence=request.window_start_sequence,
+                target_sequence=request.frame_sequence,
+                window_role=request.window_role,
+                provider_connection_isolated=request.provider_connection_isolated,
+                semantic_threshold=(
+                    self.semantic_pipeline.selector.config.semantic_threshold
+                ),
+            )
         finally:
             service.close()
 
@@ -1146,64 +1139,6 @@ class RealtimeVideoObserver:
                 store_finished_ns,
             ),
         )
-
-    def _trace_context(
-        self,
-        item: SemanticKeyframeRecord,
-    ) -> _BackgroundVisionTraceContext | None:
-        if self.trace_store is None:
-            return None
-        observation_id = uuid4().hex
-        return _BackgroundVisionTraceContext(
-            trace_store=self.trace_store,
-            trace_id=f"visual-trace-{observation_id}",
-            run_id=f"visual-observation-{item.sequence}-{observation_id}",
-            user_id=self.user_id,
-            session_id=self.session_id,
-        )
-
-    def _record_observation_summary(
-        self,
-        item: SemanticKeyframeRecord,
-        *,
-        trace_context: _BackgroundVisionTraceContext | None,
-        succeeded: bool,
-        error: dict[str, Any] | None,
-    ) -> None:
-        if trace_context is None:
-            return
-        try:
-            append_observability_event(
-                trace_context.trace_store,
-                trace_id=trace_context.trace_id,
-                run_id=trace_context.run_id,
-                user_id=self.user_id,
-                session_id=self.session_id,
-                canonical_event="vision.observation.summary",
-                node_name="realtime_video_observer",
-                status="completed" if succeeded else "failed",
-                attributes={
-                    "trace_kind": "vision_observation",
-                    "source": "realtime_video_observer",
-                    "media_kind": "live_view",
-                    "frame_sequence": item.sequence,
-                },
-                output_summary={
-                    "status": "succeeded" if succeeded else "failed",
-                },
-                error=(
-                    None
-                    if error is None
-                    else {
-                        "code": error.get(
-                            "code", "video_observation_failed"
-                        ),
-                        "message": "VLM observation failed.",
-                    }
-                ),
-            )
-        except Exception:
-            pass
 
     def _observation_diagnostics(
         self,

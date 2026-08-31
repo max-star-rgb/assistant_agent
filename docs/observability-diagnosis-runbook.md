@@ -1,91 +1,138 @@
-# Observability Diagnosis Runbook
+# LangSmith run / thread 诊断 Runbook
+
+最后更新：2026-08-31
 
 ## Authority contract
 
 | 字段 | 内容 |
 | --- | --- |
-| 定位 | 真实 run/trace 的机器事实诊断与证据降级当前权威 |
-| Owns | run_id / trace_id / thread_id 取证顺序、LangSmith/local 查询、证据降级、归因格式与敏感信息处理 |
-| Does not own | trace schema、Graph 行为、Agent Server/media wire contract、评测准入 |
-| 源码与 schema 入口 | `src/assistant_agent/observability/trace_query.py`、`trace_store.py`、`trajectory_debug.py` |
+| 定位 | 给定 LangSmith `run_id` / `trace_id` / `thread_id` 后的机器事实快速定位与诊断权威 |
+| Owns | ID 判别、LangSmith SDK 查询顺序、thread 聚合、证据降级、归因格式与敏感信息处理 |
+| Does not own | trace schema、Graph/视觉行为、Agent Server/media wire contract、评测准入 |
+| 源码与 schema 入口 | LangSmith Python SDK；当前 schema 见 `observability-harness.md` |
 | 验证入口 | `docs/authority.toml` 中 `observability-diagnosis.verification` |
-| 相邻 authority | [`observability-harness.md`](observability-harness.md)、[`agent-server-architecture.md`](agent-server-architecture.md)、[`../evals/README.md`](../evals/README.md) |
+| 相邻 authority | [`observability-harness.md`](observability-harness.md)、[`agent-server-architecture.md`](agent-server-architecture.md)、[`visual-perception-architecture.md`](visual-perception-architecture.md) |
 
-## 1. 查询模式与诊断顺序
+本文件是查询操作入口；字段、父子关系和脱敏规则只在 `observability-harness.md` 定义。后续用户只需提供
+`run_id` 或 `thread_id`，Codex 应先执行这里的窄查询，不先扫描仓库、日志、project 列表或时间范围。
 
-### 1.1 精确 run_id / thread_id 快速定位与按需追踪
+## 1. 先判别 ID
 
-当用户提供合法 UUID 形式的 LangSmith `run_id`，并要求定位、打开、确认、追踪或按执行顺序讨论时，
-先走快速路径：
+- 用户明确说 `run_id` 或 `trace_id`：按 LangSmith run UUID 直接读取。LangSmith 中 root、node、LLM、Tool
+  都有各自 `run_id`；传入 child run 也先读该 child，再使用返回的 `trace_id` 展开整棵 trace。
+- 用户明确说 `thread_id`：按 root metadata 的 `thread_id` 精确过滤。不要先把它尝试成 `run_id`。
+- 只有用户只给一个 UUID、未说明类型时，才先 `read_run`；明确返回 404 后再把同一 UUID 当 `thread_id`
+  查询。鉴权、网络或 project 错误不是 404，不得误判 ID 类型。
 
-1. 使用当前已配置的 LangSmith client 按 UUID 直接 retrieve run，不先扫描仓库、检索本地日志、
-   查询 project 列表或做时间范围搜索。
-2. 凭据只从本地安全配置加载。若调用 shell 未继承配置、但唯一的 8089 dev service 已配置 LangSmith，
-   应按是否实际持有 LangSmith 配置识别 Python worker，不得按监听列表顺序猜测父进程，也不得输出配置值。
-3. 命中后立即形成 root name、status、开始/结束时间、总耗时和 LangSmith 直达 URL；用户只要求
-   定位、打开或确认时，到此结束。
-4. 用户明确要求“追踪”“执行顺序”“展开”或“然后讨论”时，按 retrieve 返回的 `trace_id` 加载
-   child runs。一次 SDK 分页迭代属于一次逻辑查询；必须在同一进程中使用本次返回对象完成时间线、
-   LLM/Tool 计数和错误摘要聚合，禁止为了补统计再次请求 LangSmith。
-5. 追踪结果只保留关键 root/node/LLM/Tool、父子或并行关系、status、latency 与 Feedback，不原样输出
-   全部 middleware spans。此阶段只报告机器事实；用户尚未询问原因时，不提前猜测根因。
-6. 只有用户明确要求诊断、解释失败或根因时，才进入下节的完整诊断；只有直接 retrieve 未命中、
-   无权限或请求对象不是 LangSmith run ID 时，才进入下节的证据降级流程。
+所有查询使用当前安全环境中的 `LANGSMITH_API_KEY`、`LANGSMITH_ENDPOINT` 与 `LANGSMITH_PROJECT`；不得打印
+配置值。查询只读，不能为了诊断启用真实 Provider、补跑实验或修改 Feedback。
 
-“追踪”不能缩减为只返回 root；“定位”也不应预先加载完整 child tree。追踪时应分别报告 root terminal
-与内部 child error，不得因某个 child error 自动把成功 root 表述为失败。
+## 2. `run_id` 快速路径
 
-当用户提供合法 UUID 形式的 `thread_id` 时，不把它尝试为 `run_id`，也不先扫描 Agent Server、本地日志或
-整个 LangSmith project。直接在当前 project 中用 root run metadata 精确过滤：同时匹配
-`metadata_key = "thread_id"` 与 `metadata_value = <thread_id>`，并设置 `is_root=true` 和有界 `limit`。
-定位结果按时间列出该 thread 的 root run；统计 token 时只汇总 root runs，或只汇总 LLM runs，禁止把两层相加。
-需要展开时，再按命中的 `trace_id` 分别加载 child runs。若 root 数达到查询上限，基于最早命中时间继续有界分页，
-不得退化成无界 project 扫描。
+在仓库根目录用当前 Python 进程调用原生 SDK：
 
-快速定位与追踪都不读取或输出 prompt、message content、Provider payload、Tool 参数或 Tool 原始结果；
-凭据不得出现在命令、输出或报告中。
+```python
+import os
+from uuid import UUID
+from langsmith import Client
 
-### 1.2 完整诊断与证据降级
+run_id = UUID("<run_id>")
+client = Client()
+project = os.environ.get("LANGSMITH_PROJECT", "default")
+run = client.read_run(run_id)
+print({
+    "run_id": str(run.id),
+    "trace_id": str(run.trace_id),
+    "parent_run_id": str(run.parent_run_id) if run.parent_run_id else None,
+    "name": run.name,
+    "run_type": run.run_type,
+    "status": "error" if run.error else ("completed" if run.end_time else "running"),
+    "start_time": run.start_time,
+    "end_time": run.end_time,
+    "url": client.get_run_url(run=run),
+})
+```
 
-当用户提供 `assistant.turn: <trace_id>`、真实 run、通话或机器日志时：
+用户只要求“定位/打开/确认”时，到这里结束。用户要求“追踪/执行顺序/展开”时，再执行一次有界 trace 查询：
 
-1. 确认环境、时间范围、timezone 与精确 `trace_id`/`run_id`，不要用用户正文做模糊检索。
-2. 若该环境显式启用 LangSmith，在对应 project 中按 trace/run identity 查询 actual graph，核对 root、node、
-   LLM、Tool、status、latency 与 Feedback。
-3. 查询本地 canonical JSONL，确认 `run.started`、terminal、Tool 与 delivery 最小事实。
-4. 涉及旧兼容入口或媒体交付时，再查本地 lifecycle/delivery JSONL，按 `session_id`、`turn_id`、`run_id` 对齐。
-5. 比较各证据时间戳与缺口，再结合源码归因；远端未命中不能自动推断 Runtime 未执行。
+```python
+runs = sorted(
+    client.list_runs(
+        project_name=project,
+        trace_id=run.trace_id,
+        limit=1000,
+    ),
+    key=lambda item: item.start_time,
+)
+```
 
-不得为了诊断启用真实 Provider或写入远端。LangSmith 不可达、无权限或查无记录时，明确标记远端证据缺失，
-继续使用本地事实；本地只保留最小字段时，不得推断不可见的 prompt、Provider payload 或模型思路。
+在同一进程、同一批返回对象上汇总关键 root/node/LLM/Tool 的父子关系、开始时间、terminal、latency、token、
+error 与 Feedback。不要为了补统计重复请求；不要原样输出全部 middleware spans。root 成功而 child 曾失败时，
+必须分别陈述，不能把整个 trace 自动判成失败。
 
-## 2. 本地查询
+## 3. `thread_id` 快速路径
 
-默认 trace ledger 路径以启动配置为准。可通过 `TraceQueryService` 按 `trace_id` 或 `run_id` 查询，并检查：
+AssistantAgent trace 与后台视觉 trace 不共享 `run_id`，但共享 `metadata.thread_id`。因此 thread 查询应只取
+root runs；结果中通常可同时看到：
 
-- 是否存在 started 与唯一 terminal；
-- Tool started/finished 是否共享 `tool_call_id` 与 `span_id`；
-- response delivery 是否晚于 terminal，是否存在 cancel/timeout；
-- observer/exporter error 是否只影响派生视图；
-- event count、status 与关联 ID 是否一致。
+- AssistantAgent roots：原生 graph/node/LLM/Tool tree；
+- `vision.observation` roots：每个已关闭关键帧窗口一个独立 trace，tag 为 `vision-observation`；
+- 每个视觉 root 下的 `vlm.infer` child generation，以及 root 的有序 JPEG/MP4 attachments。
+- `visual_reminder.*` roots：content-free 的 created/matched/delivery/cleared 生命周期，tag 为 `visual-reminder`。
 
-不要把本地 ledger 当成完整正文历史。正文、API key、Authorization header、真实用户数据、Provider 原始响应
-和媒体内容均不得复制到 issue、报告或聊天；必要片段先脱敏并最小化。
+精确查询当前 project，默认上限 100：
 
-## 3. 归因格式
+```python
+import os
+from uuid import UUID
+from langsmith import Client
 
-每次诊断至少说明：
+thread_id = str(UUID("<thread_id>"))
+client = Client()
+project = os.environ.get("LANGSMITH_PROJECT", "default")
+metadata_filter = f'has(metadata, \'{{"thread_id":"{thread_id}"}}\')'
+roots = sorted(
+    client.list_runs(
+        project_name=project,
+        is_root=True,
+        filter=metadata_filter,
+        limit=100,
+    ),
+    key=lambda item: item.start_time,
+)
+```
 
-- 定位：trace/run、环境、时间与证据来源；
-- 事实：按时间排序的关键 event/node/Tool/terminal；
-- 归因：最早可证明的失败边界，并区分 Graph、Provider、Tool、Agent Server/custom route、exporter；
-- 限制：缺少的远端/本地事实以及不能据此得出的结论；
-- 下一步：最小可复现或应人工沉淀的 regression case。
+先输出每个 root 的 `name / run_id / trace_id / status / start/end / URL`，并按 `name` 区分 AssistantAgent 与
+`vision.observation`。用户要求展开某个窗口或对话时，再以该 root 的 `trace_id` 使用第 2 节查询 children。
+若正好返回 100 条，说明结果可能截断；再依据最早命中时间做有界时间分页，不得改成无界 project 扫描。
 
-经人工确认且适合回归的异常，可在后续原生行为评测重建时脱敏加入固定 Dataset。当前没有 Runtime
-Regression runner；不得恢复旧 Runtime facade，也不得建立自动 runtime audit、定时抓取或 webhook 替代链路。
+token 统计只能选择一个口径：汇总 root 的聚合 token，或汇总 LLM child token；不得两层相加。视觉窗口 MP4
+是窗口关闭时形成的短视频附件，不是持续更新的直播流；运行中的 trace/附件可能尚未完成上传，应报告
+`running` 并在用户要求监控时轮询同一 run，不得新建或重跑。
 
-## 4. 维护条件
+## 4. 失败与证据降级
 
-viewer、query API、默认 ledger 路径、LangSmith native tracing 或证据顺序变化时更新本文件。trace schema 与
-exporter 规则变化则更新 `docs/observability-harness.md`。
+查询顺序固定如下：
+
+1. LangSmith 精确 run/thread 查询；
+2. 若 8089 dev worker 持有凭据但当前 shell 没有，识别该唯一 worker 的安全配置来源后在同等环境重试，
+   不输出配置值，也不按监听列表顺序猜父进程；
+3. 仅在 LangSmith 404、不可达或无权限时，按用户给定 ID 与时间范围查 Agent Server/媒体 transport 日志；
+4. 历史 custom canonical JSONL 只用于诊断迁移前旧 run，不能作为当前 AssistantAgent 或视觉 trace 的主证据。
+
+远端未命中不能推出 Runtime 未执行。明确区分 `not_found`、`unauthorized`、`network_unavailable`、
+`wrong_project` 与 `evidence_not_retained`。不得输出 prompt/message content、Provider payload、Tool 原始参数或结果、
+媒体内容、Authorization、API key；必要事实先脱敏并最小化。
+
+## 5. 诊断输出格式
+
+每次诊断至少给出：
+
+- 定位：输入 ID 的类型、project、root/child 身份、URL 与证据来源；
+- 时间线：关键 root/node/LLM/Tool 或 `vision.observation -> vlm.infer` 的父子/并行关系与 terminal；
+- 归因：最早可证明的失败边界，区分 Graph、Provider、Tool、Agent Server/custom route、视觉后台与 exporter；
+- 限制：缺失事实及不能据此得出的结论；
+- 下一步：最小复现、继续轮询的同一 run，或应人工沉淀的 regression case。
+
+维护规则：trace schema 或脱敏规则变化时更新 `observability-harness.md`；SDK 查询签名、filter 语法、project
+选择或证据顺序变化时更新本文件，两者必须互相链接且不得复制两套查询命令。

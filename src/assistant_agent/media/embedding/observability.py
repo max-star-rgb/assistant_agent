@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 import math
 from typing import Any, Protocol
 
@@ -15,9 +14,6 @@ from assistant_agent.media.embedding.models import (
     ImageObservation,
     TextObservation,
 )
-
-
-logger = logging.getLogger(__name__)
 
 
 EMBEDDING_EVENT_NAMES = (
@@ -129,13 +125,6 @@ class InMemoryEmbeddingObserver:
 
     def record(self, event: TraceEvent) -> None:
         self.events.append(event.model_copy(deep=True))
-
-
-class LoggingEmbeddingObserver:
-    """Production sink for already projected content-safe lifecycle events."""
-
-    def record(self, event: TraceEvent) -> None:
-        logger.info("multimodal_observation %s", event.model_dump_json())
 
 
 def embedding_trace_payload(

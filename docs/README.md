@@ -26,7 +26,7 @@
 | 实时视觉、关键帧、embedding、提醒和历史找物 | [visual-perception-architecture.md](visual-perception-architecture.md) |
 | Multi-agent、delegation、A2A 和 transport | [agent-communication-routing.md](agent-communication-routing.md) |
 | LangSmith tracing 与可观测契约 | [observability-harness.md](observability-harness.md) |
-| 真实 run_id/trace_id 与机器日志诊断 | [observability-diagnosis-runbook.md](observability-diagnosis-runbook.md) |
+| LangSmith run_id/trace_id/thread_id 快速定位与机器事实诊断 | [observability-diagnosis-runbook.md](observability-diagnosis-runbook.md) |
 | pytest、core invariant、临时 TDD 和验证范围 | [tests/README.md](../tests/README.md) |
 | system eval、真实 Provider 门禁和 evaluation target | [evals/README.md](../evals/README.md) |
 

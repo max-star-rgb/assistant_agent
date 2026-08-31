@@ -10,7 +10,7 @@ Core project docs:
 - Runtime and provider event streaming: [docs/runtime-event-stream-architecture.md](docs/runtime-event-stream-architecture.md)
 - Tool calling governance: [docs/tool-calling-architecture.md](docs/tool-calling-architecture.md)
 - Observability architecture and trace contract: [docs/observability-harness.md](docs/observability-harness.md)
-- Real-run diagnosis runbook: [docs/observability-diagnosis-runbook.md](docs/observability-diagnosis-runbook.md)
+- LangSmith run/thread diagnosis runbook: [docs/observability-diagnosis-runbook.md](docs/observability-diagnosis-runbook.md)
 - Playwright MCP 浏览器工具与 HITL 边界: [docs/tool-calling-architecture.md](docs/tool-calling-architecture.md)
 - LangGraph 原生长期记忆（固定节点、冻结快照、Mem0/LangMem/disabled）: [docs/memory-service-architecture.md](docs/memory-service-architecture.md)
 - Mem0 graph backend 的私有 HTTP adapter 子集: [docs/memory_server_api_spec.md](docs/memory_server_api_spec.md)

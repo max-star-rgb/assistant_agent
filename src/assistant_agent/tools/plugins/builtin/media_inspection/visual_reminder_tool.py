@@ -282,7 +282,6 @@ def _create_visual_reminder(
         run_id=context.run_id,
         trace_id=context.trace_id,
     )
-    reminder_registry.record_created(manager, record.reminder_id)
     return _visual_reminder_result(
         {
             **record.model_dump(mode="json"),

@@ -248,12 +248,13 @@ source_globs = [
   "src/assistant_agent/observability/langsmith_config.py",
   "src/assistant_agent/observability/langsmith_native.py",
   "src/assistant_agent/observability/trace_content_policy.py",
+  "src/assistant_agent/media/vision/observability.py",
   "tests/core/contract/test_observability_contract.py",
 ]
 thin_references = ["scripts/README.md"]
 verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_observability_contract.py",
-  "python -m compileall -q src/assistant_agent/agent_server/services.py src/assistant_agent/native_agent/assistant_agent.py src/assistant_agent/observability/langsmith_config.py src/assistant_agent/observability/langsmith_native.py src/assistant_agent/observability/trace_content_policy.py",
+  "python -m compileall -q src/assistant_agent/agent_server/services.py src/assistant_agent/native_agent/assistant_agent.py src/assistant_agent/observability/langsmith_config.py src/assistant_agent/observability/langsmith_native.py src/assistant_agent/observability/trace_content_policy.py src/assistant_agent/media/vision/observability.py",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
@@ -267,15 +268,11 @@ read_when = [
   "用户提供 assistant.turn trace_id 或询问一次运行为何失败",
 ]
 source_globs = [
-  "src/assistant_agent/observability/trace_query.py",
-  "src/assistant_agent/observability/trace_store.py",
-  "src/assistant_agent/observability/trajectory_debug.py",
-  "src/assistant_agent/observability/agent_service_delivery.py",
-  "src/assistant_agent/observability/agent_service_latency.py",
+  "docs/observability-diagnosis-runbook.md",
 ]
 thin_references = ["AGENTS.md", "docs/observability-harness.md"]
 verification = [
-  "python -c 'from assistant_agent.observability.trace_query import TraceQueryService'",
+  "python -c 'from langsmith import Client; assert callable(Client.read_run) and callable(Client.list_runs)'",
 ]
 exclusive_literals = []
 exclusive_allowlist = []

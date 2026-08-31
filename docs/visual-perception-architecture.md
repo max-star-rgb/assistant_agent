@@ -1,6 +1,6 @@
 # 实时视觉感知与语义关键帧架构
 
-Last updated: 2026-08-28
+Last updated: 2026-08-31
 
 ## Authority contract
 
@@ -202,28 +202,28 @@ exact k 结果；Tool 不读取或理解选帧内部状态，也不回退到更�
 
 ## 视觉观测与 trace 契约
 
-每个实际执行的窗口产生独立 `vision.observation -> vlm.infer` 路径。满五帧自动关闭的窗口使用
-`window_role=background`，K 时刻触发的部分窗口使用 `window_role=target`；span 可记录 window ID、起止序号、
-目标序号、关键帧数量与 `provider_connection_isolated=true`，但不记录 frame path、JPEG、VLM summary 或
-Provider 原始响应。
+每个实际执行的窗口产生独立 LangSmith `vision.observation -> vlm.infer` 路径。`vision.observation` 是
+`parent="ignore"` 的 root run，不是 AssistantAgent graph node；它和同一窗口中的 `vlm.infer` 各有自己的
+`run_id`。后台 root 与 AssistantAgent roots 共享可信 `thread_id`，因此一次会话可按 thread 查询到两类 trace，
+但不会把并行后台线程伪装成主图 child。满五帧自动关闭的窗口使用 `window_role=background`，K 时刻触发的
+部分窗口使用 `window_role=target`。
+
+窗口 root 的 metadata 记录 thread/window ID、起止与目标 sequence、window role、semantic threshold 和
+`provider_connection_isolated=true`；inputs 记录按序 sequence 与 timestamp。root attachments 使用 LangSmith
+原生多模态附件：每个已选关键帧一张有序 JPEG，并附带同序列组成的 `selected-keyframes.mp4`。单帧不建 run，
+附件不写入 metadata，frame path、Provider 原始响应与凭据不得上传。生成 MP4 或上传观测失败必须 fail-open，
+不得影响后台 VLM 业务结果。该 MP4 在窗口关闭后一次性形成，不是持续直播流。
 
 chat 冻结目标边界后，`visual.target_barrier.started/finished` 才记录 window ID、起止序号、等待时长、
 ready/missing 数量和目标终态。context 帧晚完成不能延长 target barrier span。统一 Agent trace 中的文本生成与
 视觉 observation 是不同执行路径；视觉诊断必须定位真正的 `vlm.infer` generation。视觉流水线不读取或依赖
 Agent 的 Todo、task 或 Tool 选择，也不因统一主图迁移而串行化。
 
-semantic 诊断事件可记录当前 sequence、参考关键帧 sequence、image-image cosine、semantic change、阈值和
-selected/reason；提醒诊断事件可记录脱敏 session/reminder ID、frame sequence、image-text cosine、阈值、
-matched 和生命周期状态。它们不得记录目标文本、通知文案、embedding 向量、媒体内容、用户原始 ID 或媒体路径。
-本地静态报告和实时报告的事件、曲线只投影这些允许字段，不读取或重算模型输入；日志中缺失的历史数值必须保持
-缺失。实时报告可通过仅绑定回环地址的独立图片路由，仅为当前报告会话且当前日志快照已存在
-`semantic_frame.selected` 的 session digest + sequence，从配置关键帧根目录下的
-`semantic-input/agent-service-video-<session-hash-24>/frame-<sequence-8>-<uuid>.jpg` 读取 JPEG，在页面中显示
-最新关键帧和最近 12 帧时间轴；目录路径、文件名与图片内容不得进入日志或 SSE，静态 HTML 不嵌入媒体。图片
-路由必须拒绝无效 digest/sequence、目录或文件歧义、符号链接和根目录越界，并返回 `no-store`。实时模式先
-建立当前日志快照，再以单调事件 ID 增量追踪追加内容；浏览器重连和日志轮转不得放宽字段 allowlist。实时模式
-可显式固定 session digest；未固定时，以每个允许事件携带的有效 digest
-自动切换到最近活跃视觉会话，切换时清空浏览器中的上一会话曲线和关键帧时间轴，禁止把多个会话的数据混画。
+仓库不再维护基于 `multimodal_observation` 日志的静态/实时报告服务。视觉 reminder 的
+created/matched/delivery/cleared 使用带相同 `thread_id` 的 content-free LangSmith native root event，替代自研
+`TraceStore` lifecycle；不记录 target、message 或 embedding。reminder 的业务状态机、主动消息来源
+`run_id/trace_id` 与最小运营状态仍保留；需要观测关键帧窗口时直接使用上述 LangSmith 原生 trace 与附件。定位规则以
+[`observability-diagnosis-runbook.md`](observability-diagnosis-runbook.md) 为准。
 
 ## 文本、ASR 与跨模态消费者
 
