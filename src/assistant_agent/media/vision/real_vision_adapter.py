@@ -133,12 +133,9 @@ class DashScopeVisionProviderAdapter:
         try:
             message = self.chat_model.invoke([HumanMessage(content=content)], config=config)
         except DashScopeProviderError as exc:
-            code = (
-                "provider_timeout"
-                if isinstance(exc.__cause__, TimeoutError)
-                else "provider_execution_failed"
-            )
-            raise ProviderAdapterError(code, str(exc)) from exc
+            raise ProviderAdapterError(
+                _dashscope_provider_error_code(exc), str(exc)
+            ) from exc
         structured = message.additional_kwargs.get("structured_output")
         if not isinstance(structured, dict):
             raise ProviderAdapterError(
@@ -238,13 +235,30 @@ def vision_prompt(question: str | None) -> str:
     )
 
 
-def _image_content_block(image_ref: str) -> dict[str, str]:
+def _image_content_block(image_ref: str) -> dict[str, Any]:
+    if image_ref.startswith(("http://", "https://")):
+        return {"type": "image_url", "image_url": {"url": image_ref}}
     data_url = image_to_data_url(image_ref)
     header, separator, encoded = data_url.partition(",")
     mime_type = header.removeprefix("data:").split(";", maxsplit=1)[0]
     if not separator or not header.startswith("data:") or not mime_type or not encoded:
         raise ValueError("DashScope 原生视觉 adapter 只接受可编码的图片输入")
     return {"type": "image", "base64": encoded, "mime_type": mime_type}
+
+
+def _dashscope_provider_error_code(error: DashScopeProviderError) -> str:
+    cause = error.__cause__
+    if isinstance(cause, TimeoutError):
+        return "provider_timeout"
+    if isinstance(cause, urllib.error.HTTPError):
+        return _http_error_code(cause.code)
+    if isinstance(cause, urllib.error.URLError):
+        return "provider_unavailable"
+    if isinstance(cause, (json.JSONDecodeError, KeyError, TypeError, ValueError)):
+        return "provider_bad_response"
+    if cause is None:
+        return "provider_bad_response"
+    return "provider_execution_failed"
 
 
 def _json_object_from_text(text: str) -> dict[str, Any]:

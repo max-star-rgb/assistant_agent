@@ -340,6 +340,10 @@ class _MeasuredObservationService:
         self.registry = registry
         self.delegate = delegate
 
+    @property
+    def traces_as_chat_model(self) -> bool:
+        return self.delegate.traces_as_chat_model
+
     def observe(
         self,
         request: RealtimeVisualObservationRequest,

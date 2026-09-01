@@ -464,6 +464,13 @@ def _content_block_to_dashscope(block: Any) -> dict[str, str]:
                 "DashScope multimodal image block requires base64 and mime_type."
             )
         return {"image": f"data:{mime_type};base64,{base64}"}
+    if block.get("type") == "image_url":
+        image_url = block.get("image_url")
+        url = image_url.get("url") if isinstance(image_url, Mapping) else None
+        normalized = url.strip() if isinstance(url, str) else ""
+        parsed = urlsplit(normalized)
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            return {"image": normalized}
     if block.get("type") == "text" and isinstance(block.get("text"), str):
         return {"text": block["text"]}
     raise ValueError("unsupported DashScope multimodal content block.")
