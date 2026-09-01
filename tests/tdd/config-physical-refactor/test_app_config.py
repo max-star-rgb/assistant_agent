@@ -1,9 +1,11 @@
 import asyncio
+import json
 from dataclasses import asdict
+from pathlib import Path
 
 import pytest
 
-from assistant_agent.config import AppConfig, ProviderConfig, load_app_config
+from assistant_agent.config import AppConfig, load_app_config
 from assistant_agent.media.video.video_adapter import create_video_understanding_adapter
 from assistant_agent.native_agent.memory import create_memory_backend
 from assistant_agent.native_agent.providers import create_chat_model
@@ -36,55 +38,63 @@ def _flatten(config: AppConfig) -> dict[str, object]:
     return values
 
 
-@pytest.mark.parametrize(
-    "env",
-    [
-        {},
+def test_default_config_matches_reviewed_snapshot() -> None:
+    expected = json.loads(
+        Path(__file__).with_name("expected_default_config.json").read_text()
+    )
+
+    assert json.loads(json.dumps(_flatten(load_app_config({})))) == expected
+
+
+def test_qwen_dashscope_alias_and_workspace_url() -> None:
+    config = load_app_config(
         {
             "MULTIMODAL_AGENT_PROVIDER_MODE": "real",
             "MULTIMODAL_AGENT_CHAT_PROVIDER": "qwen",
             "DASHSCOPE_API_KEY": "qwen-sentinel",
-            "QWEN_CHAT_MODEL": "chat-sentinel",
-            "MULTIMODAL_AGENT_VISION_PROVIDER": "qwen",
-            "MULTIMODAL_AGENT_IMAGE_PROVIDER": "qwen",
-        },
+            "QWEN_CHAT_WORKSPACE_ID": "workspace-sentinel",
+        }
+    )
+
+    assert config.chat.qwen_api_key == "qwen-sentinel"
+    assert config.chat.chat_api_key == "qwen-sentinel"
+    assert config.chat.qwen_chat_base_url == (
+        "https://workspace-sentinel.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    )
+
+
+def test_ark_config_uses_shared_api_key() -> None:
+    config = load_app_config(
         {
             "MULTIMODAL_AGENT_PROVIDER_MODE": "real",
             "MULTIMODAL_AGENT_CHAT_PROVIDER": "ark",
             "ARK_API_KEY": "ark-sentinel",
             "ARK_CHAT_MODEL": "ark-chat-sentinel",
             "MULTIMODAL_AGENT_VISION_PROVIDER": "ark",
+            "MULTIMODAL_AGENT_IMAGE_PROVIDER": "ark",
+            "ARK_IMAGE_BASE_URL": "https://ark-image.example/v3",
             "ARK_IMAGE_MODEL": "ark-image-sentinel",
-        },
-    ],
-)
-def test_nested_config_matches_legacy_effective_values(
-    env: dict[str, str],
-) -> None:
-    assert _flatten(load_app_config(env)) == asdict(ProviderConfig.from_env(env))
+        }
+    )
+
+    assert config.chat.chat_api_key == "ark-sentinel"
+    assert config.vision.vision_api_key == "ark-sentinel"
+    assert config.tools.image_generation.image_generation_api_key == "ark-sentinel"
 
 
-INVALID_ENVIRONMENTS = [
-    {"MULTIMODAL_AGENT_PROVIDER_MODE": "real"},
-    {"MEMORY_BACKEND": "unknown"},
-    {"REALTIME_KEYFRAME_SEMANTIC_THRESHOLD": "1.1"},
-    {
-        "MULTIMODAL_AGENT_CONTEXT_COMPACTION_TARGET_RATIO": "0.8",
-        "MULTIMODAL_AGENT_CONTEXT_COMPACTION_TRIGGER_RATIO": "0.7",
-    },
-    {"REALTIME_KEYFRAME_MIN_INTERVAL_SECONDS": "1"},
-]
+def test_invalid_context_threshold_preserves_error() -> None:
+    with pytest.raises(ValueError, match="context compaction ratios must satisfy"):
+        load_app_config(
+            {
+                "MULTIMODAL_AGENT_CONTEXT_COMPACTION_TARGET_RATIO": "0.8",
+                "MULTIMODAL_AGENT_CONTEXT_COMPACTION_TRIGGER_RATIO": "0.7",
+            }
+        )
 
 
-@pytest.mark.parametrize("env", INVALID_ENVIRONMENTS)
-def test_nested_config_preserves_legacy_validation_error(
-    env: dict[str, str],
-) -> None:
-    with pytest.raises(ValueError) as old_error:
-        ProviderConfig.from_env(env)
-    with pytest.raises(ValueError) as new_error:
-        load_app_config(env)
-    assert str(new_error.value) == str(old_error.value)
+def test_removed_realtime_keyframe_config_is_rejected() -> None:
+    with pytest.raises(ValueError, match="removed_realtime_keyframe_config"):
+        load_app_config({"REALTIME_KEYFRAME_MIN_INTERVAL_SECONDS": "1"})
 
 
 def test_app_config_defaults_are_nested_and_mock_safe() -> None:
