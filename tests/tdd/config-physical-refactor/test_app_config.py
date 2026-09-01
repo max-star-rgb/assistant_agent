@@ -4,11 +4,15 @@ import runpy
 import sys
 from dataclasses import asdict, replace
 from pathlib import Path
+from typing import get_type_hints
 
 import pytest
 
-from assistant_agent.config import AppConfig, load_app_config
+from assistant_agent.config import AppConfig, VisionConfig, load_app_config
 from assistant_agent.media.video.video_adapter import create_video_understanding_adapter
+from assistant_agent.media.embedding.provider import (
+    create_multimodal_embedding_provider,
+)
 from assistant_agent.native_agent.memory import create_memory_backend
 from assistant_agent.native_agent.providers import create_chat_model
 from assistant_agent.native_agent.tools import (
@@ -16,6 +20,7 @@ from assistant_agent.native_agent.tools import (
     create_native_tool_inventory,
 )
 from assistant_agent.providers.provider_selection import create_vision_adapter
+from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.tools.ids import VISUAL_IMAGE_SEARCH_TOOL_NAME, WEB_FETCH_TOOL_NAME
 from assistant_agent.tools.plugins.builtin.visual_image_search.tool import (
     create_visual_image_search_tool,
@@ -317,6 +322,13 @@ def test_web_fetch_tool_default_constructor_uses_mock_adapter() -> None:
 
 def test_visual_image_search_tool_default_constructor_uses_mock_adapter() -> None:
     assert create_visual_image_search_tool().name == VISUAL_IMAGE_SEARCH_TOOL_NAME
+
+
+def test_embedding_factory_runtime_type_hints_resolve() -> None:
+    hints = get_type_hints(create_multimodal_embedding_provider)
+
+    assert hints["config"] is VisionConfig
+    assert hints["provider_mode"] is ProviderMode
 
 
 def test_mock_mode_factories_do_not_construct_real_tool_adapters() -> None:
