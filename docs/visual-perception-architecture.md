@@ -1,6 +1,6 @@
 # 实时视觉感知与语义关键帧架构
 
-Last updated: 2026-08-31
+Last updated: 2026-09-01
 
 ## Authority contract
 
@@ -173,8 +173,8 @@ reminder comparison 成功。
 
 后台 observation service 只处理 Selector 已选中的逻辑关键帧。关键帧按选中顺序组成互不重叠、容量上限为 5
 的半固定窗口；窗口满 5 帧或任意用户输入到达时立即关闭并发起一次多图 VLM。用户输入即使最终不触发视觉
-Tool，也仍作为短期视觉记忆的分段边界。每次 observation 使用 DashScope 原生 multimodal-generation HTTP API，
-在同一个 `content` 数组中按关键帧 sequence 放入 1～5 张 JPEG，再在末尾放入提示文本；请求固定
+Tool，也仍作为短期视觉记忆的分段边界。Qwen 图片理解通过 multimodal `BaseChatModel`；同一个
+`HumanMessage.content` 按关键帧 sequence 放入 1～5 张 JPEG，再在末尾放入最终完整提示文本，请求固定
 `enable_thinking=false`。`memory_context` 固定为空。提示词明确最后一张是当前目标画面，前序图片只用于理解变化，
 `summary` 必须优先描述最后一张。每个窗口只有一次无状态请求，因此连续性不依赖 Provider 会话或音频时间线。
 
@@ -211,11 +211,12 @@ exact k 结果；Tool 不读取或理解选帧内部状态，也不回退到更�
 部分窗口使用 `window_role=target`。
 
 窗口 root 的 metadata 记录 thread/window ID、起止与目标 sequence、window role、semantic threshold 和
-`provider_connection_isolated=true`；inputs 记录按序 sequence 与 timestamp。root attachments 使用 LangSmith
-原生多模态附件：每个已选关键帧一张有序 JPEG，并附带同序列组成的 `selected-keyframes-video`（MIME
-`video/mp4`）。attachment name 不含 LangSmith multipart 禁止的 `.`；文件类型只由 MIME 表达。单帧不建 run，
-附件不写入 metadata，frame path、Provider 原始响应与凭据不得上传。生成 MP4 或上传观测失败必须 fail-open，
-不得影响后台 VLM 业务结果。该 MP4 在窗口关闭后一次性形成，不是持续直播流。
+`provider_connection_isolated=true`；inputs 记录按序 sequence 与 timestamp。Qwen 原生
+`vlm.infer.inputs.messages` 按序展示 JPEG 与末尾最终 prompt；这些 JPEG 不在 root attachment 重复上传，root 只保留
+同序列组成的 `selected-keyframes-video`（MIME `video/mp4`）。attachment name 不含 LangSmith multipart 禁止的
+`.`；文件类型只由 MIME 表达。`vlm.infer` 的默认 output content 是 `summary`，完整结构化结果位于 details。
+单帧不建 run，附件不写入 metadata，frame path、Provider 原始响应与凭据不得上传。生成 MP4 或上传观测失败必须
+fail-open，不得影响后台 VLM 业务结果。该 MP4 在窗口关闭后一次性形成，不是持续直播流。
 
 chat 冻结目标边界后，`visual.target_barrier.started/finished` 才记录 window ID、起止序号、等待时长、
 ready/missing 数量和目标终态。context 帧晚完成不能延长 target barrier span。统一 Agent trace 中的文本生成与

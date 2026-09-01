@@ -114,7 +114,8 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 ## Observability and local operations
 
 - AssistantAgent 与后台视觉窗口统一使用 LangSmith native trace。视觉窗口以独立
-  `vision.observation` root 展示，内含 `vlm.infer` child、按序 JPEG attachments 与关键帧短视频；
+  `vision.observation` root 展示，内含 callback-native `vlm.infer` model run；Qwen 的有序 JPEG 与最终 prompt
+  位于 child inputs，root attachment 只保留关键帧短视频；
   通过相同 `thread_id` 与对话 runs 关联。仓库不再维护独立视觉报告服务或日志解析 UI。
 
 ## Eval and evidence
@@ -135,7 +136,8 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   冻结严格 1～5 个逻辑关键帧 sequence、只等待最后一个 target 的行为。默认
   `--dry-run` 不读取图片、不联网；真实运行要求 real Provider mode、完整 Qwen vision 配置、
   `--allow-real-provider` 和 operator 提供的恰好 5 张 sequence-named JPEG。每个关闭窗口使用隔离的 DashScope
-  原生有序多图请求，已选窗口可并行执行，Tool 只等待逻辑窗口的 exact target；artifact 只保存 sequence/status/latency/concurrency 和 trace/span ID。
+  `BaseChatModel` 有序多图请求，已选窗口可并行执行，Tool 只等待逻辑窗口的 exact target；artifact 只保存
+  sequence/status/latency/concurrency 和 vision trace/root/model run ID。
 - 旧 Runtime/Workflow/Release Review LangSmith runner 已随旧 Graph Runtime 删除。后续评测重建必须直接消费
   Agent Server 或 `NativeGraphEvaluationTarget` 的标准 messages/native trace，当前不得宣称存在上线前行为门禁。
 

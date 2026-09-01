@@ -1,6 +1,6 @@
 # LangGraph-native 可观测性
 
-最后更新：2026-08-31
+最后更新：2026-09-01
 
 ## Authority contract
 
@@ -30,15 +30,22 @@ Tool artifact 和 message content 是否记录遵循 LangSmith/部署脱敏配�
 统一主图不再包含模式 conditional edge。一次 AssistantAgent run 是一个 LangSmith trace；其中的 node、LLM、
 Tool 各自有 child `run_id`。后台视觉线程不属于 Graph node，因此每个已关闭关键帧窗口另建一个独立
 `vision.observation` root run，并显式使用 `parent="ignore"`，其 `run_id` 与 AssistantAgent run 不同；二者只以
-相同 `metadata.thread_id` 关联。窗口中的真实 VLM 调用是该 root 下独立 `run_id` 的 `vlm.infer` child generation。
+相同 `metadata.thread_id` 关联。Qwen 的 `vlm.infer` child 由 multimodal `BaseChatModel` 的 LangChain callback
+原生创建；非 Qwen/manual fallback 只在自身没有原生 model run 时创建一个 generation，不得形成重复 model run。
 
 `vision.observation` root 原生携带 window role、window/起止/目标 sequence、semantic threshold、隔离连接标记，
-inputs 携带按序 sequence/timestamp；attachments 携带按序 JPEG 和 MIME 为 `video/mp4` 的
-`selected-keyframes-video`。LangSmith attachment name 不允许包含 `.`，文件类型只由 MIME 表达。附件是本次已关闭窗口
-的短视频，不是持续更新的直播流。单帧不建立 run，避免 trace 爆炸。未启用标准 LangSmith tracing 时整条观测
+inputs 携带按序 sequence/timestamp。Qwen child 的 `inputs.messages` 按序展示 JPEG 与末尾最终 prompt；root 不重复
+上传这些 JPEG，只保留 MIME 为 `video/mp4` 的 `selected-keyframes-video`。child 默认 output content 是
+`summary`，完整结构化结果位于 details。LangSmith attachment name 不允许包含 `.`，文件类型只由 MIME 表达。
+附件是本次已关闭窗口的短视频，不是持续更新的直播流。单帧不建立 run，避免 trace 爆炸。未启用标准 LangSmith tracing 时整条观测
 fail-open，不创建自研 `TraceStore` 或本地 shadow trace，也不影响 VLM 业务调用。视觉 reminder 的
 created/matched/delivery/cleared 生命周期同样使用带 `thread_id` 的 content-free native root events；不上传
 target、message 或 embedding。
+
+诊断时以 `vlm.infer.run_id` 为 model run 身份；领域记录的 `source_vlm_span_id` 保存该同一 ID，并与
+`source_vision_trace_id/source_vision_run_id` 一起回链 root。Provider 与 model 位于 child response metadata，token
+用量位于 child usage metadata；summary 与完整结构分别查看 output content 和 details。不得用 root 聚合 usage 与
+child usage 相加。
 
 视觉 span 的父子关系、安全字段和目标帧 barrier 语义由视觉 authority 定义；本 authority 只要求它们继续
 使用 LangSmith native tracing、遵守全局脱敏边界，并能通过 `thread_id` 从 AssistantAgent roots 定位到真正的

@@ -193,7 +193,7 @@ async def _run_window(
                     "sequence": record.frame_sequence,
                     "trace_id": record.source_vision_trace_id,
                     "run_id": record.source_vision_run_id,
-                    "span_id": record.source_vlm_span_id,
+                    "model_run_id": record.source_vlm_span_id,
                 }
                 for record in semantic_store.records_in_sequence_range(
                     video_id,
@@ -235,7 +235,7 @@ async def _run_window(
         and all(
             isinstance(trace_links[0].get(field), str)
             and bool(trace_links[0].get(field))
-            for field in ("trace_id", "run_id", "span_id")
+            for field in ("trace_id", "run_id", "model_run_id")
         ),
     }
     return {
