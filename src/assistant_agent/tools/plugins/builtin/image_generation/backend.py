@@ -82,6 +82,8 @@ def create_image_generation_adapter(
 ) -> ImageGenerationAdapter:
     """Create an image generation adapter without initializing real provider clients."""
 
+    if provider_mode != "real":
+        return MockImageGenerationAdapter()
     provider = config.resolved_provider()
     missing = provider.missing_required_env()
     if missing:

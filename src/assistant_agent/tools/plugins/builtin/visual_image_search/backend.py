@@ -216,6 +216,8 @@ def create_visual_image_search_adapter(
 ) -> VisualImageSearchAdapter:
     """Create a visual image search adapter without initializing real clients."""
 
+    if provider_mode != "real":
+        return MockVisualImageSearchAdapter()
     if config.visual_image_search_provider == "qwen":
         return QwenImageSearchAdapter(
             QwenImageSearchConfig(
@@ -226,7 +228,9 @@ def create_visual_image_search_adapter(
             )
         )
     if provider_mode == "real":
-        raise ValueError("real provider mode requires a configured visual image search provider")
+        raise ValueError(
+            "real provider mode requires a configured visual image search provider"
+        )
     return MockVisualImageSearchAdapter()
 
 
@@ -291,7 +295,9 @@ def _qwen_result_from_payload(
 
     raw_images = search_call.get("output")
     try:
-        raw_items = json.loads(raw_images) if isinstance(raw_images, str) else raw_images
+        raw_items = (
+            json.loads(raw_images) if isinstance(raw_images, str) else raw_images
+        )
     except json.JSONDecodeError:
         return _failed_visual_image_search_result(
             provider="qwen",
@@ -376,7 +382,9 @@ def _match_from_qwen_item(item: Any) -> VisualImageSearchMatch | None:
     if not page_url:
         page_url = image_url
     return VisualImageSearchMatch(
-        title=sanitize_error_message(item.get("title") or item.get("name") or "Image search result"),
+        title=sanitize_error_message(
+            item.get("title") or item.get("name") or "Image search result"
+        ),
         page_url=page_url,
         image_url=image_url,
         thumbnail_url=thumbnail_url,
@@ -385,7 +393,9 @@ def _match_from_qwen_item(item: Any) -> VisualImageSearchMatch | None:
             item.get("snippet") or item.get("description") or item.get("summary") or ""
         ),
         similarity_score=_score_value(
-            item.get("similarity_score") or item.get("similarityScore") or item.get("score")
+            item.get("similarity_score")
+            or item.get("similarityScore")
+            or item.get("score")
         ),
     )
 
@@ -454,7 +464,11 @@ def _failed_from_http_error(
     latency_ms: int,
 ) -> VisualImageSearchResult:
     body = _read_http_error_body(exc)
-    message = body.get("message") if isinstance(body.get("message"), str) else f"HTTP {exc.code}"
+    message = (
+        body.get("message")
+        if isinstance(body.get("message"), str)
+        else f"HTTP {exc.code}"
+    )
     return _failed_visual_image_search_result(
         provider="qwen",
         image_used=image_used,

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -15,7 +14,8 @@ for candidate in (ROOT, SRC):
     if str(candidate) not in sys.path:
         sys.path.insert(0, str(candidate))
 
-from evals.system.multimodal_embedding.runner import (
+from assistant_agent.config import load_app_config  # noqa: E402
+from evals.system.multimodal_embedding.runner import (  # noqa: E402
     DEFAULT_OUTPUT_ROOT,
     dry_run_report,
     run_local_model_eval,
@@ -23,7 +23,9 @@ from evals.system.multimodal_embedding.runner import (
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Evaluate joint local SigLIP2 embeddings.")
+    parser = argparse.ArgumentParser(
+        description="Evaluate joint local SigLIP2 embeddings."
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--allow-local-model", action="store_true")
     parser.add_argument("--model-dir", type=Path)
@@ -32,7 +34,7 @@ def main() -> int:
     args = parser.parse_args()
     model_dir = args.model_dir
     if model_dir is None:
-        configured = os.environ.get("SIGLIP2_MODEL_DIR") or os.environ.get("SIGLIP2_VISION_MODEL_DIR")
+        configured = load_app_config().vision.siglip2_model_dir
         model_dir = Path(configured) if configured else None
     if args.dry_run:
         print(json.dumps(dry_run_report(model_dir), ensure_ascii=False))
@@ -61,7 +63,11 @@ def main() -> int:
     except Exception as exc:
         print(
             json.dumps(
-                {"status": "failed", "error": "multimodal_embedding_eval_failed", "message": str(exc)},
+                {
+                    "status": "failed",
+                    "error": "multimodal_embedding_eval_failed",
+                    "message": str(exc),
+                },
                 ensure_ascii=False,
             )
         )

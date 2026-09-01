@@ -1,6 +1,8 @@
 import asyncio
 import json
-from dataclasses import asdict
+import runpy
+import sys
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import pytest
@@ -17,6 +19,22 @@ from assistant_agent.providers.provider_selection import create_vision_adapter
 from assistant_agent.tools.ids import VISUAL_IMAGE_SEARCH_TOOL_NAME, WEB_FETCH_TOOL_NAME
 from assistant_agent.tools.plugins.builtin.visual_image_search.tool import (
     create_visual_image_search_tool,
+)
+from assistant_agent.tools.plugins.builtin.visual_image_search.backend import (
+    MockVisualImageSearchAdapter,
+    create_visual_image_search_adapter,
+)
+from assistant_agent.tools.plugins.builtin.image_generation.backend import (
+    MockImageGenerationAdapter,
+    create_image_generation_adapter,
+)
+from assistant_agent.tools.plugins.builtin.shopping.backend import (
+    create_shopping_compare_adapter,
+    create_shopping_search_adapter,
+)
+from assistant_agent.tools.plugins.builtin.web_access.fetch_backend import (
+    MockWebFetchAdapter,
+    create_web_fetch_adapter,
 )
 from assistant_agent.tools.plugins.builtin.web_access.fetch_tool import (
     create_web_fetch_tool,
@@ -299,3 +317,127 @@ def test_web_fetch_tool_default_constructor_uses_mock_adapter() -> None:
 
 def test_visual_image_search_tool_default_constructor_uses_mock_adapter() -> None:
     assert create_visual_image_search_tool().name == VISUAL_IMAGE_SEARCH_TOOL_NAME
+
+
+def test_mock_mode_factories_do_not_construct_real_tool_adapters() -> None:
+    config = load_app_config({})
+    image = replace(
+        config.tools.image_generation,
+        image_generation_provider="qwen",
+        image_generation_api_key="image-sentinel",
+        image_generation_base_url="https://image.example/v1",
+        image_generation_model="image-model",
+    )
+    search = replace(
+        config.tools.search,
+        search_provider="http",
+        web_search_base_url="https://fetch.example/v1",
+        web_search_api_key="fetch-sentinel",
+        visual_image_search_provider="qwen",
+        qwen_image_search_api_key="visual-sentinel",
+    )
+    shopping = replace(
+        config.tools.shopping,
+        shopping_search_provider="http",
+        shopping_search_base_url="https://shopping.example/search",
+        shopping_search_api_key="search-sentinel",
+        shopping_compare_provider="http",
+        shopping_compare_base_url="https://shopping.example/compare",
+        shopping_compare_api_key="compare-sentinel",
+    )
+
+    assert isinstance(
+        create_image_generation_adapter(image, provider_mode="mock"),
+        MockImageGenerationAdapter,
+    )
+    assert isinstance(
+        create_visual_image_search_adapter(search, provider_mode="mock"),
+        MockVisualImageSearchAdapter,
+    )
+    assert isinstance(
+        create_web_fetch_adapter(search, provider_mode="mock"),
+        MockWebFetchAdapter,
+    )
+    with pytest.raises(ValueError, match="real provider mode"):
+        create_shopping_search_adapter(shopping, provider_mode="mock")
+    with pytest.raises(ValueError, match="real provider mode"):
+        create_shopping_compare_adapter(shopping, provider_mode="mock")
+
+
+def test_siglip2_eval_uses_app_config_once_without_cli_override(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import assistant_agent.config as config_module
+
+    calls = 0
+    original = config_module.load_app_config
+
+    def load_once():
+        nonlocal calls
+        calls += 1
+        return original({"SIGLIP2_MODEL_DIR": ".local/siglip2"})
+
+    monkeypatch.setattr(config_module, "load_app_config", load_once)
+    monkeypatch.setattr(
+        sys, "argv", ["run_system_multimodal_embedding_eval.py", "--dry-run"]
+    )
+
+    with pytest.raises(SystemExit) as exited:
+        runpy.run_path(
+            Path(__file__).parents[3]
+            / "scripts/run_system_multimodal_embedding_eval.py",
+            run_name="__main__",
+        )
+
+    assert exited.value.code == 0
+    assert calls == 1
+    assert json.loads(capsys.readouterr().out)["model_dir_configured"] is True
+
+
+def test_siglip2_eval_cli_model_dir_skips_app_config_loader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import assistant_agent.config as config_module
+
+    monkeypatch.setattr(
+        config_module,
+        "load_app_config",
+        lambda: pytest.fail("CLI model dir must bypass config loading"),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_system_multimodal_embedding_eval.py",
+            "--dry-run",
+            "--model-dir",
+            ".local/cli-siglip2",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exited:
+        runpy.run_path(
+            Path(__file__).parents[3]
+            / "scripts/run_system_multimodal_embedding_eval.py",
+            run_name="__main__",
+        )
+
+    assert exited.value.code == 0
+
+
+def test_siglip2_eval_rejects_conflicting_model_dir_aliases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SIGLIP2_MODEL_DIR", ".local/primary-siglip2")
+    monkeypatch.setenv("SIGLIP2_VISION_MODEL_DIR", ".local/legacy-siglip2")
+    monkeypatch.setattr(
+        sys, "argv", ["run_system_multimodal_embedding_eval.py", "--dry-run"]
+    )
+
+    with pytest.raises(ValueError, match="conflicting_siglip2_model_dir"):
+        runpy.run_path(
+            Path(__file__).parents[3]
+            / "scripts/run_system_multimodal_embedding_eval.py",
+            run_name="__main__",
+        )

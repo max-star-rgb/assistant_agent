@@ -286,6 +286,8 @@ def create_web_fetch_adapter(
 ) -> WebFetchAdapter:
     """Create a web fetch adapter without initializing real provider clients."""
 
+    if provider_mode != "real":
+        return MockWebFetchAdapter()
     if config.search_provider == "http":
         return HttpWebFetchAdapter(
             base_url=config.web_search_base_url,
@@ -427,7 +429,9 @@ def _web_fetch_result_from_payload(
     )
     title = payload.get("title") if isinstance(payload.get("title"), str) else None
     output_ref = (
-        payload.get("output_ref") if isinstance(payload.get("output_ref"), str) else None
+        payload.get("output_ref")
+        if isinstance(payload.get("output_ref"), str)
+        else None
     )
     if backend_errors:
         return WebFetchResult(
@@ -478,9 +482,7 @@ def _errors_from_payload(payload: Any, *, provider: str) -> list[WebFetchProvide
             if isinstance(item.get("code"), str)
             else "provider_unknown_error"
         )
-        message = (
-            item.get("message") if isinstance(item.get("message"), str) else code
-        )
+        message = item.get("message") if isinstance(item.get("message"), str) else code
         recoverable = (
             item.get("recoverable")
             if isinstance(item.get("recoverable"), bool)
@@ -649,8 +651,6 @@ def _elapsed_ms(started: float) -> int:
 def _slugify_url(value: str) -> str:
     parsed = urlparse(value)
     text = f"{parsed.netloc}{parsed.path}".strip("/") or value
-    chars = [
-        char.lower() if char.isalnum() else "-" for char in text if char.isascii()
-    ]
+    chars = [char.lower() if char.isalnum() else "-" for char in text if char.isascii()]
     slug = "-".join(part for part in "".join(chars).split("-") if part)
     return slug[:80] or "url"

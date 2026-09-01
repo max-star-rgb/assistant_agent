@@ -90,9 +90,13 @@ def create_shopping_search_adapter(
 ) -> ProductSearchAdapter:
     """Create only explicitly configured real shopping search adapters."""
 
+    if provider_mode != "real":
+        raise ValueError("real provider mode is required for shopping search adapters")
     if config.shopping_search_provider == "haodanku":
         if not config.haodanku_api_key:
-            raise ValueError("configured real shopping search provider requires HAODANKU_API_KEY")
+            raise ValueError(
+                "configured real shopping search provider requires HAODANKU_API_KEY"
+            )
         from assistant_agent.tools.plugins.builtin.shopping.haodanku import (
             HaodankuConfig,
             HaodankuProductSearchAdapter,
@@ -131,9 +135,13 @@ def create_shopping_compare_adapter(
 ) -> PriceCompareAdapter:
     """Create only explicitly configured real shopping comparison adapters."""
 
+    if provider_mode != "real":
+        raise ValueError("real provider mode is required for shopping compare adapters")
     if config.shopping_compare_provider == "haodanku":
         if not config.haodanku_api_key:
-            raise ValueError("configured real shopping compare provider requires HAODANKU_API_KEY")
+            raise ValueError(
+                "configured real shopping compare provider requires HAODANKU_API_KEY"
+            )
         from assistant_agent.tools.plugins.builtin.shopping.haodanku import (
             HaodankuConfig,
             HaodankuPriceCompareAdapter,
