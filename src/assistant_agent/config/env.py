@@ -40,14 +40,13 @@ def load_app_config(env: Mapping[str, str] | None = None) -> AppConfig:
     source = _clean_env_source(os.environ if env is None else env)
     _apply_provider_aliases(source)
     mode = get_provider_mode(source)
-    _reject_removed_realtime_keyframe_config(source)
-    memory = _load_memory_config(source)
+    _prevalidate_environment(source, mode)
     return AppConfig(
         provider_mode=mode,
         runtime=_load_runtime_config(source),
         chat=_load_chat_config(source, mode),
         vision=_load_vision_config(source, mode),
-        memory=memory,
+        memory=_load_memory_config(source),
         media=_load_media_config(source),
         tools=_load_tool_config(source, mode),
     )
@@ -57,6 +56,174 @@ def _apply_provider_aliases(source: dict[str, str]) -> None:
     if not source.get("QWEN_API_KEY") and source.get("DASHSCOPE_API_KEY"):
         source["QWEN_API_KEY"] = source["DASHSCOPE_API_KEY"]
     source["QWEN_CHAT_BASE_URL"] = _qwen_chat_base_url(source)
+
+
+def _prevalidate_environment(source: Mapping[str, str], mode: ProviderMode) -> None:
+    """Preserve the legacy parser and validation error order before section builds."""
+
+    allow_real = mode == "real"
+    chat_provider = select_chat_provider(
+        source.get("MULTIMODAL_AGENT_CHAT_PROVIDER"), allow_real=allow_real
+    )
+    chat_settings = resolve_chat_provider(chat_provider, source)
+    select_vision_provider(
+        source.get("MULTIMODAL_AGENT_VISION_PROVIDER"), allow_real=allow_real
+    )
+    _compatible(
+        source,
+        "MULTIMODAL_AGENT_EMBEDDING_PROVIDER",
+        "MULTIMODAL_AGENT_VISION_EMBEDDING_PROVIDER",
+        "conflicting_embedding_provider",
+    )
+    _compatible(
+        source,
+        "SIGLIP2_MODEL_DIR",
+        "SIGLIP2_VISION_MODEL_DIR",
+        "conflicting_siglip2_model_dir",
+    )
+    _reject_removed_realtime_keyframe_config(source)
+    select_image_generation_provider(
+        source.get("MULTIMODAL_AGENT_IMAGE_PROVIDER"), allow_real=allow_real
+    )
+    _workspace(source, "QWEN_REALTIME_VISION_WORKSPACE_ID")
+    _realtime_region(source.get("QWEN_REALTIME_VISION_REGION"))
+
+    # These are the only field parsers that can reject; their legacy positions
+    # are after removed-key preprocessing and Qwen protocol precedes checkpointer.
+    _qwen_protocol(source.get("QWEN_CHAT_API_PROTOCOL"))
+    _checkpointer(
+        source.get("LANGGRAPH_CHECKPOINTER_BACKEND")
+        or source.get("MULTIMODAL_AGENT_CHECKPOINTER_BACKEND")
+    )
+
+    missing = chat_settings.missing_required_env()
+    if mode == "real" and (chat_provider == "mock" or missing):
+        detail = f" Missing: {', '.join(missing)}." if missing else ""
+        raise ValueError(
+            "MULTIMODAL_AGENT_PROVIDER_MODE=real requires a non-mock "
+            "MULTIMODAL_AGENT_CHAT_PROVIDER with complete configuration."
+            f"{detail}"
+        )
+
+    memory_backend = source.get("MEMORY_BACKEND", "disabled")
+    if memory_backend not in {"disabled", "mem0", "langmem"}:
+        raise ValueError("memory backend must be disabled, mem0, or langmem")
+    if _float(source.get("MEM0_TIMEOUT_SECONDS"), 5.0) <= 0:
+        raise ValueError("Mem0 timeout must be positive")
+    if not (source.get("MEM0_IDENTITY_NAMESPACE") or "assistant-agent").strip():
+        raise ValueError("Mem0 identity namespace must be non-empty")
+    if not source.get(
+        "MEMORY_COMMIT_LEDGER_PATH", ".local/langgraph/memory_commits.sqlite3"
+    ).strip():
+        raise ValueError("memory commit ledger path must be non-empty")
+    if _int(source.get("MEMORY_EXTRACTION_DELAY_SECONDS"), 1800) <= 0:
+        raise ValueError("memory extraction delay must be positive")
+
+    remote_enabled = _bool(source.get("REMOTE_VISUAL_MEMORY_ENABLED"), False)
+    if remote_enabled:
+        if mode != "real":
+            raise ValueError("remote visual memory requires provider mode real")
+        if memory_backend != "langmem":
+            raise ValueError("remote visual memory requires MEMORY_BACKEND=langmem")
+        if not (source.get("REMOTE_VISUAL_MEMORY_BASE_URL") or "").strip():
+            raise ValueError("remote visual memory requires a base URL")
+    if _float(source.get("REMOTE_VISUAL_MEMORY_QUERY_TIMEOUT_SECONDS"), 5.0) <= 0:
+        raise ValueError("remote visual memory query timeout must be positive")
+    if _int(source.get("REMOTE_VISUAL_MEMORY_QUERY_TOP_K"), 8) <= 0:
+        raise ValueError("remote visual memory top_k must be positive")
+    if _float(source.get("REMOTE_VISUAL_MEMORY_SEGMENT_SECONDS"), 30.0) <= 0:
+        raise ValueError("remote visual memory segment duration must be positive")
+    if not source.get(
+        "REMOTE_VISUAL_MEMORY_SPOOL_ROOT", ".data/remote_visual_memory"
+    ).strip():
+        raise ValueError("remote visual memory spool root must be non-empty")
+    if _int(source.get("REMOTE_VISUAL_MEMORY_FILE_TTL_SECONDS"), 86400) <= 0:
+        raise ValueError("remote visual memory file TTL must be positive")
+    if _float(source.get("REMOTE_VISUAL_MEMORY_POLL_INTERVAL_SECONDS"), 2.0) <= 0:
+        raise ValueError("remote visual memory poll interval must be positive")
+
+    device = _int(source.get("SIGLIP2_CUDA_DEVICE_ID"), 0)
+    if device < 0:
+        raise ValueError("siglip2 CUDA device id must be non-negative")
+    if device < 0:
+        raise ValueError("embedding CUDA device id must be non-negative")
+    if _float(source.get("REALTIME_KEYFRAME_MAX_INTERVAL_SECONDS"), 2.0) <= 0:
+        raise ValueError("keyframe max interval must be positive")
+    keyframe_threshold = _float(
+        source.get("REALTIME_KEYFRAME_SEMANTIC_THRESHOLD"), 0.08
+    )
+    if not 0.0 <= keyframe_threshold <= 1.0:
+        raise ValueError("keyframe semantic threshold must be between 0 and 1")
+    candidate = _float(source.get("REALTIME_VISUAL_MEMORY_CANDIDATE_SIMILARITY"), 0.20)
+    confirmed = _float(source.get("REALTIME_VISUAL_MEMORY_CONFIRMED_SIMILARITY"), 0.30)
+    if not -1.0 <= candidate < confirmed <= 1.0:
+        raise ValueError("visual memory thresholds must satisfy candidate < confirmed")
+    if not source.get("VISUAL_MEMORY_QDRANT_URL", "http://127.0.0.1:6333").strip():
+        raise ValueError("visual memory Qdrant URL must be non-empty")
+    if not source.get(
+        "VISUAL_MEMORY_QDRANT_COLLECTION", "assistant_visual_memory"
+    ).strip():
+        raise ValueError("visual memory Qdrant collection must be non-empty")
+    if _float(source.get("VISUAL_MEMORY_QDRANT_TIMEOUT_SECONDS"), 2.0) <= 0:
+        raise ValueError("visual memory Qdrant timeout must be positive")
+    if not source.get(
+        "VISUAL_MEMORY_DENSE_MODEL_CACHE_DIR", ".data/models/fastembed"
+    ).strip():
+        raise ValueError("visual memory dense model cache must be non-empty")
+    if (
+        not 0.0
+        <= _float(source.get("REALTIME_VISUAL_REMINDER_SIMILARITY_THRESHOLD"), 0.82)
+        <= 1.0
+    ):
+        raise ValueError("visual reminder similarity threshold must be within [0, 1]")
+    if _int(source.get("REALTIME_VISUAL_REMINDER_MAX_ACTIVE"), 16) <= 0:
+        raise ValueError("visual reminder active limit must be positive")
+    if _int(source.get("REALTIME_VISUAL_REMINDER_TERMINAL_HISTORY_LIMIT"), 64) <= 0:
+        raise ValueError("visual reminder terminal history limit must be positive")
+
+    if _float(source.get("PROACTIVE_MESSAGE_DELIVERY_TIMEOUT_SECONDS"), 95.0) <= 0:
+        raise ValueError("proactive message delivery timeout must be positive")
+    if not (
+        source.get("PROACTIVE_DELIVERY_STORE_PATH")
+        or ".local/agent_server/proactive_deliveries.sqlite3"
+    ).strip():
+        raise ValueError("proactive delivery store path must be non-empty")
+    if _float(source.get("PROACTIVE_DELIVERY_ACK_TIMEOUT_SECONDS"), 15.0) <= 0:
+        raise ValueError("proactive delivery ACK timeout must be positive")
+    if _float(source.get("PROACTIVE_DELIVERY_LEASE_SECONDS"), 30.0) <= 0:
+        raise ValueError("proactive delivery lease must be positive")
+    if _float(source.get("PROACTIVE_DELIVERY_PRESENCE_TTL_SECONDS"), 45.0) <= 0:
+        raise ValueError("proactive delivery presence TTL must be positive")
+    if _float(source.get("PROACTIVE_DELIVERY_POLL_INTERVAL_SECONDS"), 0.25) <= 0:
+        raise ValueError("proactive delivery poll interval must be positive")
+
+    context_target = _ratio(
+        source.get("MULTIMODAL_AGENT_CONTEXT_COMPACTION_TARGET_RATIO"), 0.15
+    )
+    context_trigger = _ratio(
+        source.get("MULTIMODAL_AGENT_CONTEXT_COMPACTION_TRIGGER_RATIO"), 0.75
+    )
+    context_hard = _ratio(
+        source.get("MULTIMODAL_AGENT_CONTEXT_COMPACTION_HARD_RATIO"), 0.85
+    )
+    if not 0.0 < context_target < context_trigger < context_hard <= 1.0:
+        raise ValueError(
+            "context compaction ratios must satisfy 0 < target < trigger < hard <= 1"
+        )
+    visual_target = _ratio(
+        source.get("REALTIME_VISUAL_CONTEXT_COMPACTION_TARGET_RATIO"), 0.40
+    )
+    visual_trigger = _ratio(
+        source.get("REALTIME_VISUAL_CONTEXT_COMPACTION_TRIGGER_RATIO"), 0.70
+    )
+    visual_hard = _ratio(
+        source.get("REALTIME_VISUAL_CONTEXT_COMPACTION_HARD_RATIO"), 0.85
+    )
+    if not 0.0 < visual_target < visual_trigger < visual_hard <= 1.0:
+        raise ValueError(
+            "visual context compaction ratios must satisfy "
+            "0 < target < trigger < hard <= 1"
+        )
 
 
 def _load_runtime_config(source: Mapping[str, str]) -> RuntimeConfig:
