@@ -8,7 +8,9 @@ from pathlib import Path
 import subprocess
 from time import perf_counter
 from typing import Any, TypeVar
+from uuid import uuid4
 
+from langchain_core.runnables import RunnableConfig
 from langsmith import trace
 from langsmith.schemas import Attachment
 from langsmith.utils import tracing_is_enabled
@@ -113,6 +115,7 @@ def trace_visual_observation(
     window_role: str,
     provider_connection_isolated: bool,
     semantic_threshold: float,
+    include_frame_attachments: bool = True,
 ) -> tuple[_ResultT, VisionInferenceTraceLink | None]:
     """Trace one closed keyframe window as an independent LangSmith root run."""
 
@@ -145,7 +148,11 @@ def trace_visual_observation(
             metadata=metadata,
             tags=["vision-observation"],
             parent="ignore",
-            attachments=_visual_attachments(frame_refs, frame_sequences),
+            attachments=_visual_attachments(
+                frame_refs,
+                frame_sequences,
+                include_frames=include_frame_attachments,
+            ),
         ) as root:
             context = VisionInferenceTraceContext(
                 trace_id=str(root.trace_id),
@@ -168,6 +175,43 @@ def trace_visual_observation(
     if business_error is not None:
         raise business_error
     return result, context.last_link if context is not None else None
+
+
+def invoke_native_vision_model(
+    call: Callable[[RunnableConfig], _ResultT],
+    *,
+    context: VisionInferenceTraceContext | None,
+    capability: str,
+    source: str,
+    media_kind: str,
+    media_count: int,
+    trace_link_callback: Callable[[VisionInferenceTraceLink], None] | None = None,
+    **metadata: Any,
+) -> _ResultT:
+    """Invoke one callback-native vision model with an exact preassigned run ID."""
+
+    run_id = uuid4()
+    config: RunnableConfig = {
+        "run_name": VISION_INFERENCE_OBSERVATION_NAME,
+        "run_id": run_id,
+        "tags": ["vlm"],
+        "metadata": _vision_inference_metadata(
+            capability=capability,
+            source=source,
+            media_kind=media_kind,
+            media_count=media_count,
+            extra=metadata,
+        ),
+    }
+    if context is not None:
+        link = VisionInferenceTraceLink(
+            trace_id=context.trace_id,
+            run_id=context.run_id,
+            span_id=str(run_id),
+        )
+        context.last_link = link
+        _notify_trace_link_fail_open(trace_link_callback, link)
+    return call(config)
 
 
 def observe_vision_inference(
@@ -193,55 +237,22 @@ def observe_vision_inference(
 
     if not tracing_is_enabled():
         return call()
-    common = {
-        "capability": capability,
-        "source": source,
-        "media_kind": media_kind,
-        "media_count": max(0, int(media_count)),
-        "prompt_version": prompt_version,
-        "model_role": "vlm",
-        **(
-            {"frame_sequence": frame_sequence}
-            if isinstance(frame_sequence, int)
-            and not isinstance(frame_sequence, bool)
-            and frame_sequence >= 0
-            else {}
-        ),
-        **(
-            {"query_provided": query_provided}
-            if isinstance(query_provided, bool)
-            else {}
-        ),
-        **(
-            {"visual_window_id": visual_window_id}
-            if isinstance(visual_window_id, str) and visual_window_id
-            else {}
-        ),
-        **(
-            {"window_start_sequence": window_start_sequence}
-            if isinstance(window_start_sequence, int)
-            and not isinstance(window_start_sequence, bool)
-            and window_start_sequence >= 0
-            else {}
-        ),
-        **(
-            {"target_sequence": target_sequence}
-            if isinstance(target_sequence, int)
-            and not isinstance(target_sequence, bool)
-            and target_sequence >= 0
-            else {}
-        ),
-        **(
-            {"window_role": window_role}
-            if window_role in {"target", "context", "background"}
-            else {}
-        ),
-        **(
-            {"provider_connection_isolated": provider_connection_isolated}
-            if isinstance(provider_connection_isolated, bool)
-            else {}
-        ),
-    }
+    common = _vision_inference_metadata(
+        capability=capability,
+        source=source,
+        media_kind=media_kind,
+        media_count=media_count,
+        extra={
+            "prompt_version": prompt_version,
+            "frame_sequence": frame_sequence,
+            "query_provided": query_provided,
+            "visual_window_id": visual_window_id,
+            "window_start_sequence": window_start_sequence,
+            "target_sequence": target_sequence,
+            "window_role": window_role,
+            "provider_connection_isolated": provider_connection_isolated,
+        },
+    )
     inputs = {
         **common,
         **(
@@ -314,9 +325,48 @@ def _notify_trace_link_fail_open(
         return
 
 
+def _vision_inference_metadata(
+    *,
+    capability: str,
+    source: str,
+    media_kind: str,
+    media_count: int,
+    extra: Mapping[str, Any],
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "capability": capability,
+        "source": source,
+        "media_kind": media_kind,
+        "media_count": max(0, int(media_count)),
+        "prompt_version": VISION_INFERENCE_PROMPT_VERSION,
+        "model_role": "vlm",
+    }
+    for key, value in extra.items():
+        if value in (None, "", [], {}):
+            continue
+        if key in {"frame_sequence", "window_start_sequence", "target_sequence"}:
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                continue
+        elif key in {"query_provided", "provider_connection_isolated"}:
+            if not isinstance(value, bool):
+                continue
+        elif key == "window_role" and value not in {
+            "target",
+            "context",
+            "background",
+        }:
+            continue
+        elif _blocked_vlm_content_key(key.strip().lower()):
+            continue
+        metadata[key[:120]] = _safe_vlm_content_value(value)
+    return metadata
+
+
 def _visual_attachments(
     frame_refs: Sequence[str],
     frame_sequences: Sequence[int],
+    *,
+    include_frames: bool = True,
 ) -> dict[str, Attachment]:
     frames: list[bytes] = []
     attachments: dict[str, Attachment] = {}
@@ -328,10 +378,11 @@ def _visual_attachments(
         if not data or len(data) > _MAX_KEYFRAME_BYTES:
             continue
         frames.append(data)
-        attachments[f"keyframe-{sequence:08d}"] = Attachment(
-            mime_type="image/jpeg",
-            data=data,
-        )
+        if include_frames:
+            attachments[f"keyframe-{sequence:08d}"] = Attachment(
+                mime_type="image/jpeg",
+                data=data,
+            )
     video = _selected_keyframe_mp4(frames)
     if video:
         attachments["selected-keyframes-video"] = Attachment(

@@ -38,6 +38,10 @@ class VisionUnderstandingClient(Protocol):
     ) -> VisionUnderstandingResult:
         """Return a provider-neutral structured vision result."""
 
+    @property
+    def traces_as_chat_model(self) -> bool:
+        """Return whether image inference owns a native chat-model run."""
+
 
 class VisionClient(VisionUnderstandingClient, Protocol):
     """Short alias used by callers that do not need the longer historical name."""
@@ -90,6 +94,10 @@ class AdapterVisionUnderstandingClient:
             source="request_image",
             media_refs=list(request.image_ids),
         )
+
+    @property
+    def traces_as_chat_model(self) -> bool:
+        return bool(getattr(self.image_adapter, "traces_as_chat_model", False))
 
     @property
     def last_observation_diagnostics(self) -> dict[str, object] | None:

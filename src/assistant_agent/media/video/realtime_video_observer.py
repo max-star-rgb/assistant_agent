@@ -1011,6 +1011,7 @@ class RealtimeVideoObserver:
                 semantic_threshold=(
                     self.semantic_pipeline.selector.config.semantic_threshold
                 ),
+                include_frame_attachments=not service.traces_as_chat_model,
             )
         finally:
             service.close()

@@ -15,7 +15,10 @@ from assistant_agent.media.vision.models import (
     VisionUnderstandingRequest,
     VisionUnderstandingResult,
 )
-from assistant_agent.media.vision.observability import observe_vision_inference
+from assistant_agent.media.vision.observability import (
+    invoke_native_vision_model,
+    observe_vision_inference,
+)
 from assistant_agent.media.vision.vision_client import (
     VisionUnderstandingClient,
     video_request_from_vision_request,
@@ -81,14 +84,25 @@ class UploadedMediaInspector:
         context: ToolContext,
     ) -> ToolResult:
         try:
-            result = observe_vision_inference(
-                lambda: self.client.understand(request),
-                context=context,
-                capability=IMAGE_UNDERSTANDING_CAPABILITY,
-                source="request_image",
-                media_kind="image",
-                media_count=len(request.image_ids),
-            )
+            if getattr(self.client, "traces_as_chat_model", False):
+                result = invoke_native_vision_model(
+                    lambda config: self.client.understand(request, config=config),
+                    context=None,
+                    capability=IMAGE_UNDERSTANDING_CAPABILITY,
+                    source="request_image",
+                    media_kind="image",
+                    media_count=len(request.image_ids),
+                    query_provided=bool(request.question or request.user_query),
+                )
+            else:
+                result = observe_vision_inference(
+                    lambda: self.client.understand(request),
+                    context=context,
+                    capability=IMAGE_UNDERSTANDING_CAPABILITY,
+                    source="request_image",
+                    media_kind="image",
+                    media_count=len(request.image_ids),
+                )
         except ProviderAdapterError as exc:
             provider = getattr(
                 getattr(self.adapter, "config", None),

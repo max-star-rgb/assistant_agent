@@ -16,6 +16,7 @@ from assistant_agent.media.vision.models import (
 from assistant_agent.media.vision.observability import (
     VisionInferenceTraceContext,
     VisionInferenceTraceLink,
+    invoke_native_vision_model,
     observe_vision_inference,
 )
 from assistant_agent.media.vision.vision_client import (
@@ -96,6 +97,10 @@ class RealtimeVisualObservationService:
         self._client = client
         self._closed = False
 
+    @property
+    def traces_as_chat_model(self) -> bool:
+        return bool(getattr(self._client, "traces_as_chat_model", False))
+
     def observe(
         self,
         request: RealtimeVisualObservationRequest,
@@ -127,8 +132,30 @@ class RealtimeVisualObservationService:
         def call() -> VisionUnderstandingResult:
             return self._client.understand(provider_request)
 
-        raw = (
-            observe_vision_inference(
+        if self.traces_as_chat_model:
+            raw = invoke_native_vision_model(
+                lambda config: self._client.understand(
+                    provider_request,
+                    config=config,
+                ),
+                context=trace_context,
+                capability="video_understanding",
+                source="background_keyframe_observation",
+                media_kind="live_view",
+                media_count=len(request.frame_refs),
+                trace_link_callback=trace_links.append,
+                frame_sequence=request.frame_sequence,
+                visual_window_id=request.visual_window_id,
+                window_start_sequence=request.window_start_sequence,
+                target_sequence=request.target_sequence,
+                window_role=request.window_role,
+                provider_connection_isolated=(
+                    request.provider_connection_isolated
+                ),
+                prompt_version="keyframe-window-v2",
+            )
+        elif trace_context is not None:
+            raw = observe_vision_inference(
                 call,
                 context=trace_context,
                 capability="video_understanding",
@@ -160,9 +187,8 @@ class RealtimeVisualObservationService:
                 },
                 trace_link_callback=trace_links.append,
             )
-            if trace_context is not None
-            else call()
-        )
+        else:
+            raw = call()
         result = video_result_from_vision_result(
             raw.model_copy(
                 update={

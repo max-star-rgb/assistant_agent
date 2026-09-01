@@ -10,6 +10,8 @@ from threading import Lock
 from typing import Any, Protocol
 from uuid import uuid4
 
+from langchain_core.runnables import RunnableConfig
+
 from assistant_agent.config import ProviderConfig
 from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
 from assistant_agent.media.embedding.coordinator_store import (
@@ -446,6 +448,8 @@ class VisualPerceptionModule:
     def understand(
         self,
         request: VisionUnderstandingRequest,
+        *,
+        config: RunnableConfig | None = None,
     ) -> VisionUnderstandingResult:
         """Run one explicit-media inference behind the module boundary."""
 
@@ -454,7 +458,14 @@ class VisualPerceptionModule:
         if self._vision_client is None:
             raise RuntimeError("vision_understanding_client_unconfigured")
         with self._vision_client_lock:
-            return self._vision_client.understand(request)
+            return self._vision_client.understand(request, config=config)
+
+    @property
+    def traces_as_chat_model(self) -> bool:
+        return bool(
+            self._vision_client is not None
+            and getattr(self._vision_client, "traces_as_chat_model", False)
+        )
 
     def tool_resources(self) -> VisualPerceptionToolResources:
         embedding_readiness = self.embedding_provider.readiness()
