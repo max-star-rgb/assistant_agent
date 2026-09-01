@@ -1,6 +1,6 @@
 # LangGraph-native Assistant 运行与流式架构
 
-最后更新：2026-08-31
+最后更新：2026-09-01
 
 ## Authority contract
 
@@ -96,7 +96,7 @@ graph；主模型 token 不再依赖 subgraph stream，媒体入口仍可启用 
 `ToolProgressMiddleware` 通过原生 custom stream 发送 `tool_name`、`tool_call_id` 和
 `started|completed|failed`，不发送参数、结果或异常正文。模型循环不设置 model 或单 Tool 的 run 累计次数上限；
 同一 model superstep 内同名 Tool 最多并行 12 次，并在 `recursion_limit` 只剩 8 步时关闭 Tool 完成一次自然综合。
-main 与 worker 的单一 Deep Agents `SummarizationMiddleware.awrap_model_call` 从同一 `ProviderConfig` 取得窗口、
+main 与 worker 的单一 Deep Agents `SummarizationMiddleware.awrap_model_call` 从同一 composition 投影的 `ChatConfig` 取得窗口、
 trigger/target ratio 和可选离线 token counter，并由 Studio 的成对绝对值只覆盖当前 run；
 real DeepSeek/native compactor 缺 tokenizer 时 composition 启动失败。
 

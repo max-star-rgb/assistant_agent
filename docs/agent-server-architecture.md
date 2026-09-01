@@ -1,6 +1,6 @@
 # LangGraph Agent Server 部署架构
 
-最后更新：2026-08-31
+最后更新：2026-09-01
 
 ## Authority contract
 
@@ -66,9 +66,9 @@ thread；失败时不创建 run、不改变 checkpoint。
 
 ## 统一 composition、本机文件系统与 worker
 
-每个 Agent Server worker 进程只创建一个 `AgentServerExecutionOwner`。它持有一个模型、一次发现的业务/MCP
-Tool inventory、一个 `MemoryBackend`、一个 `ThreadResourceManager`、线程级 MCP session pool，以及编译后的
-main、worker、Memory graph。
+每个 Agent Server worker 进程只创建一个 `AgentServerExecutionOwner`。其 `compose()` 在装配期局部加载并持有完整、
+冻结的 `AppConfig`，只向下游投影所需的窄配置段；owner 本身持有一个模型、一次发现的业务/MCP Tool inventory、一个
+`MemoryBackend`、一个 `ThreadResourceManager`、线程级 MCP session pool，以及编译后的 main、worker、Memory graph。
 schema/history/state 请求和 run 都复用该 owner；custom-app lifespan 在进程 shutdown 时关闭一次。
 
 main Agent 使用按当前 run 的 `AssistantRunContext.cwd` 创建的 `LocalShellBackend`，并用 Deep Agents 原生
@@ -78,7 +78,7 @@ main Agent 使用按当前 run 的 `AssistantRunContext.cwd` 创建的 `LocalShe
 working-directory backend、基础模型、完整业务 Tool inventory、Prompt Builder、Skills、
 Tool Profile、filesystem、`execute` 与 HITL 配置。Skills discovery 仍使用独立 `FilesystemBackend`，只读取产品内建
 Skill。worker 不装配同步或异步 delegation middleware，也不运行主 Agent 的 Memory 提取生命周期。
-两者的官方 summarization 从同一 Provider 配置取得 context window、trigger/target ratio 与可选离线 token counter；
+两者的官方 summarization 从同一 composition 投影的 `ChatConfig` 取得 context window、trigger/target ratio 与可选离线 token counter；
 real DeepSeek/native compactor 缺 tokenizer 时在模型 composition 前启动失败。
 
 生成媒体的 thread 临时资源位于 `/home/lenovo1/assistant_agent/threads/<thread_ref>/artifacts/generated/`；该目录是
@@ -128,7 +128,8 @@ stream/cancel/join、终态 `AIMessage` 投影、视觉引用接入和 callback�
 `assistant-memory-v1` delayed run。普通 chat 使用 Agent Server 原生 `multitask_strategy="interrupt"`；显式
 checkpoint replay 使用 enqueue。主动投递使用独立 Store，不进入 `AssistantAgent` run。
 
-进程级 `VisualPerceptionModule` 由 custom-app lifespan 持有；Graph Tool 只消费其窄接口。媒体接入不得合并、
+media custom-app lifespan 单次加载 `AppConfig` 后，只保留 provider mode、`VisionConfig` 和 `MediaConfig`；进程级
+`VisualPerceptionModule` 由该 lifespan 持有，Graph Tool 只消费其窄接口。媒体接入不得合并、
 串行化或删除视觉 authority 定义的 SigLIP2 latest-wins 和并行关键帧 VLM 流水线。
 
 ## 本地部署

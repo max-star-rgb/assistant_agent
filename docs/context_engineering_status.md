@@ -1,6 +1,6 @@
 # LangChain-native Context Engineering
 
-最后更新：2026-08-31
+最后更新：2026-09-01
 
 ## Authority contract
 
@@ -80,9 +80,9 @@ main/worker 在同一 model superstep 内每 Tool 最多并行 12 次，并在
 `recursion_limit` 只剩 8 个 superstep 时关闭 Tool 生成自然综合。所有显式配置 Tool 的审批由 Runtime/Tool authority
 统一定义，不通过上下文模式切换。
 
-summarization 的绝对 token trigger/keep 分别由
-`ProviderConfig.context_input_token_limit * context_compaction_trigger_ratio/target_ratio` 计算，不写死模型窗口。
-composition 启动时先创建配置的离线 token counter，并把同一个 `count_messages` 和模型配置同时传给 main 与 worker。real DeepSeek V4 或 native LLM compactor 缺少本地
+summarization 的绝对 token trigger/keep 分别由同一 composition 投影的
+`ChatConfig.context_input_token_limit * context_compaction_trigger_ratio/target_ratio` 计算，不写死模型窗口。
+composition 启动时先创建配置的离线 token counter，并把同一个 `count_messages` 和 `ChatConfig` 同时传给 main 与 worker。real DeepSeek V4 或 native LLM compactor 缺少本地
 tokenizer 时启动直接失败，不回退近似计数或发起网络调用。
 
 旧 `ContextService`、prompt-json compiler、动态 catalog/exposure 与 renderer 已删除。仍保留的 context 代码只服务
