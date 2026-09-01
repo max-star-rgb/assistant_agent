@@ -17,7 +17,6 @@ from assistant_agent.providers.provider_selection import create_vision_adapter
 from assistant_agent.media.video.video_adapter import (
     MockVideoUnderstandingAdapter,
     VideoUnderstandingAdapter,
-    create_realtime_video_understanding_adapter,
     create_video_understanding_adapter,
 )
 from assistant_agent.media.vision.vision_adapter import (
@@ -114,20 +113,6 @@ def create_vision_understanding_client(
     return AdapterVisionUnderstandingClient(
         image_adapter=create_vision_adapter(resolved),
         video_adapter=create_video_understanding_adapter(resolved),
-    )
-
-
-def create_realtime_vision_understanding_client(
-    config: ProviderConfig | None = None,
-) -> VisionUnderstandingClient:
-    """Create the realtime-observer unified client."""
-
-    resolved = config or ProviderConfig.from_env()
-    if resolved.provider_mode == "real" and resolved.vision_provider == "mock":
-        raise ValueError("real provider mode requires a configured vision provider")
-    return AdapterVisionUnderstandingClient(
-        image_adapter=create_vision_adapter(resolved),
-        video_adapter=create_realtime_video_understanding_adapter(resolved),
     )
 
 

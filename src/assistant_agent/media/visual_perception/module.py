@@ -47,7 +47,6 @@ from assistant_agent.media.vision.models import (
 )
 from assistant_agent.media.vision.vision_client import (
     VisionUnderstandingClient,
-    create_realtime_vision_understanding_client,
     create_vision_understanding_client,
 )
 from assistant_agent.media.visual_perception.observation_service import (
@@ -545,7 +544,7 @@ class VisualPerceptionModule:
 
         def observation_service_factory() -> RealtimeVisualObservationService:
             return RealtimeVisualObservationService(
-                client=create_realtime_vision_understanding_client(self.config)
+                client=create_vision_understanding_client(self.config)
             )
 
         try:

@@ -23,7 +23,7 @@ from assistant_agent.media.video.semantic_store import SessionVisualSemanticStor
 from assistant_agent.media.video.video_context import REALTIME_VISUAL_TARGET_WINDOW_SIZE, VideoFrame
 from assistant_agent.media.video.visual_memory_index import UnavailableVisualMemoryTextIndex
 from assistant_agent.media.vision.models import VideoUnderstandingRequest
-from assistant_agent.media.vision.vision_client import create_realtime_vision_understanding_client
+from assistant_agent.media.vision.vision_client import create_vision_understanding_client
 from assistant_agent.media.visual_perception.observation_service import (
     RealtimeVisualObservationOutcome,
     RealtimeVisualObservationRequest,
@@ -53,14 +53,14 @@ def dry_run_report(*, frame_dir: Path | None, allow_real_provider: bool) -> dict
         "real_provider_authorized": bool(allow_real_provider),
         "provider_mode": config.provider_mode,
         "vision_provider": config.vision_provider,
-        "realtime_vision_config_complete": _realtime_qwen_config_complete(config),
+        "vision_config_complete": _qwen_vision_config_complete(config),
         "frame_dir_configured": frame_dir is not None,
         "candidate_frame_count": len(configured_frames),
         "planned_provider_calls": "1 closed keyframe window (1..5 images)",
         "would_check": [
             "one_multiframe_vlm_call_for_frozen_window",
             "ordered_keyframes_end_at_exact_target",
-            "window_uses_isolated_realtime_vlm_client",
+            "window_uses_isolated_native_multimodal_call",
             "exact_target_barrier",
             "exact_target_trace_correlation",
         ],
@@ -116,7 +116,7 @@ async def _run_window(
                 service_id=service_id,
                 registry=registry,
                 delegate=RealtimeVisualObservationService(
-                    client=create_realtime_vision_understanding_client(config)
+                    client=create_vision_understanding_client(config)
                 ),
             )
 
@@ -384,18 +384,15 @@ def _validate_real_eval(config: ProviderConfig, *, allow_real_provider: bool) ->
         raise RealtimeVisualEvalConfigurationError(
             "realtime visual eval requires MULTIMODAL_AGENT_VISION_PROVIDER=qwen"
         )
-    if not _realtime_qwen_config_complete(config):
+    if not _qwen_vision_config_complete(config):
         raise RealtimeVisualEvalConfigurationError(
-            "Qwen realtime vision configuration is incomplete"
+            "Qwen native multimodal vision configuration is incomplete"
         )
 
 
-def _realtime_qwen_config_complete(config: ProviderConfig) -> bool:
-    return bool(
-        config.qwen_realtime_vision_api_key
-        and config.qwen_realtime_vision_base_url
-        and config.qwen_realtime_vision_model
-    )
+def _qwen_vision_config_complete(config: ProviderConfig) -> bool:
+    resolved = config.resolved_vision_provider()
+    return resolved.adapter_kind == "dashscope_multimodal" and not resolved.missing_required_env()
 
 
 def _validated_frame_paths(frame_dir: Path) -> list[tuple[int, Path]]:

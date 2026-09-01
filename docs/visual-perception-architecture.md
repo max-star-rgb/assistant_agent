@@ -88,7 +88,7 @@ Realtime frame
                          ├─ 满 5 帧：关闭窗口并立即启动 VLM task
                          └─ 任意 chat 到达 K：提前关闭当前 1～4 帧窗口并立即启动 VLM
                               -> 下一关键帧从新窗口开始
-                              -> 每个窗口使用 isolated service/client/WebSocket（允许并行）
+                              -> 每个窗口使用 isolated service/client/HTTP request（允许并行）
                               -> VLM window summary（最后一张是当前目标画面）
                          -> VisualSemanticRecord + bounded timeline + Qdrant derived index
         -> SessionVisualSemanticStore
@@ -171,13 +171,13 @@ reminder comparison 成功。
 
 后台 observation service 只处理 Selector 已选中的逻辑关键帧。关键帧按选中顺序组成互不重叠、容量上限为 5
 的半固定窗口；窗口满 5 帧或任意用户输入到达时立即关闭并发起一次多图 VLM。用户输入即使最终不触发视觉
-Tool，也仍作为短期视觉记忆的分段边界。每次 observation 向同一个 Qwen realtime conversation 按时间顺序
-append 该窗口的 1～5 张 JPEG，再统一 commit；`memory_context` 固定为空。提示词明确最后一张是当前目标画面，
-前序图片只用于理解变化，`summary` 必须优先描述最后一张。成功文本发布后关闭该窗口的连接，失败或不完整
-响应同样关闭，因此连续性不依赖 Provider 会话。
+Tool，也仍作为短期视觉记忆的分段边界。每次 observation 使用 DashScope 原生 multimodal-generation HTTP API，
+在同一个 `content` 数组中按关键帧 sequence 放入 1～5 张 JPEG，再在末尾放入提示文本；请求固定
+`enable_thinking=false`。`memory_context` 固定为空。提示词明确最后一张是当前目标画面，前序图片只用于理解变化，
+`summary` 必须优先描述最后一张。每个窗口只有一次无状态请求，因此连续性不依赖 Provider 会话或音频时间线。
 
 不同已关闭窗口各自创建独立 asyncio task、窄
-`RealtimeVisualObservationService`、client、adapter 和 Provider WebSocket；它们允许并行，不经过全局 FIFO，
+`RealtimeVisualObservationService`、client、adapter 和 Provider HTTP request；它们允许并行，不经过全局 FIFO，
 也不会等待、替换或取消其他窗口的 VLM。SigLIP2 选帧继续独立追踪最新画面，不受 VLM 速度影响。同一个
 `(window_id, end_sequence)` 只执行一次；没有新关键帧的重复用户输入复用最近已关闭窗口，不重复推理。
 

@@ -132,9 +132,9 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   由离线 pytest 验证。
 - `scripts/run_system_realtime_visual_target_window_eval.py`：验证 live camera SigLIP2 latest-wins、chat
   冻结严格 1～5 个逻辑关键帧 sequence、只等待最后一个 target 的行为。默认
-  `--dry-run` 不读取图片、不联网；真实运行要求 real Provider mode、完整 Qwen realtime vision 配置、
-  `--allow-real-provider` 和 operator 提供的恰好 5 张 sequence-named JPEG。每个实际执行的关键帧使用隔离 WebSocket
-  client，已选关键帧并行执行，Tool 只等待逻辑窗口的 exact target；artifact 只保存 sequence/status/latency/concurrency 和 trace/span ID。
+  `--dry-run` 不读取图片、不联网；真实运行要求 real Provider mode、完整 Qwen vision 配置、
+  `--allow-real-provider` 和 operator 提供的恰好 5 张 sequence-named JPEG。每个关闭窗口使用隔离的 DashScope
+  原生有序多图请求，已选窗口可并行执行，Tool 只等待逻辑窗口的 exact target；artifact 只保存 sequence/status/latency/concurrency 和 trace/span ID。
 - 旧 Runtime/Workflow/Release Review LangSmith runner 已随旧 Graph Runtime 删除。后续评测重建必须直接消费
   Agent Server 或 `NativeGraphEvaluationTarget` 的标准 messages/native trace，当前不得宣称存在上线前行为门禁。
 

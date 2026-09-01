@@ -105,9 +105,8 @@ class RealtimeVisualObservationService:
         if self._closed:
             raise RuntimeError("realtime_visual_observation_service_closed")
         provider_request = VisionUnderstandingRequest(
-            video_ref=request.video_id,
-            frame_refs=list(request.frame_refs),
-            user_query=(
+            image_ids=list(request.frame_refs),
+            question=(
                 "按时间顺序理解这些关键帧。最后一张是目标当前画面，前面的帧只用于理解变化过程；"
                 "summary 必须优先、明确描述最后一张画面，可以补充与前序关键帧相比发生的变化。"
             ),
@@ -117,7 +116,6 @@ class RealtimeVisualObservationService:
                 "frame_sequence": request.frame_sequence,
                 "frame_sequences": list(request.frame_sequences),
                 "frame_timestamp_ms": request.frame_timestamp_ms,
-                "_force_video_understanding": True,
                 "visual_context_compaction": {
                     "status": "disabled_keyframe_window_text",
                     "compacted": False,
@@ -145,7 +143,7 @@ class RealtimeVisualObservationService:
                 provider_connection_isolated=(
                     request.provider_connection_isolated
                 ),
-                prompt_version="realtime-keyframe-window-v1",
+                prompt_version="keyframe-window-v2",
                 local_input_content={
                     "mode": "background_keyframe_observation",
                     "media_kind": "live_view",
@@ -158,7 +156,7 @@ class RealtimeVisualObservationService:
                     "provider_connection_isolated": (
                         request.provider_connection_isolated
                     ),
-                    "query": provider_request.user_query,
+                    "query": provider_request.question,
                 },
                 trace_link_callback=trace_links.append,
             )

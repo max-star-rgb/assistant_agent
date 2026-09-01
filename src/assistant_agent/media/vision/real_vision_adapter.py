@@ -74,6 +74,59 @@ class HttpVisionProviderAdapter:
             raise ProviderAdapterError("provider_bad_response", str(exc)) from exc
 
 
+class DashScopeVisionProviderAdapter:
+    """DashScope-native multimodal image understanding adapter."""
+
+    def __init__(
+        self, config: RealVisionProviderConfig, timeout_seconds: float = 10.0
+    ) -> None:
+        self.config = config
+        self.timeout_seconds = timeout_seconds
+
+    def understand(self, input: VisionUnderstandingInput) -> VisualUnderstandingResult:
+        if not self.config.api_key:
+            raise ProviderAdapterError(
+                "provider_unconfigured",
+                "qwen vision provider requires an API key",
+            )
+        if not input.image_ids:
+            raise ValueError("缺少图片 ID，无法进行视觉理解")
+        if input.video_ids:
+            raise ValueError("DashScope 原生视觉 adapter 只接受有序图片输入")
+
+        request = urllib.request.Request(
+            dashscope_multimodal_url(self.config.base_url),
+            data=json.dumps(
+                build_dashscope_vision_payload(input, self.config.model)
+            ).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.config.api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(
+                request, timeout=self.timeout_seconds
+            ) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except TimeoutError as exc:
+            raise ProviderAdapterError("provider_timeout", str(exc)) from exc
+        except urllib.error.HTTPError as exc:
+            raise ProviderAdapterError(
+                _http_error_code(exc.code), f"HTTP {exc.code}"
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise ProviderAdapterError("provider_unavailable", str(exc.reason)) from exc
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            raise ProviderAdapterError("provider_bad_response", str(exc)) from exc
+
+        try:
+            return parse_dashscope_vision_response(data)
+        except ValueError as exc:
+            raise ProviderAdapterError("provider_bad_response", str(exc)) from exc
+
+
 def chat_completions_url(base_url: str) -> str:
     """Return a chat completions endpoint from a provider base URL or endpoint."""
 
@@ -81,6 +134,20 @@ def chat_completions_url(base_url: str) -> str:
     if normalized.endswith("/chat/completions"):
         return normalized
     return f"{normalized}/chat/completions"
+
+
+def dashscope_multimodal_url(base_url: str) -> str:
+    """Return the native DashScope multimodal generation endpoint."""
+
+    normalized = base_url.rstrip("/")
+    endpoint = "/api/v1/services/aigc/multimodal-generation/generation"
+    if normalized.endswith(endpoint):
+        return normalized
+    scheme, separator, remainder = normalized.partition("://")
+    if not separator or not scheme or not remainder:
+        raise ValueError("DashScope vision base URL must be absolute")
+    host = remainder.split("/", maxsplit=1)[0]
+    return f"{scheme}://{host}{endpoint}"
 
 
 def build_openai_vision_payload(input: VisionUnderstandingInput, model: str) -> dict[str, Any]:
@@ -104,6 +171,27 @@ def build_openai_vision_payload(input: VisionUnderstandingInput, model: str) -> 
     }
 
 
+def build_dashscope_vision_payload(
+    input: VisionUnderstandingInput,
+    model: str,
+) -> dict[str, Any]:
+    """Build a DashScope-native ordered multi-image request."""
+
+    if input.video_ids:
+        raise ValueError("DashScope 原生视觉 adapter 只接受有序图片输入")
+    content = [{"image": image_to_data_url(image_id)} for image_id in input.image_ids]
+    content.append({"text": _vision_prompt(input.question)})
+    return {
+        "model": model,
+        "input": {"messages": [{"role": "user", "content": content}]},
+        "parameters": {
+            "enable_thinking": False,
+            "result_format": "message",
+            "temperature": 0,
+        },
+    }
+
+
 def parse_openai_vision_response(data: dict[str, Any]) -> VisualUnderstandingResult:
     """Parse OpenAI-compatible response into VisualUnderstandingResult."""
 
@@ -118,6 +206,22 @@ def parse_openai_vision_response(data: dict[str, Any]) -> VisualUnderstandingRes
         raise ValueError("response message content is not text")
     parsed = _json_object_from_text(content)
     return map_vision_result(parsed)
+
+
+def parse_dashscope_vision_response(data: dict[str, Any]) -> VisualUnderstandingResult:
+    """Parse a DashScope-native multimodal response."""
+
+    try:
+        content = data["output"]["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ValueError("missing output.choices[0].message.content") from exc
+    if isinstance(content, list):
+        content = "\n".join(
+            item.get("text", "") for item in content if isinstance(item, dict)
+        )
+    if not isinstance(content, str):
+        raise ValueError("response message content is not text")
+    return map_vision_result(_json_object_from_text(content))
 
 
 def map_vision_result(parsed: dict[str, Any]) -> VisualUnderstandingResult:
