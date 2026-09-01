@@ -11,8 +11,7 @@ from typing import Any
 
 from langchain_core.tools import BaseTool
 
-from assistant_agent.config import MediaConfig, ProviderConfig, ToolConfig, VisionConfig
-from assistant_agent.config.env import _app_config_from_legacy
+from assistant_agent.config import MediaConfig, ToolConfig, VisionConfig
 from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.mcp.amap_route_links import amap_route_link_interceptor
 from assistant_agent.mcp.config import (
@@ -206,11 +205,11 @@ async def _create_official_mcp_tools(
 
 
 async def create_native_tool_inventory(
-    config: ToolConfig | ProviderConfig,
+    config: ToolConfig,
     *,
-    provider_mode: ProviderMode | None = None,
-    vision_config: VisionConfig | None = None,
-    media_config: MediaConfig | None = None,
+    provider_mode: ProviderMode,
+    vision_config: VisionConfig,
+    media_config: MediaConfig,
     resources: NativeToolResources,
     mcp_server_configs: Sequence[MCPServerConfig],
     mcp_client_factory: Callable[..., Any] | None = None,
@@ -218,17 +217,6 @@ async def create_native_tool_inventory(
 ) -> list[BaseTool]:
     """Compose the one production inventory from built-ins and official MCP tools."""
 
-    if isinstance(config, ProviderConfig):
-        # ponytail: Task 5 migrates the remaining mock-only core callers.
-        if config.provider_mode != "mock":
-            raise TypeError("real tool inventory requires projected configuration")
-        projected = _app_config_from_legacy(config)
-        config = projected.tools
-        provider_mode = projected.provider_mode
-        vision_config = projected.vision
-        media_config = projected.media
-    if provider_mode is None or vision_config is None or media_config is None:
-        raise TypeError("tool inventory requires projected configuration")
     builtins = await asyncio.to_thread(
         _create_builtin_tools,
         config,

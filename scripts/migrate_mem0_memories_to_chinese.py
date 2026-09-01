@@ -19,7 +19,7 @@ if str(ROOT) not in sys.path:
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from assistant_agent.config import ProviderConfig
+from assistant_agent.config import ChatConfig, load_app_config
 from assistant_agent.identity import RequestIdentity
 from assistant_agent.memory.mem0.chinese_migration import (
     migrate_memories_to_chinese,
@@ -93,11 +93,11 @@ def translate_memory_to_chinese(
 
 
 def create_memory_translation_adapter(
-    config: ProviderConfig,
+    config: ChatConfig,
 ) -> OpenAICompatibleChatAdapter:
     """Create the configured Qwen adapter without native web search."""
 
-    settings = config.resolved_chat_provider()
+    settings = config.resolved_provider()
     if (
         settings.provider != "qwen"
         or settings.adapter_kind != "openai_compatible"
@@ -129,34 +129,38 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.no_env_file:
         load_env_file(args.env_file)
-    config = ProviderConfig.from_env()
-    if not config.mem0_base_url:
+    loaded_config = load_app_config()
+    provider_mode = loaded_config.provider_mode
+    chat_config = loaded_config.chat
+    memory_config = loaded_config.memory
+    del loaded_config
+    if not memory_config.mem0_base_url:
         return _print_error("mem0_base_url_required")
 
     if args.apply:
         gate_error = migration_apply_gate_error(
-            provider_mode=config.provider_mode,
-            chat_provider=config.chat_provider,
-            mem0_base_url=config.mem0_base_url,
+            provider_mode=provider_mode,
+            chat_provider=chat_config.chat_provider,
+            mem0_base_url=memory_config.mem0_base_url,
             allow_real_provider=args.allow_real_provider,
         )
         if gate_error:
             return _print_error(gate_error)
-        provider = config.resolved_chat_provider()
+        provider = chat_config.resolved_provider()
         missing = provider.missing_required_env()
         if missing:
             return _print_error(
                 "qwen_provider_not_configured",
                 details={"missing": sorted(missing)},
             )
-        adapter: ChatAdapter | None = create_memory_translation_adapter(config)
+        adapter: ChatAdapter | None = create_memory_translation_adapter(chat_config)
     else:
         adapter = None
 
-    base_transport = urllib_mem0_transport(config.mem0_base_url)
+    base_transport = urllib_mem0_transport(memory_config.mem0_base_url)
     headers = (
-        {"X-API-Key": config.mem0_api_key}
-        if config.mem0_api_key
+        {"X-API-Key": memory_config.mem0_api_key}
+        if memory_config.mem0_api_key
         else None
     )
 
@@ -172,7 +176,7 @@ def main(argv: list[str] | None = None) -> int:
                 agent_id=args.agent_id,
                 session_id="memory-language-migration",
             ),
-            identity_namespace=config.mem0_identity_namespace,
+            identity_namespace=memory_config.mem0_identity_namespace,
             transport=transport,
             translate=(
                 (lambda text: translate_memory_to_chinese(adapter, text))
@@ -180,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
                 else _translation_must_not_run
             ),
             apply=args.apply,
-            timeout_seconds=config.mem0_timeout_seconds,
+            timeout_seconds=memory_config.mem0_timeout_seconds,
         )
     except Exception:
         return _print_error("memory_migration_request_failed")

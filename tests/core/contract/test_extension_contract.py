@@ -10,7 +10,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 import pytest
 from pydantic import ValidationError
 
-from assistant_agent.config import ProviderConfig
+from assistant_agent.config import AppConfig
 from assistant_agent.mcp.config import MCPServerConfig
 from assistant_agent.mcp.stateful_sessions import (
     ThreadMcpSessionPool,
@@ -38,9 +38,13 @@ class _MCPClient:
 
 @pytest.mark.core_invariant("EXT-001")
 def test_native_extensions_are_static_standard_tools() -> None:
+    config = AppConfig()
     tools = asyncio.run(
         create_native_tool_inventory(
-            ProviderConfig(provider_mode="mock"),
+            config.tools,
+            provider_mode=config.provider_mode,
+            vision_config=config.vision,
+            media_config=config.media,
             resources=NativeToolResources(),
             mcp_server_configs=[],
         )
@@ -60,6 +64,7 @@ def test_native_extensions_are_static_standard_tools() -> None:
 
 @pytest.mark.core_invariant("EXT-001")
 def test_mcp_extension_uses_allowlist_and_namespace() -> None:
+    app_config = AppConfig()
     config = MCPServerConfig(
         server_name="server",
         command=["probe"],
@@ -71,7 +76,10 @@ def test_mcp_extension_uses_allowlist_and_namespace() -> None:
 
     tools = asyncio.run(
         create_native_tool_inventory(
-            ProviderConfig(provider_mode="mock"),
+            app_config.tools,
+            provider_mode=app_config.provider_mode,
+            vision_config=app_config.vision,
+            media_config=app_config.media,
             resources=NativeToolResources(),
             mcp_server_configs=[config],
             mcp_client_factory=_MCPClient,

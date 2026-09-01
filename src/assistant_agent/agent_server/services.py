@@ -17,7 +17,7 @@ from assistant_agent.agent_server.async_delegation import (
     async_task_tool_profile,
     build_async_subagent_middleware,
 )
-from assistant_agent.config import AppConfig, ProviderConfig, load_app_config
+from assistant_agent.config import AppConfig, load_app_config
 from assistant_agent.context.token_counter import create_context_token_counter
 from assistant_agent.mcp.config import load_mcp_server_configs_from_env
 from assistant_agent.mcp.stateful_sessions import ThreadMcpSessionPool
@@ -90,14 +90,11 @@ class AgentServerExecutionOwner:
     ) -> "AgentServerExecutionOwner":
         """Build configured clients without blocking the Agent Server loop."""
 
-        # Temporary migration bridge: Task 5 removes the legacy config once
-        # Vision and Tool composition accept their projected sections.
-        app_config = load_app_config()
-        config = ProviderConfig.from_env()
+        config = load_app_config()
         context_token_counter = await asyncio.to_thread(
             create_context_token_counter,
-            app_config.chat,
-            provider_mode=app_config.provider_mode,
+            config.chat,
+            provider_mode=config.provider_mode,
         )
         (
             model,
@@ -108,7 +105,6 @@ class AgentServerExecutionOwner:
         ) = await asyncio.to_thread(
             _compose_sync,
             config,
-            app_config,
             store,
         )
         thread_resource_manager = ThreadResourceManager(thread_resource_config)
@@ -122,7 +118,10 @@ class AgentServerExecutionOwner:
         )
         await reap_thread_resources(mcp_session_pool, thread_resource_manager)
         tools = await create_native_tool_inventory(
-            config,
+            config.tools,
+            provider_mode=config.provider_mode,
+            vision_config=config.vision,
+            media_config=config.media,
             resources=tool_resources,
             mcp_server_configs=mcp_server_configs,
             mcp_session_pool=mcp_session_pool,
@@ -152,9 +151,9 @@ class AgentServerExecutionOwner:
         business_tool_profiles = project_tool_profiles()
         async_tool_profile = async_task_tool_profile()
         context_options = {
-            "context_window_tokens": config.context_input_token_limit,
-            "compaction_trigger_ratio": config.context_compaction_trigger_ratio,
-            "compaction_target_ratio": config.context_compaction_target_ratio,
+            "context_window_tokens": config.chat.context_input_token_limit,
+            "compaction_trigger_ratio": config.chat.context_compaction_trigger_ratio,
+            "compaction_target_ratio": config.chat.context_compaction_target_ratio,
             "token_counter": (
                 context_token_counter.count_messages
                 if context_token_counter is not None
@@ -163,9 +162,9 @@ class AgentServerExecutionOwner:
         }
         native_search_enabled = (
             config.provider_mode == "real"
-            and config.resolved_chat_provider().provider == "qwen"
-            and config.qwen_chat_api_protocol == "dashscope"
-            and config.qwen_chat_enable_search
+            and config.chat.resolved_provider().provider == "qwen"
+            and config.chat.qwen_chat_api_protocol == "dashscope"
+            and config.chat.qwen_chat_enable_search
         )
         writable_backend = create_local_backend()
         conversation_history_backend = create_conversation_history_backend()
@@ -181,7 +180,7 @@ class AgentServerExecutionOwner:
             interrupt_tool_names=interrupt_names,
             visual_history_probe=tool_resources.visual_history_probe,
             live_view_resolver=tool_resources.live_view_resolver,
-            current_location=config.current_location,
+            current_location=config.runtime.current_location,
             native_search_enabled=native_search_enabled,
         )
         async_middleware = build_async_subagent_middleware()
@@ -203,10 +202,10 @@ class AgentServerExecutionOwner:
             additional_middleware=(async_middleware,),
             visual_history_probe=tool_resources.visual_history_probe,
             live_view_resolver=tool_resources.live_view_resolver,
-            current_location=config.current_location,
+            current_location=config.runtime.current_location,
             native_search_enabled=native_search_enabled,
             memory_backend=memory_backend,
-            memory_extraction_delay_seconds=config.memory_extraction_delay_seconds,
+            memory_extraction_delay_seconds=config.memory.memory_extraction_delay_seconds,
         )
         memory_graph = build_memory_extraction_graph(backend=memory_backend)
         owner = cls(
@@ -248,8 +247,7 @@ class AgentServerExecutionOwner:
 
 
 def _compose_sync(
-    config: ProviderConfig,
-    app_config: AppConfig,
+    config: AppConfig,
     store: BaseStore | None,
 ) -> tuple[
     BaseChatModel,
@@ -259,13 +257,13 @@ def _compose_sync(
     ThreadResourceConfig,
 ]:
     model = create_chat_model(
-        app_config.chat,
-        provider_mode=app_config.provider_mode,
+        config.chat,
+        provider_mode=config.provider_mode,
     )
     visual_perception = get_visual_perception_module(
-        provider_mode=app_config.provider_mode,
-        vision_config=app_config.vision,
-        media_config=app_config.media,
+        provider_mode=config.provider_mode,
+        vision_config=config.vision,
+        media_config=config.media,
     )
     visual_resources = visual_perception.tool_resources()
     tool_resources = NativeToolResources(
@@ -280,10 +278,10 @@ def _compose_sync(
         live_view_resolver=visual_perception.resolve_frozen_live_view,
     )
     memory_backend = create_memory_backend(
-        app_config.memory,
-        provider_mode=app_config.provider_mode,
-        chat_config=app_config.chat,
-        media_config=app_config.media,
+        config.memory,
+        provider_mode=config.provider_mode,
+        chat_config=config.chat,
+        media_config=config.media,
         langmem_store=store,
     )
     project_root = Path(__file__).resolve().parents[3]
