@@ -226,13 +226,7 @@ def image_to_data_url(image_ref: str) -> str:
 
 
 def vision_prompt(question: str | None) -> str:
-    base_question = question or "请描述图片中的主要物体、颜色、材质和场景。"
-    return (
-        f"{base_question}\n"
-        "请只输出一个 JSON object，字段必须符合："
-        "objects: string[], colors: string[], materials: string[], scene: string | null, "
-        "style_tags: string[], text_in_media: string[], summary: string。"
-    )
+    return question or "请描述图片中的主要物体、颜色、材质和场景。"
 
 
 def _image_content_block(image_ref: str) -> dict[str, Any]:

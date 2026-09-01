@@ -110,13 +110,7 @@ def _create_ark_client(*, api_key: str, base_url: str):
 
 
 def _ark_vision_prompt(question: str | None) -> str:
-    base_question = question or "请描述图片中的主要物体、颜色、材质和场景。"
-    return (
-        f"{base_question}\n"
-        "请只输出一个 JSON object，字段必须符合："
-        "objects: string[], colors: string[], materials: string[], scene: string | null, "
-        "style_tags: string[], text_in_media: string[], summary: string。"
-    )
+    return question or "请描述图片中的主要物体、颜色、材质和场景。"
 
 
 def _find_text(value: Any) -> str | None:
