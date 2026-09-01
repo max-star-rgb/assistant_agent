@@ -234,27 +234,27 @@ class DashScopeImageOnlyEmbeddingProvider:
         )
 
 
-def create_multimodal_embedding_provider(config=None) -> MultimodalEmbeddingProvider:
+def create_multimodal_embedding_provider(
+    config: "VisionConfig",
+    *,
+    provider_mode: "ProviderMode",
+) -> MultimodalEmbeddingProvider:
     """Create the configured Provider while keeping mock mode offline."""
 
-    if config is None:
-        from assistant_agent.config import ProviderConfig
-
-        config = ProviderConfig.from_env()
-    if getattr(config, "provider_mode", "mock") != "real":
+    if provider_mode != "real":
         return MockMultimodalEmbeddingProvider()
-    provider = getattr(config, "embedding_provider", "mock")
+    provider = config.embedding_provider
     if provider == "local_siglip2":
         from assistant_agent.media.embedding.local_siglip2 import (
             LocalSiglip2EmbeddingConfig,
             LocalSiglip2EmbeddingProvider,
         )
 
-        model_dir = getattr(config, "siglip2_model_dir", None)
+        model_dir = config.siglip2_model_dir
         return LocalSiglip2EmbeddingProvider(
             LocalSiglip2EmbeddingConfig(
                 model_dir=Path(model_dir) if model_dir else None,
-                cuda_device_id=getattr(config, "embedding_cuda_device_id", 0),
+                cuda_device_id=config.embedding_cuda_device_id,
             )
         )
     if provider == "dashscope":

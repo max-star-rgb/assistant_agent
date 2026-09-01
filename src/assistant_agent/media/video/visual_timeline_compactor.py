@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any, Mapping
 
-from assistant_agent.config import ProviderConfig
+from assistant_agent.config import VisionConfig
+from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.context.token_budget import normalize_provider_token_usage
 from assistant_agent.media.video.visual_timeline_context import (
     VisualTimelineCompaction,
@@ -110,16 +111,17 @@ class LLMVisualTimelineCompactor:
 
 
 def create_visual_timeline_compactor(
-    config: ProviderConfig,
+    config: VisionConfig,
     chat_adapter: ChatAdapter,
     *,
+    provider_mode: ProviderMode,
     token_counter: VisualTimelineTokenCounter | None,
 ) -> LLMVisualTimelineCompactor | None:
     """Create the Tool-tail compactor without weakening provider boundaries."""
 
     if config.visual_context_compactor_mode == "off":
         return None
-    if config.provider_mode != "real" or getattr(chat_adapter, "provider", "") == "mock":
+    if provider_mode != "real" or getattr(chat_adapter, "provider", "") == "mock":
         return None
     if token_counter is None:
         raise ValueError(

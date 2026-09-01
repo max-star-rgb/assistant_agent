@@ -3,8 +3,10 @@ from dataclasses import asdict
 import pytest
 
 from assistant_agent.config import AppConfig, ProviderConfig, load_app_config
+from assistant_agent.media.video.video_adapter import create_video_understanding_adapter
 from assistant_agent.native_agent.memory import create_memory_backend
 from assistant_agent.native_agent.providers import create_chat_model
+from assistant_agent.providers.provider_selection import create_vision_adapter
 
 
 def _flatten(config: AppConfig) -> dict[str, object]:
@@ -97,3 +99,21 @@ def test_chat_and_memory_factories_accept_only_projected_config() -> None:
 
     assert model._llm_type == "assistant-agent-mock"
     assert backend is not None
+
+
+def test_vision_factories_use_projected_config() -> None:
+    """Missing projected vision inputs must break offline factory construction."""
+
+    config = load_app_config({})
+
+    adapter = create_vision_adapter(
+        config.vision,
+        provider_mode=config.provider_mode,
+    )
+    video = create_video_understanding_adapter(
+        config.vision,
+        provider_mode=config.provider_mode,
+    )
+
+    assert adapter.provider == "mock"
+    assert video.provider == "mock"

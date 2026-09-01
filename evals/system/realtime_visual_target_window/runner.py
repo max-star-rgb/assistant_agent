@@ -13,7 +13,7 @@ from time import perf_counter_ns
 from typing import Any
 from uuid import uuid4
 
-from assistant_agent.config import ProviderConfig
+from assistant_agent.config import AppConfig, ProviderConfig, load_app_config
 from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
 from assistant_agent.media.embedding.provider import MockMultimodalEmbeddingProvider
 from assistant_agent.media.visual_perception.module import VisualPerceptionSession  # noqa: F401
@@ -79,7 +79,13 @@ def run_real_eval(
     config = ProviderConfig.from_env()
     _validate_real_eval(config, allow_real_provider=allow_real_provider)
     frame_paths = _validated_frame_paths(frame_dir)
-    result = asyncio.run(_run_window(config=config, frame_paths=frame_paths))
+    result = asyncio.run(
+        _run_window(
+            config=config,
+            app_config=load_app_config(),
+            frame_paths=frame_paths,
+        )
+    )
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     run_dir = output_root / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
@@ -93,6 +99,7 @@ def run_real_eval(
 async def _run_window(
     *,
     config: ProviderConfig,
+    app_config: AppConfig,
     frame_paths: list[tuple[int, Path]],
 ) -> dict[str, object]:
     user_id = "realtime-visual-system-eval"
@@ -116,7 +123,11 @@ async def _run_window(
                 service_id=service_id,
                 registry=registry,
                 delegate=RealtimeVisualObservationService(
-                    client=create_vision_understanding_client(config)
+                    client=create_vision_understanding_client(
+                        app_config.vision,
+                        provider_mode=app_config.provider_mode,
+                        media_config=app_config.media,
+                    )
                 ),
             )
 
@@ -134,7 +145,8 @@ async def _run_window(
                 message="visual-memory indexing is outside this system eval",
             ),
             trace_store=trace_store,
-            provider_config=config,
+            vision_config=app_config.vision,
+            provider_mode=app_config.provider_mode,
             keyframe_root=temp_root / "keyframes",
         )
         frames = tuple(
@@ -148,6 +160,11 @@ async def _run_window(
             for sequence, path in frame_paths
         )
         branch = VideoUnderstandingBranch(
+            client=create_vision_understanding_client(
+                app_config.vision,
+                provider_mode=app_config.provider_mode,
+                media_config=app_config.media,
+            ),
             memory_store=memory_store,
             semantic_store_pool=_SingleSemanticStorePool(semantic_store),
         )

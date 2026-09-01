@@ -6,6 +6,7 @@ from time import perf_counter_ns, time
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from assistant_agent.config import MediaConfig, VisionConfig
 from assistant_agent.tools.capability_output import build_capability_output_contract
 from assistant_agent.media.vision.models import (
     VideoUnderstandingRequest,
@@ -51,6 +52,7 @@ from assistant_agent.tools.ids import (
 )
 from assistant_agent.tools.runtime import ToolContext
 from assistant_agent.observability.trace_store import append_observability_event
+from assistant_agent.provider_mode import ProviderMode
 
 
 LIVE_VIEW_SNAPSHOT_WAIT_SECONDS = 4.0
@@ -66,6 +68,9 @@ class VideoUnderstandingBranch:
         *,
         tool_name: str = "uploaded_media_inspect",
         client: VisionUnderstandingClient | None = None,
+        vision_config: VisionConfig | None = None,
+        provider_mode: ProviderMode | None = None,
+        media_config: MediaConfig | None = None,
         context_store: VideoContextStore | None = None,
         memory_store: RealtimeVideoMemoryStore | None = None,
         semantic_store_pool: SessionVisualSemanticStorePool | None = None,
@@ -74,7 +79,17 @@ class VideoUnderstandingBranch:
     ) -> None:
         self.name = tool_name
         if client is None:
-            self.adapter = adapter or create_video_understanding_adapter()
+            if adapter is None:
+                if vision_config is None or provider_mode is None:
+                    raise ValueError(
+                        "video understanding requires an injected client or projected vision config"
+                    )
+                adapter = create_video_understanding_adapter(
+                    vision_config,
+                    provider_mode=provider_mode,
+                    media_config=media_config,
+                )
+            self.adapter = adapter
             self.client = AdapterVisionUnderstandingClient(video_adapter=self.adapter)
         else:
             self.adapter = adapter or getattr(client, "video_adapter", None)

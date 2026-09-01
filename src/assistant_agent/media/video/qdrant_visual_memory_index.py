@@ -11,7 +11,8 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 from uuid import NAMESPACE_URL, uuid5
 
-from assistant_agent.config import ProviderConfig
+from assistant_agent.config import VisionConfig
+from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.media.video.visual_memory_index import (
     VisualMemoryIndexDocument,
     VisualMemoryIndexError,
@@ -361,7 +362,11 @@ class QdrantVisualMemoryTextIndex:
             return
 
 
-def create_visual_memory_text_index(config: ProviderConfig) -> VisualMemoryTextIndex:
+def create_visual_memory_text_index(
+    config: VisionConfig,
+    *,
+    provider_mode: ProviderMode,
+) -> VisualMemoryTextIndex:
     """Create the runtime backend without ever downloading a model at startup."""
 
     try:

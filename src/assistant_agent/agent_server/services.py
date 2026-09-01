@@ -262,7 +262,11 @@ def _compose_sync(
         app_config.chat,
         provider_mode=app_config.provider_mode,
     )
-    visual_perception = get_visual_perception_module(config)
+    visual_perception = get_visual_perception_module(
+        provider_mode=app_config.provider_mode,
+        vision_config=app_config.vision,
+        media_config=app_config.media,
+    )
     visual_resources = visual_perception.tool_resources()
     tool_resources = NativeToolResources(
         video_context_store=visual_resources.video_context_store,

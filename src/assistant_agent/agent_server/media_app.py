@@ -49,7 +49,7 @@ from assistant_agent.agent_server.proactive_delivery import (
 from assistant_agent.api.rendering_3d_callback import (
     router as rendering_3d_callback_router,
 )
-from assistant_agent.config import ProviderConfig
+from assistant_agent.config import ProviderConfig, load_app_config
 from assistant_agent.media.video.h264_video_ingestion import (
     H264VideoIngestionService,
     validate_h264_bytes,
@@ -94,7 +94,12 @@ logger = logging.getLogger(__name__)
 async def agent_server_lifespan(application: FastAPI):
     """Own the process-wide visual module for this Agent Server process."""
 
-    visual_module = get_visual_perception_module()
+    app_config = load_app_config()
+    visual_module = get_visual_perception_module(
+        provider_mode=app_config.provider_mode,
+        vision_config=app_config.vision,
+        media_config=app_config.media,
+    )
     application.state.visual_perception_module = visual_module
     config = ProviderConfig.from_env()
     video_archive = _create_remote_video_archive_service(config)
@@ -485,7 +490,12 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
     )
     visual_module = getattr(websocket.app.state, "visual_perception_module", None)
     if visual_module is None:
-        visual_module = get_visual_perception_module()
+        app_config = load_app_config()
+        visual_module = get_visual_perception_module(
+            provider_mode=app_config.provider_mode,
+            vision_config=app_config.vision,
+            media_config=app_config.media,
+        )
     ingestion_factory = getattr(app.state, "video_ingestion_factory", None)
     video_ingestion = (
         ingestion_factory()
