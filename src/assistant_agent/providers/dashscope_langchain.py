@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 import json
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from langchain_core.language_models import BaseChatModel
@@ -37,6 +37,7 @@ from assistant_agent.native_agent.search_profiles import (
 from assistant_agent.providers.dashscope_chat import (
     UrllibDashScopeTransport,
     dashscope_generation_url,
+    dashscope_multimodal_generation_url,
 )
 
 
@@ -66,7 +67,7 @@ class DashScopeProviderError(RuntimeError):
 
 
 class DashScopeNativeChatModel(BaseChatModel):
-    """Official DashScope text-generation API exposed as a BaseChatModel."""
+    """Official DashScope Generation APIs exposed as a BaseChatModel."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -74,6 +75,8 @@ class DashScopeNativeChatModel(BaseChatModel):
     base_url: str
     model_name: str
     timeout_seconds: float = 75.0
+    api_mode: Literal["text", "multimodal"] = "text"
+    temperature: float | None = None
     enable_thinking: bool = False
     enable_search: bool = False
     streaming: bool = False
@@ -119,7 +122,7 @@ class DashScopeNativeChatModel(BaseChatModel):
         payload = self._build_payload(messages, stop=stop, stream=False, **kwargs)
         try:
             data = self.http_transport.post_json(
-                url=dashscope_generation_url(self.base_url),
+                url=self._generation_url(),
                 headers=self._headers(stream=False),
                 payload=payload,
                 timeout_seconds=self.timeout_seconds,
@@ -162,7 +165,7 @@ class DashScopeNativeChatModel(BaseChatModel):
         terminal_seen = False
         try:
             stream = self.http_transport.stream_sse(
-                url=dashscope_generation_url(self.base_url),
+                url=self._generation_url(),
                 headers=self._headers(stream=True),
                 payload=payload,
                 timeout_seconds=self.timeout_seconds,
@@ -263,6 +266,8 @@ class DashScopeNativeChatModel(BaseChatModel):
             "result_format": "message",
             "enable_thinking": self.enable_thinking or deep_research,
         }
+        if self.temperature is not None:
+            parameters["temperature"] = self.temperature
         if stream:
             parameters["incremental_output"] = True
         if stop:
@@ -302,21 +307,51 @@ class DashScopeNativeChatModel(BaseChatModel):
                 parameters["tool_choice"] = tool_choice
         return {
             "model": self.model_name,
-            "input": {"messages": [_message_to_dashscope(item) for item in messages]},
+            "input": {
+                "messages": [
+                    _message_to_dashscope(
+                        item,
+                        multimodal=self.api_mode == "multimodal",
+                    )
+                    for item in messages
+                ]
+            },
             "parameters": parameters,
         }
+
+    def _generation_url(self) -> str:
+        if self.api_mode == "multimodal":
+            return dashscope_multimodal_generation_url(self.base_url)
+        return dashscope_generation_url(self.base_url)
 
     def _parse_response(self, data: dict[str, Any]) -> AIMessage:
         output, choice, raw_message = _response_parts(data)
         raw_tool_calls = raw_message.get("tool_calls")
         parsed_calls, invalid_calls = _parse_tool_calls(raw_tool_calls)
         content = _message_text(raw_message.get("content"))
-        if not content and not parsed_calls and not invalid_calls:
-            raise DashScopeProviderError("DashScope response was empty.")
         finish_reason = _optional_text(choice.get("finish_reason"))
         sources = _parse_search_sources(
             output.get("search_info", data.get("search_info"))
         )
+        if self.api_mode == "multimodal":
+            structured_output = _json_object_from_text(content)
+            summary = structured_output.get("summary")
+            if not isinstance(summary, str) or not summary.strip():
+                raise DashScopeProviderError(
+                    "DashScope multimodal response missing summary."
+                )
+            return AIMessage(
+                content=summary.strip(),
+                additional_kwargs={"structured_output": structured_output},
+                response_metadata=self._response_metadata(
+                    data,
+                    finish_reason=finish_reason,
+                    sources=sources,
+                ),
+                usage_metadata=_usage_metadata(data.get("usage")),
+            )
+        if not content and not parsed_calls and not invalid_calls:
+            raise DashScopeProviderError("DashScope response was empty.")
         return AIMessage(
             content=content,
             tool_calls=parsed_calls,
@@ -360,7 +395,20 @@ class DashScopeNativeChatModel(BaseChatModel):
         return headers
 
 
-def _message_to_dashscope(message: AnyMessage) -> dict[str, Any]:
+def _message_to_dashscope(
+    message: AnyMessage,
+    *,
+    multimodal: bool = False,
+) -> dict[str, Any]:
+    if isinstance(message, HumanMessage) and multimodal:
+        if not isinstance(message.content, (list, tuple)):
+            raise ValueError("DashScope multimodal human content must be a list.")
+        return {
+            "role": "user",
+            "content": [
+                _content_block_to_dashscope(block) for block in message.content
+            ],
+        }
     content = _message_text(message.content)
     if isinstance(message, SystemMessage):
         return {"role": "system", "content": content}
@@ -396,6 +444,27 @@ def _message_to_dashscope(message: AnyMessage) -> dict[str, Any]:
     raise TypeError(f"unsupported DashScope message type: {type(message).__name__}")
 
 
+def _content_block_to_dashscope(block: Any) -> dict[str, str]:
+    if not isinstance(block, Mapping):
+        raise ValueError("DashScope multimodal content block must be an object.")
+    if block.get("type") == "image":
+        base64 = block.get("base64")
+        mime_type = block.get("mime_type")
+        if (
+            not isinstance(base64, str)
+            or not base64.strip()
+            or not isinstance(mime_type, str)
+            or not mime_type.strip()
+        ):
+            raise ValueError(
+                "DashScope multimodal image block requires base64 and mime_type."
+            )
+        return {"image": f"data:{mime_type};base64,{base64}"}
+    if block.get("type") == "text" and isinstance(block.get("text"), str):
+        return {"text": block["text"]}
+    raise ValueError("unsupported DashScope multimodal content block.")
+
+
 def _message_text(value: Any) -> str:
     if isinstance(value, str):
         return value
@@ -410,7 +479,28 @@ def _message_text(value: Any) -> str:
             "output_text",
         }:
             parts.append(str(block.get("text", "")))
+        elif isinstance(block, Mapping) and isinstance(block.get("text"), str):
+            parts.append(block["text"])
     return "\n".join(part for part in parts if part)
+
+
+def _json_object_from_text(text: str) -> dict[str, Any]:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = stripped.strip("`")
+        if stripped.lower().startswith("json"):
+            stripped = stripped[4:].strip()
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            raise
+        parsed = json.loads(stripped[start : end + 1])
+    if not isinstance(parsed, dict):
+        raise ValueError("response JSON is not an object")
+    return parsed
 
 
 def _response_parts(

@@ -458,18 +458,32 @@ def _stream_tool_call_deltas(value: Any) -> list[LLMToolCallDelta]:
 
 
 def dashscope_generation_url(base_url: str) -> str:
+    return _dashscope_service_url(
+        base_url,
+        "/api/v1/services/aigc/text-generation/generation",
+    )
+
+
+def dashscope_multimodal_generation_url(base_url: str) -> str:
+    return _dashscope_service_url(
+        base_url,
+        "/api/v1/services/aigc/multimodal-generation/generation",
+    )
+
+
+def _dashscope_service_url(base_url: str, service_path: str) -> str:
     parsed = urlsplit(base_url.rstrip("/"))
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("DashScope base URL must be an absolute HTTP(S) URL.")
     path = parsed.path
     if "/compatible-mode" in path:
         path = path.split("/compatible-mode", 1)[0]
     if path.endswith("/api/v1"):
-        prefix = path
-    else:
-        prefix = f"{path.rstrip('/')}/api/v1"
+        path = path.removesuffix("/api/v1")
     return urlunsplit((
         parsed.scheme,
         parsed.netloc,
-        f"{prefix}/services/aigc/text-generation/generation",
+        f"{path.rstrip('/')}{service_path}",
         "",
         "",
     ))
@@ -480,6 +494,7 @@ __all__ = [
     "DashScopeHttpTransport",
     "UrllibDashScopeTransport",
     "dashscope_generation_url",
+    "dashscope_multimodal_generation_url",
 ]
 
 
