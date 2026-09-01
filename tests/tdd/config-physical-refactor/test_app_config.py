@@ -97,6 +97,50 @@ def test_removed_realtime_keyframe_config_is_rejected() -> None:
         load_app_config({"REALTIME_KEYFRAME_MIN_INTERVAL_SECONDS": "1"})
 
 
+@pytest.mark.parametrize("value", ["99", "0"])
+def test_visual_memory_result_limit_is_not_an_environment_setting(value: str) -> None:
+    assert (
+        load_app_config(
+            {"VISUAL_MEMORY_RESULT_LIMIT": value}
+        ).vision.visual_memory_result_limit
+        == 12
+    )
+
+
+@pytest.mark.parametrize(
+    ("env", "message"),
+    [
+        (
+            {
+                "LANGGRAPH_CHECKPOINTER_BACKEND": "bad",
+                "REALTIME_KEYFRAME_MIN_INTERVAL_SECONDS": "1",
+            },
+            "removed_realtime_keyframe_config",
+        ),
+        (
+            {
+                "MULTIMODAL_AGENT_CONTEXT_COMPACTION_TARGET_RATIO": "0.8",
+                "MULTIMODAL_AGENT_CONTEXT_COMPACTION_TRIGGER_RATIO": "0.7",
+                "REALTIME_KEYFRAME_MIN_INTERVAL_SECONDS": "1",
+            },
+            "removed_realtime_keyframe_config",
+        ),
+        (
+            {
+                "MEMORY_BACKEND": "bad",
+                "REALTIME_KEYFRAME_SEMANTIC_THRESHOLD": "2",
+            },
+            "memory backend must be disabled, mem0, or langmem",
+        ),
+    ],
+)
+def test_combined_invalid_environment_preserves_legacy_first_error(
+    env: dict[str, str], message: str
+) -> None:
+    with pytest.raises(ValueError, match=f"^{message}$"):
+        load_app_config(env)
+
+
 def test_app_config_defaults_are_nested_and_mock_safe() -> None:
     config = AppConfig()
     assert config.provider_mode == "mock"
