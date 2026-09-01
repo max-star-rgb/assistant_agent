@@ -159,6 +159,10 @@ class DashScopeNativeChatModel(BaseChatModel):
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
         del run_manager
+        if self.api_mode == "multimodal":
+            raise DashScopeProviderError(
+                "DashScope multimodal streaming is not supported."
+            )
         payload = self._build_payload(messages, stop=stop, stream=True, **kwargs)
         stream: Iterator[dict[str, Any]] | None = None
         sources: list[dict[str, Any]] = []
