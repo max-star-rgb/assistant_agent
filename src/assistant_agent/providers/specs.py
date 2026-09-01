@@ -441,6 +441,24 @@ def resolve_provider(provider: str, env: Mapping[str, str], specs: Mapping[str, 
     )
 
 
+def resolved_provider_values(
+    provider: str,
+    *,
+    api_key: str | None,
+    base_url: str | None,
+    model: str | None,
+    specs: Mapping[str, ProviderSpec],
+) -> ResolvedProviderSpec:
+    """Return a provider spec from values already resolved by config loading."""
+
+    return ResolvedProviderSpec(
+        spec=specs.get(provider, specs["mock"]),
+        api_key=api_key,
+        base_url=base_url,
+        model=model,
+    )
+
+
 def supported_chat_providers() -> tuple[str, ...]:
     """Return supported chat provider names."""
 
@@ -463,6 +481,22 @@ def resolve_chat_provider(provider: str, env: Mapping[str, str]) -> ResolvedProv
     """Resolve selected chat provider values from environment-like data."""
 
     return resolve_provider(provider, _chat_provider_env_with_aliases(provider, env), CHAT_PROVIDER_SPECS)
+
+
+def resolved_chat_provider(
+    provider: str,
+    *,
+    api_key: str | None,
+    base_url: str | None,
+    model: str | None,
+) -> ResolvedProviderSpec:
+    return resolved_provider_values(
+        provider,
+        api_key=api_key,
+        base_url=base_url,
+        model=model,
+        specs=CHAT_PROVIDER_SPECS,
+    )
 
 
 def _chat_provider_env_with_aliases(provider: str, env: Mapping[str, str]) -> Mapping[str, str]:
@@ -525,6 +559,22 @@ def resolve_vision_provider(provider: str, env: Mapping[str, str]) -> ResolvedPr
     return resolve_provider(provider, env, VISION_PROVIDER_SPECS)
 
 
+def resolved_vision_provider(
+    provider: str,
+    *,
+    api_key: str | None,
+    base_url: str | None,
+    model: str | None,
+) -> ResolvedProviderSpec:
+    return resolved_provider_values(
+        provider,
+        api_key=api_key,
+        base_url=base_url,
+        model=model,
+        specs=VISION_PROVIDER_SPECS,
+    )
+
+
 def supported_image_generation_providers() -> tuple[str, ...]:
     """Return supported image generation provider names."""
 
@@ -559,6 +609,22 @@ def resolve_image_generation_provider(provider: str, env: Mapping[str, str]) -> 
             IMAGE_GENERATION_PROVIDER_SPECS,
         )
     return resolve_provider(provider, env, IMAGE_GENERATION_PROVIDER_SPECS)
+
+
+def resolved_image_generation_provider(
+    provider: str,
+    *,
+    api_key: str | None,
+    base_url: str | None,
+    model: str | None,
+) -> ResolvedProviderSpec:
+    return resolved_provider_values(
+        provider,
+        api_key=api_key,
+        base_url=base_url,
+        model=model,
+        specs=IMAGE_GENERATION_PROVIDER_SPECS,
+    )
 
 
 def _qwen_env_with_api_key_aliases(env: Mapping[str, str], *legacy_api_key_envs: str) -> dict[str, str]:
