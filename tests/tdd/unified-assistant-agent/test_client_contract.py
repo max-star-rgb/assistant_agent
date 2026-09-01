@@ -92,8 +92,11 @@ def test_graph_ids_and_public_context_are_v4_only() -> None:
         "assistant-memory-v1",
     }
     assert set(AssistantRunContext.model_fields) == {
+        "cwd",
         "enable_memory",
         "require_tool_approval",
+        "context_compaction_trigger_tokens",
+        "context_compaction_keep_tokens",
     }
     with pytest.raises(ValidationError):
         AssistantRunContext.model_validate({"execution_mode": "fast"})

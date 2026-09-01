@@ -130,9 +130,8 @@ class VisualTargetWindow:
 class LiveViewProjection:
     """Trusted live-view facts projected from the VLM side for one session.
 
-    The main LLM never sees these (no``source=live_camera`` message block); the
-    ``live_view_inspect`` Tool resolves them by ``(user_id, thread_id)`` from the
-    process-owned visual module when it decides to answer a picture question.
+    Raw projection fields do not enter the user message. Tool exposure and
+    execution resolve them through one run-scoped capability.
     """
 
     live_video_ids: tuple[str, ...]
@@ -347,10 +346,7 @@ class VisualPerceptionModule:
         self._vision_client_lock = Lock()
         self._observer_factory = observer_factory or self._create_observer
         self._sessions: set[VisualPerceptionSession] = set()
-        self._live_views: dict[tuple[str, str], LiveViewProjection] = {}
-        self._frozen_live_views: dict[
-            tuple[str, str, str], LiveViewProjection
-        ] = {}
+        self._frozen_live_views: dict[tuple[str, str, str], LiveViewProjection] = {}
         self._live_views_lock = Lock()
         self._closed = False
 
@@ -394,17 +390,18 @@ class VisualPerceptionModule:
             raise RuntimeError("visual_perception_module_closed")
         return H264VideoIngestionService(store=self.video_context_store)
 
-    def record_live_view(
+    def freeze_live_view(
         self,
         user_id: str,
         session_id: str,
         *,
         video_ids: Sequence[str],
         window: VisualTargetWindow | None,
-    ) -> None:
-        """Freeze the current live-view facts for a session on the VLM side."""
-        if self._closed:
-            return
+    ) -> str | None:
+        """Freeze one run's live-view facts and issue its opaque capability."""
+
+        if self._closed or not user_id or not session_id or not video_ids:
+            return None
         projection = LiveViewProjection(
             live_video_ids=tuple(video_ids),
             window_id=window.window_id if window is not None else None,
@@ -412,33 +409,9 @@ class VisualPerceptionModule:
             target_sequence=window.target_sequence if window is not None else None,
             target_video_id=window.video_id if window is not None else None,
             window_sequences=window.sequences if window is not None else (),
-            window_timestamps_ms=(
-                window.timestamps_ms if window is not None else ()
-            ),
+            window_timestamps_ms=(window.timestamps_ms if window is not None else ()),
         )
         with self._live_views_lock:
-            self._live_views[(user_id, session_id)] = projection
-
-    def resolve_live_view(
-        self,
-        user_id: str,
-        session_id: str,
-    ) -> LiveViewProjection | None:
-        """Return the session's current live-view facts, if any."""
-        if not user_id or not session_id:
-            return None
-        with self._live_views_lock:
-            return self._live_views.get((user_id, session_id))
-
-    def freeze_live_view(self, user_id: str, session_id: str) -> str | None:
-        """Issue an opaque capability for the session's current projection."""
-
-        if self._closed or not user_id or not session_id:
-            return None
-        with self._live_views_lock:
-            projection = self._live_views.get((user_id, session_id))
-            if projection is None:
-                return None
             token = uuid4().hex
             self._frozen_live_views[(user_id, session_id, token)] = projection
             return token
@@ -454,9 +427,7 @@ class VisualPerceptionModule:
         if not user_id or not session_id or not capability_token:
             return None
         with self._live_views_lock:
-            return self._frozen_live_views.get(
-                (user_id, session_id, capability_token)
-            )
+            return self._frozen_live_views.get((user_id, session_id, capability_token))
 
     def release_frozen_live_view(
         self,
@@ -510,7 +481,6 @@ class VisualPerceptionModule:
             return
         self._closed = True
         with self._live_views_lock:
-            self._live_views.clear()
             self._frozen_live_views.clear()
         sessions = tuple(self._sessions)
         if sessions:
@@ -599,5 +569,7 @@ def _validate_logical_keyframe_window(sequences: Sequence[int]) -> None:
         if isinstance(sequence, bool) or sequence < 0:
             raise ValueError("visual target window sequence must be non-negative")
         if previous_sequence is not None and sequence <= previous_sequence:
-            raise ValueError("visual target window sequences must be strictly increasing")
+            raise ValueError(
+                "visual target window sequences must be strictly increasing"
+            )
         previous_sequence = sequence

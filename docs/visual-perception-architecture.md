@@ -30,7 +30,8 @@ embedding coordinator、`SessionVisualSemanticStorePool`、视觉检索派生索
 薄消费入口，不再为用户 query 二次调用 VLM。主 Agent LLM 根据模块已经发布的结构化文本回答 query。
 实时读取分为两种语义：没有冻结目标窗口时读取 latest 已完成结果；受信 video block 携带
 `window_id + window_start_sequence + target_sequence` 时，最多 4 秒等待 exact target。当前 Agent-Service media custom route 不生成该 block，
-因此不会从该入口进入这两种 Tool 读取语义。strict 未命中
+而是通过服务端签发的 capability 和冻结 `LiveViewProjection` 进入 exact target 语义；Tool 暴露不依赖
+用户消息中的实时视频 block。strict 未命中
 exact sequence 时旧记录只能用于状态诊断，Tool 内部结果记录 `usable_visual_text=false`，主模型不得把旧文本当作当前画面。
 `live_view_inspect` 给主模型的成功或不可用结果都固定收窄为两个字段：`window` 按选帧顺序列出
 `sequence + captured_at`，其中 `captured_at` 是 `Asia/Shanghai` 的 ISO 8601 时间；`vlm_response` 承载
@@ -54,12 +55,13 @@ Tool artifact、contract 与 trace，不进入模型可见 ToolMessage。
 可信 VIDEO 连接中的 `create/list/cancel`，不是 embedding Tool。`live_view_inspect` 继续回答当前实时画面，内部
 后台 observation service 继续生成 rolling VLM snapshot。`siglip2_embed*`、`find_object`、
 `visual_attention_manage` 都不是注册 Tool。Attention 仍只产生内部候选；连接级 reminder manager 是独立的
-一次性状态机，不复用 Attention consumer。当前 media custom route 的投影限制使这三个 Tool 都不会由该用户入口暴露，
-因此上述历史找物和连接提醒也不是当前 media 用户入口的可用能力；进程流水线与静态 inventory 不受影响。
+一次性状态机，不复用 Attention consumer。media custom route 通过服务端 capability 与冻结投影暴露这三个 Tool：
+`live_view_inspect` 要求冻结投影已包含视频 ID，`visual_memory_search` 要求目标序号与可检索历史，
+`visual_reminder_manage` 要求连接已收到视频帧。这些条件均不依赖用户消息中的实时视频 block。
 
 `visual_memory_search` 的模型可见描述明确它是当前 VIDEO 会话/thread 内的短期视觉记忆检索，不用于
-跨会话长期视觉记忆。远端长期视觉记忆属于 Memory backend，由主 Agent 的 Memory middleware 根据当前请求自动召回并以
-`[长期视觉记忆]` 标记进入 `memory_context`；它不是视觉 Tool，具体契约由 Memory authority 所有。
+跨会话历史。远端长期视觉记忆属于 Memory backend，由主 Agent 的 Memory middleware 根据当前请求自动召回，
+不添加来源标签地进入 `memory_context`；它不是视觉 Tool，具体契约由 Memory authority 所有。
 
 VLM 推理层复用 Provider-neutral `VisionUnderstandingClient` 与 adapter：视觉 Tool 负责受信输入绑定、
 Tool 治理和结构化结果，client/adapter 负责具体模型协议。同步 `uploaded_media_inspect` 调用在当前
@@ -298,11 +300,11 @@ hard gate。
 
 ## Tool 暴露与安全
 
-`visual_memory_search` 是 read Tool，但只在当前连接已完成 VIDEO 握手且可信
+`visual_memory_search` 是 read Tool，但只在当前视频投影存在且可信
 `user/session/as-of sequence` 已有可检索视觉文本时对模型可见；视频断线后不会继续暴露。生产 composition
 在进程级视觉资源可用时静态构造该 `BaseTool`，再由统一条件 middleware 缩小每轮可见集合，不按请求关键词
-建立动态 catalog。`live_view_inspect` 只有在本轮冻结投影已经包含 selector 选中的目标关键帧时才可见；
-仅完成 VIDEO 握手、仅收到尚未成为关键帧的原始帧或冻结窗口为空时都不暴露；
+建立动态 catalog。`live_view_inspect` 在本轮冻结投影已包含视频 ID 时可见；尚无已完成 VLM 文本时，
+Tool 直接返回有界不可用结果，不再用额外 availability 层隐藏。
 `visual_memory_search` 的可检索历史判定以 backend-neutral 的 `index_status=ready` 为准；Qdrant 持有文本向量时，
 不得再要求进程内 `VisualSemanticRecord.search_embedding` 非空。
 媒体入口在创建 run 时冻结当前视觉投影，并把 server-issued opaque capability token 放入 namespaced run metadata；
@@ -310,10 +312,9 @@ hard gate。
 条件 Tool 暴露和 Tool 执行必须以身份、thread、token 解析同一份投影，不得信任客户端提交的 video ID/sequence，
 也不得在执行期重读可能已被后续聊天更新的 session 投影。冻结投影没有 target sequence 时历史 Tool fail closed，
 不能把 `None` 当作无上界。
-当前 media custom route 虽然仍在进程 owner 中冻结这些投影并运行视觉并行流水线，但
-`media_graph_input()` 只生成文本 `HumanMessage`，不注入 `source=live_camera` block。所以
-`latest_runtime_media(...).live_video_ids` 为空，上述三个实时视觉 Tool 不会由该入口条件暴露。后续恢复必须设计
-受信的非消息投影并补齐 coverage，不得将 camera facts 直接暴露给主 LLM；本任务不改 production wiring。
+当前 media custom route 在进程 owner 中一次冻结投影并签发 run-scoped capability。
+`media_graph_input()` 只生成文本 `HumanMessage`，不注入 `source=live_camera` block；条件 middleware 解析该 capability
+后暴露对应 Tool，dynamic prompt 只根据最终可见 Tool 注入视觉回复规则，不投影 video ID 或 sequence。
 其描述把实时视频会话中的“这是什么/这个呢/它在做什么”等指示性问题视为视觉请求，不要求用户必须说出
 “摄像头”或“画面”，但问候和无关纯文本任务不调用。实时画面是瞬时事实：每个新的当前画面问题都必须重新调用，
 历史视觉 Tool observation 不能替代本轮证据；同一用户问题失败后不以相同参数重试。

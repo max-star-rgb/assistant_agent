@@ -24,6 +24,7 @@ class ImageGenerationToolPlugin:
                 adapter=create_image_generation_adapter(context.config),
                 thread_resource_manager=context.thread_resource_manager,
                 artifact_base_url=context.config.artifact_base_url,
+                use_fixture=True,
             )
         ]
 

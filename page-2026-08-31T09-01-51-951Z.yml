@@ -1,0 +1,51 @@
+- generic [ref=e2]:
+  - navigation [ref=e3]:
+    - link "About" [ref=e4] [cursor=pointer]:
+      - /url: https://about.google/?fg=1&utm_source=google-SG&utm_medium=referral&utm_campaign=hp-header
+    - link "Store" [ref=e5] [cursor=pointer]:
+      - /url: https://store.google.com/SG?utm_source=hp_header&utm_medium=google_ooo&utm_campaign=GS100042&hl=en-SG
+    - generic [ref=e7]:
+      - generic [ref=e8]:
+        - link "Gmail" [ref=e10] [cursor=pointer]:
+          - /url: https://mail.google.com/mail/&ogbl
+        - link "Search for Images" [ref=e12] [cursor=pointer]:
+          - /url: https://www.google.com/imghp?hl=en&ogbl
+          - text: Images
+      - button "Google apps" [ref=e15] [cursor=pointer]
+      - link "Sign in" [ref=e20] [cursor=pointer]:
+        - /url: https://accounts.google.com/ServiceLogin?hl=en&passive=true&continue=https://www.google.com/&ec=futura_exp_og_so_72776762_e
+  - img "Google" [ref=e23]
+  - search [ref=e31]:
+    - generic [ref=e33]:
+      - generic [ref=e35]:
+        - combobox "Search" [active] [ref=e42]
+        - generic [ref=e44]:
+          - button "Search by voice" [ref=e45] [cursor=pointer]
+          - button "Search by image" [ref=e48] [cursor=pointer]
+      - generic [ref=e52]:
+        - button "Google Search" [ref=e53] [cursor=pointer]
+        - button "I'm Feeling Lucky" [ref=e54] [cursor=pointer]
+  - generic [ref=e57]:
+    - text: "Google offered in:"
+    - link "简体中文" [ref=e58] [cursor=pointer]:
+      - /url: https://www.google.com/setprefs?sig=0_NfBEeEZHX_GS1ggvFY0L2v-V6BI%3D&hl=zh-CN&source=homepage&sa=X&ved=0ahUKEwj3_JzswMqWAxW2lOEIHVw9JDcQ2ZgBCBY
+    - link "Bahasa Melayu" [ref=e59] [cursor=pointer]:
+      - /url: https://www.google.com/setprefs?sig=0_NfBEeEZHX_GS1ggvFY0L2v-V6BI%3D&hl=ms&source=homepage&sa=X&ved=0ahUKEwj3_JzswMqWAxW2lOEIHVw9JDcQ2ZgBCBc
+    - link "தமிழ்" [ref=e60] [cursor=pointer]:
+      - /url: https://www.google.com/setprefs?sig=0_NfBEeEZHX_GS1ggvFY0L2v-V6BI%3D&hl=ta&source=homepage&sa=X&ved=0ahUKEwj3_JzswMqWAxW2lOEIHVw9JDcQ2ZgBCBg
+  - contentinfo [ref=e62]:
+    - generic [ref=e63]: Singapore
+    - generic [ref=e64]:
+      - generic [ref=e65]:
+        - link "Advertising" [ref=e66] [cursor=pointer]:
+          - /url: https://www.google.com/intl/en_sg/ads/?subid=ww-ww-et-g-awa-a-g_hpafoot1_1!o2&utm_source=google.com&utm_medium=referral&utm_campaign=google_hpafooter&fg=1
+        - link "Business" [ref=e67] [cursor=pointer]:
+          - /url: https://www.google.com/services/?subid=ww-ww-et-g-awa-a-g_hpbfoot1_1!o2&utm_source=google.com&utm_medium=referral&utm_campaign=google_hpbfooter&fg=1
+        - link "How Search works" [ref=e68] [cursor=pointer]:
+          - /url: https://google.com/search/howsearchworks/?fg=1
+      - generic [ref=e69]:
+        - link "Privacy" [ref=e70] [cursor=pointer]:
+          - /url: https://policies.google.com/privacy?hl=en-SG&fg=1
+        - link "Terms" [ref=e71] [cursor=pointer]:
+          - /url: https://policies.google.com/terms?hl=en-SG&fg=1
+        - button "Settings" [ref=e75] [cursor=pointer]

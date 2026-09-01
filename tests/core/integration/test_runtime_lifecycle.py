@@ -22,6 +22,7 @@ from assistant_agent.agent_server.async_delegation import (
     BACKGROUND_AGENT_NAME,
     build_async_subagent_middleware,
 )
+from assistant_agent.runtime import local_backend as local_backend_module
 from assistant_agent.runtime import thread_resources as thread_resources_module
 from assistant_agent.runtime.local_backend import create_local_backend
 from assistant_agent.native_agent import assistant_agent as assistant_agent_module
@@ -112,25 +113,35 @@ def test_main_graph_is_the_native_deep_agent(monkeypatch) -> None:
 
 
 @pytest.mark.core_invariant("LOOP-001")
-def test_local_shell_backend_resolves_cwd_and_os_absolute_paths(tmp_path: Path) -> None:
-    home_root = tmp_path / "home"
-    agent_home = home_root / "assistant_agent"
-    agent_home.mkdir(parents=True)
-    (agent_home / "cwd-sentinel.txt").write_text("cwd", encoding="utf-8")
+def test_local_shell_backend_resolves_runtime_cwd_and_os_absolute_paths(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    working_directory = tmp_path / "workspace"
+    working_directory.mkdir()
+    (working_directory / "cwd-sentinel.txt").write_text("cwd", encoding="utf-8")
     host_file = tmp_path / "host-sentinel.txt"
     host_file.write_text("host", encoding="utf-8")
-    manager = thread_resources_module.ThreadResourceManager(
-        thread_resources_module.ThreadResourceConfig(root=tmp_path / "threads")
+    monkeypatch.setattr(
+        local_backend_module,
+        "get_runtime",
+        lambda _schema: SimpleNamespace(
+            context=SimpleNamespace(cwd=working_directory)
+        ),
     )
-    backend = create_local_backend(manager, agent_home=agent_home).default
+    async def create_backend() -> LocalShellBackend:
+        with blockbuster_ctx():
+            return create_local_backend()
+
+    backend = asyncio.run(create_backend())
 
     assert isinstance(backend, LocalShellBackend)
     assert {entry["path"] for entry in backend.ls(".").entries or []} == {
-        str(agent_home / "cwd-sentinel.txt")
+        str(working_directory / "cwd-sentinel.txt")
     }
     assert "/tmp/" in {entry["path"] for entry in backend.ls("/.").entries or []}
     assert backend.read(str(host_file)).file_data["content"] == "host"
-    assert backend.execute("pwd").output.strip() == str(agent_home)
+    assert backend.execute("pwd").output.strip() == str(working_directory)
 
 
 @pytest.mark.core_invariant("LOOP-001")
@@ -197,11 +208,21 @@ def test_public_input_and_context_expose_no_private_run_facts() -> None:
         {"enable_memory": False, "require_tool_approval": False}
     )
     assert set(type(context).model_fields) == {
+        "cwd",
         "enable_memory",
         "require_tool_approval",
+        "context_compaction_trigger_tokens",
+        "context_compaction_keep_tokens",
     }
+    assert context.cwd == Path.home().resolve()
     assert context.enable_memory is False
     assert context.require_tool_approval is False
+    assert context.context_compaction_trigger_tokens is None
+    assert context.context_compaction_keep_tokens is None
+    assert (
+        AssistantRunContext.model_json_schema()["properties"]["cwd"]["default"]
+        == str(Path.home().resolve())
+    )
     assert (
         AssistantRunContext.model_json_schema()["properties"]["enable_memory"][
             "default"
@@ -216,6 +237,13 @@ def test_public_input_and_context_expose_no_private_run_facts() -> None:
     )
     with pytest.raises(ValidationError):
         AssistantRunContext.model_validate({"execution_mode": "fast"})
+    with pytest.raises(ValidationError):
+        AssistantRunContext(context_compaction_trigger_tokens=60_000)
+    with pytest.raises(ValidationError):
+        AssistantRunContext(
+            context_compaction_trigger_tokens=12_000,
+            context_compaction_keep_tokens=12_000,
+        )
 
 
 @pytest.mark.core_invariant("RUN-001")
@@ -252,6 +280,7 @@ def test_async_task_tracks_parent_correlation_without_workspace_state(
 
     def runtime(async_tasks=None):
         return SimpleNamespace(
+            context=AssistantRunContext(cwd=Path.home()),
             state={
                 "memory_context": ("memory-sentinel",),
                 "async_tasks": async_tasks or {},
@@ -286,6 +315,22 @@ def test_async_task_tracks_parent_correlation_without_workspace_state(
     )
 
     assert "workspace_id" not in task
+    assert [call.kwargs["context"] for call in client.runs.create.await_args_list] == [
+        {
+            "cwd": str(Path.home().resolve()),
+            "enable_memory": True,
+            "require_tool_approval": True,
+            "context_compaction_trigger_tokens": None,
+            "context_compaction_keep_tokens": None,
+        },
+        {
+            "cwd": str(Path.home().resolve()),
+            "enable_memory": True,
+            "require_tool_approval": True,
+            "context_compaction_trigger_tokens": None,
+            "context_compaction_keep_tokens": None,
+        },
+    ]
     for call in (
         client.threads.create.await_args,
         *client.runs.create.await_args_list,

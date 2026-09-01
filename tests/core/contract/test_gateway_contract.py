@@ -435,16 +435,28 @@ def test_media_wire_parser_rejects_removed_assistant_mode() -> None:
 
 
 @pytest.mark.core_invariant("IDENT-001")
-def test_assistant_context_is_public_configuration_not_private_run_facts() -> None:
+def test_assistant_context_is_public_configuration_not_private_run_facts(
+    tmp_path: Path,
+) -> None:
     context = AssistantRunContext.model_validate(
-        {"enable_memory": False, "require_tool_approval": False}
+        {
+            "cwd": str(Path.home()),
+            "enable_memory": False,
+            "require_tool_approval": False,
+        }
     )
     assert set(type(context).model_fields) == {
+        "cwd",
         "enable_memory",
         "require_tool_approval",
+        "context_compaction_trigger_tokens",
+        "context_compaction_keep_tokens",
     }
+    assert context.cwd == Path.home().resolve()
     assert context.enable_memory is False
     assert context.require_tool_approval is False
+    with pytest.raises(ValidationError, match="under"):
+        AssistantRunContext(cwd=tmp_path)
     with pytest.raises(ValidationError):
         AssistantRunContext.model_validate({"execution_mode": "planning"})
 

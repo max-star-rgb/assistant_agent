@@ -37,7 +37,10 @@ from assistant_agent.native_agent.tools import (
     interrupt_tool_names,
 )
 from assistant_agent.skills.native import create_project_skills_backend
-from assistant_agent.runtime.local_backend import create_browser_backend, create_local_backend
+from assistant_agent.runtime.local_backend import (
+    create_conversation_history_backend,
+    create_local_backend,
+)
 from assistant_agent.runtime.thread_resources import (
     ThreadResourceConfig,
     ThreadResourceManager,
@@ -50,9 +53,9 @@ async def reap_thread_resources(
 ) -> None:
     """Close thread MCP sessions before deleting expired thread directories."""
 
+    await pool.aclose_idle(manager.config.ttl_seconds)
     thread_refs = await asyncio.to_thread(manager.expired_thread_refs)
     for thread_ref in thread_refs:
-        await pool.aclose_thread(thread_ref)
         await asyncio.to_thread(manager.remove_expired, thread_ref)
 
 
@@ -111,7 +114,6 @@ class AgentServerExecutionOwner:
         mcp_server_configs = load_mcp_server_configs_from_env()
         mcp_session_pool = ThreadMcpSessionPool(
             mcp_server_configs,
-            manager=thread_resource_manager,
         )
         await reap_thread_resources(mcp_session_pool, thread_resource_manager)
         tools = await create_native_tool_inventory(
@@ -154,48 +156,50 @@ class AgentServerExecutionOwner:
                 else None
             ),
         }
-        agent_home = thread_resource_config.root.parent
-        writable_backend = create_local_backend(
-            thread_resource_manager,
-            agent_home=agent_home,
+        native_search_enabled = (
+            config.provider_mode == "real"
+            and config.resolved_chat_provider().provider == "qwen"
+            and config.qwen_chat_api_protocol == "dashscope"
+            and config.qwen_chat_enable_search
         )
+        writable_backend = create_local_backend()
+        conversation_history_backend = create_conversation_history_backend()
         worker_graph = build_general_purpose_worker(
             model,
             tools,
             backend=writable_backend,
+            summarization_backend=conversation_history_backend,
             skills_backend=skills_backend,
             **context_options,
             tool_profiles=business_tool_profiles,
-            general_purpose_tool_names={
-                tool.name for tool in general_purpose_tools
-            },
+            general_purpose_tool_names={tool.name for tool in general_purpose_tools},
             interrupt_tool_names=interrupt_names,
             visual_history_probe=tool_resources.visual_history_probe,
             live_view_resolver=tool_resources.live_view_resolver,
             current_location=config.current_location,
+            native_search_enabled=native_search_enabled,
         )
         async_middleware = build_async_subagent_middleware()
         assistant_agent = build_assistant_agent(
             model,
             tools,
             backend=writable_backend,
+            summarization_backend=conversation_history_backend,
             worker_graph=worker_graph,
             skills_backend=skills_backend,
             **context_options,
             tool_profiles=(*business_tool_profiles, async_tool_profile),
-            general_purpose_tool_names={
-                tool.name for tool in general_purpose_tools
-            },
+            general_purpose_tool_names={tool.name for tool in general_purpose_tools},
             interrupt_tool_names={
                 *interrupt_names,
                 *ASYNC_TASK_INTERRUPT_TOOL_NAMES,
             },
             browser_tools=browser_tools,
-            browser_backend=create_browser_backend(thread_resource_manager),
             additional_middleware=(async_middleware,),
             visual_history_probe=tool_resources.visual_history_probe,
             live_view_resolver=tool_resources.live_view_resolver,
             current_location=config.current_location,
+            native_search_enabled=native_search_enabled,
             memory_backend=memory_backend,
             memory_extraction_delay_seconds=config.memory_extraction_delay_seconds,
         )

@@ -276,7 +276,7 @@ class HybridMemoryBackend:
         return _bounded_texts(
             (
                 *text_result,
-                *(f"[长期视觉记忆] {value}" for value in visual_result),
+                *visual_result,
             )
         )
 

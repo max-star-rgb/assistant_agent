@@ -5,7 +5,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from blockbuster import blockbuster_ctx
 from langchain_mcp_adapters.interceptors import MCPToolCallRequest
 from langchain_core.tools import BaseTool, StructuredTool
 import pytest
@@ -13,16 +12,14 @@ from pydantic import ValidationError
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.mcp.config import MCPServerConfig
-from assistant_agent.mcp.stateful_sessions import ThreadMcpSessionPool
+from assistant_agent.mcp.stateful_sessions import (
+    ThreadMcpSessionPool,
+    resolve_mcp_connection,
+)
 from assistant_agent.native_agent import tools as native_tools
 from assistant_agent.native_agent.tools import (
     NativeToolResources,
     create_native_tool_inventory,
-)
-from assistant_agent.runtime import thread_resources as thread_resources_module
-from assistant_agent.runtime.thread_resources import (
-    ThreadResourceConfig,
-    ThreadResourceManager,
 )
 
 
@@ -111,23 +108,33 @@ def test_mcp_rejects_legacy_tool_classification_fields(field_name: str) -> None:
 
 
 @pytest.mark.core_invariant("EXT-001")
-def test_thread_mcp_creates_resources_off_the_event_loop(tmp_path: Path) -> None:
+def test_thread_mcp_resolves_the_run_cwd_without_thread_filesystem() -> None:
+    cwd = Path.home()
     config = MCPServerConfig(
         server_name="browser",
         session_scope="thread",
-        command=["probe"],
+        cwd="{cwd}",
+        command=["probe", "--output-dir", "{cwd}"],
         allowed_tools=["navigate"],
     )
-    manager = ThreadResourceManager(ThreadResourceConfig(root=tmp_path / "threads"))
-    pool = ThreadMcpSessionPool([config], manager=manager)
+    assert resolve_mcp_connection(config, cwd=cwd) == {
+        "transport": "stdio",
+        "command": "probe",
+        "args": ["--output-dir", str(cwd)],
+        "cwd": str(cwd),
+        "env": {},
+    }
+
+    pool = ThreadMcpSessionPool([config])
     session = SimpleNamespace(call_tool=AsyncMock(return_value="ok"))
+    entry = SimpleNamespace(
+        call_lock=asyncio.Lock(),
+        session=session,
+    )
 
     async def scenario() -> object:
         pool._entry = AsyncMock(  # type: ignore[method-assign]
-            return_value=SimpleNamespace(
-                call_lock=asyncio.Lock(),
-                session=session,
-            )
+            return_value=entry,
         )
         request = MCPToolCallRequest(
             name="navigate",
@@ -138,9 +145,14 @@ def test_thread_mcp_creates_resources_off_the_event_loop(tmp_path: Path) -> None
                     user=SimpleNamespace(identity="user-sentinel")
                 ),
                 execution_info=SimpleNamespace(thread_id="thread-sentinel"),
+                context=SimpleNamespace(cwd=cwd),
             ),
         )
-        with blockbuster_ctx(scanned_modules=thread_resources_module):
-            return await pool.call(request)
+        return await pool.call(request)
 
     assert asyncio.run(scenario()) == "ok"
+    pool._entry.assert_awaited_once_with(  # type: ignore[attr-defined]
+        ("user-sentinel", "thread-sentinel", "browser"),
+        config,
+        cwd,
+    )

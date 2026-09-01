@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from pathlib import Path
+from typing import Any, Self
 
 from langgraph.runtime import Runtime
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class AuthenticatedUserRequired(PermissionError):
@@ -18,6 +19,10 @@ class AssistantRunContext(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    cwd: Path = Field(
+        default=Path.home().resolve(),
+        description="本轮 Assistant 使用的默认工作目录。",
+    )
     enable_memory: bool = Field(
         default=True,
         json_schema_extra={
@@ -31,6 +36,42 @@ class AssistantRunContext(BaseModel):
         default=True,
         description="工具执行前是否要求人工审批。",
     )
+    context_compaction_trigger_tokens: int | None = Field(
+        default=None,
+        ge=1,
+        title="上下文压缩触发 Token 数",
+        description="触发上下文压缩的绝对 token 数；留空时使用服务端默认值。",
+        json_schema_extra={"langgraph_nodes": ["model"]},
+    )
+    context_compaction_keep_tokens: int | None = Field(
+        default=None,
+        ge=1,
+        title="压缩后保留 Token 数",
+        description="压缩后保留的绝对 token 数；留空时使用服务端默认值。",
+        json_schema_extra={"langgraph_nodes": ["model"]},
+    )
+
+    @field_validator("cwd", mode="before")
+    @classmethod
+    def validate_cwd(cls, value: object) -> Path:
+        try:
+            cwd = Path(value).expanduser().resolve(strict=True)  # type: ignore[arg-type]
+        except (OSError, TypeError, ValueError) as exc:
+            raise ValueError("cwd must be an existing directory") from exc
+        host_root = Path.home().resolve()
+        if not cwd.is_dir() or not cwd.is_relative_to(host_root):
+            raise ValueError(f"cwd must be a directory under {host_root}")
+        return cwd
+
+    @model_validator(mode="after")
+    def validate_context_compaction_limits(self) -> Self:
+        trigger = self.context_compaction_trigger_tokens
+        keep = self.context_compaction_keep_tokens
+        if (trigger is None) != (keep is None):
+            raise ValueError("context compaction trigger and keep must be set together")
+        if trigger is not None and keep is not None and keep >= trigger:
+            raise ValueError("context compaction keep must be lower than trigger")
+        return self
 
 
 ASSISTANT_RUNTIME_METADATA_KEY = "assistant_agent_runtime"

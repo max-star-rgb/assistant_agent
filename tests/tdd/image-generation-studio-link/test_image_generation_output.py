@@ -1,13 +1,34 @@
+import base64
 import json
+from pathlib import Path
 
+from langchain.agents import AgentState
+from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.graph import END, START, StateGraph
+from langgraph.prebuilt import ToolNode
+
+from assistant_agent.native_agent.context import AssistantRunContext
+from assistant_agent.runtime.thread_resources import (
+    ThreadResourceConfig,
+    ThreadResourceManager,
+)
 from assistant_agent.tools.native_boundary import native_tool_response
 from assistant_agent.tools.plugins.builtin.image_generation.models import (
     ImageGenerationRequest,
     ImageGenerationResult,
 )
 from assistant_agent.tools.plugins.builtin.image_generation.tool import (
+    create_image_generation_tool,
     _execute_image_generation,
 )
+
+
+PNG_BYTES = b"\x89PNG\r\n\x1a\nimage-generation-studio"
+
+
+class _User(dict):
+    identity = "user-sentinel"
+    permissions = ()
 
 
 class _GeneratedImageAdapter:
@@ -50,3 +71,51 @@ def test_model_observation_exposes_only_backend_owned_image_url(tmp_path) -> Non
     ]
     assert artifact["images"][0]["url"] == observation["images"][0]["url"]
     assert "provider.example" not in content[0]["text"]
+
+
+def test_image_generation_returns_native_image_content_block(tmp_path: Path) -> None:
+    manager = ThreadResourceManager(ThreadResourceConfig(root=tmp_path / "threads"))
+    resources = manager.resolve("user-sentinel", "thread-sentinel")
+    generated = resources.artifact_root / "generated"
+    generated.mkdir()
+    (generated / "cake.png").write_bytes(PNG_BYTES)
+    output_ref = f"/artifacts/{resources.thread_ref}/generated/cake.png"
+    image_tool = create_image_generation_tool(
+        _GeneratedImageAdapter(output_ref),
+        thread_resource_manager=manager,
+    )
+    builder = StateGraph(AgentState, context_schema=AssistantRunContext)
+    builder.add_node("tools", ToolNode([image_tool]))
+    builder.add_edge(START, "tools")
+    builder.add_edge("tools", END)
+
+    result = builder.compile().invoke(
+        {
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "image_generation",
+                            "args": {"prompt": "cake"},
+                            "id": "image-call",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            ]
+        },
+        context=AssistantRunContext(),
+        config={
+            "configurable": {
+                "thread_id": "thread-sentinel",
+                "langgraph_auth_user": _User(),
+            }
+        },
+    )
+
+    message = result["messages"][-1]
+    assert isinstance(message, ToolMessage)
+    image = next(block for block in message.content if block["type"] == "image")
+    assert image["mime_type"] == "image/png"
+    assert base64.b64decode(image["base64"]) == PNG_BYTES

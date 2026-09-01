@@ -74,7 +74,6 @@ class DashScopeNativeChatModel(BaseChatModel):
     base_url: str
     model_name: str
     timeout_seconds: float = 75.0
-    max_tokens: int = 1_024
     enable_thinking: bool = False
     enable_search: bool = False
     streaming: bool = False
@@ -262,7 +261,6 @@ class DashScopeNativeChatModel(BaseChatModel):
         )
         parameters: dict[str, Any] = {
             "result_format": "message",
-            "max_tokens": self.max_tokens,
             "enable_thinking": self.enable_thinking or deep_research,
         }
         if stream:

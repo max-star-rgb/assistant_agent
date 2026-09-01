@@ -1,6 +1,6 @@
 # LangGraph Agent Server 部署架构
 
-最后更新：2026-08-29
+最后更新：2026-08-31
 
 ## Authority contract
 
@@ -71,21 +71,24 @@ Tool inventory、一个 `MemoryBackend`、一个 `ThreadResourceManager`、线�
 main、worker、Memory graph。
 schema/history/state 请求和 run 都复用该 owner；custom-app lifespan 在进程 shutdown 时关闭一次。
 
-main Agent 使用原生 `CompositeBackend`：默认 `LocalShellBackend` 以
-`/home/lenovo1/assistant_agent` 为 cwd，并用 Deep Agents 原生 `virtual_mode=False` 接受真实绝对路径；filesystem
+main Agent 使用按当前 run 的 `AssistantRunContext.cwd` 创建的 `LocalShellBackend`，并用 Deep Agents 原生
+`virtual_mode=False` 接受真实绝对路径；filesystem
 将 `.` 映射为 cwd，`/`、`/.` 和其他绝对路径保持宿主 OS 语义。
-`/artifacts/`、`/scratch/`、`/uploads/` 是当前 thread 的快捷路由。
-main 和 worker 复用同一个 `CompositeBackend`、基础模型、完整业务 Tool inventory、Prompt Builder、Skills、
+不装配 `/artifacts/`、`/scratch/`、`/uploads/` 等虚拟 filesystem route。main 和 worker 复用同一个
+working-directory backend、基础模型、完整业务 Tool inventory、Prompt Builder、Skills、
 Tool Profile、filesystem、`execute` 与 HITL 配置。Skills discovery 仍使用独立 `FilesystemBackend`，只读取产品内建
 Skill。worker 不装配同步或异步 delegation middleware，也不运行主 Agent 的 Memory 提取生命周期。
 两者的官方 summarization 从同一 Provider 配置取得 context window、trigger/target ratio 与可选离线 token counter；
 real DeepSeek/native compactor 缺 tokenizer 时在模型 composition 前启动失败。
 
-thread 临时资源位于 `/home/lenovo1/assistant_agent/threads/<thread_ref>/`，只包含 `scratch/`、`uploads/` 和
-`artifacts/`。`thread_ref` 由认证 identity 与 Agent Server thread ID 的摘要确定，目录按 24 小时 TTL 回收；不存在
+生成媒体的 thread 临时资源位于 `/home/lenovo1/assistant_agent/threads/<thread_ref>/artifacts/generated/`；该目录是
+媒体交付运行数据，不是 Agent filesystem mount、源码、安装副本或默认 cwd。`thread_ref` 由认证 identity 与 Agent Server
+thread ID 的摘要确定，目录按 24 小时 TTL 回收；不存在
 `workspace_id`、`workspace.json`、project registry、仓库副本、Git worktree 或 patch 回灌层。Agent 直接操作
-Agent Server OS identity 有权访问的真实路径；需要识别 Git 仓库时对目标路径执行
-`git -C <path> rev-parse --show-toplevel`，不预注册或启动时全盘扫描仓库。
+Agent Server OS identity 有权访问的真实路径；`git` Tool 按调用提供的目标路径识别仓库根，不预注册或启动时
+全盘扫描仓库；通用 `execute` 不执行直接 Git CLI。
+Playwright 的 thread session 只复用浏览器进程状态，不使用上述 thread 目录；其进程 cwd 和输出目录直接取当前
+`AssistantRunContext.cwd`，空闲 session 独立按 TTL 回收。
 
 `start_async_task` 只把父子 thread/run correlation 写入 task handle、child thread metadata 和 worker run metadata。
 只有进程内 async adapter 会在 start/update 的 loopback SDK
@@ -97,7 +100,7 @@ internal capability 是当前本地单进程部署的进程内随机 secret，�
 仓库；多进程部署前必须升级为共享 secret 或正式 service identity。
 
 统一 Agent 的全部副作用 Tool 由官方 HITL 在 handler 前 interrupt。HITL 是审批治理，不是进程隔离；批准
-`execute` 等价于授权以 `lenovo1` 运行的 Agent Server 在 Agent Home cwd 下执行完整 command，可访问该 OS 用户有权
+`execute` 等价于授权以 `lenovo1` 运行的 Agent Server 在 run cwd 下执行完整 command，可访问该 OS 用户有权
 访问的宿主路径、网络和 Git。filesystem Tool 与 shell 共享这套 OS identity 权限边界。
 当前 `LocalShellBackend` 只适合受信本地个人 Agent；多租户或不可信生产必须使用 container 或 remote sandbox backend。
 
@@ -109,7 +112,10 @@ internal capability 是当前本地单进程部署的进程内随机 secret，�
 {"messages":[{"role":"user","content":"hello"}]}
 ```
 
-公开 `AssistantRunContext` 只有 `enable_memory` 与 `require_tool_approval`；后者默认为 true，保存为 false 的
+公开 `AssistantRunContext` 包含 `cwd`、`enable_memory`、`require_tool_approval`，以及可选的
+`context_compaction_trigger_tokens` / `context_compaction_keep_tokens`；`cwd` 默认为 OS 用户 Home，且只接受
+Home 内已存在目录。两个压缩值必须同时设置且 `0 < keep < trigger`；都不设置时继续使用 Provider context window 的
+75% 触发、压缩后保留 15%。`require_tool_approval` 默认为 true，保存为 false 的
 Assistant 会让原本受 HITL 管理的 Tool 自动执行。身份、入口和视觉 capability 只在
 服务端签发的 namespaced run metadata 中。认证用户唯一来自 `Runtime.server_info.user.identity`；当前 tokenless
 developer hook 从 `X-Assistant-User` 取得 identity，省略时为 `local-developer`，因此端口不得暴露给不受信网络。

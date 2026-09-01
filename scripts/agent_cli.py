@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import Any
 
 from langgraph_sdk import get_sync_client
@@ -12,12 +13,12 @@ from langgraph_sdk import get_sync_client
 from assistant_agent.agent_server.client import (
     IncompatibleCheckpointGraphError,
     IncompatibleThreadGraphError,
-    bind_thread_graph_identity,
     require_current_checkpoint_graph,
     require_thread_graph_identity,
 )
 from assistant_agent.agent_server.config import ASSISTANT_GRAPH_ID
 from assistant_agent.native_agent.context import (
+    AssistantRunContext,
     AssistantRuntimeFacts,
     assistant_runtime_metadata,
 )
@@ -45,17 +46,14 @@ def _ensure_thread(client: Any, thread_id: str | None) -> str:
     thread = client.threads.create(
         thread_id=thread_id,
         if_exists="do_nothing",
-        metadata=bind_thread_graph_identity(
-            {"client": "agent_cli"},
-            expected_graph_id=ASSISTANT_ID,
-        ),
+        metadata={"client": "agent_cli"},
         graph_id=ASSISTANT_ID,
     )
     require_thread_graph_identity(thread, expected_graph_id=ASSISTANT_ID)
     return str(thread["thread_id"])
 
 
-def _run_once(client: Any, *, text: str, thread_id: str) -> int:
+def _run_once(client: Any, *, text: str, thread_id: str, cwd: Path) -> int:
     try:
         require_thread_graph_identity(
             client.threads.get(thread_id),
@@ -70,6 +68,7 @@ def _run_once(client: Any, *, text: str, thread_id: str) -> int:
         input={
             "messages": [{"role": "user", "content": text}],
         },
+        context=AssistantRunContext(cwd=cwd).model_dump(mode="json"),
         metadata=assistant_runtime_metadata(
             AssistantRuntimeFacts(entry_profile="cli")
         ),
@@ -115,6 +114,7 @@ def _replay_checkpoint(
     *,
     thread_id: str,
     checkpoint_id: str,
+    cwd: Path,
     confirm: Callable[[str], str] = input,
 ) -> int:
     states = client.threads.get_history(thread_id, limit=100)
@@ -147,6 +147,7 @@ def _replay_checkpoint(
         ASSISTANT_ID,
         input=None,
         checkpoint_id=checkpoint_id,
+        context=AssistantRunContext(cwd=cwd).model_dump(mode="json"),
         metadata=assistant_runtime_metadata(
             AssistantRuntimeFacts(entry_profile="cli")
         ),
@@ -202,7 +203,7 @@ def main() -> int:
         text = " ".join(args.text).strip()
         if not text:
             raise SystemExit("text is required unless --interactive is used")
-        return _run_once(client, text=text, thread_id=thread_id)
+        return _run_once(client, text=text, thread_id=thread_id, cwd=args.cwd)
     print(f"Agent Server thread: {thread_id}")
     print(
         "Commands: /new, /history, "
@@ -237,6 +238,7 @@ def main() -> int:
                 client,
                 thread_id=thread_id,
                 checkpoint_id=checkpoint_id,
+                cwd=args.cwd,
             )
             continue
         if text == "/rollback":
@@ -249,15 +251,16 @@ def main() -> int:
                 continue
             _rollback_run(client, thread_id=thread_id, run_id=run_id)
             continue
-        _run_once(client, text=text, thread_id=thread_id)
+        _run_once(client, text=text, thread_id=thread_id, cwd=args.cwd)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Client for assistant_agent Agent Server.")
     parser.add_argument("text", nargs="*")
-    parser.add_argument("--server", default="http://127.0.0.1:8000")
+    parser.add_argument("--server", default="http://127.0.0.1:8089")
     parser.add_argument("--identity", default="local-cli")
     parser.add_argument("--thread-id")
+    parser.add_argument("--cwd", type=Path, default=Path.home())
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--interactive", action="store_true")
     return parser

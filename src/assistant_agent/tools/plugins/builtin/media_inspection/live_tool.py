@@ -22,7 +22,6 @@ from assistant_agent.native_agent.context import (
     assistant_runtime_facts,
     authenticated_user_identity,
 )
-from assistant_agent.media.runtime_media import latest_runtime_media
 from assistant_agent.tools.availability import ToolAvailability
 from assistant_agent.tools.runtime import ToolContext
 from assistant_agent.tools.ids import LIVE_VIEW_INSPECT_TOOL_NAME
@@ -86,23 +85,17 @@ def create_live_view_inspect_tool(
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """理解当前实时画面，用视觉证据回答用户正在指向或询问的对象、人物、场景、动作、文字与空间关系。
 
-        当前连接向你暴露本工具时，表示实时画面能力已经可用。以下情况应调用：
+        以下情况应调用：
         - 用户明确询问画面、镜头、眼前或现场内容；
-        - 用户使用“这是什么”“这个呢”“那是什么”“它在做什么”等指示语，且当前是实时视频会话；
+        - 用户使用“这是什么”“这个呢”“那是什么”“它在做什么”等指示语；
         - 回答必须依赖看到当前对象、人物、动作、文字、颜色、数量、位置或环境。
-
-        问候、闲聊或与当前视觉内容无关的纯文本任务不要调用。每个用户问题最多调用一次；
-        若画面尚未就绪或调用失败，直接说明当前画面信息暂不可用，不要用相同参数重试，
-        不要暴露 Tool 名、参数、运行时字段或内部错误。
+；
+        若调用失败，直接说明当前画面信息暂不可用，不要用相同参数重试，
+        不要暴露 Tool 名和描述。
         """
 
         def inspect_live_view() -> ToolResult:
             state = runtime.state if isinstance(runtime.state, Mapping) else {}
-            media = latest_runtime_media(state)
-            if not media.live_video_ids:
-                raise ToolException(
-                    "live_video_required: 当前请求没有受信实时视频引用"
-                )
             execution = runtime.execution_info
             user_id = authenticated_user_identity(runtime)
             session_id = getattr(execution, "thread_id", None)
@@ -149,7 +142,7 @@ def create_live_view_inspect_tool(
 
     return configure_builtin_tool(
         live_view_inspect,
-        availability=ToolAvailability.VISUAL_KEYFRAME_AVAILABLE.value,
+        availability=ToolAvailability.VIDEO_FRAME_RECEIVED.value,
         bounded_expected_errors=True,
     )
 

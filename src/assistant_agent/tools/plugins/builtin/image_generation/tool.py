@@ -1,9 +1,11 @@
 """Image generation Tool backed by a Plugin-private adapter."""
 
+import shutil
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any
 
+from langchain_core.messages.content import create_image_block
 from langchain_core.tools import BaseTool, tool
 from langgraph.prebuilt import ToolRuntime
 from pydantic import Field
@@ -30,6 +32,7 @@ from assistant_agent.tools.plugins.builtin.image_generation.backend import (
 from assistant_agent.runtime.generated_artifacts import (
     MAX_DELIVERED_IMAGE_COUNT,
     generated_artifact_payload,
+    generated_artifact_payload_for_ref,
     materialize_image_generation_result,
 )
 from assistant_agent.tools.ids import (
@@ -43,11 +46,17 @@ from assistant_agent.tools.native_boundary import (
 from assistant_agent.runtime.thread_resources import ThreadResourceManager
 
 
+IMAGE_GENERATION_FIXTURE = Path(
+    "/home/lenovo1/pycharm_project/assistant_agent/.local/generated/1fa3105676e9af305a8c555e.png"
+)
+
+
 def create_image_generation_tool(
     adapter: ImageGenerationAdapter | None = None,
     *,
     thread_resource_manager: ThreadResourceManager,
     artifact_base_url: str | None = None,
+    use_fixture: bool = False,
 ) -> BaseTool:
     """Create the native image generation Tool."""
 
@@ -71,7 +80,7 @@ def create_image_generation_tool(
         不用于理解、检索或修改现有图片。
         """
 
-        return invoke_native_tool(
+        content, artifact = invoke_native_tool(
             IMAGE_GENERATION_TOOL_NAME,
             lambda: _execute_image_generation_from_runtime(
                 image_adapter,
@@ -79,8 +88,24 @@ def create_image_generation_tool(
                 runtime,
                 thread_resource_manager=thread_resource_manager,
                 artifact_base_url=public_artifact_base_url,
+                use_fixture=use_fixture,
             ),
         )
+        for image in artifact.get("images", []):
+            if not isinstance(image, Mapping):
+                continue
+            payload = generated_artifact_payload_for_ref(
+                image.get("output_ref"),
+                thread_resource_manager,
+            )
+            if payload is not None:
+                content.append(
+                    create_image_block(
+                        base64=payload.base64_data,
+                        mime_type=payload.media_type,
+                    )
+                )
+        return content, artifact
 
     return configure_builtin_tool(image_generation, bounded_expected_errors=True)
 
@@ -92,6 +117,7 @@ def _execute_image_generation_from_runtime(
     *,
     thread_resource_manager: ThreadResourceManager,
     artifact_base_url: str = "",
+    use_fixture: bool = False,
 ) -> ToolResult:
     state = runtime.state if isinstance(runtime.state, Mapping) else {}
     request = ImageGenerationRequest(
@@ -111,6 +137,7 @@ def _execute_image_generation_from_runtime(
         artifact_dir=resources.artifact_root / "generated",
         public_prefix=public_prefix,
         artifact_base_url=artifact_base_url,
+        use_fixture=use_fixture,
     )
 
 
@@ -121,9 +148,34 @@ def _execute_image_generation(
     artifact_dir: Path,
     public_prefix: str,
     artifact_base_url: str = "",
+    use_fixture: bool = False,
 ) -> ToolResult:
     try:
-        result = adapter.generate(input)
+        # ponytail: temporary global fixture; remove this branch to restore Provider generation.
+        if use_fixture:
+            if not IMAGE_GENERATION_FIXTURE.is_file():
+                raise ProviderAdapterError(
+                    "provider_unconfigured", "hardcoded image fixture is missing"
+                )
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            fixture_path = artifact_dir / IMAGE_GENERATION_FIXTURE.name
+            shutil.copyfile(IMAGE_GENERATION_FIXTURE, fixture_path)
+            output_ref = f"{public_prefix.rstrip('/')}/{fixture_path.name}"
+            result = ImageGenerationResult(
+                task_id="hardcoded_image_fixture",
+                status="succeeded",
+                image_url=output_ref,
+                image_urls=[output_ref],
+                download_url=output_ref,
+                download_urls=[output_ref],
+                prompt=input.prompt,
+                provider="mock",
+                model="hardcoded-local-fixture",
+                output_ref=output_ref,
+                prompt_used=input.prompt,
+            )
+        else:
+            result = adapter.generate(input)
         if result.status == "succeeded":
             result = materialize_image_generation_result(
                 result,

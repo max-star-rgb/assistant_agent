@@ -151,7 +151,6 @@ class ProviderConfig:
     chat_stream: bool = False
     native_provider_streaming: bool = False
     chat_timeout_seconds: float = 75.0
-    chat_max_tokens: int = 1_024
     deep_research_chat_max_tokens: int = 8_192
     agent_service_text_turn_timeout_seconds: float = 90.0
     context_compactor_mode: ContextCompactorMode = "off"
@@ -657,13 +656,6 @@ class ProviderConfig:
                 source.get("MULTIMODAL_AGENT_CHAT_TIMEOUT_SECONDS"),
                 75.0,
             ),
-            chat_max_tokens=max(
-                1,
-                _int_env(
-                    source.get("MULTIMODAL_AGENT_CHAT_MAX_TOKENS"),
-                    1_024,
-                ),
-            ),
             deep_research_chat_max_tokens=max(
                 1,
                 _int_env(
@@ -826,7 +818,9 @@ class ProviderConfig:
                 "QWEN_IMAGE_BASE_URL", "https://dashscope.aliyuncs.com/api/v1"
             ),
             qwen_image_model=source.get("QWEN_IMAGE_MODEL", "qwen-image-2.0-pro"),
-            qwen_image_default_size="1024*1024",
+            qwen_image_default_size=source.get(
+                "QWEN_IMAGE_DEFAULT_SIZE", "1024*1024"
+            ),
             ark_image_base_url=source.get("ARK_IMAGE_BASE_URL"),
             ark_image_model=source.get("ARK_IMAGE_MODEL"),
             ark_image_default_size="2K",

@@ -45,10 +45,6 @@ class MediaConnectionSession:
         self.media_capabilities = media_capabilities
 
     @property
-    def video_handshake_completed(self) -> bool:
-        return self.thread_id is not None and self.call_type == "VIDEO"
-
-    @property
     def requires_matching_media_user(self) -> bool:
         return self.control_message == "assistantControl"
 

@@ -1,6 +1,6 @@
 # Memory Backend 私有 HTTP 接入契约
 
-最后更新：2026-08-25
+最后更新：2026-09-01
 
 ## Authority contract
 
@@ -76,8 +76,7 @@ Content-Type: application/json
 
 adapter 只消费 `results[]` 中 `type=text` 的非空 `content`。图片、Base64、URL、direct answer、远端身份字段
 和原始响应都不进入 Graph state。视觉分支具有独立 timeout，任何失败规范化为空结果；LangMem 和当前 turn
-继续。远端文本以 `[长期视觉记忆]` 来源标签与 LangMem 结果合并，仍受 `memory_context` 既有预算约束。
-该标签用于区分自动跨会话召回与当前 VIDEO 会话的短期 `visual_memory_search` Tool 结果。
+继续。远端文本不添加来源标签，直接与 LangMem 结果合并，仍受 `memory_context` 既有预算约束。
 
 ### 远端视觉服务身份
 

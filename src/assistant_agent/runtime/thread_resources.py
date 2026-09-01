@@ -1,4 +1,4 @@
-"""Thread-scoped scratch, upload, and artifact directories."""
+"""Thread-scoped generated artifact directories."""
 
 from __future__ import annotations
 
@@ -36,8 +36,6 @@ class ThreadResources(BaseModel):
 
     thread_ref: str = Field(pattern=r"^[0-9a-f]{32}$")
     root: Path
-    scratch_root: Path
-    upload_root: Path
     artifact_root: Path
 
 
@@ -53,17 +51,12 @@ class ThreadResourceManager:
             f"{identity}\0{thread_id}".encode("utf-8")
         ).hexdigest()[:32]
         root = self.config.root / thread_ref
-        scratch_root = root / "scratch"
-        upload_root = root / "uploads"
         artifact_root = root / "artifacts"
-        for directory in (scratch_root, upload_root, artifact_root):
-            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        artifact_root.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.utime(root)
         return ThreadResources(
             thread_ref=thread_ref,
             root=root,
-            scratch_root=scratch_root,
-            upload_root=upload_root,
             artifact_root=artifact_root,
         )
 

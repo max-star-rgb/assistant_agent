@@ -105,6 +105,8 @@
 - 工具结果必须结构化，失败必须返回可解释错误；外部能力必须经过 adapter、mock/unconfigured 和安全 profile 边界。
 - Memory tool、MCP、A2A、durable task 和入口层都保持薄适配，不把治理逻辑散落到入口脚本或 route 中。
 - 业务功能建议从具体模块导入；只有明确包级公共入口才放进 `__init__.py` 聚合导出。
+- 仅修改 system prompt / dynamic prompt 的自然语言文案、规则说明或措辞时，禁止使用 TDD，禁止为此新增或修改
+  pytest；直接复核最终渲染内容。涉及 prompt 装配逻辑、上下文数据流、安全或权限边界时，仍按测试策略判断。
 
 ## 7. 文档与工作模式
 

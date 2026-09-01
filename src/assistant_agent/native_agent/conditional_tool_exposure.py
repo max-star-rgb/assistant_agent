@@ -63,33 +63,15 @@ class ConditionalToolExposureMiddleware(AgentMiddleware):
         availability = tool_availability(tool)
         if availability is ToolAvailability.ALWAYS:
             return True
-        media = latest_runtime_media(request.state)
         if availability is ToolAvailability.UPLOADED_MEDIA_PRESENT:
-            return media.has_uploaded_media
+            return latest_runtime_media(request.state).has_uploaded_media
         runtime = request.runtime
         live = self._trusted_live_view(runtime)
-        if availability is ToolAvailability.VIDEO_HANDSHAKE_COMPLETED:
-            return bool(media.live_video_ids) and live is not None
         if availability is ToolAvailability.VIDEO_FRAME_RECEIVED:
-            return (
-                bool(media.live_video_ids)
-                and live is not None
-                and bool(live.live_video_ids)
-            )
-        if availability is ToolAvailability.VISUAL_KEYFRAME_AVAILABLE:
-            return (
-                bool(media.live_video_ids)
-                and live is not None
-                and bool(live.live_video_ids)
-                and live.target_video_id in live.live_video_ids
-                and live.target_sequence is not None
-                and bool(live.window_sequences)
-                and live.window_sequences[-1] == live.target_sequence
-            )
+            return live is not None and bool(live.live_video_ids)
         if availability is ToolAvailability.VISUAL_HISTORY_AVAILABLE:
             return (
-                bool(media.live_video_ids)
-                and live is not None
+                live is not None
                 and live.target_sequence is not None
                 and self._has_visual_history(
                     runtime,

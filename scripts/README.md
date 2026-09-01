@@ -85,7 +85,8 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
 - `scripts/agent_cli.py`：通过公开 `langgraph_sdk` 调用 Agent Server。交互模式支持 `/history` 查看脱敏
   checkpoint 元数据、`/replay <checkpoint_id>` 从历史 checkpoint 创建原生 replay 分支，以及
   `/rollback <run_id>` 用 `action="rollback"` 丢弃可取消 run；两个变更状态的命令都要求精确确认。CLI 不读取
-  saver、不维护 checkpoint facade，也不承诺撤销已经发生的外部 Tool 副作用。
+  saver、不维护 checkpoint facade，也不承诺撤销已经发生的外部 Tool 副作用。`--cwd` 选择当前 run 的工作目录，
+  默认是 OS 用户 Home；普通调用、交互后续消息和 replay 使用同一个 cwd。
 - `scripts/media_simulator.py`: server-backed Media-Agent protocol simulator for
   `/agent-service/v1`; type text repeatedly, or use `/new [sessionId]` to open a
   new media session. Media chat 不提供模式选择命令。If the server closes the
@@ -176,7 +177,8 @@ Runtime 使用 `onnx` 解析图中真实 external-data 引用并核对 manifest�
 浏览器能力由 `deploy/mcp_servers.example.json` 中固定版本的官方 Playwright MCP 提供，不再安装 Python
 Playwright 或注册项目内建 Website guidance plugin。运行环境需要 Node.js 20+；把示例 server 合并到未跟踪的
 `.local/mcp_servers.json`，并设置 `MULTIMODAL_AGENT_MCP_ENABLED=1`。启动时 MCP discovery 成功后，`browser`
-Profile 才会出现；交互类 Tool 统一进入 HITL。
+Profile 才会出现；交互类 Tool 统一进入 HITL。示例中的 `{cwd}` 在每个 thread 首次调用时替换为
+`AssistantRunContext.cwd`，Playwright 的截图和下载直接落在该目录，不使用 thread scratch/artifact 目录。
 
 新增脚本必须对应当前权威文档中的稳定入口或无法由现有 pytest/eval 表达的 operator 流程；
 临时诊断优先使用不提交的一次性命令。

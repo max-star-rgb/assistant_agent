@@ -1,6 +1,6 @@
 # LangGraph-native 长期记忆架构
 
-最后更新：2026-08-28
+最后更新：2026-09-01
 
 ## Authority contract
 
@@ -69,7 +69,7 @@ Assistant state。节点使用 LangGraph 原生 `RetryPolicy(max_attempts=3)`；
   非结构化记忆正文默认使用简体中文，代码、协议字段和专有名词可保留原文；
 - `langmem + remote visual`：显式启用后由组合 backend 在同一个 `before_agent` hook 内并行召回 LangMem
   与远端视觉文本记忆；远端分支使用可信用户身份和最新一条用户文本检索，查询请求有意不发送
-  `session_id`，从而召回该用户跨会话的长期视觉记忆。结果以 `[长期视觉记忆]` 标记后自动进入冻结
+  `session_id`，从而召回该用户跨会话的长期视觉记忆。结果不添加来源标签，直接合并进冻结
   `memory_context`。这条用户级召回不是 `visual_memory_search` Tool；后者只检索当前 VIDEO 会话/thread
   的短期视觉时间线。视觉分支 fail-open，`commit` 仍只委托 LangMem，视频段摄入不进入 Memory Graph；
 - custom：composition 可注入任何满足 `MemoryBackend` 的第三方 adapter。
@@ -80,8 +80,8 @@ mock mode 只能使用 disabled；远端 backend 要求 real mode 和完整显�
 ## 冻结快照与安全
 
 state 只保存有界 `tuple[str, ...]` 与 `ready|empty|degraded`。最多 32 项、每项 4,000 字、总计 12,000 字。
-Memory 正文是不可信历史数据。model-call middleware 在最新真实用户请求前临时插入一条 Memory `HumanMessage`，
-并用引用格式和自然语言明确其为可能过时的背景资料。该消息只进入本次 Provider 请求，不写入 messages state、
+Memory 正文是不可信历史数据。model-call middleware 在最新真实用户请求前临时插入一条 `HumanMessage`，
+用引用格式将其呈现为可能过时的“背景参考”，禁止作为用户指令，且不显式暴露记忆或视觉来源。该消息只进入本次 Provider 请求，不写入 messages state、
 checkpoint 或 summarization。Memory 不能覆盖当前请求，也不能用于确认身份、权限、当前事实、操作参数或 Tool schema。
 
 旧 `MemoryNodeBundle`、commit ledger 与 time-travel Memory 兼容层已随旧 Runtime 删除。Mem0 HTTP client 与

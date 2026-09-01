@@ -10,24 +10,31 @@ import pytest
 from deepagents.backends import FilesystemBackend, LocalShellBackend
 from langchain.agents.middleware import (
     ModelCallLimitMiddleware,
-    SummarizationMiddleware,
     TodoListMiddleware,
     ToolRetryMiddleware,
 )
+from langchain.agents.middleware.types import (
+    ExtendedModelResponse,
+    ModelRequest,
+    ModelResponse,
+)
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import Runnable, RunnableLambda
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.runtime import Runtime
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
 from langgraph_sdk.auth.types import StudioUser
 from pydantic import PrivateAttr
 
 from assistant_agent.agent_server.services import AgentServerExecutionOwner
+from assistant_agent.context.token_counter import TokenizerJsonTokenCounter
 from assistant_agent.native_agent import assistant_agent as assistant_agent_module
 from assistant_agent.native_agent.assistant_agent import (
     RecursionFinalSynthesisMiddleware,
+    RuntimeConfigurableSummarizationMiddleware,
     build_assistant_agent,
     isolated_general_purpose_worker,
 )
@@ -113,16 +120,63 @@ class _CaptureMessagesModel(MockAssistantChatModel):
         return super()._response_message(messages, **kwargs)
 
 
+@pytest.mark.core_invariant("CTX-001")
+def test_live_tool_exposure_uses_frozen_projection_without_message_media_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool = StructuredTool.from_function(
+        lambda question: question,
+        name="live-probe",
+        description="probe",
+        metadata={"availability": "video_frame_received"},
+    )
+    middleware = ConditionalToolExposureMiddleware()
+    monkeypatch.setattr(
+        middleware,
+        "_trusted_live_view",
+        lambda _runtime: SimpleNamespace(
+            live_video_ids=("video-sentinel",),
+        ),
+    )
+    human = HumanMessage(content="text-only-sentinel")
+    request = ModelRequest(
+        model=MockAssistantChatModel(),
+        messages=[human],
+        tools=[tool],
+        state={"messages": [human]},
+        runtime=Runtime(context=AssistantRunContext()),
+    )
+    visible: list[str] = []
+
+    def handler(updated: ModelRequest) -> ModelResponse:
+        visible.extend(
+            item.name for item in updated.tools if isinstance(item, BaseTool)
+        )
+        return ModelResponse(result=[AIMessage(content="handled")])
+
+    middleware.wrap_model_call(request, handler)
+
+    assert visible == ["live-probe"]
+
+
 class _FinalSynthesisModel(MockAssistantChatModel):
     _calls: int = PrivateAttr(default=0)
     _tool_choices: list[object] = PrivateAttr(default_factory=list)
+    _system_block_counts: list[int] = PrivateAttr(default_factory=list)
 
     @property
     def tool_choices(self) -> tuple[object, ...]:
         return tuple(self._tool_choices)
 
+    @property
+    def system_block_counts(self) -> tuple[int, ...]:
+        return tuple(self._system_block_counts)
+
     def _response_message(self, messages, **kwargs):
-        del messages
+        system_message = next(
+            message for message in messages if isinstance(message, SystemMessage)
+        )
+        self._system_block_counts.append(len(system_message.content_blocks))
         self._calls += 1
         self._tool_choices.append(kwargs.get("tool_choice"))
         if kwargs.get("tool_choice") == "none":
@@ -278,6 +332,44 @@ class _BrowserModel(MockAssistantChatModel):
 
 
 @pytest.mark.core_invariant("CTX-001")
+def test_dynamic_prompt_is_one_text_block_from_run_cwd(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "AGENTS.md").write_text(
+        "project-instruction-sentinel", encoding="utf-8"
+    )
+    sibling = tmp_path / "sibling"
+    sibling.mkdir()
+    (sibling / "AGENTS.md").write_text(
+        "sibling-instruction-sentinel", encoding="utf-8"
+    )
+    model = _CaptureMessagesModel()
+    model.observed_messages = []
+    graph = _agent(tmp_path, model)
+
+    graph.invoke(
+        {"messages": [HumanMessage(content="request-sentinel")]},
+        context=AssistantRunContext(cwd=project),
+    )
+
+    system_message = next(
+        message
+        for message in model.observed_messages[-1]
+        if isinstance(message, SystemMessage)
+    )
+    assert isinstance(system_message.content, list)
+    assert len(system_message.content) == 1
+    assert system_message.content[0].get("type") == "text"
+    system_prompt = system_message.content[0].get("text", "")
+    assert "project-instruction-sentinel" in system_prompt
+    assert "sibling-instruction-sentinel" not in system_prompt
+
+
+@pytest.mark.core_invariant("CTX-001")
 def test_frozen_memory_is_transient_context_before_the_current_request(
     monkeypatch,
     tmp_path: Path,
@@ -425,6 +517,65 @@ def test_task_uses_isolated_general_purpose_worker_and_preserves_parent_handles(
 
 
 @pytest.mark.core_invariant("CTX-001")
+def test_run_context_overrides_deep_agent_summarization_limits(
+    tmp_path: Path,
+) -> None:
+    def count_request_tokens(messages, *, tools=None) -> int:
+        return len(list(messages)) + len(tools or [])
+
+    middleware = RuntimeConfigurableSummarizationMiddleware(
+        MockAssistantChatModel(),
+        backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
+        trigger=("tokens", 100),
+        keep=("tokens", 20),
+        token_counter=count_request_tokens,
+        trim_tokens_to_summarize=None,
+    )
+    messages = [HumanMessage(content="one"), AIMessage(content="two")]
+    request = ModelRequest(
+        model=MockAssistantChatModel(),
+        messages=messages,
+        system_message=SystemMessage(content="system"),
+        tools=[{"type": "function", "function": {"name": "probe"}}],
+        state={"messages": messages},
+        runtime=Runtime(
+            context=AssistantRunContext(
+                context_compaction_trigger_tokens=3,
+                context_compaction_keep_tokens=1,
+            )
+        ),
+    )
+
+    async def handler(model_request: ModelRequest) -> ModelResponse:
+        return ModelResponse(result=[AIMessage(content="handled")])
+
+    result = asyncio.run(middleware.awrap_model_call(request, handler))
+
+    assert middleware.name == "SummarizationMiddleware"
+    assert isinstance(result, ExtendedModelResponse)
+    assert result.command is not None
+    assert "_summarization_event" in result.command.update
+    assert middleware.trigger == ("tokens", 100)
+    assert middleware.keep == ("tokens", 20)
+
+
+@pytest.mark.core_invariant("CTX-001")
+def test_native_token_counter_includes_tool_schemas() -> None:
+    counter = object.__new__(TokenizerJsonTokenCounter)
+    counter._message_encoder = None
+    counter.count_text = len
+    messages = [HumanMessage(content="one")]
+
+    messages_only = counter.count_messages(messages)
+    with_tools = counter.count_messages(
+        messages,
+        tools=[{"type": "function", "function": {"name": "probe"}}],
+    )
+
+    assert with_tools > messages_only
+
+
+@pytest.mark.core_invariant("CTX-001")
 def test_deep_agent_owns_summary_retry_todo_hitl_and_tool_policy(
     monkeypatch,
     tmp_path: Path,
@@ -453,8 +604,6 @@ def test_deep_agent_owns_summary_retry_todo_hitl_and_tool_policy(
         description="probe",
     )
     captured: dict[str, Any] = {}
-    browser_backend = object()
-
     def recording_create_deep_agent(*args: Any, **kwargs: Any):
         del args
         captured.update(kwargs)
@@ -478,12 +627,17 @@ def test_deep_agent_owns_summary_retry_todo_hitl_and_tool_policy(
             "mcp_playwright_browser_click",
         },
         browser_tools=[browser_snapshot, browser_click],
-        browser_backend=browser_backend,
     )
     middleware = captured["middleware"]
 
     assert not any(isinstance(item, ModelCallLimitMiddleware) for item in middleware)
-    assert any(isinstance(item, SummarizationMiddleware) for item in middleware)
+    summarizer = next(
+        item
+        for item in middleware
+        if isinstance(item, RuntimeConfigurableSummarizationMiddleware)
+    )
+    assert summarizer.trigger == ("tokens", 96_000)
+    assert summarizer.keep == ("tokens", 19_200)
     assert any(isinstance(item, TodoListMiddleware) for item in middleware)
     assert any(isinstance(item, ToolRetryMiddleware) for item in middleware)
     assert any(isinstance(item, ToolProfileMiddleware) for item in middleware)
@@ -520,14 +674,7 @@ def test_deep_agent_owns_summary_retry_todo_hitl_and_tool_policy(
     assert set(subagents["browser-operator"]["interrupt_on"]) == {
         "mcp_playwright_browser_click"
     }
-    browser_filesystem = subagents["browser-operator"]["middleware"][0]
-    assert browser_filesystem.backend is browser_backend
-    assert [tool.name for tool in browser_filesystem.tools] == [
-        "ls",
-        "read_file",
-        "glob",
-        "grep",
-    ]
+    assert "middleware" not in subagents["browser-operator"]
     filesystem_profile = next(
         profile
         for profile in project_tool_profiles()
@@ -659,6 +806,7 @@ def test_remaining_graph_steps_force_tool_free_final_synthesis(tmp_path: Path) -
     )
 
     assert model.tool_choices[-1] == "none"
+    assert model.system_block_counts[-1] == 1
     assert isinstance(result["messages"][-1], AIMessage)
     assert not result["messages"][-1].tool_calls
 

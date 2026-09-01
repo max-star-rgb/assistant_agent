@@ -148,6 +148,7 @@ def _authenticated_start_tool(
                     "messages": [{"role": "user", "content": description}],
                     "memory_context": list(runtime.state.get("memory_context") or ()),
                 },
+                context=runtime.context.model_dump(mode="json"),
                 metadata=metadata,
                 headers=headers,
             )
@@ -193,6 +194,7 @@ def _authenticated_start_tool(
                     "messages": [{"role": "user", "content": description}],
                     "memory_context": list(runtime.state.get("memory_context") or ()),
                 },
+                context=runtime.context.model_dump(mode="json"),
                 metadata=metadata,
                 headers=headers,
             )
@@ -285,6 +287,7 @@ async def _update_async_task(
             thread_id=task["thread_id"],
             assistant_id=WORKER_GRAPH_ID,
             input={"messages": [{"role": "user", "content": message}]},
+            context=runtime.context.model_dump(mode="json"),
             metadata=metadata,
             multitask_strategy="interrupt",
             headers=headers,

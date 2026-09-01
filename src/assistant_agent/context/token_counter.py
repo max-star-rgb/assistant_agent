@@ -12,6 +12,8 @@ from langchain_core.messages import (
     MessageLikeRepresentation,
     convert_to_openai_messages,
 )
+from langchain_core.tools import BaseTool
+from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from assistant_agent.runtime.chat_adapter import ChatRequest
 
@@ -33,6 +35,8 @@ class ContextTokenCounter(Protocol):
     def count_messages(
         self,
         messages: Iterable[MessageLikeRepresentation],
+        *,
+        tools: list[BaseTool | dict[str, Any]] | None = None,
     ) -> int:
         """Count one LangChain message history for native middleware."""
 
@@ -84,8 +88,10 @@ class TokenizerJsonTokenCounter:
     def count_messages(
         self,
         messages: Iterable[MessageLikeRepresentation],
+        *,
+        tools: list[BaseTool | dict[str, Any]] | None = None,
     ) -> int:
-        """Count native messages after applying the model's chat encoding."""
+        """Count native messages and exposed tool schemas."""
 
         openai_messages = cast(
             "list[dict[str, Any]]",
@@ -93,16 +99,26 @@ class TokenizerJsonTokenCounter:
         )
         if self._message_encoder is not None:
             encoder_messages = _project_user_content_blocks_to_text(openai_messages)
-            return self.count_text(
+            message_tokens = self.count_text(
                 self._message_encoder(encoder_messages, thinking_mode="chat")
             )
-        serialized = json.dumps(
-            {"messages": openai_messages},
+        else:
+            serialized = json.dumps(
+                {"messages": openai_messages},
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            message_tokens = self.count_text(serialized)
+        if not tools:
+            return message_tokens
+        serialized_tools = json.dumps(
+            {"tools": [convert_to_openai_tool(tool) for tool in tools]},
             ensure_ascii=False,
             separators=(",", ":"),
             sort_keys=True,
         )
-        return self.count_text(serialized)
+        return message_tokens + self.count_text(serialized_tools)
 
 
 def create_context_token_counter(

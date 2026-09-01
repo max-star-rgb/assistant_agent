@@ -75,9 +75,15 @@ class MCPServerConfig(BaseModel):
         if self.session_scope == "call" and any(
             token in value
             for value in values
+            for token in ("{cwd}",)
+        ):
+            raise ValueError("runtime cwd token requires thread session scope")
+        if any(
+            token in value
+            for value in values
             for token in ("{workspace_root}", "{repo_root}", "{artifact_root}")
         ):
-            raise ValueError("thread MCP path token requires thread session scope")
+            raise ValueError("legacy MCP workspace path tokens are not supported")
         return self
 
 

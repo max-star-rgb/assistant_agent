@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from time import time
 from typing import Annotated, Any, Literal
 
@@ -32,7 +32,6 @@ from assistant_agent.native_agent.context import (
     assistant_runtime_facts,
     authenticated_user_identity,
 )
-from assistant_agent.media.runtime_media import latest_runtime_media
 from assistant_agent.tools.availability import ToolAvailability
 from assistant_agent.tools.runtime import ToolContext
 from assistant_agent.tools.ids import VISUAL_MEMORY_SEARCH_TOOL_NAME
@@ -260,7 +259,7 @@ def create_visual_memory_search_tool(
                 max_length=500,
                 description=(
                     "要在当前 VIDEO 会话的短期视觉记忆文本中检索的"
-                    "对象、场景或事件；不用于跨会话长期视觉记忆。"
+                    "对象、场景或事件；不用于跨会话历史。"
                 ),
             ),
         ],
@@ -271,23 +270,15 @@ def create_visual_memory_search_tool(
         """检索当前实时 VIDEO 会话/thread 内的短期视觉记忆文本。
 
         用户询问当前视频会话中较早出现的对象、场景、事件或找回视觉线索时调用。
-        本工具不重新调用视觉模型，不查询跨会话的长期视觉记忆。长期视觉记忆由系统
-        根据当前请求自动召回，并在相关历史记忆中标记为“[长期视觉记忆]”；不要用本工具
-        尝试补查跨会话历史。用户询问当前画面时应使用 live_view_inspect。
+        本工具不重新调用视觉模型，只查询当前会话的历史；不要用它尝试补查
+        跨会话历史。用户询问当前画面时应使用 live_view_inspect。
         """
 
         def search_visual_memory() -> ToolResult:
-            state = runtime.state if isinstance(runtime.state, Mapping) else {}
-            if not latest_runtime_media(state).live_video_ids:
-                raise ToolException(
-                    "live_video_required: 当前请求没有受信实时视频引用"
-                )
             execution = runtime.execution_info
             session_id = getattr(execution, "thread_id", None)
             if not isinstance(session_id, str) or not session_id:
-                raise ToolException(
-                    "session_required: 视觉历史检索需要有效 thread_id"
-                )
+                raise ToolException("session_required: 视觉历史检索需要有效 thread_id")
             user_id = authenticated_user_identity(runtime)
             request = VisualMemorySearchInput(
                 query=query,
@@ -308,9 +299,7 @@ def create_visual_memory_search_tool(
                     "visual_capability_required: 当前视觉会话凭据不可用"
                 )
             if live.target_sequence is None:
-                raise ToolException(
-                    "visual_target_required: 当前视觉窗口尚未就绪"
-                )
+                raise ToolException("visual_target_required: 当前视觉窗口尚未就绪")
             context = ToolContext(
                 user_id=user_id,
                 session_id=session_id,
@@ -318,9 +307,7 @@ def create_visual_memory_search_tool(
                 metadata={
                     "entry_profile": runtime_facts.entry_profile,
                     "request_metadata": {
-                        "_trusted_visual_memory_as_of_sequence": (
-                            live.target_sequence
-                        )
+                        "_trusted_visual_memory_as_of_sequence": (live.target_sequence)
                     },
                 },
             )

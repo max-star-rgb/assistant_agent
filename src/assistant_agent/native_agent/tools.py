@@ -38,7 +38,6 @@ GENERAL_PURPOSE_BUILTIN_TOOL_NAMES = frozenset(
         "visual_image_search",
         "visual_memory_search",
         "web_fetch",
-        "web_search",
     }
 )
 INTERRUPT_BUILTIN_TOOL_NAMES = frozenset(
@@ -174,6 +173,14 @@ async def _create_official_mcp_tools(
                     tool.model_copy(
                         update={
                             "name": name,
+                            "description": (
+                                f"{tool.description}\n\n"
+                                "需要让模型或用户查看截图时不要传 filename，以返回原生图片内容块；"
+                                "仅在用户明确要求固定文件名时传 filename。"
+                                if server.server_name == "playwright"
+                                and tool.name == "browser_take_screenshot"
+                                else tool.description
+                            ),
                             "metadata": {
                                 **(tool.metadata or {}),
                                 "source": "mcp",

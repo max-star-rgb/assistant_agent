@@ -770,22 +770,16 @@ async def _handle_frame(
         if visual_perception.session is not None and visual_window is not None:
             await visual_perception.session.ensure_strict_window(visual_window)
         visual_prepared_ns = perf_counter_ns()
-        record_live_view = getattr(visual_module, "record_live_view", None)
         visual_identity = _agent_server_identity(websocket)
         visual_capability_token = None
-        if callable(record_live_view):
-            record_live_view(
+        freeze_live_view = getattr(visual_module, "freeze_live_view", None)
+        if callable(freeze_live_view):
+            visual_capability_token = freeze_live_view(
                 visual_identity,
                 session.thread_id,
                 video_ids=live_video_ids,
                 window=visual_window,
             )
-            freeze_live_view = getattr(visual_module, "freeze_live_view", None)
-            if callable(freeze_live_view):
-                visual_capability_token = freeze_live_view(
-                    visual_identity,
-                    session.thread_id,
-                )
         task = asyncio.create_task(
             _run_chat(
                 websocket,
@@ -796,18 +790,6 @@ async def _handle_frame(
                 delivery_id=delivery_id,
                 send_lock=send_lock,
                 interrupted_chats=interrupted_chats,
-                visual_window_id=(
-                    visual_window.window_id if visual_window is not None else None
-                ),
-                visual_window_start_sequence=(
-                    visual_window.start_sequence if visual_window is not None else None
-                ),
-                visual_target_sequence=(
-                    visual_window.target_sequence if visual_window is not None else None
-                ),
-                visual_target_video_id=(
-                    visual_window.video_id if visual_window is not None else None
-                ),
                 visual_module=visual_module,
                 visual_identity=visual_identity,
                 visual_capability_token=visual_capability_token,
@@ -981,10 +963,6 @@ async def _run_chat(
     delivery_id: str,
     send_lock: asyncio.Lock,
     interrupted_chats: set[str],
-    visual_window_id: str | None = None,
-    visual_window_start_sequence: int | None = None,
-    visual_target_sequence: int | None = None,
-    visual_target_video_id: str | None = None,
     visual_module: Any | None = None,
     visual_identity: str | None = None,
     visual_capability_token: str | None = None,
@@ -1016,14 +994,7 @@ async def _run_chat(
         async for part in client.stream_run(
             thread_id=session.thread_id,
             assistant_id=ASSISTANT_GRAPH_ID,
-            input=media_graph_input(
-                chat,
-                video_ids=session.video_ids,
-                visual_window_id=visual_window_id,
-                visual_window_start_sequence=visual_window_start_sequence,
-                visual_target_sequence=visual_target_sequence,
-                visual_target_video_id=visual_target_video_id,
-            ),
+            input=media_graph_input(chat),
             context={"enable_memory": True},
             metadata=run_metadata,
             multitask_strategy="interrupt",
@@ -1416,20 +1387,11 @@ def _native_thread_id(
     )
 
 
-def media_graph_input(
-    chat: Any,
-    *,
-    video_ids: list[str] = (),
-    visual_window_id: str | None = None,
-    visual_window_start_sequence: int | None = None,
-    visual_target_sequence: int | None = None,
-    visual_target_video_id: str | None = None,
-) -> dict[str, Any]:
+def media_graph_input(chat: Any) -> dict[str, Any]:
     """Mechanically project one vendor chat to the native public graph input."""
 
-    # The live camera is intentionally NOT injected into the user message: the
-    # main LLM must not "know there is a camera". Live-view facts live on the
-    # VLM side and are resolved by the Tool from the process-owned module.
+    # Live camera details stay out of the user message. Tool exposure and reads
+    # use the server-issued capability and process-owned frozen projection.
     content: list[dict[str, Any]] = [{"type": "text", "text": chat.text}]
     return {
         "messages": [{"role": "user", "content": content}],

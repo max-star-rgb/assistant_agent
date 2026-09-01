@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable, Collection, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from typing import Annotated, Any, Literal, NotRequired
 
 from langchain.agents import AgentState
@@ -31,9 +31,19 @@ from assistant_agent.tools.native_boundary import configure_builtin_tool
 
 
 ACTIVATE_TOOL_PROFILE_TOOL_NAME = "activate_tool_profile"
+DEACTIVATE_TOOL_PROFILE_TOOL_NAME = "deactivate_tool_profile"
+_DEACTIVATE_PROFILE_ID_KEY = "__deactivate_tool_profile_id__"
 
 
-def _merge_unique_profile_ids(left: list[str], right: list[str]) -> list[str]:
+def _merge_unique_profile_ids(
+    left: list[str],
+    right: list[str] | dict[str, str],
+) -> list[str]:
+    if isinstance(right, dict):
+        profile_id = right.get(_DEACTIVATE_PROFILE_ID_KEY)
+        if len(right) != 1 or not isinstance(profile_id, str) or not profile_id:
+            raise TypeError("invalid tool profile state update")
+        return [candidate for candidate in left if candidate != profile_id]
     return list(dict.fromkeys([*left, *right]))
 
 
@@ -126,7 +136,11 @@ class ToolProfileMiddleware(AgentMiddleware[ToolProfileState, Any]):
         self._claimed_tool_names = frozenset(
             self._profile_id_by_tool_name
         )
-        self.tools = [self._create_activate_tool()] if catalog.profiles else []
+        self.tools = (
+            [self._create_activate_tool(), self._create_deactivate_tool()]
+            if catalog.profiles
+            else []
+        )
 
     @property
     def profiles(self) -> tuple[ToolProfile, ...]:
@@ -167,9 +181,7 @@ class ToolProfileMiddleware(AgentMiddleware[ToolProfileState, Any]):
         return blocked if blocked is not None else await handler(request)
 
     def _request_with_visible_tools(self, request: ModelRequest) -> ModelRequest:
-        active_profile_ids = _string_values(
-            request.state.get("active_tool_profile_ids")
-        )
+        active_profile_ids = self._active_profile_ids(request.state)
         active_tool_names = {
             tool_name
             for profile_id in active_profile_ids
@@ -179,10 +191,29 @@ class ToolProfileMiddleware(AgentMiddleware[ToolProfileState, Any]):
             candidate
             for candidate in request.tools
             if not isinstance(candidate, BaseTool)
-            or candidate.name not in self._claimed_tool_names
-            or candidate.name in active_tool_names
+            or (
+                (
+                    candidate.name != DEACTIVATE_TOOL_PROFILE_TOOL_NAME
+                    or bool(active_profile_ids)
+                )
+                and (
+                    candidate.name not in self._claimed_tool_names
+                    or candidate.name in active_tool_names
+                )
+            )
         ]
         return request.override(tools=visible_tools)
+
+    def _active_profile_ids(self, state: object) -> tuple[str, ...]:
+        if not isinstance(state, Mapping):
+            return ()
+        return tuple(
+            profile_id
+            for profile_id in _string_values(
+                state.get("active_tool_profile_ids")
+            )
+            if profile_id in self._profiles_by_id
+        )
 
     def _tool_names_for_profile(self, profile_id: str) -> tuple[str, ...]:
         profile = self._profiles_by_id.get(profile_id)
@@ -191,9 +222,7 @@ class ToolProfileMiddleware(AgentMiddleware[ToolProfileState, Any]):
     def _blocked_tool_message(self, request: ToolCallRequest) -> ToolMessage | None:
         tool_name = request.tool_call["name"]
         profile_id = self._profile_id_by_tool_name.get(tool_name)
-        active_profile_ids = _string_values(
-            request.state.get("active_tool_profile_ids")
-        )
+        active_profile_ids = self._active_profile_ids(request.state)
         if profile_id is None or profile_id in active_profile_ids:
             return None
         observation = {
@@ -234,8 +263,8 @@ class ToolProfileMiddleware(AgentMiddleware[ToolProfileState, Any]):
             ACTIVATE_TOOL_PROFILE_TOOL_NAME,
             args_schema=args_schema,
             description=(
-                "实现用户需求时，如果发现缺少相关工具，运行本工具以获取额外的工具集。"
-                "在多数场景下都需要使用本工具，但注意按需要加载\n\n"
+                "实现用户需求时，如果发现缺少相关工具，运行本工具以获取额外的工具集。\n"
+                "在多数场景下都需要使用本工具，但注意按需要加载，不要刻意说明‘正在加载工具’等文本\n\n"
                 "当前可用 工具集：\n"
                 f"{profile_index}"
             ),
@@ -281,6 +310,80 @@ class ToolProfileMiddleware(AgentMiddleware[ToolProfileState, Any]):
         }
         return configured
 
+    def _create_deactivate_tool(self) -> BaseTool:
+        profiles_by_id = self._profiles_by_id
+        profile_id_type = (
+            Literal.__getitem__(tuple(profiles_by_id)) if profiles_by_id else str
+        )
+        args_schema = create_model(
+            "DeactivateToolProfileInput",
+            profile_id=(
+                profile_id_type,
+                Field(description="选择不再需要暴露的 Tool Profile。"),
+            ),
+        )
+
+        @tool(
+            DEACTIVATE_TOOL_PROFILE_TOOL_NAME,
+            args_schema=args_schema,
+            description=(
+                "当前任务不再需要某个已激活的工具集时，调用本工具隐藏该工具集。\n"
+                "是否调用由你根据任务进展自主决定。"
+            ),
+        )
+        def deactivate_tool_profile(
+            profile_id: str,
+            runtime: ToolRuntime[Any],
+        ) -> Command:
+            profile = profiles_by_id.get(profile_id)
+            if profile is None:
+                raise ToolException("tool_profile_not_found")
+            active_profile_ids = self._active_profile_ids(runtime.state)
+            already_inactive = profile.profile_id not in active_profile_ids
+            deactivated_tool_names = (
+                [] if already_inactive else list(profile.tool_names)
+            )
+            observation = {
+                "status": "succeeded",
+                "summary": (
+                    "Tool Profile 已处于未激活状态。"
+                    if already_inactive
+                    else "Tool Profile 已取消激活。"
+                ),
+                "profile_id": profile.profile_id,
+                "deactivated_tool_names": deactivated_tool_names,
+                "already_inactive": already_inactive,
+            }
+            return Command(
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=json.dumps(
+                                observation,
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            ),
+                            artifact={
+                                **observation,
+                                "tool_count": len(deactivated_tool_names),
+                            },
+                            name=DEACTIVATE_TOOL_PROFILE_TOOL_NAME,
+                            tool_call_id=runtime.tool_call_id,
+                        )
+                    ],
+                    "active_tool_profile_ids": {
+                        _DEACTIVATE_PROFILE_ID_KEY: profile.profile_id
+                    },
+                }
+            )
+
+        configured = configure_builtin_tool(deactivate_tool_profile)
+        configured.metadata = {
+            **(configured.metadata or {}),
+            "retryable": False,
+        }
+        return configured
+
 
 def project_tool_profiles() -> tuple[ToolProfile, ...]:
     """Return the repository-owned business Tool Profile catalog."""
@@ -299,6 +402,11 @@ def project_tool_profiles() -> tuple[ToolProfile, ...]:
                 "grep",
                 "execute",
             ),
+        ),
+        ToolProfile(
+            profile_id="git",
+            description="在目标路径所属的 Git 仓库中执行版本控制命令。",
+            tool_names=("git",),
         ),
         ToolProfile(
             profile_id="browser",
@@ -373,6 +481,7 @@ def _string_values(value: object) -> tuple[str, ...]:
 
 __all__ = [
     "ACTIVATE_TOOL_PROFILE_TOOL_NAME",
+    "DEACTIVATE_TOOL_PROFILE_TOOL_NAME",
     "ToolProfile",
     "ToolProfileMiddleware",
     "ToolProfileState",

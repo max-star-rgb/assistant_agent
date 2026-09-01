@@ -211,7 +211,7 @@ enqueue 时已有有效在线 presence 才排队，在线写成功后记为 sent
 pending，旧消息仍收到正常 `videoResponse`，但不再解码、提交 VLM 或进入视觉窗口。后台任务在 media edge
 的工作线程中把独立 Annex-B H.264 frame 解码为有界 JPEG window，因此消费速度下降时不会形成历史 FIFO
 积压。稳定 `video_id` 仅保留在进程视觉 owner 和 namespaced capability facts 中，当前不进入 Graph 标准 message；
-因此虽然受治理 `live_view_inspect` Tool 能通过进程级有界内存 frame index 解析该引用，它不会由本入口暴露。H.264 hex、JPEG
+收到首个视频 ID 后，受治理 `live_view_inspect` Tool 通过 run-scoped capability 暴露，并从进程级有界内存 frame index 读取。H.264 hex、JPEG
 正文和本地路径均不进入 Graph State、prompt 或 Agent Server Store。
 
 显式启用远端视觉 Memory Service 时，同一批已校验 H.264 bytes 还会复制到独立顺序归档 lane；该 lane
@@ -233,8 +233,8 @@ pending，旧消息仍收到正常 `videoResponse`，但不再解码、提交 VL
 用户主动上传的图片或视频必须由普通请求入口标记为 `source=uploaded`，交给独立的
 `uploaded_media_inspect`。进程视觉模块仍冻结 live camera 窗口和 namespaced capability facts，也会继续运行
 selector、并行 VLM 和 reminder manager；但当前 custom route 不向标准 message 注入 `source=live_camera` block。
-统一条件 middleware 从 `latest_runtime_media(...).live_video_ids` 判定实时媒体可用性，因此
-`live_view_inspect`、`visual_memory_search` 和 `visual_reminder_manage` 不会由该入口暴露给模型。
+统一条件 middleware 只解析服务端签发的 capability 和冻结投影：有视频 ID 时暴露
+`live_view_inspect` 与 `visual_reminder_manage`，同时存在目标序号和可检索历史时暴露 `visual_memory_search`。
 
 媒体 wire 只负责把每个成功解码帧提交给连接级视觉句柄。chat 到达 A 时刻后，入口在任何异步发送或其他
 `await` 之前同步冻结 selector 已经登记的当前半固定关键帧窗口（1～5 帧），随后立即发送 `chatProgress`，
@@ -243,11 +243,11 @@ selector、并行 VLM 和 reminder manager；但当前 custom route 不向标准
 关键帧从新窗口开始。用户输入是否最终调用视觉 Tool 不改变这个短期记忆分段动作。当时仍处于
 pending/in-flight、尚未 selected 的帧不属于已关闭窗口。尚未完成解码或尚未完成选帧的工作不会阻塞 run
 创建；其后成为新关键帧也不回写已经冻结的本轮投影。
-随后媒体入口只把冻结投影保存在进程 owner 并将 opaque capability token 写入 namespaced metadata，
+随后媒体入口一次把冻结投影保存在进程 owner 并将 opaque capability token 写入 namespaced metadata，
 不传 JPEG、Provider client 或 task，也不把 `window_id`、`window_start_sequence` 和 `target_sequence` 写入标准 message。
 窗口并发、semantic keyframe、目标帧等待、ready/missing 结果和
 晚到帧处理均以 [`visual-perception-architecture.md`](visual-perception-architecture.md) 为唯一权威。
-恢复实时视觉 Tool 需要另立受信的非消息投影与 coverage，不得让主 LLM 直接感知摄像头；这不属于本次文档迁移。
+主 LLM 只能看到最终可见 Tool 和对应动态规则，不能看到 video ID、sequence 或其他投影内部字段。
 
 保留 callback：
 

@@ -3,6 +3,8 @@
     {
       "server_name": "playwright",
       "transport": "stdio",
+      "session_scope": "thread",
+      "cwd": "{cwd}",
       "command": [
         "/home/lenovo1/.nvm/versions/node/v24.16.0/bin/npx",
         "-y",
@@ -10,7 +12,7 @@
         "--headless",
         "--isolated",
         "--output-dir",
-        ".local/playwright-mcp-output"
+        "{cwd}"
       ],
       "env": {
         "PATH": "/home/lenovo1/.nvm/versions/node/v24.16.0/bin:/usr/bin:/bin"

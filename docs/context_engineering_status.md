@@ -1,6 +1,6 @@
 # LangChain-native Context Engineering
 
-最后更新：2026-08-29
+最后更新：2026-08-31
 
 ## Authority contract
 
@@ -16,19 +16,30 @@
 ## 当前主链
 
 生产上下文以 LangChain 标准 `messages` channel 为事实源。统一 `AssistantAgent` 使用一个分层 Prompt Builder：
-provider-neutral 的稳定核心策略在前，Deep Agents Skills L0 目录随后注入，dynamic prompt 最后追加北京时间自然日、
-可信用户地区与本轮媒体事实。稳定策略要求直接推进结果，只在缺少阻塞信息或关键选择会改变结果时询问，并区分
-已核验事实、失败和模型判断；Git 操作按目标路径使用 `git -C <path> rev-parse --show-toplevel` 动态识别仓库，
-不依赖 Agent Server cwd，也不启动时扫描用户 Home。
+provider-neutral 的稳定核心策略在前，Deep Agents Skills L0 目录随后注入，dynamic prompt 最后追加当前工作目录、
+项目指令、北京时间自然日、可信用户地区与本轮媒体事实。当前工作目录来自公开 `AssistantRunContext.cwd`，默认是
+当前 OS 用户 Home，必须解析为 Home 内已存在目录。项目指令只沿 Home 到 cwd 的祖先链读取；同层
+`AGENTS.override.md` 优先于 `AGENTS.md`，单次最多注入 32 KiB，不扫描 Home 的其他目录。
+预算不足时优先保留最接近 cwd 的指令，再以祖先到子目录的顺序呈现；自动加载拒绝解析到 Home 外的
+指令文件 symlink，避免把 cwd 选择扩大为隐式文件读取授权。最终 runtime dynamic prompt 将上游 middleware
+生成的普通纯文本 section 合并为单个 text content block；带额外元数据或非文本 block 保持原结构。
 
-公开 `AssistantRunContext` 只有 `enable_memory` 与 `require_tool_approval`，默认均为 true；前者控制本轮 recall 与
-delayed extraction，后者允许单次 run 关闭已配置 Tool 的 HITL interrupt，两者都不进入 prompt。`entry_profile` 与视觉 capability token 属于服务端签发的
+稳定策略要求直接推进结果，只在缺少阻塞信息或关键选择会改变结果时询问，并区分
+已核验事实、失败和模型判断。Git 仓库识别与命令执行由 `git` Tool 的代码边界负责，不写入 system prompt。
+
+公开 `AssistantRunContext` 包含 `cwd`、`enable_memory`、`require_tool_approval`，以及 Studio 可配置的成对绝对值
+`context_compaction_trigger_tokens` / `context_compaction_keep_tokens`。压缩值都不设置时使用 Provider context window 的
+75%/15%，设置时必须满足 `0 < keep < trigger`，并由 main/worker 的 Deep Agents
+`SummarizationMiddleware.awrap_model_call` 在当前 run 中读取而不修改进程共享 middleware。
+后两个布尔值默认均为 true，`enable_memory` 控制本轮 recall 与 delayed extraction，`require_tool_approval` 允许单次 run
+关闭已配置 Tool 的 HITL interrupt，两者都不进入 prompt。`entry_profile` 与视觉 capability token 属于服务端签发的
 `AssistantRuntimeFacts`，只放在 namespaced run metadata。用户身份只来自 Agent Server
-`Runtime.server_info.user.identity`。公开 context 不包含模式、prompt、身份、仓库选择或 Tool 授权。
+`Runtime.server_info.user.identity`。公开 context 不包含模式、任意 prompt、身份、仓库注册或 Tool 授权；`cwd` 是用户可见的
+运行位置，不是隐藏身份或授权事实。
 
 实时 VIDEO 的当前画面是瞬时事实；若受信入口暴露 `live_view_inspect`，每个新的指示性视觉问题都必须重新调用，不能把历史视觉
 Tool observation 当作本轮证据。`visual_memory_search` 只查当前 VIDEO thread 的短期视觉时间线；Memory middleware 自动召回的
-跨会话长期视觉文本以 `[长期视觉记忆]` 标记进入临时 Memory message。
+跨会话长期视觉文本不添加来源标签，直接合并进临时背景参考消息。
 
 ## Skill、filesystem 与 task state
 
@@ -55,14 +66,17 @@ Todo、`async_tasks`、Provider search profile、Tool Profile、Skill metadata�
 ## Memory、预算与历史
 
 `before_agent` 冻结的 `memory_context` 不进入 system prompt。位于 summarization 内层的 model-call middleware 在最新真实
-`HumanMessage` 前临时插入一条引用格式的 Memory `HumanMessage`，明确它可能过时且不是本轮指令。这条消息不写入
+`HumanMessage` 前临时插入一条引用格式的背景参考 `HumanMessage`，明确它可能过时且禁止作为用户指令。这条消息不写入
 state、checkpoint messages 或摘要，不能用于确认身份、权限、当前事实和操作参数。
 
 dynamic prompt 只加入 `Asia/Shanghai` 的自然日和可信配置地区，不加入时分秒；本轮明确给出的任务地点优先，且
 不会反向修改配置。Provider 联网来源只属于产生它的 `AIMessage.response_metadata`，不会变成下一轮上下文消息。
 Tool observation 使用标准 `ToolMessage(content, artifact)`；runtime-owned 字段不进入模型可见 schema。
 
-统一 Agent 与通用 worker 都使用官方 summarization、同一 model superstep 内每 Tool 最多并行 12 次，并在
+统一 Agent 与通用 worker 都只装配一套 Deep Agents summarization；该 model-call middleware 统计当前可见的 system message、
+有效历史与 Tool schema，并通过 `_summarization_event` 保留原始 message log。被压缩的完整历史沿用 Deep Agents
+`/conversation_history/session_<uuid>.md` 约定，实际写入动态 `Path.home()`，不依赖本轮 `cwd` 或 thread artifact。
+main/worker 在同一 model superstep 内每 Tool 最多并行 12 次，并在
 `recursion_limit` 只剩 8 个 superstep 时关闭 Tool 生成自然综合。所有显式配置 Tool 的审批由 Runtime/Tool authority
 统一定义，不通过上下文模式切换。
 
