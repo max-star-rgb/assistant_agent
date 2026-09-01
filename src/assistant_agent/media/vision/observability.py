@@ -328,13 +328,13 @@ def _visual_attachments(
         if not data or len(data) > _MAX_KEYFRAME_BYTES:
             continue
         frames.append(data)
-        attachments[f"keyframe-{sequence:08d}.jpg"] = Attachment(
+        attachments[f"keyframe-{sequence:08d}"] = Attachment(
             mime_type="image/jpeg",
             data=data,
         )
     video = _selected_keyframe_mp4(frames)
     if video:
-        attachments["selected-keyframes.mp4"] = Attachment(
+        attachments["selected-keyframes-video"] = Attachment(
             mime_type="video/mp4",
             data=video,
         )

@@ -210,7 +210,8 @@ exact k 结果；Tool 不读取或理解选帧内部状态，也不回退到更�
 
 窗口 root 的 metadata 记录 thread/window ID、起止与目标 sequence、window role、semantic threshold 和
 `provider_connection_isolated=true`；inputs 记录按序 sequence 与 timestamp。root attachments 使用 LangSmith
-原生多模态附件：每个已选关键帧一张有序 JPEG，并附带同序列组成的 `selected-keyframes.mp4`。单帧不建 run，
+原生多模态附件：每个已选关键帧一张有序 JPEG，并附带同序列组成的 `selected-keyframes-video`（MIME
+`video/mp4`）。attachment name 不含 LangSmith multipart 禁止的 `.`；文件类型只由 MIME 表达。单帧不建 run，
 附件不写入 metadata，frame path、Provider 原始响应与凭据不得上传。生成 MP4 或上传观测失败必须 fail-open，
 不得影响后台 VLM 业务结果。该 MP4 在窗口关闭后一次性形成，不是持续直播流。
 

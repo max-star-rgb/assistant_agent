@@ -33,7 +33,8 @@ Tool 各自有 child `run_id`。后台视觉线程不属于 Graph node，因此�
 相同 `metadata.thread_id` 关联。窗口中的真实 VLM 调用是该 root 下独立 `run_id` 的 `vlm.infer` child generation。
 
 `vision.observation` root 原生携带 window role、window/起止/目标 sequence、semantic threshold、隔离连接标记，
-inputs 携带按序 sequence/timestamp；attachments 携带按序 JPEG 和 `selected-keyframes.mp4`。附件是本次已关闭窗口
+inputs 携带按序 sequence/timestamp；attachments 携带按序 JPEG 和 MIME 为 `video/mp4` 的
+`selected-keyframes-video`。LangSmith attachment name 不允许包含 `.`，文件类型只由 MIME 表达。附件是本次已关闭窗口
 的短视频，不是持续更新的直播流。单帧不建立 run，避免 trace 爆炸。未启用标准 LangSmith tracing 时整条观测
 fail-open，不创建自研 `TraceStore` 或本地 shadow trace，也不影响 VLM 业务调用。视觉 reminder 的
 created/matched/delivery/cleared 生命周期同样使用带 `thread_id` 的 content-free native root events；不上传

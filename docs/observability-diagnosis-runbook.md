@@ -33,12 +33,14 @@
 
 ```python
 import os
+import asyncio
 from uuid import UUID
 from langsmith import Client
+from assistant_agent.observability.langsmith_config import DEFAULT_LANGSMITH_PROJECT
 
 run_id = UUID("<run_id>")
 client = Client()
-project = os.environ.get("LANGSMITH_PROJECT", "default")
+project = os.environ.get("LANGSMITH_PROJECT", DEFAULT_LANGSMITH_PROJECT)
 run = client.read_run(run_id)
 print({
     "run_id": str(run.id),
@@ -58,17 +60,30 @@ print({
 ```python
 runs = sorted(
     client.list_runs(
-        project_name=project,
+        project_id=run.session_id,
         trace_id=run.trace_id,
         limit=1000,
     ),
     key=lambda item: item.start_time,
 )
+
+# read_run/list_runs 的旧响应不含附件；检查窗口 root 必须显式选 ATTACHMENTS。
+root = client.read_run(run.trace_id)
+root_detail = asyncio.run(
+    client.runs.retrieve(
+        str(root.id),
+        project_id=str(root.session_id),
+        selects=["ID", "NAME", "STATUS", "TRACE_ID", "ATTACHMENTS", "METADATA"],
+        timeout=30.0,
+    )
+)
 ```
 
 在同一进程、同一批返回对象上汇总关键 root/node/LLM/Tool 的父子关系、开始时间、terminal、latency、token、
-error 与 Feedback。不要为了补统计重复请求；不要原样输出全部 middleware spans。root 成功而 child 曾失败时，
-必须分别陈述，不能把整个 trace 自动判成失败。
+error 与 Feedback。附件检查是一次独立、显式字段读取；`read_run()` 返回的 `attachments=[]` 不能证明没有附件。
+不要为了其余统计重复请求，也不要原样输出全部 middleware spans。root 成功而 child 曾失败时，必须分别陈述，
+不能把整个 trace 自动判成失败。视觉附件名不带扩展名：图片为 `keyframe-<sequence>`，短视频为
+`selected-keyframes-video`，以 MIME 判断 `image/jpeg` / `video/mp4`。
 
 ## 3. `thread_id` 快速路径
 
@@ -86,10 +101,11 @@ root runs；结果中通常可同时看到：
 import os
 from uuid import UUID
 from langsmith import Client
+from assistant_agent.observability.langsmith_config import DEFAULT_LANGSMITH_PROJECT
 
 thread_id = str(UUID("<thread_id>"))
 client = Client()
-project = os.environ.get("LANGSMITH_PROJECT", "default")
+project = os.environ.get("LANGSMITH_PROJECT", DEFAULT_LANGSMITH_PROJECT)
 metadata_filter = f'has(metadata, \'{{"thread_id":"{thread_id}"}}\')'
 roots = sorted(
     client.list_runs(
