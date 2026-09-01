@@ -14,8 +14,8 @@ from assistant_agent.tools.plugins.builtin.visual_image_search.models import (
 )
 from assistant_agent.providers.provider_errors import sanitize_error_detail
 from assistant_agent.tools.plugins.builtin.visual_image_search.backend import (
+    MockVisualImageSearchAdapter,
     VisualImageSearchAdapter,
-    create_visual_image_search_adapter,
 )
 from assistant_agent.tools.ids import (
     VISUAL_IMAGE_SEARCH_CAPABILITY,
@@ -33,7 +33,7 @@ def create_visual_image_search_tool(
 ) -> BaseTool:
     """Create a native read-only visual image search Tool."""
 
-    search_adapter = adapter or create_visual_image_search_adapter()
+    search_adapter = adapter or MockVisualImageSearchAdapter()
 
     @tool(VISUAL_IMAGE_SEARCH_TOOL_NAME, response_format="content_and_artifact")
     def visual_image_search(

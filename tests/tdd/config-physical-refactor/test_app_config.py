@@ -12,6 +12,17 @@ from assistant_agent.native_agent.tools import (
     create_native_tool_inventory,
 )
 from assistant_agent.providers.provider_selection import create_vision_adapter
+from assistant_agent.tools.ids import (
+    HOTEL_PRICE_WATCH_CREATE_TOOL_NAME,
+    VISUAL_IMAGE_SEARCH_TOOL_NAME,
+    WEB_FETCH_TOOL_NAME,
+)
+from assistant_agent.tools.plugins.builtin.visual_image_search.tool import (
+    create_visual_image_search_tool,
+)
+from assistant_agent.tools.plugins.builtin.web_access.fetch_tool import (
+    create_web_fetch_tool,
+)
 
 
 def _flatten(config: AppConfig) -> dict[str, object]:
@@ -142,3 +153,25 @@ def test_tool_inventory_uses_projected_config() -> None:
 
     assert tools
     assert len({tool.name for tool in tools}) == len(tools)
+
+
+def test_legacy_mock_inventory_preserves_projected_tool_config() -> None:
+    """The temporary bridge must not discard the legacy caller's tool settings."""
+
+    tools = asyncio.run(
+        create_native_tool_inventory(
+            ProviderConfig(provider_mode="mock", durable_tasks_enabled=True),
+            resources=NativeToolResources(durable_task_service=object()),
+            mcp_server_configs=[],
+        )
+    )
+
+    assert HOTEL_PRICE_WATCH_CREATE_TOOL_NAME in {tool.name for tool in tools}
+
+
+def test_web_fetch_tool_default_constructor_uses_mock_adapter() -> None:
+    assert create_web_fetch_tool().name == WEB_FETCH_TOOL_NAME
+
+
+def test_visual_image_search_tool_default_constructor_uses_mock_adapter() -> None:
+    assert create_visual_image_search_tool().name == VISUAL_IMAGE_SEARCH_TOOL_NAME
