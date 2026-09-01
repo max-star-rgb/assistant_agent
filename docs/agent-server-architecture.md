@@ -70,6 +70,8 @@ thread；失败时不创建 run、不改变 checkpoint。
 冻结的 `AppConfig`，只向下游投影所需的窄配置段；owner 本身持有一个模型、一次发现的业务/MCP Tool inventory、一个
 `MemoryBackend`、一个 `ThreadResourceManager`、线程级 MCP session pool，以及编译后的 main、worker、Memory graph。
 schema/history/state 请求和 run 都复用该 owner；custom-app lifespan 在进程 shutdown 时关闭一次。
+`load_app_config()` 仅位于 composition/入口；Provider、Tool、Memory、Media 叶子只接收显式窄配置，不读取应用配置
+环境变量。Provider SDK policy 自身的 `from_env()` 不是应用配置 loader。
 
 main Agent 使用按当前 run 的 `AssistantRunContext.cwd` 创建的 `LocalShellBackend`，并用 Deep Agents 原生
 `virtual_mode=False` 接受真实绝对路径；filesystem
