@@ -16,7 +16,10 @@ from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 
 from assistant_agent.media.vision.models import VisualUnderstandingResult
-from assistant_agent.providers.dashscope_langchain import DashScopeNativeChatModel
+from assistant_agent.providers.dashscope_langchain import (
+    DashScopeNativeChatModel,
+    DashScopeProviderError,
+)
 from assistant_agent.providers.provider_errors import ProviderAdapterError
 from assistant_agent.media.vision.vision_adapter import VisionUnderstandingInput
 
@@ -127,14 +130,25 @@ class DashScopeVisionProviderAdapter:
 
         content = [_image_content_block(image_id) for image_id in input.image_ids]
         content.append({"type": "text", "text": vision_prompt(input.question)})
-        message = self.chat_model.invoke([HumanMessage(content=content)], config=config)
+        try:
+            message = self.chat_model.invoke([HumanMessage(content=content)], config=config)
+        except DashScopeProviderError as exc:
+            code = (
+                "provider_timeout"
+                if isinstance(exc.__cause__, TimeoutError)
+                else "provider_execution_failed"
+            )
+            raise ProviderAdapterError(code, str(exc)) from exc
         structured = message.additional_kwargs.get("structured_output")
         if not isinstance(structured, dict):
             raise ProviderAdapterError(
                 "provider_bad_response",
                 "DashScope multimodal response missing structured output",
             )
-        return map_vision_result(structured)
+        try:
+            return map_vision_result(structured)
+        except ValueError as exc:
+            raise ProviderAdapterError("provider_bad_response", str(exc)) from exc
 
 
 def chat_completions_url(base_url: str) -> str:
