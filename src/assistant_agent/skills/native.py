@@ -7,13 +7,16 @@ from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any, TypedDict
 
-from deepagents.backends import FilesystemBackend
+from deepagents.backends import CompositeBackend, FilesystemBackend
 from deepagents.backends.protocol import BackendProtocol, LsResult
 from deepagents.middleware import FilesystemMiddleware, SkillsMiddleware
 from deepagents.middleware.skills import SkillMetadata
 
+from assistant_agent.runtime.local_backend import WorkingDirectoryBackend
 
-PROJECT_SKILLS_SOURCE = "/skills/"
+
+SOURCE_SKILLS_SOURCE = "/source-skills/"
+CWD_SKILLS_SOURCE = "/cwd-skills/"
 PROJECT_FILESYSTEM_TOOL_NAMES = (
     "ls",
     "read_file",
@@ -31,7 +34,9 @@ _PROJECT_SKILLS_SYSTEM_PROMPT = """## Skills
 
 {skills_list}
 
-当请求匹配某项 Skill，先使用`activate_tool_profile`激活 `filesystem` Tool Profile，再使用 `read_file` 读取对应的 `SKILL.md`。
+源码 Skill 随 Agent 发布；Working Directory Skill 来自当前 `<cwd>/skills/`，同名时后者优先。
+
+当请求匹配某项 Skill，先使用 `activate_tool_profile` 激活 `filesystem` Tool Profile，再使用 `read_file` 读取对应的 `SKILL.md`。
 
 不向用户介绍 Skill、文件读取或内部流程。
 """
@@ -42,6 +47,28 @@ class _ProjectSkillMetadata(TypedDict):
     name: str
     description: str
     path: str
+
+
+class _WorkingDirectorySkillsBackend(WorkingDirectoryBackend):
+    def __init__(self, source_skills_root: Path) -> None:
+        super().__init__("skills", virtual_mode=True)
+        self._source_skills_root = source_skills_root.resolve()
+
+    def ls(self, path: str):
+        backend = self._backend()
+        return (
+            backend.ls(path)
+            if backend.cwd.is_dir() and backend.cwd != self._source_skills_root
+            else LsResult(entries=[])
+        )
+
+    async def als(self, path: str):
+        backend = self._backend()
+        return (
+            await backend.als(path)
+            if backend.cwd.is_dir() and backend.cwd != self._source_skills_root
+            else LsResult(entries=[])
+        )
 
 
 def _project_skills_update(
@@ -73,18 +100,48 @@ class _ProjectSkillsMiddleware(SkillsMiddleware):
         )
 
     def before_agent(self, state, runtime, config):
-        return _project_skills_update(super().before_agent(state, runtime, config))
+        return _project_skills_update(
+            super().before_agent(_without_cached_skills(state), runtime, config)
+        )
 
     async def abefore_agent(self, state, runtime, config):
         return _project_skills_update(
-            await super().abefore_agent(state, runtime, config)
+            await super().abefore_agent(
+                _without_cached_skills(state), runtime, config
+            )
         )
 
 
-def create_project_skills_backend(project_root: str | Path) -> FilesystemBackend:
-    """Create the project-root backend used only for Skill discovery."""
+def _without_cached_skills(state: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in state.items()
+        if key not in {"skills_metadata", "skills_load_errors"}
+    }
 
-    return FilesystemBackend(root_dir=Path(project_root), virtual_mode=True)
+
+def create_project_skills_backend(
+    project_root: str | Path,
+    working_backend: BackendProtocol | None = None,
+) -> CompositeBackend:
+    """Expose source and current-working-directory Skills through one backend."""
+
+    source_skills_root = Path(project_root) / "skills"
+    source_backend = FilesystemBackend(
+        root_dir=source_skills_root,
+        virtual_mode=True,
+    )
+    return CompositeBackend(
+        default=working_backend or source_backend,
+        routes={
+            SOURCE_SKILLS_SOURCE: source_backend,
+            CWD_SKILLS_SOURCE: (
+                _WorkingDirectorySkillsBackend(source_skills_root)
+                if working_backend is not None
+                else source_backend
+            ),
+        },
+    )
 
 def create_project_skills_middleware(
     backend: BackendProtocol,
@@ -93,7 +150,10 @@ def create_project_skills_middleware(
 
     return _ProjectSkillsMiddleware(
         backend=backend,
-        sources=[(PROJECT_SKILLS_SOURCE, "Project")],
+        sources=[
+            (SOURCE_SKILLS_SOURCE, "Source"),
+            (CWD_SKILLS_SOURCE, "Working Directory"),
+        ],
         system_prompt=_PROJECT_SKILLS_SYSTEM_PROMPT,
     )
 
@@ -171,9 +231,10 @@ def list_skill_reference_ids(
 
 
 __all__ = [
-    "PROJECT_SKILLS_SOURCE",
+    "CWD_SKILLS_SOURCE",
     "PROJECT_FILESYSTEM_TOOL_NAMES",
     "PROJECT_FILESYSTEM_READ_TOOL_NAMES",
+    "SOURCE_SKILLS_SOURCE",
     "create_project_skills_backend",
     "create_project_filesystem_middleware",
     "create_project_skills_middleware",

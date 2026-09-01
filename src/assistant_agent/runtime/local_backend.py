@@ -265,9 +265,15 @@ class GitToolMiddleware(AgentMiddleware):
 class WorkingDirectoryBackend(LocalShellBackend):
     """Resolve the native local backend from the current run context."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        subdirectory: str | None = None,
+        *,
+        virtual_mode: bool = False,
+    ) -> None:
         self.cwd = Path.home()
-        self.virtual_mode = False
+        self.virtual_mode = virtual_mode
+        self._subdirectory = subdirectory
         self.max_file_size_bytes = 10 * 1024 * 1024
         self._default_timeout = 120
         self._max_output_bytes = 100_000
@@ -279,9 +285,12 @@ class WorkingDirectoryBackend(LocalShellBackend):
 
     def _backend(self) -> LocalShellBackend:
         runtime = get_runtime(AssistantRunContext)
+        root_dir = Path(runtime.context.cwd)
+        if self._subdirectory:
+            root_dir /= self._subdirectory
         return LocalShellBackend(
-            root_dir=runtime.context.cwd,
-            virtual_mode=False,
+            root_dir=root_dir,
+            virtual_mode=self.virtual_mode,
             timeout=120,
             max_output_bytes=100_000,
             env=_shell_env(),
@@ -331,6 +340,18 @@ class WorkingDirectoryBackend(LocalShellBackend):
 
     def delete(self, file_path: str):
         return self._backend().delete(file_path)
+
+    def upload_files(self, files: list[tuple[str, bytes]]):
+        return self._backend().upload_files(files)
+
+    async def aupload_files(self, files: list[tuple[str, bytes]]):
+        return await self._backend().aupload_files(files)
+
+    def download_files(self, paths: list[str]):
+        return self._backend().download_files(paths)
+
+    async def adownload_files(self, paths: list[str]):
+        return await self._backend().adownload_files(paths)
 
     def execute(self, command: str, *, timeout: int | None = None):
         return self._backend().execute(command, timeout=timeout)

@@ -140,10 +140,6 @@ class AgentServerExecutionOwner:
             if tool.name in general_purpose_names
             and tool.name not in browser_tool_names
         ]
-        skills_backend = await asyncio.to_thread(
-            create_project_skills_backend,
-            project_root,
-        )
         business_tool_profiles = project_tool_profiles()
         async_tool_profile = async_task_tool_profile()
         context_options = {
@@ -162,7 +158,11 @@ class AgentServerExecutionOwner:
             and config.qwen_chat_api_protocol == "dashscope"
             and config.qwen_chat_enable_search
         )
-        writable_backend = create_local_backend()
+        writable_backend = create_project_skills_backend(
+            project_root,
+            create_local_backend(),
+        )
+        skills_backend = writable_backend
         conversation_history_backend = create_conversation_history_backend()
         worker_graph = build_general_purpose_worker(
             model,

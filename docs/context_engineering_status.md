@@ -43,10 +43,12 @@ Tool observation 当作本轮证据。`visual_memory_search` 只查当前 VIDEO 
 
 ## Skill、filesystem 与 task state
 
-Deep Agents `SkillsMiddleware` 从独立的普通 `FilesystemBackend` 的 `/skills/` 发现标准 `SKILL.md` L0 元数据，
-项目 state 与 Prompt 只投影 `name`、`description`、`path`；上游可选的 `allowed_tools`、`compatibility`、`license`、
-`metadata` 不进入项目运行时。正文只在模型实际调用 `read_file` 时进入当前角色 transcript。这个 backend 与 main/worker
-共享的可写 Home backend 相互分离；Skills 不授予 Tool，也不扩大文件访问或 task state。
+Deep Agents `SkillsMiddleware` 从同一个 `CompositeBackend` 的两条虚拟 route 发现标准 `SKILL.md` L0 元数据：
+`/source-skills/` 对应随源码发布的 `<source-root>/skills/`，`/cwd-skills/` 对应每次 run 的 `<cwd>/skills/`；后者同名
+覆盖前者，且每次 run 重新发现，避免 thread 切换 cwd 后沿用旧目录。项目 state 与 Prompt 只投影 `name`、`description`、
+`path`；上游可选的 `allowed_tools`、`compatibility`、`license`、`metadata` 不进入项目运行时。两条 route 与主/worker 的
+working-directory backend 一起交给同一套 filesystem Tool，因此 Prompt 中的路径可直接由 `read_file` 按需读取；正文只在
+实际读取后进入当前角色 transcript。Skills 不授予 Tool，也不扩大 task state。
 
 同步 `task` 使用双向显式 allowlist，而不是传递整个 Deep Agent state：
 

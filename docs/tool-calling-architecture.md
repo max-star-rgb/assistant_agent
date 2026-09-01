@@ -27,10 +27,11 @@ filesystem surface，项目 middleware 列表不再重复创建它，且 `filesy
 
 当前 composition 的 backend 为：
 
-- 主 Agent：按 `AssistantRunContext.cwd` 动态创建 `LocalShellBackend`；`.` 映射到 cwd，`/`、`/.` 和其他绝对路径保持宿主
-  OS 语义，不装配 `/artifacts/`、`/scratch/`、`/uploads/` 等虚拟 route；
+- 主 Agent：`CompositeBackend` 默认 route 按 `AssistantRunContext.cwd` 动态创建 `LocalShellBackend`；`.` 映射到 cwd，
+  `/`、`/.` 和其他绝对路径保持宿主 OS 语义，不装配 `/artifacts/`、`/scratch/`、`/uploads/` 等虚拟 route；
 - 同步/异步 worker：复用主 Agent 的 working-directory backend 和完整 filesystem/`execute` surface；同步继承 run context，异步显式复制父 context；
-- Skill discovery：独立 `FilesystemBackend`，只给 `SkillsMiddleware` 发现和读取项目 `/skills/`。
+- Skill：同一 composite 额外挂载只用于稳定寻址的 `/source-skills/` 与 `/cwd-skills/`，分别映射源码 `skills/` 与当前
+  `<cwd>/skills/`；`SkillsMiddleware` 用它们发现目录，filesystem `read_file` 用同一路径按需读取正文。
 
 `general-purpose` 使用与主 Agent 相同的模型和业务 Tool inventory，并拒绝业务 Tool 伪装成 filesystem、Todo、task、
 async task 或 profile activation 等保留名称。`coder` 只接收 Deep Agents
