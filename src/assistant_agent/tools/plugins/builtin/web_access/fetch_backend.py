@@ -10,7 +10,8 @@ from time import perf_counter
 from typing import Any, Protocol
 from urllib.parse import urlparse, urlunparse
 
-from assistant_agent.config import ProviderConfig
+from assistant_agent.config import SearchConfig
+from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.tools.plugins.builtin.web_access.fetch_models import (
     WebFetchProviderError,
     WebFetchRequest,
@@ -278,23 +279,26 @@ class TavilyWebFetchAdapter:
         )
 
 
-def create_web_fetch_adapter(config: ProviderConfig | None = None) -> WebFetchAdapter:
+def create_web_fetch_adapter(
+    config: SearchConfig,
+    *,
+    provider_mode: ProviderMode,
+) -> WebFetchAdapter:
     """Create a web fetch adapter without initializing real provider clients."""
 
-    resolved = config or ProviderConfig.from_env()
-    if resolved.search_provider == "http":
+    if config.search_provider == "http":
         return HttpWebFetchAdapter(
-            base_url=resolved.web_search_base_url,
-            api_key=resolved.web_search_api_key,
-            timeout_seconds=resolved.web_search_timeout_seconds,
+            base_url=config.web_search_base_url,
+            api_key=config.web_search_api_key,
+            timeout_seconds=config.web_search_timeout_seconds,
         )
-    if resolved.search_provider == "tavily":
+    if config.search_provider == "tavily":
         return TavilyWebFetchAdapter(
-            base_url=resolved.tavily_base_url,
-            api_key=resolved.tavily_api_key,
-            timeout_seconds=resolved.web_search_timeout_seconds,
+            base_url=config.tavily_base_url,
+            api_key=config.tavily_api_key,
+            timeout_seconds=config.web_search_timeout_seconds,
         )
-    if resolved.provider_mode == "real":
+    if provider_mode == "real":
         raise ValueError("real provider mode requires a configured web fetch provider")
     return MockWebFetchAdapter()
 

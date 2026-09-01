@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import asdict
 
 import pytest
@@ -6,6 +7,10 @@ from assistant_agent.config import AppConfig, ProviderConfig, load_app_config
 from assistant_agent.media.video.video_adapter import create_video_understanding_adapter
 from assistant_agent.native_agent.memory import create_memory_backend
 from assistant_agent.native_agent.providers import create_chat_model
+from assistant_agent.native_agent.tools import (
+    NativeToolResources,
+    create_native_tool_inventory,
+)
 from assistant_agent.providers.provider_selection import create_vision_adapter
 
 
@@ -117,3 +122,23 @@ def test_vision_factories_use_projected_config() -> None:
 
     assert adapter.provider == "mock"
     assert video.provider == "mock"
+
+
+def test_tool_inventory_uses_projected_config() -> None:
+    """Inventory must compose from the config sections it actually consumes."""
+
+    config = load_app_config({})
+
+    tools = asyncio.run(
+        create_native_tool_inventory(
+            config.tools,
+            provider_mode=config.provider_mode,
+            vision_config=config.vision,
+            media_config=config.media,
+            resources=NativeToolResources(),
+            mcp_server_configs=[],
+        )
+    )
+
+    assert tools
+    assert len({tool.name for tool in tools}) == len(tools)

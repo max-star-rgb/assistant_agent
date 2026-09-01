@@ -6,7 +6,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from assistant_agent.config import ProviderConfig
+from assistant_agent.config import MediaConfig, ToolConfig, VisionConfig
+from assistant_agent.provider_mode import ProviderMode
 
 if TYPE_CHECKING:
     from assistant_agent.runtime.thread_resources import ThreadResourceManager
@@ -33,7 +34,10 @@ if TYPE_CHECKING:
 class ToolPluginContext:
     """Dependencies and structured enablement facts available to built-in plugins."""
 
-    config: ProviderConfig
+    provider_mode: ProviderMode
+    config: ToolConfig
+    vision_config: VisionConfig
+    media_config: MediaConfig
     video_context_store: VideoContextStore | None = None
     vision_client: VisionUnderstandingClient | None = None
     realtime_video_memory_store: RealtimeVideoMemoryStore | None = None
@@ -48,4 +52,4 @@ class ToolPluginContext:
 
     @property
     def mock_mode(self) -> bool:
-        return self.config.provider_mode == "mock"
+        return self.provider_mode == "mock"

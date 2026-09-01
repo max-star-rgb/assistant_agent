@@ -10,7 +10,8 @@ from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, Protocol
 
-from assistant_agent.config import ProviderConfig
+from assistant_agent.config import SearchConfig
+from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.tools.plugins.builtin.visual_image_search.models import (
     VisualImageSearchMatch,
     VisualImageSearchProviderError,
@@ -209,21 +210,22 @@ class QwenImageSearchAdapter:
 
 
 def create_visual_image_search_adapter(
-    config: ProviderConfig | None = None,
+    config: SearchConfig,
+    *,
+    provider_mode: ProviderMode,
 ) -> VisualImageSearchAdapter:
     """Create a visual image search adapter without initializing real clients."""
 
-    resolved = config or ProviderConfig.from_env()
-    if resolved.visual_image_search_provider == "qwen":
+    if config.visual_image_search_provider == "qwen":
         return QwenImageSearchAdapter(
             QwenImageSearchConfig(
-                api_key=resolved.qwen_image_search_api_key,
-                base_url=resolved.qwen_image_search_base_url,
-                model=resolved.qwen_image_search_model,
-                timeout_seconds=resolved.qwen_image_search_timeout_seconds,
+                api_key=config.qwen_image_search_api_key,
+                base_url=config.qwen_image_search_base_url,
+                model=config.qwen_image_search_model,
+                timeout_seconds=config.qwen_image_search_timeout_seconds,
             )
         )
-    if resolved.provider_mode == "real":
+    if provider_mode == "real":
         raise ValueError("real provider mode requires a configured visual image search provider")
     return MockVisualImageSearchAdapter()
 

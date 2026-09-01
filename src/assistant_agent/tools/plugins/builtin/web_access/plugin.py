@@ -1,6 +1,6 @@
 """Web fetch tool plugin."""
 
-from assistant_agent.config import ProviderConfig
+from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.tools.plugins.builtin.web_access.fetch_backend import (
     create_web_fetch_adapter,
 )
@@ -16,9 +16,14 @@ class WebAccessToolPlugin:
         if not context.mock_mode:
             return []
         return [
-            create_web_fetch_tool(adapter=create_web_fetch_adapter(context.config)),
+            create_web_fetch_tool(
+                adapter=create_web_fetch_adapter(
+                    context.config.search,
+                    provider_mode=context.provider_mode,
+                )
+            ),
         ]
 
 
-def web_provider_ready(config: ProviderConfig) -> bool:
-    return config.provider_mode == "mock"
+def web_provider_ready(provider_mode: ProviderMode) -> bool:
+    return provider_mode == "mock"

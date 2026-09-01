@@ -2,7 +2,8 @@
 
 from typing import Protocol
 
-from assistant_agent.config import ProviderConfig
+from assistant_agent.config import ShoppingConfig
+from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.tools.plugins.builtin.shopping.models import (
     PriceCompareRequest,
     PriceCompareResult,
@@ -83,13 +84,14 @@ class HttpPriceCompareAdapter:
 
 
 def create_shopping_search_adapter(
-    config: ProviderConfig | None = None,
+    config: ShoppingConfig,
+    *,
+    provider_mode: ProviderMode,
 ) -> ProductSearchAdapter:
     """Create only explicitly configured real shopping search adapters."""
 
-    resolved = config or ProviderConfig.from_env()
-    if resolved.shopping_search_provider == "haodanku":
-        if not resolved.haodanku_api_key:
+    if config.shopping_search_provider == "haodanku":
+        if not config.haodanku_api_key:
             raise ValueError("configured real shopping search provider requires HAODANKU_API_KEY")
         from assistant_agent.tools.plugins.builtin.shopping.haodanku import (
             HaodankuConfig,
@@ -98,38 +100,39 @@ def create_shopping_search_adapter(
 
         return HaodankuProductSearchAdapter(
             HaodankuConfig(
-                api_key=resolved.haodanku_api_key,
-                base_url=resolved.haodanku_base_url,
-                timeout_seconds=resolved.haodanku_timeout_seconds,
-                enabled_platforms=resolved.haodanku_enabled_platforms,
-                taobao_pid=resolved.haodanku_taobao_pid,
-                taobao_authorized_name=resolved.haodanku_taobao_authorized_name,
-                jd_sub_union_id=resolved.haodanku_jd_sub_union_id,
-                pdd_channel=resolved.haodanku_pdd_channel,
+                api_key=config.haodanku_api_key,
+                base_url=config.haodanku_base_url,
+                timeout_seconds=config.haodanku_timeout_seconds,
+                enabled_platforms=config.haodanku_enabled_platforms,
+                taobao_pid=config.haodanku_taobao_pid,
+                taobao_authorized_name=config.haodanku_taobao_authorized_name,
+                jd_sub_union_id=config.haodanku_jd_sub_union_id,
+                pdd_channel=config.haodanku_pdd_channel,
             )
         )
-    if resolved.shopping_search_provider == "http":
-        if not resolved.shopping_search_base_url or not resolved.shopping_search_api_key:
+    if config.shopping_search_provider == "http":
+        if not config.shopping_search_base_url or not config.shopping_search_api_key:
             raise ValueError(
                 "configured real shopping search provider requires "
                 "SHOPPING_SEARCH_BASE_URL and SHOPPING_SEARCH_API_KEY"
             )
         return HttpProductSearchAdapter(
-            base_url=resolved.shopping_search_base_url,
-            api_key=resolved.shopping_search_api_key,
-            timeout_seconds=resolved.shopping_search_timeout_seconds,
+            base_url=config.shopping_search_base_url,
+            api_key=config.shopping_search_api_key,
+            timeout_seconds=config.shopping_search_timeout_seconds,
         )
     raise ValueError("configured real shopping search provider is required")
 
 
 def create_shopping_compare_adapter(
-    config: ProviderConfig | None = None,
+    config: ShoppingConfig,
+    *,
+    provider_mode: ProviderMode,
 ) -> PriceCompareAdapter:
     """Create only explicitly configured real shopping comparison adapters."""
 
-    resolved = config or ProviderConfig.from_env()
-    if resolved.shopping_compare_provider == "haodanku":
-        if not resolved.haodanku_api_key:
+    if config.shopping_compare_provider == "haodanku":
+        if not config.haodanku_api_key:
             raise ValueError("configured real shopping compare provider requires HAODANKU_API_KEY")
         from assistant_agent.tools.plugins.builtin.shopping.haodanku import (
             HaodankuConfig,
@@ -138,26 +141,26 @@ def create_shopping_compare_adapter(
 
         return HaodankuPriceCompareAdapter(
             HaodankuConfig(
-                api_key=resolved.haodanku_api_key,
-                base_url=resolved.haodanku_base_url,
-                timeout_seconds=resolved.haodanku_timeout_seconds,
-                enabled_platforms=resolved.haodanku_enabled_platforms,
-                taobao_pid=resolved.haodanku_taobao_pid,
-                taobao_authorized_name=resolved.haodanku_taobao_authorized_name,
-                jd_sub_union_id=resolved.haodanku_jd_sub_union_id,
-                pdd_channel=resolved.haodanku_pdd_channel,
+                api_key=config.haodanku_api_key,
+                base_url=config.haodanku_base_url,
+                timeout_seconds=config.haodanku_timeout_seconds,
+                enabled_platforms=config.haodanku_enabled_platforms,
+                taobao_pid=config.haodanku_taobao_pid,
+                taobao_authorized_name=config.haodanku_taobao_authorized_name,
+                jd_sub_union_id=config.haodanku_jd_sub_union_id,
+                pdd_channel=config.haodanku_pdd_channel,
             )
         )
-    if resolved.shopping_compare_provider == "http":
-        if not resolved.shopping_compare_base_url or not resolved.shopping_compare_api_key:
+    if config.shopping_compare_provider == "http":
+        if not config.shopping_compare_base_url or not config.shopping_compare_api_key:
             raise ValueError(
                 "configured real shopping compare provider requires "
                 "SHOPPING_COMPARE_BASE_URL and SHOPPING_COMPARE_API_KEY"
             )
         return HttpPriceCompareAdapter(
-            base_url=resolved.shopping_compare_base_url,
-            api_key=resolved.shopping_compare_api_key,
-            timeout_seconds=resolved.shopping_compare_timeout_seconds,
+            base_url=config.shopping_compare_base_url,
+            api_key=config.shopping_compare_api_key,
+            timeout_seconds=config.shopping_compare_timeout_seconds,
         )
     raise ValueError("configured real shopping compare provider is required")
 

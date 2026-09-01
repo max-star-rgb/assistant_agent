@@ -21,16 +21,16 @@ class LodgingToolPlugin:
         if context.mock_mode:
             tools: list[BaseTool] = [create_lodging_search_tool()]
         elif (
-            context.config.lodging_provider == "flyai"
-            and _is_executable_file(context.config.flyai_cli_path)
-            and context.config.flyai_api_key
+            context.config.lodging.lodging_provider == "flyai"
+            and _is_executable_file(context.config.lodging.flyai_cli_path)
+            and context.config.lodging.flyai_api_key
         ):
             tools = [
                 create_lodging_search_tool(
                     FlyAILodgingSearchAdapter(
-                        cli_path=context.config.flyai_cli_path,
-                        api_key=context.config.flyai_api_key,
-                        timeout_seconds=context.config.flyai_timeout_seconds,
+                        cli_path=context.config.lodging.flyai_cli_path,
+                        api_key=context.config.lodging.flyai_api_key,
+                        timeout_seconds=context.config.lodging.flyai_timeout_seconds,
                     )
                 )
             ]

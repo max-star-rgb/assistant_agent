@@ -6,7 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from assistant_agent.config import ProviderConfig
+from assistant_agent.config import ChatConfig, ToolConfig, VisionConfig
+from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.providers.provider_config_validation import (
     ProviderConfigIssue,
     validate_provider_config,
@@ -55,26 +56,37 @@ class ProviderSmokeContract(BaseModel):
     errors: list[dict[str, object]] = Field(default_factory=list)
 
 
-def build_provider_readiness_report(config: ProviderConfig) -> ProviderReadinessReport:
+def build_provider_readiness_report(
+    *,
+    provider_mode: ProviderMode,
+    chat_config: ChatConfig,
+    vision_config: VisionConfig,
+    tool_config: ToolConfig,
+) -> ProviderReadinessReport:
     """Build readiness checks without making network calls."""
 
-    validation = validate_provider_config(config)
+    validation = validate_provider_config(
+        provider_mode=provider_mode,
+        chat_config=chat_config,
+        vision_config=vision_config,
+        tool_config=tool_config,
+    )
     issues_by_key: dict[tuple[str, str], list[ProviderConfigIssue]] = {}
     for issue in validation.issues:
         issues_by_key.setdefault((issue.capability, issue.provider), []).append(issue)
 
     checks = [
-        _check(IMAGE_UNDERSTANDING_CAPABILITY, config.vision_provider, config, issues_by_key),
-        _check(DIRECT_CHAT_CAPABILITY, config.chat_provider, config, issues_by_key),
-        _check(IMAGE_GENERATION_CAPABILITY, config.image_generation_provider, config, issues_by_key),
-        _check(SHOPPING_SEARCH_CAPABILITY, config.shopping_search_provider, config, issues_by_key),
-        _check(SHOPPING_SEARCH_CAPABILITY, config.shopping_compare_provider, config, issues_by_key),
-        _native_web_search_check(config),
-        _check(VIDEO_UNDERSTANDING_CAPABILITY, config.vision_provider, config, issues_by_key),
+        _check(IMAGE_UNDERSTANDING_CAPABILITY, vision_config.vision_provider, provider_mode, issues_by_key),
+        _check(DIRECT_CHAT_CAPABILITY, chat_config.chat_provider, provider_mode, issues_by_key),
+        _check(IMAGE_GENERATION_CAPABILITY, tool_config.image_generation.image_generation_provider, provider_mode, issues_by_key),
+        _check(SHOPPING_SEARCH_CAPABILITY, tool_config.shopping.shopping_search_provider, provider_mode, issues_by_key),
+        _check(SHOPPING_SEARCH_CAPABILITY, tool_config.shopping.shopping_compare_provider, provider_mode, issues_by_key),
+        _native_web_search_check(provider_mode, chat_config),
+        _check(VIDEO_UNDERSTANDING_CAPABILITY, vision_config.vision_provider, provider_mode, issues_by_key),
     ]
 
     return ProviderReadinessReport(
-        provider_mode=config.provider_mode,
+        provider_mode=provider_mode,
         ready=all(check.status != "not_ready" for check in checks),
         checks=checks,
     )
@@ -82,7 +94,10 @@ def build_provider_readiness_report(config: ProviderConfig) -> ProviderReadiness
 
 def build_smoke_contract(
     *,
-    config: ProviderConfig,
+    provider_mode: ProviderMode,
+    chat_config: ChatConfig,
+    vision_config: VisionConfig,
+    tool_config: ToolConfig,
     capability: str,
     provider: str,
     success: bool,
@@ -90,14 +105,21 @@ def build_smoke_contract(
 ) -> ProviderSmokeContract:
     """Build a standard smoke result wrapper."""
 
-    readiness = _readiness_for(config, capability, provider)
+    readiness = _readiness_for(
+        provider_mode=provider_mode,
+        chat_config=chat_config,
+        vision_config=vision_config,
+        tool_config=tool_config,
+        capability=capability,
+        provider=provider,
+    )
     normalized_errors = errors or []
     if readiness.status == "disabled":
         return ProviderSmokeContract(
             status="skipped",
             provider=provider,
             capability=capability,
-            provider_mode=config.provider_mode,
+            provider_mode=provider_mode,
             readiness=readiness.status,
             message="Provider smoke is disabled in mock mode.",
             errors=normalized_errors,
@@ -107,7 +129,7 @@ def build_smoke_contract(
             status="failed",
             provider=provider,
             capability=capability,
-            provider_mode=config.provider_mode,
+            provider_mode=provider_mode,
             readiness=readiness.status,
             message="Provider smoke failed with structured errors.",
             errors=normalized_errors,
@@ -116,7 +138,7 @@ def build_smoke_contract(
         status="success" if success else "failed",
         provider=provider,
         capability=capability,
-        provider_mode=config.provider_mode,
+        provider_mode=provider_mode,
         readiness=readiness.status,
         message="Provider smoke completed." if success else "Provider smoke did not complete.",
         errors=[],
@@ -126,15 +148,15 @@ def build_smoke_contract(
 def _check(
     capability: str,
     provider: str,
-    config: ProviderConfig,
+    provider_mode: ProviderMode,
     issues_by_key: dict[tuple[str, str], list[ProviderConfigIssue]],
 ) -> ProviderReadinessCheck:
     issues = issues_by_key.get((capability, provider), [])
-    if provider in _offline_providers(capability) and config.provider_mode == "real":
+    if provider in _offline_providers(capability) and provider_mode == "real":
         status: ReadinessStatus = "disabled"
     elif provider in _offline_providers(capability):
         status = "ready"
-    elif config.provider_mode != "real":
+    elif provider_mode != "real":
         status = "disabled"
     elif issues:
         status = "not_ready"
@@ -144,17 +166,30 @@ def _check(
         capability=capability,
         provider=provider,
         status=status,
-        real_provider_allowed=config.provider_mode == "real",
+        real_provider_allowed=provider_mode == "real",
         issues=issues,
     )
 
 
-def _readiness_for(config: ProviderConfig, capability: str, provider: str) -> ProviderReadinessCheck:
-    report = build_provider_readiness_report(config)
+def _readiness_for(
+    *,
+    provider_mode: ProviderMode,
+    chat_config: ChatConfig,
+    vision_config: VisionConfig,
+    tool_config: ToolConfig,
+    capability: str,
+    provider: str,
+) -> ProviderReadinessCheck:
+    report = build_provider_readiness_report(
+        provider_mode=provider_mode,
+        chat_config=chat_config,
+        vision_config=vision_config,
+        tool_config=tool_config,
+    )
     for check in report.checks:
         if check.capability == capability and check.provider == provider:
             return check
-    if provider not in _offline_providers(capability) and config.provider_mode != "real":
+    if provider not in _offline_providers(capability) and provider_mode != "real":
         status: ReadinessStatus = "disabled"
     else:
         status = "not_ready"
@@ -162,26 +197,29 @@ def _readiness_for(config: ProviderConfig, capability: str, provider: str) -> Pr
         capability=capability,
         provider=provider,
         status=status,
-        real_provider_allowed=config.provider_mode == "real",
+        real_provider_allowed=provider_mode == "real",
     )
 
 
-def _native_web_search_check(config: ProviderConfig) -> ProviderReadinessCheck:
-    if config.provider_mode == "mock":
+def _native_web_search_check(
+    provider_mode: ProviderMode,
+    chat_config: ChatConfig,
+) -> ProviderReadinessCheck:
+    if provider_mode == "mock":
         return ProviderReadinessCheck(
             capability=WEB_SEARCH_CAPABILITY,
             provider="mock",
             status="ready",
             real_provider_allowed=False,
         )
-    if config.chat_provider != "qwen":
+    if chat_config.chat_provider != "qwen":
         return ProviderReadinessCheck(
             capability=WEB_SEARCH_CAPABILITY,
-            provider=config.chat_provider,
+            provider=chat_config.chat_provider,
             status="disabled",
             real_provider_allowed=True,
         )
-    missing = config.resolved_chat_provider().missing_required_env()
+    missing = chat_config.resolved_provider().missing_required_env()
     issues: list[ProviderConfigIssue] = []
     if missing:
         issues = [

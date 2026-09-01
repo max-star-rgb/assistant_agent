@@ -12,7 +12,7 @@ class ImageTo3DToolPlugin:
     def build_tools(self, context: ToolPluginContext) -> list[BaseTool]:
         if context.mock_mode:
             return [create_image_to_3d_tool()]
-        config = context.config
+        config = context.media_config
         required = (
             config.td_gen_ip,
             config.td_gen_port,
