@@ -3,6 +3,8 @@ from dataclasses import asdict
 import pytest
 
 from assistant_agent.config import AppConfig, ProviderConfig, load_app_config
+from assistant_agent.native_agent.memory import create_memory_backend
+from assistant_agent.native_agent.providers import create_chat_model
 
 
 def _flatten(config: AppConfig) -> dict[str, object]:
@@ -77,3 +79,21 @@ def test_app_config_defaults_are_nested_and_mock_safe() -> None:
     assert config.chat.chat_provider == "mock"
     assert config.vision.vision_provider == "mock"
     assert config.tools.image_generation.image_generation_provider == "mock"
+
+
+def test_chat_and_memory_factories_accept_only_projected_config() -> None:
+    """Removing projected inputs must break offline factory construction."""
+
+    config = load_app_config({})
+
+    model = create_chat_model(config.chat, provider_mode=config.provider_mode)
+    backend = create_memory_backend(
+        config.memory,
+        provider_mode=config.provider_mode,
+        chat_config=config.chat,
+        media_config=config.media,
+        langmem_store=None,
+    )
+
+    assert model._llm_type == "assistant-agent-mock"
+    assert backend is not None

@@ -17,7 +17,7 @@ from assistant_agent.agent_server.async_delegation import (
     async_task_tool_profile,
     build_async_subagent_middleware,
 )
-from assistant_agent.config import ProviderConfig
+from assistant_agent.config import AppConfig, ProviderConfig, load_app_config
 from assistant_agent.context.token_counter import create_context_token_counter
 from assistant_agent.mcp.config import load_mcp_server_configs_from_env
 from assistant_agent.mcp.stateful_sessions import ThreadMcpSessionPool
@@ -90,10 +90,14 @@ class AgentServerExecutionOwner:
     ) -> "AgentServerExecutionOwner":
         """Build configured clients without blocking the Agent Server loop."""
 
+        # Temporary migration bridge: Task 5 removes the legacy config once
+        # Vision and Tool composition accept their projected sections.
+        app_config = load_app_config()
         config = ProviderConfig.from_env()
         context_token_counter = await asyncio.to_thread(
             create_context_token_counter,
-            config,
+            app_config.chat,
+            provider_mode=app_config.provider_mode,
         )
         (
             model,
@@ -104,6 +108,7 @@ class AgentServerExecutionOwner:
         ) = await asyncio.to_thread(
             _compose_sync,
             config,
+            app_config,
             store,
         )
         thread_resource_manager = ThreadResourceManager(thread_resource_config)
@@ -244,6 +249,7 @@ class AgentServerExecutionOwner:
 
 def _compose_sync(
     config: ProviderConfig,
+    app_config: AppConfig,
     store: BaseStore | None,
 ) -> tuple[
     BaseChatModel,
@@ -252,7 +258,10 @@ def _compose_sync(
     Path,
     ThreadResourceConfig,
 ]:
-    model = create_chat_model(config)
+    model = create_chat_model(
+        app_config.chat,
+        provider_mode=app_config.provider_mode,
+    )
     visual_perception = get_visual_perception_module(config)
     visual_resources = visual_perception.tool_resources()
     tool_resources = NativeToolResources(
@@ -267,7 +276,10 @@ def _compose_sync(
         live_view_resolver=visual_perception.resolve_frozen_live_view,
     )
     memory_backend = create_memory_backend(
-        config,
+        app_config.memory,
+        provider_mode=app_config.provider_mode,
+        chat_config=app_config.chat,
+        media_config=app_config.media,
         langmem_store=store,
     )
     project_root = Path(__file__).resolve().parents[3]

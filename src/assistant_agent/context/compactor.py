@@ -7,7 +7,8 @@ from dataclasses import dataclass, field
 from html import escape
 from typing import Any, Protocol
 
-from assistant_agent.config import ProviderConfig
+from assistant_agent.config import ChatConfig
+from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.context.models import ContextBudgetReport, ContextSummary, SessionHandoffV2
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.chat_adapter import ChatAdapter, ChatRequest
@@ -295,9 +296,10 @@ class SummaryValidator:
 
 
 def create_context_compactor(
-    config: ProviderConfig,
+    config: ChatConfig,
     chat_adapter: ChatAdapter,
     *,
+    provider_mode: ProviderMode,
     token_counter: Any | None = None,
     fallback: ContextCompactor | None = None,
 ) -> ContextCompactor | None:
@@ -307,7 +309,7 @@ def create_context_compactor(
         return None
     if (
         config.context_compactor_mode == "llm"
-        and config.provider_mode == "real"
+        and provider_mode == "real"
         and getattr(chat_adapter, "provider", "") != "mock"
     ):
         return LLMCompactor(

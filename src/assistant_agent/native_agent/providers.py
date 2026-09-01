@@ -21,7 +21,8 @@ from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
-from assistant_agent.config import ProviderConfig
+from assistant_agent.config import ChatConfig
+from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.providers.provider_http import without_unsupported_socks_proxy_env
 
 
@@ -138,12 +139,15 @@ class MockAssistantChatModel(BaseChatModel):
         )
 
 
-def create_chat_model(config: ProviderConfig | None = None) -> BaseChatModel:
+def create_chat_model(
+    config: ChatConfig,
+    *,
+    provider_mode: ProviderMode,
+) -> BaseChatModel:
     """Create one standard chat model without silently changing provider mode."""
 
-    resolved = config or ProviderConfig.from_env()
-    settings = resolved.resolved_chat_provider()
-    if resolved.provider_mode == "mock":
+    settings = config.resolved_provider()
+    if provider_mode == "mock":
         return MockAssistantChatModel()
 
     missing = settings.missing_required_env()
@@ -151,7 +155,7 @@ def create_chat_model(config: ProviderConfig | None = None) -> BaseChatModel:
         raise ProviderConfigurationError(
             f"{settings.provider} chat provider is missing {', '.join(missing)}"
         )
-    if settings.provider == "qwen" and resolved.qwen_chat_api_protocol == "dashscope":
+    if settings.provider == "qwen" and config.qwen_chat_api_protocol == "dashscope":
         from assistant_agent.providers.dashscope_langchain import (
             DashScopeNativeChatModel,
         )
@@ -161,10 +165,10 @@ def create_chat_model(config: ProviderConfig | None = None) -> BaseChatModel:
             base_url=settings.base_url or "",
             model_name=settings.model or "",
             output_version="v1",
-            timeout_seconds=resolved.chat_timeout_seconds,
-            enable_thinking=resolved.qwen_chat_enable_thinking,
-            enable_search=resolved.qwen_chat_enable_search,
-            streaming=(resolved.native_provider_streaming or resolved.chat_stream),
+            timeout_seconds=config.chat_timeout_seconds,
+            enable_thinking=config.qwen_chat_enable_thinking,
+            enable_search=config.qwen_chat_enable_search,
+            streaming=(config.native_provider_streaming or config.chat_stream),
         )
     if settings.adapter_kind not in {"openai_compatible", "local_http"}:
         raise ProviderConfigurationError(
@@ -173,14 +177,14 @@ def create_chat_model(config: ProviderConfig | None = None) -> BaseChatModel:
 
     from langchain_openai import ChatOpenAI
 
-    extra_body = _provider_extra_body(resolved, settings.provider)
-    streaming = resolved.native_provider_streaming or resolved.chat_stream
+    extra_body = _provider_extra_body(config, settings.provider)
+    streaming = config.native_provider_streaming or config.chat_stream
     with without_unsupported_socks_proxy_env():
         return ChatOpenAI(
             api_key=settings.api_key or "not-required",
             base_url=settings.base_url,
             model=settings.model or "",
-            timeout=resolved.chat_timeout_seconds,
+            timeout=config.chat_timeout_seconds,
             streaming=streaming,
             stream_usage=streaming,
             extra_body=extra_body,
@@ -189,10 +193,7 @@ def create_chat_model(config: ProviderConfig | None = None) -> BaseChatModel:
         )
 
 
-def _provider_extra_body(
-    config: ProviderConfig,
-    provider: str,
-) -> dict[str, Any] | None:
+def _provider_extra_body(config: ChatConfig, provider: str) -> dict[str, Any] | None:
     if provider != "qwen":
         return None
     extra_body: dict[str, Any] = {
