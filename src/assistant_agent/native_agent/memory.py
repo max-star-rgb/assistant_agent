@@ -14,7 +14,8 @@ from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from langgraph.runtime import Runtime
 from langgraph.store.base import BaseStore
 
-from assistant_agent.config import ProviderConfig
+from assistant_agent.config import ChatConfig, MediaConfig, MemoryConfig
+from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.identity import RequestIdentity
 from assistant_agent.memory.mem0.client import Mem0Client
 from assistant_agent.memory.mem0.identity import bind_mem0_identity
@@ -308,8 +309,11 @@ class HybridMemoryBackend:
 
 
 def create_memory_backend(
-    config: ProviderConfig | None = None,
+    config: MemoryConfig,
     *,
+    provider_mode: ProviderMode,
+    chat_config: ChatConfig,
+    media_config: MediaConfig,
     custom_backend: MemoryBackend | None = None,
     mem0_client: Any | None = None,
     langmem_manager: Any | None = None,
@@ -321,56 +325,57 @@ def create_memory_backend(
     if custom_backend is not None:
         _validate_backend(custom_backend)
         return custom_backend
-    resolved = config or ProviderConfig.from_env()
-    if resolved.memory_backend == "disabled":
+    if config.memory_backend == "disabled":
         return DisabledMemoryBackend()
-    if resolved.provider_mode != "real":
+    if provider_mode != "real":
         raise MemoryBackendConfigurationError(
-            f"Memory backend '{resolved.memory_backend}' requires real provider mode."
+            f"Memory backend '{config.memory_backend}' requires real provider mode."
         )
-    if resolved.memory_backend == "mem0":
-        if not resolved.mem0_base_url and mem0_client is None:
+    if config.memory_backend == "mem0":
+        if not config.mem0_base_url and mem0_client is None:
             raise MemoryBackendConfigurationError(
                 "Memory backend 'mem0' requires MEM0_BASE_URL."
             )
         client = mem0_client or Mem0Client(
-            base_url=resolved.mem0_base_url or "",
-            api_key=resolved.mem0_api_key,
-            timeout_seconds=resolved.mem0_timeout_seconds,
+            base_url=config.mem0_base_url or "",
+            api_key=config.mem0_api_key,
+            timeout_seconds=config.mem0_timeout_seconds,
         )
         return Mem0MemoryBackend(
             client=client,
-            identity_namespace=resolved.mem0_identity_namespace,
+            identity_namespace=config.mem0_identity_namespace,
         )
-    if resolved.memory_backend == "langmem":
+    if config.memory_backend == "langmem":
         manager = langmem_manager or _create_langmem_manager(
-            resolved,
+            config,
+            provider_mode=provider_mode,
+            chat_config=chat_config,
             store=langmem_store,
         )
         backend: MemoryBackend = LangMemMemoryBackend(manager=manager)
-        if resolved.remote_visual_memory_enabled:
+        if media_config.remote_visual_memory_enabled:
             if visual_memory_client is None:
                 from assistant_agent.memory.remote_service import (
                     RemoteMemoryServiceClient,
                 )
 
                 visual_memory_client = RemoteMemoryServiceClient(
-                    base_url=resolved.remote_visual_memory_base_url or "",
+                    base_url=media_config.remote_visual_memory_base_url or "",
                     timeout_seconds=(
-                        resolved.remote_visual_memory_query_timeout_seconds
+                        media_config.remote_visual_memory_query_timeout_seconds
                     ),
                 )
             backend = HybridMemoryBackend(
                 text_backend=backend,
                 visual_client=visual_memory_client,
                 visual_timeout_seconds=(
-                    resolved.remote_visual_memory_query_timeout_seconds
+                    media_config.remote_visual_memory_query_timeout_seconds
                 ),
-                visual_top_k=resolved.remote_visual_memory_query_top_k,
+                visual_top_k=media_config.remote_visual_memory_query_top_k,
             )
         return backend
     raise MemoryBackendConfigurationError(
-        f"Unsupported memory backend: {resolved.memory_backend!r}."
+        f"Unsupported memory backend: {config.memory_backend!r}."
     )
 
 
@@ -416,7 +421,13 @@ async def memory_extract_node(
     return {}
 
 
-def _create_langmem_manager(config: ProviderConfig, *, store: BaseStore | None):
+def _create_langmem_manager(
+    config: MemoryConfig,
+    *,
+    provider_mode: ProviderMode,
+    chat_config: ChatConfig,
+    store: BaseStore | None,
+):
     if store is None:
         raise MemoryBackendConfigurationError(
             "Memory backend 'langmem' requires an explicit LangGraph BaseStore."
@@ -430,7 +441,10 @@ def _create_langmem_manager(config: ProviderConfig, *, store: BaseStore | None):
             importlib.import_module("langmem"),
             "create_memory_store_manager",
         )
-        model = create_chat_model(replace(config, chat_model=config.langmem_model))
+        model = create_chat_model(
+            replace(chat_config, chat_model=config.langmem_model),
+            provider_mode=provider_mode,
+        )
         return create_manager(
             model,
             instructions=_LANGMEM_MEMORY_INSTRUCTIONS,

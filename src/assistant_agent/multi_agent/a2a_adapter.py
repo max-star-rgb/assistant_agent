@@ -37,7 +37,7 @@ PUBLIC_CAPABILITY_TAGS = {
 }
 PRIVATE_TEXT_MARKERS = (
     "NativeGraphEvaluationTarget",
-    "ProviderConfig",
+    "AppConfig",
     "assistant_agent.",
     "/home/",
     "/src/",

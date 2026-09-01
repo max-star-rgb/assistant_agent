@@ -7,7 +7,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from assistant_agent.config import ProviderConfig
+from assistant_agent.config import ChatConfig, ToolConfig, VisionConfig
+from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.providers.provider_errors import ProviderError, build_provider_error
 from assistant_agent.tools.ids import (
     DIRECT_CHAT_CAPABILITY,
@@ -46,7 +47,13 @@ class ProviderConfigValidationResult(BaseModel):
         return [issue for issue in self.issues if issue.severity == "error"]
 
 
-def validate_provider_config(config: ProviderConfig) -> ProviderConfigValidationResult:
+def validate_provider_config(
+    *,
+    provider_mode: ProviderMode,
+    chat_config: ChatConfig,
+    vision_config: VisionConfig,
+    tool_config: ToolConfig,
+) -> ProviderConfigValidationResult:
     """Validate selected provider config without making provider calls."""
 
     issues: list[ProviderConfigIssue] = []
@@ -54,42 +61,42 @@ def validate_provider_config(config: ProviderConfig) -> ProviderConfigValidation
     _add_issue_if_missing(
         issues,
         capability=IMAGE_UNDERSTANDING_CAPABILITY,
-        provider=config.vision_provider,
-        missing=_vision_missing(config),
+        provider=vision_config.vision_provider,
+        missing=_vision_missing(vision_config),
     )
     _add_issue_if_missing(
         issues,
         capability=DIRECT_CHAT_CAPABILITY,
-        provider=config.chat_provider,
-        missing=_chat_missing(config),
+        provider=chat_config.chat_provider,
+        missing=_chat_missing(chat_config),
     )
     _add_issue_if_missing(
         issues,
         capability=IMAGE_GENERATION_CAPABILITY,
-        provider=config.image_generation_provider,
-        missing=_image_generation_missing(config),
+        provider=tool_config.image_generation.image_generation_provider,
+        missing=_image_generation_missing(tool_config),
     )
     _add_issue_if_missing(
         issues,
         capability=SHOPPING_SEARCH_CAPABILITY,
-        provider=config.shopping_search_provider,
-        missing=_shopping_search_missing(config),
+        provider=tool_config.shopping.shopping_search_provider,
+        missing=_shopping_search_missing(tool_config),
     )
     _add_issue_if_missing(
         issues,
         capability=SHOPPING_SEARCH_CAPABILITY,
-        provider=config.shopping_compare_provider,
-        missing=_shopping_compare_missing(config),
+        provider=tool_config.shopping.shopping_compare_provider,
+        missing=_shopping_compare_missing(tool_config),
     )
     _add_issue_if_missing(
         issues,
         capability=VIDEO_UNDERSTANDING_CAPABILITY,
-        provider=config.vision_provider,
-        missing=_vision_missing(config),
+        provider=vision_config.vision_provider,
+        missing=_vision_missing(vision_config),
     )
 
     return ProviderConfigValidationResult(
-        provider_mode=config.provider_mode,
+        provider_mode=provider_mode,
         valid=not any(issue.severity == "error" for issue in issues),
         issues=issues,
     )
@@ -129,32 +136,32 @@ def _add_issue_if_missing(
     )
 
 
-def _vision_missing(config: ProviderConfig) -> list[str]:
-    return config.resolved_vision_provider().missing_required_env()
+def _vision_missing(config: VisionConfig) -> list[str]:
+    return config.resolved_provider().missing_required_env()
 
 
-def _chat_missing(config: ProviderConfig) -> list[str]:
-    return config.resolved_chat_provider().missing_required_env()
+def _chat_missing(config: ChatConfig) -> list[str]:
+    return config.resolved_provider().missing_required_env()
 
 
-def _image_generation_missing(config: ProviderConfig) -> list[str]:
-    return config.resolved_image_generation_provider().missing_required_env()
+def _image_generation_missing(config: ToolConfig) -> list[str]:
+    return config.image_generation.resolved_provider().missing_required_env()
 
 
-def _shopping_search_missing(config: ProviderConfig) -> list[str]:
-    if config.shopping_search_provider == "http":
+def _shopping_search_missing(config: ToolConfig) -> list[str]:
+    if config.shopping.shopping_search_provider == "http":
         return _missing(
-            ("SHOPPING_SEARCH_BASE_URL", config.shopping_search_base_url),
-            ("SHOPPING_SEARCH_API_KEY", config.shopping_search_api_key),
+            ("SHOPPING_SEARCH_BASE_URL", config.shopping.shopping_search_base_url),
+            ("SHOPPING_SEARCH_API_KEY", config.shopping.shopping_search_api_key),
         )
     return []
 
 
-def _shopping_compare_missing(config: ProviderConfig) -> list[str]:
-    if config.shopping_compare_provider == "http":
+def _shopping_compare_missing(config: ToolConfig) -> list[str]:
+    if config.shopping.shopping_compare_provider == "http":
         return _missing(
-            ("SHOPPING_COMPARE_BASE_URL", config.shopping_compare_base_url),
-            ("SHOPPING_COMPARE_API_KEY", config.shopping_compare_api_key),
+            ("SHOPPING_COMPARE_BASE_URL", config.shopping.shopping_compare_base_url),
+            ("SHOPPING_COMPARE_API_KEY", config.shopping.shopping_compare_api_key),
         )
     return []
 

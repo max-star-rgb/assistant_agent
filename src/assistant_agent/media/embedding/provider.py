@@ -8,6 +8,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Protocol
 
+from assistant_agent.config import VisionConfig
 from assistant_agent.media.embedding.models import (
     EmbeddingEvent,
     EmbeddingFailureEvent,
@@ -16,6 +17,7 @@ from assistant_agent.media.embedding.models import (
     ImageObservation,
     TextObservation,
 )
+from assistant_agent.provider_mode import ProviderMode
 
 
 class MultimodalEmbeddingProvider(Protocol):
@@ -149,6 +151,7 @@ class UnavailableMultimodalEmbeddingProvider:
             model_id=self.model_id,
         )
 
+
 class DashScopeImageOnlyEmbeddingProvider:
     """Compatibility adapter: DashScope has no proven matching text space here."""
 
@@ -178,7 +181,9 @@ class DashScopeImageOnlyEmbeddingProvider:
                 session_id=observation.session_id,
                 source_observation_id=observation.observation_id,
                 code=str(error.get("code") or "provider_empty_response"),
-                safe_message=str(error.get("message") or "DashScope image embedding failed"),
+                safe_message=str(
+                    error.get("message") or "DashScope image embedding failed"
+                ),
                 recoverable=bool(error.get("recoverable", True)),
                 latency_ms=max(0, int((perf_counter() - started) * 1000)),
                 model_id=self.model_id,
@@ -234,27 +239,27 @@ class DashScopeImageOnlyEmbeddingProvider:
         )
 
 
-def create_multimodal_embedding_provider(config=None) -> MultimodalEmbeddingProvider:
+def create_multimodal_embedding_provider(
+    config: "VisionConfig",
+    *,
+    provider_mode: "ProviderMode",
+) -> MultimodalEmbeddingProvider:
     """Create the configured Provider while keeping mock mode offline."""
 
-    if config is None:
-        from assistant_agent.config import ProviderConfig
-
-        config = ProviderConfig.from_env()
-    if getattr(config, "provider_mode", "mock") != "real":
+    if provider_mode != "real":
         return MockMultimodalEmbeddingProvider()
-    provider = getattr(config, "embedding_provider", "mock")
+    provider = config.embedding_provider
     if provider == "local_siglip2":
         from assistant_agent.media.embedding.local_siglip2 import (
             LocalSiglip2EmbeddingConfig,
             LocalSiglip2EmbeddingProvider,
         )
 
-        model_dir = getattr(config, "siglip2_model_dir", None)
+        model_dir = config.siglip2_model_dir
         return LocalSiglip2EmbeddingProvider(
             LocalSiglip2EmbeddingConfig(
                 model_dir=Path(model_dir) if model_dir else None,
-                cuda_device_id=getattr(config, "embedding_cuda_device_id", 0),
+                cuda_device_id=config.embedding_cuda_device_id,
             )
         )
     if provider == "dashscope":
@@ -280,8 +285,7 @@ def create_multimodal_embedding_provider(config=None) -> MultimodalEmbeddingProv
 def _deterministic_unit_vector(seed: str, dimension: int) -> list[float]:
     digest = hashlib.sha256(seed.encode("utf-8")).digest()
     values = [
-        (digest[index % len(digest)] - 127.5) / 127.5
-        for index in range(dimension)
+        (digest[index % len(digest)] - 127.5) / 127.5 for index in range(dimension)
     ]
     norm = sqrt(sum(value * value for value in values))
     if norm == 0.0:

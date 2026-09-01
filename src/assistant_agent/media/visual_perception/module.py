@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from langchain_core.runnables import RunnableConfig
 
-from assistant_agent.config import ProviderConfig
+from assistant_agent.config import MediaConfig, VisionConfig
 from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
 from assistant_agent.media.embedding.coordinator_store import (
     SessionEmbeddingCoordinatorStore,
@@ -59,6 +59,7 @@ from assistant_agent.media.visual_perception.history_probe import (
     VisualObservationHistoryProbe,
 )
 from assistant_agent.runtime.proactive_messages import ProactiveMessageSink
+from assistant_agent.provider_mode import ProviderMode
 
 
 DEFAULT_VISUAL_PERCEPTION_ROOT = Path(".data") / "visual_perception"
@@ -297,8 +298,10 @@ class VisualPerceptionModule:
 
     def __init__(
         self,
-        config: ProviderConfig | None = None,
         *,
+        provider_mode: ProviderMode,
+        vision_config: VisionConfig,
+        media_config: MediaConfig,
         data_root: Path | str = DEFAULT_VISUAL_PERCEPTION_ROOT,
         video_context_store: Any | None = None,
         realtime_video_memory_store: RealtimeVideoMemoryStore | None = None,
@@ -308,7 +311,9 @@ class VisualPerceptionModule:
         vision_client: VisionUnderstandingClient | None = None,
         embedding_provider: MultimodalEmbeddingProvider | None = None,
     ) -> None:
-        self.config = config or ProviderConfig.from_env()
+        self.provider_mode = provider_mode
+        self.vision_config = vision_config
+        self.media_config = media_config
         self.data_root = Path(data_root)
         self.video_context_store = video_context_store or InMemoryVideoContextStore()
         self.realtime_video_memory_store = (
@@ -316,7 +321,11 @@ class VisualPerceptionModule:
         )
         self.embedding_observer = None
         self.embedding_provider = (
-            embedding_provider or create_multimodal_embedding_provider(self.config)
+            embedding_provider
+            or create_multimodal_embedding_provider(
+                self.vision_config,
+                provider_mode=self.provider_mode,
+            )
         )
         self.embedding_coordinator_store = SessionEmbeddingCoordinatorStore(
             factory=lambda _user_id, session_id: SessionEmbeddingCoordinator(
@@ -327,7 +336,7 @@ class VisualPerceptionModule:
         )
         self.visual_reminder_registry = VisualReminderRegistry(
             delivery_timeout_seconds=(
-                self.config.proactive_message_delivery_timeout_seconds
+                self.media_config.proactive_message_delivery_timeout_seconds
             ),
         )
         self.visual_semantic_store_pool = visual_semantic_store_pool or (
@@ -337,13 +346,18 @@ class VisualPerceptionModule:
             )
         )
         self.visual_memory_text_index = visual_memory_text_index or (
-            create_visual_memory_text_index(self.config)
+            create_visual_memory_text_index(
+                self.vision_config,
+                provider_mode=self.provider_mode,
+            )
         )
         self.visual_history_probe = PoolVisualObservationHistoryProbe(
             self.visual_semantic_store_pool
         )
         self._vision_client = vision_client or _create_process_vision_client(
-            self.config
+            provider_mode=self.provider_mode,
+            vision_config=self.vision_config,
+            media_config=self.media_config,
         )
         self._vision_client_lock = Lock()
         self._observer_factory = observer_factory or self._create_observer
@@ -373,10 +387,12 @@ class VisualPerceptionModule:
             reminder_manager=VisualReminderManager(
                 user_id=user_id,
                 session_id=session_id,
-                similarity_threshold=self.config.visual_reminder_similarity_threshold,
-                max_active=self.config.visual_reminder_max_active,
+                similarity_threshold=(
+                    self.vision_config.visual_reminder_similarity_threshold
+                ),
+                max_active=self.vision_config.visual_reminder_max_active,
                 terminal_history_limit=(
-                    self.config.visual_reminder_terminal_history_limit
+                    self.vision_config.visual_reminder_terminal_history_limit
                 ),
                 observer=self.embedding_observer,
             ),
@@ -525,7 +541,11 @@ class VisualPerceptionModule:
 
         def observation_service_factory() -> RealtimeVisualObservationService:
             return RealtimeVisualObservationService(
-                client=create_vision_understanding_client(self.config)
+                client=create_vision_understanding_client(
+                    self.vision_config,
+                    provider_mode=self.provider_mode,
+                    media_config=self.media_config,
+                )
             )
 
         try:
@@ -538,7 +558,8 @@ class VisualPerceptionModule:
                 embedding_coordinator=embedding_lease.coordinator,
                 visual_reminder_registry=self.visual_reminder_registry,
                 visual_memory_text_index=self.visual_memory_text_index,
-                provider_config=self.config,
+                vision_config=self.vision_config,
+                provider_mode=self.provider_mode,
                 keyframe_root=self.data_root / "keyframes",
                 resource_release=release_resources,
             )
@@ -552,26 +573,40 @@ _default_module_lock = Lock()
 
 
 def get_visual_perception_module(
-    config: ProviderConfig | None = None,
+    *,
+    provider_mode: ProviderMode,
+    vision_config: VisionConfig,
+    media_config: MediaConfig,
 ) -> VisualPerceptionModule:
     """Return the process-owned visual capability module."""
 
     global _default_module
     with _default_module_lock:
         if _default_module is None or _default_module.closed:
-            _default_module = VisualPerceptionModule(config=config)
+            _default_module = VisualPerceptionModule(
+                provider_mode=provider_mode,
+                vision_config=vision_config,
+                media_config=media_config,
+            )
         return _default_module
 
 
 def _create_process_vision_client(
-    config: ProviderConfig,
+    *,
+    provider_mode: ProviderMode,
+    vision_config: VisionConfig,
+    media_config: MediaConfig,
 ) -> VisionUnderstandingClient | None:
-    if config.provider_mode == "real" and (
-        config.vision_provider == "mock"
-        or config.resolved_vision_provider().missing_required_env()
+    if provider_mode == "real" and (
+        vision_config.vision_provider == "mock"
+        or vision_config.resolved_provider().missing_required_env()
     ):
         return None
-    return create_vision_understanding_client(config)
+    return create_vision_understanding_client(
+        vision_config,
+        provider_mode=provider_mode,
+        media_config=media_config,
+    )
 
 
 def _validate_logical_keyframe_window(sequences: Sequence[int]) -> None:

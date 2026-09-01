@@ -31,6 +31,8 @@ class VisionUnderstandingAdapter(Protocol):
 class MockVisionUnderstandingAdapter:
     """Deterministic local adapter for tests and MVP flows."""
 
+    provider = "mock"
+
     def understand(
         self,
         input: VisionUnderstandingInput,

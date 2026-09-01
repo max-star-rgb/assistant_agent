@@ -49,7 +49,8 @@ from assistant_agent.agent_server.proactive_delivery import (
 from assistant_agent.api.rendering_3d_callback import (
     router as rendering_3d_callback_router,
 )
-from assistant_agent.config import ProviderConfig
+from assistant_agent.config import MediaConfig, load_app_config
+from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.media.video.h264_video_ingestion import (
     H264VideoIngestionService,
     validate_h264_bytes,
@@ -94,10 +95,22 @@ logger = logging.getLogger(__name__)
 async def agent_server_lifespan(application: FastAPI):
     """Own the process-wide visual module for this Agent Server process."""
 
-    visual_module = get_visual_perception_module()
+    loaded_config = load_app_config()
+    provider_mode = loaded_config.provider_mode
+    vision_config = loaded_config.vision
+    media_config = loaded_config.media
+    del loaded_config
+    visual_module = get_visual_perception_module(
+        provider_mode=provider_mode,
+        vision_config=vision_config,
+        media_config=media_config,
+    )
     application.state.visual_perception_module = visual_module
-    config = ProviderConfig.from_env()
-    video_archive = _create_remote_video_archive_service(config)
+    application.state.media_config = media_config
+    video_archive = _create_remote_video_archive_service(
+        media_config,
+        provider_mode=provider_mode,
+    )
     application.state.remote_video_archive_service = video_archive
     application.state.memory_media_download_registry = (
         video_archive.uploader.registry if video_archive is not None else None
@@ -124,6 +137,8 @@ async def agent_server_lifespan(application: FastAPI):
             is visual_module
         ):
             del application.state.visual_perception_module
+        if getattr(application.state, "media_config", None) is media_config:
+            del application.state.media_config
 
 
 async def _warm_native_graph(
@@ -485,7 +500,7 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
     )
     visual_module = getattr(websocket.app.state, "visual_perception_module", None)
     if visual_module is None:
-        visual_module = get_visual_perception_module()
+        raise RuntimeError("visual perception module is unavailable")
     ingestion_factory = getattr(app.state, "video_ingestion_factory", None)
     video_ingestion = (
         ingestion_factory()
@@ -1253,7 +1268,7 @@ async def _bind_proactive_delivery(
 ) -> None:
     if session.thread_id is None or session.user_id is None:
         raise MediaProtocolError("proactive delivery requires a bound native thread")
-    config = ProviderConfig.from_env()
+    config = websocket.app.state.media_config
     store_factory = getattr(app.state, "proactive_delivery_store_factory", None)
     store = (
         store_factory()
@@ -1579,11 +1594,13 @@ def _create_video_ingestion() -> H264VideoIngestionService:
 
 
 def _create_remote_video_archive_service(
-    config: ProviderConfig,
+    config: MediaConfig,
+    *,
+    provider_mode: ProviderMode,
 ) -> RemoteVideoArchiveService | None:
     if not config.remote_visual_memory_enabled:
         return None
-    if config.provider_mode != "real":
+    if provider_mode != "real":
         raise ValueError("remote visual memory requires provider mode real")
     if not (config.remote_visual_memory_download_base_url or "").strip():
         raise ValueError(

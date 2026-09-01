@@ -17,7 +17,8 @@ from assistant_agent.media.video.detection.image_fingerprint import grayscale_fi
 from assistant_agent.media.video.types import VideoFrame
 
 if TYPE_CHECKING:
-    from assistant_agent.config import ProviderConfig
+    from assistant_agent.config import VisionConfig
+    from assistant_agent.provider_mode import ProviderMode
 
 
 DEFAULT_DASHSCOPE_VISION_EMBEDDING_BASE_URL = "https://dashscope.aliyuncs.com/api/v1"
@@ -252,14 +253,14 @@ class DashScopeVisionEmbeddingProvider:
         return self.embed_image(frame)
 
 
-def create_vision_embedding_provider(config: ProviderConfig | None = None) -> VisionEmbeddingProvider:
+def create_vision_embedding_provider(
+    config: "VisionConfig",
+    *,
+    provider_mode: "ProviderMode",
+) -> VisionEmbeddingProvider:
     """Create the configured vision embedding provider without enabling real calls by default."""
 
-    if config is None:
-        from assistant_agent.config import ProviderConfig
-
-        config = ProviderConfig.from_env()
-    if config.provider_mode != "real":
+    if provider_mode != "real":
         return MockVisionEmbeddingProvider()
     if config.vision_embedding_provider == "dashscope":
         return DashScopeVisionEmbeddingProvider(

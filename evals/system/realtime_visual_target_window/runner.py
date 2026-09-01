@@ -13,7 +13,8 @@ from time import perf_counter_ns
 from typing import Any
 from uuid import uuid4
 
-from assistant_agent.config import ProviderConfig
+from assistant_agent.config import MediaConfig, VisionConfig, load_app_config
+from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
 from assistant_agent.media.embedding.provider import MockMultimodalEmbeddingProvider
 from assistant_agent.media.visual_perception.module import VisualPerceptionSession  # noqa: F401
@@ -46,14 +47,17 @@ class RealtimeVisualEvalConfigurationError(RuntimeError):
 def dry_run_report(*, frame_dir: Path | None, allow_real_provider: bool) -> dict[str, object]:
     """Describe the gated real evaluation without reading frames or calling Provider."""
 
-    config = ProviderConfig.from_env()
+    loaded_config = load_app_config()
+    provider_mode = loaded_config.provider_mode
+    vision_config = loaded_config.vision
+    del loaded_config
     configured_frames = _frame_candidates(frame_dir) if frame_dir is not None else []
     return {
         "status": "dry_run",
         "real_provider_authorized": bool(allow_real_provider),
-        "provider_mode": config.provider_mode,
-        "vision_provider": config.vision_provider,
-        "vision_config_complete": _qwen_vision_config_complete(config),
+        "provider_mode": provider_mode,
+        "vision_provider": vision_config.vision_provider,
+        "vision_config_complete": _qwen_vision_config_complete(vision_config),
         "frame_dir_configured": frame_dir is not None,
         "candidate_frame_count": len(configured_frames),
         "planned_provider_calls": "1 closed keyframe window (1..5 images)",
@@ -76,10 +80,25 @@ def run_real_eval(
 ) -> tuple[Path, dict[str, object]]:
     """Run one full window of isolated frame observations and the target barrier."""
 
-    config = ProviderConfig.from_env()
-    _validate_real_eval(config, allow_real_provider=allow_real_provider)
+    loaded_config = load_app_config()
+    provider_mode = loaded_config.provider_mode
+    vision_config = loaded_config.vision
+    media_config = loaded_config.media
+    del loaded_config
+    _validate_real_eval(
+        vision_config,
+        provider_mode=provider_mode,
+        allow_real_provider=allow_real_provider,
+    )
     frame_paths = _validated_frame_paths(frame_dir)
-    result = asyncio.run(_run_window(config=config, frame_paths=frame_paths))
+    result = asyncio.run(
+        _run_window(
+            vision_config=vision_config,
+            media_config=media_config,
+            provider_mode=provider_mode,
+            frame_paths=frame_paths,
+        )
+    )
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     run_dir = output_root / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
@@ -92,7 +111,9 @@ def run_real_eval(
 
 async def _run_window(
     *,
-    config: ProviderConfig,
+    vision_config: VisionConfig,
+    media_config: MediaConfig,
+    provider_mode: ProviderMode,
     frame_paths: list[tuple[int, Path]],
 ) -> dict[str, object]:
     user_id = "realtime-visual-system-eval"
@@ -116,7 +137,11 @@ async def _run_window(
                 service_id=service_id,
                 registry=registry,
                 delegate=RealtimeVisualObservationService(
-                    client=create_vision_understanding_client(config)
+                    client=create_vision_understanding_client(
+                        vision_config,
+                        provider_mode=provider_mode,
+                        media_config=media_config,
+                    )
                 ),
             )
 
@@ -134,7 +159,8 @@ async def _run_window(
                 message="visual-memory indexing is outside this system eval",
             ),
             trace_store=trace_store,
-            provider_config=config,
+            vision_config=vision_config,
+            provider_mode=provider_mode,
             keyframe_root=temp_root / "keyframes",
         )
         frames = tuple(
@@ -148,6 +174,11 @@ async def _run_window(
             for sequence, path in frame_paths
         )
         branch = VideoUnderstandingBranch(
+            client=create_vision_understanding_client(
+                vision_config,
+                provider_mode=provider_mode,
+                media_config=media_config,
+            ),
             memory_store=memory_store,
             semantic_store_pool=_SingleSemanticStorePool(semantic_store),
         )
@@ -375,12 +406,17 @@ class _SingleSemanticStorePool:
         return self.store
 
 
-def _validate_real_eval(config: ProviderConfig, *, allow_real_provider: bool) -> None:
+def _validate_real_eval(
+    config: VisionConfig,
+    *,
+    provider_mode: ProviderMode,
+    allow_real_provider: bool,
+) -> None:
     if not allow_real_provider:
         raise RealtimeVisualEvalConfigurationError(
             "real Provider calls require --allow-real-provider"
         )
-    if config.provider_mode != "real":
+    if provider_mode != "real":
         raise RealtimeVisualEvalConfigurationError(
             "MULTIMODAL_AGENT_PROVIDER_MODE must be real"
         )
@@ -394,8 +430,8 @@ def _validate_real_eval(config: ProviderConfig, *, allow_real_provider: bool) ->
         )
 
 
-def _qwen_vision_config_complete(config: ProviderConfig) -> bool:
-    resolved = config.resolved_vision_provider()
+def _qwen_vision_config_complete(config: VisionConfig) -> bool:
+    resolved = config.resolved_provider()
     return resolved.adapter_kind == "dashscope_multimodal" and not resolved.missing_required_env()
 
 

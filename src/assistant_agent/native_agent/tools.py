@@ -11,7 +11,8 @@ from typing import Any
 
 from langchain_core.tools import BaseTool
 
-from assistant_agent.config import ProviderConfig
+from assistant_agent.config import MediaConfig, ToolConfig, VisionConfig
+from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.mcp.amap_route_links import amap_route_link_interceptor
 from assistant_agent.mcp.config import (
     MCPServerConfig,
@@ -70,14 +71,20 @@ class NativeToolResources:
 
 
 def _create_builtin_tools(
-    config: ProviderConfig,
+    config: ToolConfig,
     *,
+    provider_mode: ProviderMode,
+    vision_config: VisionConfig,
+    media_config: MediaConfig,
     resources: NativeToolResources,
 ) -> list[BaseTool]:
     """Build the trusted in-process inventory without Registry or discovery."""
 
     context = ToolPluginContext(
+        provider_mode=provider_mode,
         config=config,
+        vision_config=vision_config,
+        media_config=media_config,
         video_context_store=resources.video_context_store,
         vision_client=resources.vision_client,
         realtime_video_memory_store=resources.realtime_video_memory_store,
@@ -198,8 +205,11 @@ async def _create_official_mcp_tools(
 
 
 async def create_native_tool_inventory(
-    config: ProviderConfig,
+    config: ToolConfig,
     *,
+    provider_mode: ProviderMode,
+    vision_config: VisionConfig,
+    media_config: MediaConfig,
     resources: NativeToolResources,
     mcp_server_configs: Sequence[MCPServerConfig],
     mcp_client_factory: Callable[..., Any] | None = None,
@@ -210,6 +220,9 @@ async def create_native_tool_inventory(
     builtins = await asyncio.to_thread(
         _create_builtin_tools,
         config,
+        provider_mode=provider_mode,
+        vision_config=vision_config,
+        media_config=media_config,
         resources=resources,
     )
     mcp_tools = await _create_official_mcp_tools(

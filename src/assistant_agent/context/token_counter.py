@@ -18,7 +18,8 @@ from langchain_core.utils.function_calling import convert_to_openai_tool
 from assistant_agent.runtime.chat_adapter import ChatRequest
 
 if TYPE_CHECKING:
-    from assistant_agent.config import ProviderConfig
+    from assistant_agent.config import ChatConfig, VisionConfig
+    from assistant_agent.provider_mode import ProviderMode
 
 
 class ContextTokenCounter(Protocol):
@@ -122,11 +123,13 @@ class TokenizerJsonTokenCounter:
 
 
 def create_context_token_counter(
-    config: ProviderConfig,
+    config: ChatConfig,
+    *,
+    provider_mode: ProviderMode,
 ) -> ContextTokenCounter | None:
     """Create the configured offline tokenizer counter for Provider input."""
 
-    if config.provider_mode != "real":
+    if provider_mode != "real":
         return None
     if not config.context_tokenizer_path:
         model_id = str(config.chat_model or "").strip().lower()
@@ -143,22 +146,25 @@ def create_context_token_counter(
 
 
 def create_visual_context_token_counter(
-    config: ProviderConfig,
+    config: ChatConfig,
+    vision_config: VisionConfig,
+    *,
+    provider_mode: ProviderMode,
 ) -> TokenizerJsonTokenCounter | None:
     """Create the independently configured offline visual-context tokenizer."""
 
     if (
-        config.visual_context_compactor_mode != "llm"
-        or config.provider_mode != "real"
+        vision_config.visual_context_compactor_mode != "llm"
+        or provider_mode != "real"
     ):
         return None
-    if not config.visual_context_tokenizer_path:
+    if not vision_config.visual_context_tokenizer_path:
         raise ValueError(
             "LLM visual context compaction requires "
             "REALTIME_VISUAL_CONTEXT_TOKENIZER_PATH"
         )
     return TokenizerJsonTokenCounter(
-        config.visual_context_tokenizer_path,
+        vision_config.visual_context_tokenizer_path,
         tokenizer_id=str(config.chat_model or config.chat_provider),
     )
 

@@ -10,7 +10,8 @@ from time import perf_counter
 from typing import Any, Protocol
 from urllib.parse import urlparse, urlunparse
 
-from assistant_agent.config import ProviderConfig
+from assistant_agent.config import SearchConfig
+from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.tools.plugins.builtin.web_access.fetch_models import (
     WebFetchProviderError,
     WebFetchRequest,
@@ -278,23 +279,28 @@ class TavilyWebFetchAdapter:
         )
 
 
-def create_web_fetch_adapter(config: ProviderConfig | None = None) -> WebFetchAdapter:
+def create_web_fetch_adapter(
+    config: SearchConfig,
+    *,
+    provider_mode: ProviderMode,
+) -> WebFetchAdapter:
     """Create a web fetch adapter without initializing real provider clients."""
 
-    resolved = config or ProviderConfig.from_env()
-    if resolved.search_provider == "http":
+    if provider_mode != "real":
+        return MockWebFetchAdapter()
+    if config.search_provider == "http":
         return HttpWebFetchAdapter(
-            base_url=resolved.web_search_base_url,
-            api_key=resolved.web_search_api_key,
-            timeout_seconds=resolved.web_search_timeout_seconds,
+            base_url=config.web_search_base_url,
+            api_key=config.web_search_api_key,
+            timeout_seconds=config.web_search_timeout_seconds,
         )
-    if resolved.search_provider == "tavily":
+    if config.search_provider == "tavily":
         return TavilyWebFetchAdapter(
-            base_url=resolved.tavily_base_url,
-            api_key=resolved.tavily_api_key,
-            timeout_seconds=resolved.web_search_timeout_seconds,
+            base_url=config.tavily_base_url,
+            api_key=config.tavily_api_key,
+            timeout_seconds=config.web_search_timeout_seconds,
         )
-    if resolved.provider_mode == "real":
+    if provider_mode == "real":
         raise ValueError("real provider mode requires a configured web fetch provider")
     return MockWebFetchAdapter()
 
@@ -423,7 +429,9 @@ def _web_fetch_result_from_payload(
     )
     title = payload.get("title") if isinstance(payload.get("title"), str) else None
     output_ref = (
-        payload.get("output_ref") if isinstance(payload.get("output_ref"), str) else None
+        payload.get("output_ref")
+        if isinstance(payload.get("output_ref"), str)
+        else None
     )
     if backend_errors:
         return WebFetchResult(
@@ -474,9 +482,7 @@ def _errors_from_payload(payload: Any, *, provider: str) -> list[WebFetchProvide
             if isinstance(item.get("code"), str)
             else "provider_unknown_error"
         )
-        message = (
-            item.get("message") if isinstance(item.get("message"), str) else code
-        )
+        message = item.get("message") if isinstance(item.get("message"), str) else code
         recoverable = (
             item.get("recoverable")
             if isinstance(item.get("recoverable"), bool)
@@ -645,8 +651,6 @@ def _elapsed_ms(started: float) -> int:
 def _slugify_url(value: str) -> str:
     parsed = urlparse(value)
     text = f"{parsed.netloc}{parsed.path}".strip("/") or value
-    chars = [
-        char.lower() if char.isalnum() else "-" for char in text if char.isascii()
-    ]
+    chars = [char.lower() if char.isalnum() else "-" for char in text if char.isascii()]
     slug = "-".join(part for part in "".join(chars).split("-") if part)
     return slug[:80] or "url"

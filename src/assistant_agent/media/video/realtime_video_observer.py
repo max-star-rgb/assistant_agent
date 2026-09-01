@@ -12,7 +12,8 @@ from time import perf_counter_ns, time
 from typing import Any
 from uuid import uuid4
 
-from assistant_agent.config import ProviderConfig
+from assistant_agent.config import VisionConfig
+from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
 from assistant_agent.media.embedding.models import EmbeddingEvent
 from assistant_agent.media.embedding.observability import (
@@ -131,7 +132,8 @@ class RealtimeVideoObserver:
         embedding_coordinator: SessionEmbeddingCoordinator,
         visual_reminder_registry: VisualReminderRegistry | None = None,
         visual_memory_text_index: VisualMemoryTextIndex | None = None,
-        provider_config: ProviderConfig | None = None,
+        vision_config: VisionConfig,
+        provider_mode: ProviderMode,
         keyframe_root: Path | str = DEFAULT_KEYFRAME_ROOT,
         close_wait_seconds: float = DEFAULT_CLOSE_WAIT_SECONDS,
         resource_release: Callable[[], None] | None = None,
@@ -163,7 +165,7 @@ class RealtimeVideoObserver:
         self._resource_release = resource_release
         self._resources_released = False
         self._close_resources_finalized = False
-        resolved_provider_config = provider_config or ProviderConfig()
+        self.provider_mode = provider_mode
         self.close_wait_seconds = close_wait_seconds
         self.clock_ns = clock_ns
         self.wall_clock_ms = wall_clock_ms or (lambda: int(time() * 1000))
@@ -194,10 +196,10 @@ class RealtimeVideoObserver:
             selector=SemanticKeyframeSelector(
                 SemanticKeyframeConfig(
                     max_interval_seconds=(
-                        resolved_provider_config.keyframe_max_interval_seconds
+                        vision_config.keyframe_max_interval_seconds
                     ),
                     semantic_threshold=(
-                        resolved_provider_config.keyframe_semantic_threshold
+                        vision_config.keyframe_semantic_threshold
                     ),
                 )
             ),

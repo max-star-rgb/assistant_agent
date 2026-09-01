@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from math import sqrt
 from typing import Any, Protocol
 
+from assistant_agent.config import VisionConfig
 from assistant_agent.media.embedding.consumers.keyframe import KeyframeChangeConsumer
 from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
 from assistant_agent.media.embedding.models import (
@@ -20,6 +21,7 @@ from assistant_agent.media.video.detection.vision_embedding_provider import (
     create_vision_embedding_provider,
 )
 from assistant_agent.media.video.types import VideoFrame
+from assistant_agent.provider_mode import ProviderMode
 
 
 class ImageEmbeddingModel(Protocol):
@@ -215,8 +217,9 @@ class SemanticChangeDetector:
 
 
 def create_semantic_change_detector(
-    config: Any | None = None,
+    config: VisionConfig,
     *,
+    provider_mode: ProviderMode,
     coordinator: SessionEmbeddingCoordinator | None = None,
 ) -> SemanticChangeDetector:
     """Create a semantic detector, retaining the legacy image-only path for compatibility.
@@ -234,7 +237,10 @@ def create_semantic_change_detector(
             coordinator=coordinator,
             requires_visual_gate=requires_visual_gate,
         )
-    provider = create_vision_embedding_provider(config)
+    provider = create_vision_embedding_provider(
+        config,
+        provider_mode=provider_mode,
+    )
     if not requires_visual_gate:
         return SemanticChangeDetector(MetadataEmbeddingModel())
     return SemanticChangeDetector(provider, requires_visual_gate=True)

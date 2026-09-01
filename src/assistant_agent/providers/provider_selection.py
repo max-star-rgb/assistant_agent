@@ -1,22 +1,28 @@
 """Provider selection helpers for optional real adapters."""
 
-from assistant_agent.config import ProviderConfig
+from assistant_agent.config import VisionConfig
 from assistant_agent.media.vision.real_vision_adapter import (
     DashScopeVisionProviderAdapter,
     HttpVisionProviderAdapter,
     RealVisionProviderConfig,
 )
 from assistant_agent.media.vision.vision_adapter import MockVisionUnderstandingAdapter, VisionUnderstandingAdapter
+from assistant_agent.provider_mode import ProviderMode
 
 
-def create_vision_adapter(config: ProviderConfig | None = None) -> VisionUnderstandingAdapter:
+def create_vision_adapter(
+    config: VisionConfig,
+    *,
+    provider_mode: ProviderMode,
+) -> VisionUnderstandingAdapter:
     """Create the configured vision adapter.
 
     Defaults to the local deterministic mock adapter.
     """
 
-    resolved_config = config or ProviderConfig.from_env()
-    provider = resolved_config.resolved_vision_provider()
+    if provider_mode != "real":
+        return MockVisionUnderstandingAdapter()
+    provider = config.resolved_provider()
     if provider.adapter_kind == "ark_responses":
         from assistant_agent.providers.ark_vision import ArkVisionProviderAdapter, ArkVisionProviderConfig
 

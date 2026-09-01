@@ -15,8 +15,8 @@ from assistant_agent.tools.native_boundary import (
     invoke_native_tool,
 )
 from assistant_agent.tools.plugins.builtin.web_access.fetch_backend import (
+    MockWebFetchAdapter,
     WebFetchAdapter,
-    create_web_fetch_adapter,
 )
 from assistant_agent.tools.plugins.builtin.web_access.fetch_models import (
     WebFetchRequest,
@@ -27,7 +27,7 @@ from assistant_agent.tools.runtime import ToolContext, tool_context
 def create_web_fetch_tool(adapter: WebFetchAdapter | None = None) -> BaseTool:
     """Create a native read-only web-page reader Tool."""
 
-    fetch_adapter = adapter or create_web_fetch_adapter()
+    fetch_adapter = adapter or MockWebFetchAdapter()
 
     @tool(WEB_FETCH_TOOL_NAME, response_format="content_and_artifact")
     def web_fetch(

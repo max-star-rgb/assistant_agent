@@ -6,7 +6,8 @@ from time import perf_counter
 from typing import Protocol
 
 from langchain_core.runnables import RunnableConfig
-from assistant_agent.config import ProviderConfig
+
+from assistant_agent.config import MediaConfig, VisionConfig
 from assistant_agent.media.vision.models import (
     VideoUnderstandingRequest,
     VideoUnderstandingResult,
@@ -15,6 +16,7 @@ from assistant_agent.media.vision.models import (
     VisualUnderstandingResult,
 )
 from assistant_agent.providers.provider_selection import create_vision_adapter
+from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.media.video.video_adapter import (
     MockVideoUnderstandingAdapter,
     VideoUnderstandingAdapter,
@@ -122,16 +124,22 @@ class MockVisionUnderstandingClient(AdapterVisionUnderstandingClient):
 
 
 def create_vision_understanding_client(
-    config: ProviderConfig | None = None,
+    config: VisionConfig,
+    *,
+    provider_mode: ProviderMode,
+    media_config: MediaConfig | None = None,
 ) -> VisionUnderstandingClient:
     """Create the configured unified vision client."""
 
-    resolved = config or ProviderConfig.from_env()
-    if resolved.provider_mode == "real" and resolved.vision_provider == "mock":
+    if provider_mode == "real" and config.vision_provider == "mock":
         raise ValueError("real provider mode requires a configured vision provider")
     return AdapterVisionUnderstandingClient(
-        image_adapter=create_vision_adapter(resolved),
-        video_adapter=create_video_understanding_adapter(resolved),
+        image_adapter=create_vision_adapter(config, provider_mode=provider_mode),
+        video_adapter=create_video_understanding_adapter(
+            config,
+            provider_mode=provider_mode,
+            media_config=media_config,
+        ),
     )
 
 

@@ -3,8 +3,9 @@
 from pathlib import Path
 from typing import Protocol
 
-from assistant_agent.config import ProviderConfig
+from assistant_agent.config import MediaConfig, VisionConfig
 from assistant_agent.media.vision.models import VideoUnderstandingRequest, VideoUnderstandingResult
+from assistant_agent.provider_mode import ProviderMode
 
 
 class VideoUnderstandingAdapter(Protocol):
@@ -94,32 +95,47 @@ class FakeRealtimeVisionAdapter:
         )
 
 
-def create_video_understanding_adapter(config: ProviderConfig | None = None) -> VideoUnderstandingAdapter:
+def create_video_understanding_adapter(
+    config: VisionConfig,
+    *,
+    provider_mode: ProviderMode,
+    media_config: MediaConfig | None = None,
+) -> VideoUnderstandingAdapter:
     """Create a video understanding adapter from the selected vision provider."""
 
-    resolved = config or ProviderConfig.from_env()
-    provider = resolved.resolved_vision_provider()
+    if provider_mode != "real":
+        return MockVideoUnderstandingAdapter()
+    provider = config.resolved_provider()
     if provider.adapter_kind == "fake_realtime_vision":
         return FakeRealtimeVisionAdapter(model=provider.model or "fake-realtime-vision")
-    if resolved.vision_provider == "qwen":
-        return _create_qwen_realtime_adapter(resolved)
+    if config.vision_provider == "qwen":
+        return _create_qwen_realtime_adapter(config, media_config=media_config)
     return MockVideoUnderstandingAdapter()
 
 
 def create_realtime_video_understanding_adapter(
-    config: ProviderConfig | None = None,
+    config: VisionConfig,
+    *,
+    provider_mode: ProviderMode,
+    media_config: MediaConfig | None = None,
 ) -> VideoUnderstandingAdapter:
     """Select Qwen realtime only for background live-video observations."""
 
-    resolved = config or ProviderConfig.from_env()
-    if resolved.vision_provider == "qwen":
-        return _create_qwen_realtime_adapter(resolved)
-    return create_video_understanding_adapter(resolved)
+    if provider_mode != "real":
+        return MockVideoUnderstandingAdapter()
+    if config.vision_provider == "qwen":
+        return _create_qwen_realtime_adapter(config, media_config=media_config)
+    return create_video_understanding_adapter(
+        config,
+        provider_mode=provider_mode,
+        media_config=media_config,
+    )
 
 
 def _create_qwen_realtime_adapter(
-    resolved: ProviderConfig,
+    config: VisionConfig,
     *,
+    media_config: MediaConfig | None,
     close_connection_on_return: bool = True,
 ) -> VideoUnderstandingAdapter:
     from assistant_agent.providers.qwen_realtime_vision import (
@@ -129,10 +145,14 @@ def _create_qwen_realtime_adapter(
 
     return QwenRealtimeVisionAdapter(
         QwenRealtimeVisionConfig(
-            api_key=resolved.qwen_realtime_vision_api_key,
-            base_url=resolved.qwen_realtime_vision_base_url,
-            model=resolved.qwen_realtime_vision_model,
-            timeout_seconds=resolved.video_understanding_timeout_seconds,
+            api_key=config.qwen_realtime_vision_api_key,
+            base_url=config.qwen_realtime_vision_base_url,
+            model=config.qwen_realtime_vision_model,
+            timeout_seconds=(
+                media_config.video_understanding_timeout_seconds
+                if media_config is not None
+                else 60.0
+            ),
         ),
         close_connection_on_return=close_connection_on_return,
     )

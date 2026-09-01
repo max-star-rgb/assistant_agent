@@ -1,6 +1,6 @@
 """Image generation tool plugin."""
 
-from assistant_agent.config import ProviderConfig
+from assistant_agent.config import ImageGenerationConfig
 from assistant_agent.tools.plugins.builtin.image_generation.backend import (
     create_image_generation_adapter,
 )
@@ -16,21 +16,24 @@ class ImageGenerationToolPlugin:
         if context.thread_resource_manager is None:
             return []
         if not context.mock_mode and not image_generation_provider_ready(
-            context.config
+            context.config.image_generation
         ):
             return []
         return [
             create_image_generation_tool(
-                adapter=create_image_generation_adapter(context.config),
+                adapter=create_image_generation_adapter(
+                    context.config.image_generation,
+                    provider_mode=context.provider_mode,
+                ),
                 thread_resource_manager=context.thread_resource_manager,
-                artifact_base_url=context.config.artifact_base_url,
+                artifact_base_url=context.media_config.artifact_base_url,
                 use_fixture=True,
             )
         ]
 
 
-def image_generation_provider_ready(config: ProviderConfig) -> bool:
+def image_generation_provider_ready(config: ImageGenerationConfig) -> bool:
     return (
         config.image_generation_provider != "mock"
-        and not config.resolved_image_generation_provider().missing_required_env()
+        and not config.resolved_provider().missing_required_env()
     )

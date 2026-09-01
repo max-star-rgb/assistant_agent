@@ -7,7 +7,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from assistant_agent.config import ProviderConfig
+from assistant_agent.config import VisionConfig
+from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.media.video.semantic_store import VisualSemanticRecord
 from assistant_agent.media.video.visual_context import (
     VisualContextCompactor,
@@ -194,9 +195,10 @@ class LLMVisualContextCompactor:
 
 
 def create_visual_context_compactor(
-    config: ProviderConfig,
+    config: VisionConfig,
     chat_adapter: ChatAdapter,
     *,
+    provider_mode: ProviderMode,
     token_counter: VisualContextTokenCounter | None,
 ) -> VisualContextCompactor | None:
     """Create a visual compactor without weakening provider-mode boundaries."""
@@ -204,7 +206,7 @@ def create_visual_context_compactor(
     if config.visual_context_compactor_mode == "off":
         return None
     if (
-        config.provider_mode != "real"
+        provider_mode != "real"
         or getattr(chat_adapter, "provider", "") == "mock"
     ):
         return None

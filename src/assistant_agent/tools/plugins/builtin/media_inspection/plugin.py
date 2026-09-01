@@ -1,6 +1,6 @@
 """Uploaded, live, and historical visual inspection plugin."""
 
-from assistant_agent.config import ProviderConfig
+from assistant_agent.config import VisionConfig
 from langchain_core.tools import BaseTool
 from assistant_agent.tools.plugins.builtin.media_inspection.live_tool import (
     create_live_view_inspect_tool,
@@ -20,7 +20,7 @@ from assistant_agent.tools.plugins.contracts import ToolPluginContext
 class MediaInspectionPlugin:
     def build_tools(self, context: ToolPluginContext) -> list[BaseTool]:
         tools: list[BaseTool] = []
-        vision_ready = context.mock_mode or vision_provider_ready(context.config)
+        vision_ready = context.mock_mode or vision_provider_ready(context.vision_config)
         vision_client = context.vision_client
         if (
             context.embedding_coordinator_store is not None
@@ -56,15 +56,15 @@ class MediaInspectionPlugin:
                 create_visual_memory_search_tool(
                     semantic_store_pool=context.visual_semantic_store_pool,
                     text_index=context.visual_memory_text_index,
-                    limit=context.config.visual_memory_result_limit,
+                    limit=context.vision_config.visual_memory_result_limit,
                     live_view_resolver=context.live_view_resolver,
                 )
             )
         return tools
 
 
-def vision_provider_ready(config: ProviderConfig) -> bool:
+def vision_provider_ready(config: VisionConfig) -> bool:
     return (
         config.vision_provider != "mock"
-        and not config.resolved_vision_provider().missing_required_env()
+        and not config.resolved_provider().missing_required_env()
     )

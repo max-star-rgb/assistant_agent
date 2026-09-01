@@ -2,7 +2,8 @@
 
 from typing import Protocol
 
-from assistant_agent.config import ProviderConfig
+from assistant_agent.config import ImageGenerationConfig
+from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.providers.provider_errors import build_provider_error
 from assistant_agent.providers.prompting import build_image_prompt
 from assistant_agent.tools.plugins.builtin.image_generation.models import (
@@ -75,12 +76,15 @@ class UnconfiguredImageGenerationAdapter:
 
 
 def create_image_generation_adapter(
-    config: ProviderConfig | None = None,
+    config: ImageGenerationConfig,
+    *,
+    provider_mode: ProviderMode,
 ) -> ImageGenerationAdapter:
     """Create an image generation adapter without initializing real provider clients."""
 
-    resolved = config or ProviderConfig.from_env()
-    provider = resolved.resolved_image_generation_provider()
+    if provider_mode != "real":
+        return MockImageGenerationAdapter()
+    provider = config.resolved_provider()
     missing = provider.missing_required_env()
     if missing:
         return UnconfiguredImageGenerationAdapter(provider.provider, ", ".join(missing))
@@ -95,7 +99,7 @@ def create_image_generation_adapter(
                 api_key=provider.api_key,
                 base_url=provider.base_url or "",
                 model=provider.model or "",
-                default_size=resolved.qwen_image_default_size,
+                default_size=config.qwen_image_default_size,
             )
         )
     if provider.adapter_kind == "ark_image":
@@ -109,11 +113,11 @@ def create_image_generation_adapter(
                 api_key=provider.api_key,
                 base_url=provider.base_url or "",
                 model=provider.model or "",
-                default_size=resolved.ark_image_default_size,
-                output_format=resolved.ark_image_output_format,
+                default_size=config.ark_image_default_size,
+                output_format=config.ark_image_output_format,
             )
         )
-    if resolved.provider_mode == "real":
+    if provider_mode == "real":
         raise ValueError(
             "real provider mode requires a configured image generation provider"
         )
