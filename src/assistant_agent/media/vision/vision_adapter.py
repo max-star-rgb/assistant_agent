@@ -2,6 +2,7 @@
 
 from typing import Protocol
 
+from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
 
 from assistant_agent.media.vision.models import VisualUnderstandingResult
@@ -18,14 +19,25 @@ class VisionUnderstandingInput(BaseModel):
 class VisionUnderstandingAdapter(Protocol):
     """Adapter contract for VLM or Video MLLM providers."""
 
-    def understand(self, input: VisionUnderstandingInput) -> VisualUnderstandingResult:
+    def understand(
+        self,
+        input: VisionUnderstandingInput,
+        *,
+        config: RunnableConfig | None = None,
+    ) -> VisualUnderstandingResult:
         """Return structured visual understanding."""
 
 
 class MockVisionUnderstandingAdapter:
     """Deterministic local adapter for tests and MVP flows."""
 
-    def understand(self, input: VisionUnderstandingInput) -> VisualUnderstandingResult:
+    def understand(
+        self,
+        input: VisionUnderstandingInput,
+        *,
+        config: RunnableConfig | None = None,
+    ) -> VisualUnderstandingResult:
+        del config
         if not input.image_ids and not input.video_ids:
             raise ValueError("缺少图片或视频 ID，无法进行视觉理解")
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from time import perf_counter
 from typing import Protocol
 
+from langchain_core.runnables import RunnableConfig
 from assistant_agent.config import ProviderConfig
 from assistant_agent.media.vision.models import (
     VideoUnderstandingRequest,
@@ -29,7 +30,12 @@ from assistant_agent.media.vision.vision_adapter import (
 class VisionUnderstandingClient(Protocol):
     """Unified client contract for image, explicit video, and realtime keyframes."""
 
-    def understand(self, request: VisionUnderstandingRequest) -> VisionUnderstandingResult:
+    def understand(
+        self,
+        request: VisionUnderstandingRequest,
+        *,
+        config: RunnableConfig | None = None,
+    ) -> VisionUnderstandingResult:
         """Return a provider-neutral structured vision result."""
 
 
@@ -49,7 +55,12 @@ class AdapterVisionUnderstandingClient:
         self.image_adapter = image_adapter or MockVisionUnderstandingAdapter()
         self.video_adapter = video_adapter or MockVideoUnderstandingAdapter()
 
-    def understand(self, request: VisionUnderstandingRequest) -> VisionUnderstandingResult:
+    def understand(
+        self,
+        request: VisionUnderstandingRequest,
+        *,
+        config: RunnableConfig | None = None,
+    ) -> VisionUnderstandingResult:
         if vision_request_has_video(request):
             result = self.video_adapter.understand_video(
                 video_request_from_vision_request(request)
@@ -67,7 +78,7 @@ class AdapterVisionUnderstandingClient:
             )
         started_at = perf_counter()
         result = self.image_adapter.understand(
-            image_input_from_vision_request(request)
+            image_input_from_vision_request(request), config=config
         )
         latency_ms = max(0, int((perf_counter() - started_at) * 1000))
         return vision_result_from_visual_result(

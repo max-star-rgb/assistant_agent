@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from langchain_core.runnables import RunnableConfig
 from assistant_agent.media.vision.models import VisualUnderstandingResult
 from assistant_agent.providers.provider_errors import ProviderAdapterError, sanitize_error_message
 from assistant_agent.media.vision.real_vision_adapter import _json_object_from_text, map_vision_result
@@ -32,7 +33,13 @@ class ArkVisionProviderAdapter:
     def __init__(self, config: ArkVisionProviderConfig) -> None:
         self.config = config
 
-    def understand(self, input: VisionUnderstandingInput) -> VisualUnderstandingResult:
+    def understand(
+        self,
+        input: VisionUnderstandingInput,
+        *,
+        config: RunnableConfig | None = None,
+    ) -> VisualUnderstandingResult:
+        del config
         if not self.config.api_key:
             raise ProviderAdapterError(
                 "provider_unconfigured",
