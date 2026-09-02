@@ -5,14 +5,18 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated, Any, Final
 
-from langchain_core.tools import BaseTool, tool
+from langchain_core.tools import BaseTool, ToolException, tool
 from langgraph.prebuilt import ToolRuntime
 from pydantic import Field
 
-from assistant_agent.native_agent.context import AssistantRunContext
+from assistant_agent.native_agent.context import (
+    AssistantRunContext,
+    authenticated_user_identity,
+)
 from assistant_agent.tools.native_boundary import (
     configure_builtin_tool,
-    invoke_native_tool,
+    native_content_and_artifact,
+    native_tool_exception,
 )
 
 from assistant_agent.tools.plugins.builtin.local_file_access.models import (
@@ -20,8 +24,6 @@ from assistant_agent.tools.plugins.builtin.local_file_access.models import (
     FileReadRequest,
     FileReadResult,
 )
-from assistant_agent.tools.models import ToolResult
-from assistant_agent.tools.runtime import ToolContext, tool_context
 
 
 LOCAL_FILE_READ_TOOL_NAME: Final = "file_read"
@@ -92,15 +94,28 @@ def create_local_file_read_tool(
         隐藏路径、二进制文件或非白名单类型。
         """
 
-        return invoke_native_tool(
-            LOCAL_FILE_READ_TOOL_NAME,
-            lambda: _execute_local_file_read(
+        try:
+            result = _execute_local_file_read(
                 resolved_root,
                 max_file_bytes,
                 FileReadRequest(path=path, cursor=cursor),
-                tool_context(runtime),
-            ),
-        )
+                cwd=runtime.context.cwd,
+                user_id=authenticated_user_identity(runtime),
+            )
+            if result.status == "failed":
+                first = result.errors[0] if result.errors else None
+                raise ToolException(
+                    f"{first.code if first else 'file_read_failed'}: "
+                    f"{first.message if first else '文件读取失败。'}"
+                )
+            return native_content_and_artifact(
+                _file_read_observation(result),
+                result.model_dump(mode="json"),
+            )
+        except ToolException:
+            raise
+        except Exception as exc:
+            raise native_tool_exception(exc) from exc
 
     return configure_builtin_tool(file_read)
 
@@ -109,24 +124,25 @@ def _execute_local_file_read(
     root: Path,
     max_file_bytes: int,
     input: FileReadRequest,
-    context: ToolContext,
-) -> ToolResult:
+    *,
+    cwd: Path,
+    user_id: str,
+) -> FileReadResult:
+    del cwd, user_id
     try:
         relative_path = _validated_relative_path(input.path)
         resolved_path = (root / relative_path).resolve(strict=True)
         resolved_path.relative_to(root)
     except _FileReadValidationError as exc:
-        return _failure(LOCAL_FILE_READ_TOOL_NAME, input.path, exc.code, exc.message)
+        return _failed_result(input.path, exc.code, exc.message)
     except FileNotFoundError:
-        return _failure(
-            LOCAL_FILE_READ_TOOL_NAME,
+        return _failed_result(
             input.path,
             "file_not_found",
             "指定文件不存在。",
         )
     except (OSError, RuntimeError, ValueError):
-        return _failure(
-            LOCAL_FILE_READ_TOOL_NAME,
+        return _failed_result(
             input.path,
             "file_access_denied",
             "指定路径不在允许读取的文件根目录内。",
@@ -135,46 +151,40 @@ def _execute_local_file_read(
     try:
         stat_result = resolved_path.stat()
         if not resolved_path.is_file():
-            return _failure(
-                LOCAL_FILE_READ_TOOL_NAME,
+            return _failed_result(
                 input.path,
                 "file_not_regular",
                 "指定路径不是普通文件。",
             )
         if stat_result.st_size > max_file_bytes:
-            return _failure(
-                LOCAL_FILE_READ_TOOL_NAME,
+            return _failed_result(
                 input.path,
                 "file_too_large",
                 f"文件超过允许的 {max_file_bytes} 字节上限。",
             )
         raw = resolved_path.read_bytes()
         if len(raw) > max_file_bytes:
-            return _failure(
-                LOCAL_FILE_READ_TOOL_NAME,
+            return _failed_result(
                 input.path,
                 "file_too_large",
                 f"文件超过允许的 {max_file_bytes} 字节上限。",
             )
         text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
-        return _failure(
-            LOCAL_FILE_READ_TOOL_NAME,
+        return _failed_result(
             input.path,
             "file_encoding_unsupported",
             "文件不是受支持的 UTF-8 文本。",
         )
     except OSError:
-        return _failure(
-            LOCAL_FILE_READ_TOOL_NAME,
+        return _failed_result(
             input.path,
             "file_read_failed",
             "文件读取失败。",
         )
 
     if input.cursor > len(text):
-        return _failure(
-            LOCAL_FILE_READ_TOOL_NAME,
+        return _failed_result(
             input.path,
             "file_cursor_invalid",
             "cursor 超出文件文本范围。",
@@ -194,37 +204,7 @@ def _execute_local_file_read(
         truncated=truncated,
         next_cursor=end_char if truncated else None,
     )
-    data = result.model_dump(mode="json")
-    summary = (
-        f"已读取 {result.path} 的字符 {result.start_char}-{result.end_char}，"
-        f"全文共 {result.total_chars} 字符。"
-    )
-    return ToolResult(
-        tool_name=LOCAL_FILE_READ_TOOL_NAME,
-        success=True,
-        data=data,
-        model_observation={
-            "summary": summary,
-            "path": result.path,
-            "content": result.content,
-            "start_char": result.start_char,
-            "end_char": result.end_char,
-            "total_chars": result.total_chars,
-            "truncated": result.truncated,
-            "next_cursor": result.next_cursor,
-        },
-        trace_summary={
-            "status": result.status,
-            "path": result.path,
-            "returned_chars": len(result.content),
-            "total_chars": result.total_chars,
-            "truncated": result.truncated,
-        },
-        audit_payload={
-            "path": result.path,
-            "content_redacted": True,
-        },
-    )
+    return result
 
 
 def _validated_relative_path(raw_path: str) -> Path:
@@ -248,34 +228,29 @@ def _validated_relative_path(raw_path: str) -> Path:
     return path
 
 
-def _failure(
-    tool_name: str,
+def _failed_result(
     path: str,
     code: str,
     message: str,
-) -> ToolResult:
-    result = FileReadResult(
+) -> FileReadResult:
+    return FileReadResult(
         status="failed",
         path=path,
         errors=[FileReadError(code=code, message=message)],
     )
-    data = result.model_dump(mode="json")
-    return ToolResult(
-        tool_name=tool_name,
-        success=False,
-        data=data,
-        model_observation={
-            "summary": message,
-            "path": path,
-            "errors": data["errors"],
-        },
-        trace_summary={
-            "status": result.status,
-            "error_code": code,
-        },
-        audit_payload={
-            "path": path,
-            "content_redacted": True,
-        },
-        error=f"{code}: {message}",
-    )
+
+
+def _file_read_observation(result: FileReadResult) -> dict[str, Any]:
+    return {
+        "summary": (
+            f"已读取 {result.path} 的字符 {result.start_char}-{result.end_char}，"
+            f"全文共 {result.total_chars} 字符。"
+        ),
+        "path": result.path,
+        "content": result.content,
+        "start_char": result.start_char,
+        "end_char": result.end_char,
+        "total_chars": result.total_chars,
+        "truncated": result.truncated,
+        "next_cursor": result.next_cursor,
+    }
