@@ -7,10 +7,9 @@ from langgraph.prebuilt import ToolRuntime
 from pydantic import Field
 
 from assistant_agent.native_agent.context import AssistantRunContext
-from assistant_agent.tools.capability_output import build_capability_output_contract
-from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.plugins.builtin.visual_image_search.models import (
     VisualImageSearchRequest,
+    VisualImageSearchResult,
 )
 from assistant_agent.providers.provider_errors import sanitize_error_detail
 from assistant_agent.tools.plugins.builtin.visual_image_search.backend import (
@@ -18,14 +17,13 @@ from assistant_agent.tools.plugins.builtin.visual_image_search.backend import (
     VisualImageSearchAdapter,
 )
 from assistant_agent.tools.ids import (
-    VISUAL_IMAGE_SEARCH_CAPABILITY,
     VISUAL_IMAGE_SEARCH_TOOL_NAME,
 )
 from assistant_agent.tools.native_boundary import (
     configure_builtin_tool,
-    invoke_native_tool,
+    native_content_and_artifact,
+    native_tool_exception,
 )
-from assistant_agent.tools.runtime import ToolContext, tool_context
 
 
 def create_visual_image_search_tool(
@@ -57,18 +55,24 @@ def create_visual_image_search_tool(
         本地路径、私有媒体 ID 或 base64。
         """
 
-        return invoke_native_tool(
-            VISUAL_IMAGE_SEARCH_TOOL_NAME,
-            lambda: _execute_visual_image_search(
+        try:
+            result = _execute_visual_image_search(
                 search_adapter,
                 VisualImageSearchRequest(
                     image_url=image_url,
                     image_ids=image_ids,
                     query_hint=query_hint,
                 ),
-                tool_context(runtime),
-            ),
-        )
+            )
+            if result.errors:
+                error = result.errors[0]
+                raise RuntimeError(f"{error.code}: {error.message}")
+            data = result.model_dump(mode="json")
+            return native_content_and_artifact(
+                _visual_image_search_model_observation(data), data
+            )
+        except Exception as exc:
+            raise native_tool_exception(exc) from exc
 
     return configure_builtin_tool(visual_image_search)
 
@@ -76,47 +80,8 @@ def create_visual_image_search_tool(
 def _execute_visual_image_search(
     adapter: VisualImageSearchAdapter,
     input: VisualImageSearchRequest,
-    context: ToolContext,
-) -> ToolResult:
-    del context
-    result = adapter.search(input)
-    data = result.model_dump(mode="json")
-    model_observation = _visual_image_search_model_observation(data)
-    contract = build_capability_output_contract(
-        capability=VISUAL_IMAGE_SEARCH_CAPABILITY,
-        status="failed" if result.errors else "succeeded",
-        output_ref=result.output_ref,
-        data={
-            "image_used": result.image_used,
-            "query_hint_used": result.query_hint_used,
-            "matches": data.get("matches", []),
-            "total": result.total,
-        },
-        errors=[error.model_dump(mode="json") for error in result.errors],
-        metadata={"provider": result.provider, "latency_ms": result.latency_ms},
-    )
-    if result.errors:
-        first_error = result.errors[0]
-        return ToolResult(
-            tool_name=VISUAL_IMAGE_SEARCH_TOOL_NAME,
-            success=False,
-            data=data,
-            model_observation=model_observation,
-            error=f"{first_error.code}: {first_error.message}",
-            output_ref=result.output_ref,
-            latency_ms=result.latency_ms,
-            contract=contract,
-        )
-
-    return ToolResult(
-        tool_name=VISUAL_IMAGE_SEARCH_TOOL_NAME,
-        success=True,
-        data=data,
-        model_observation=model_observation,
-        output_ref=result.output_ref,
-        latency_ms=result.latency_ms,
-        contract=contract,
-    )
+) -> VisualImageSearchResult:
+    return adapter.search(input)
 
 
 def _visual_image_search_model_observation(data: dict[str, Any]) -> dict[str, Any]:

@@ -8,12 +8,9 @@ from langgraph.prebuilt import ToolRuntime
 from pydantic import Field
 
 from assistant_agent.native_agent.context import AssistantRunContext
-from assistant_agent.tools.capability_output import build_capability_output_contract
 from assistant_agent.tools.ids import (
-    SHOPPING_SEARCH_CAPABILITY,
     SHOPPING_SEARCH_TOOL_NAME,
 )
-from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.plugins.builtin.shopping.backend import (
     PriceCompareAdapter,
     ProductSearchAdapter,
@@ -34,9 +31,9 @@ from assistant_agent.tools.plugins.builtin.shopping.models import (
 )
 from assistant_agent.tools.native_boundary import (
     configure_builtin_tool,
-    invoke_native_tool,
+    native_content_and_artifact,
+    native_tool_exception,
 )
-from assistant_agent.tools.runtime import ToolContext, tool_context
 
 
 def create_shopping_search_tool(
@@ -82,9 +79,8 @@ def create_shopping_search_tool(
         优先采用本次检索得到的商品信息，其他渠道例如网络搜索仅可作为补充
         """
 
-        return invoke_native_tool(
-            SHOPPING_SEARCH_TOOL_NAME,
-            lambda: _execute_shopping_search(
+        try:
+            result = _execute_shopping_search(
                 search_adapter,
                 compare_adapter,
                 ShoppingSearchRequest(
@@ -95,9 +91,14 @@ def create_shopping_search_tool(
                     needs=needs,
                     platforms=platforms,
                 ),
-                tool_context(runtime),
-            ),
-        )
+            )
+            if not result.success:
+                error = result.errors[0].message if result.errors else result.summary
+                raise RuntimeError(error)
+            data = result.model_dump(mode="json")
+            return native_content_and_artifact(_model_observation(data), data)
+        except Exception as exc:
+            raise native_tool_exception(exc) from exc
 
     return configure_builtin_tool(shopping_search)
 
@@ -106,9 +107,7 @@ def _execute_shopping_search(
     search_adapter: ProductSearchAdapter,
     compare_adapter: PriceCompareAdapter,
     input: ShoppingSearchRequest,
-    context: ToolContext,
-) -> ToolResult:
-    del context
+) -> ShoppingSearchResult:
     searches: list[ProductSearchResult] = []
     comparisons: list[PriceCompareResult | None] = []
     for need in input.needs:
@@ -137,42 +136,7 @@ def _execute_shopping_search(
         )
 
     result = _build_result(input, searches, comparisons)
-    data = result.model_dump(mode="json")
-    errors = [error.model_dump(mode="json") for error in result.errors]
-    output_ref = result.output_refs[0] if result.output_refs else None
-    contract = build_capability_output_contract(
-        capability=SHOPPING_SEARCH_CAPABILITY,
-        status="succeeded" if result.success else "failed",
-        output_ref=output_ref,
-        data=data,
-        errors=errors,
-        metadata={
-            "provider": result.provider,
-            "latency_ms": result.latency_ms,
-            "query_count": len(input.needs),
-        },
-    )
-    observation = _model_observation(data)
-    if not result.success:
-        return ToolResult(
-            tool_name=SHOPPING_SEARCH_TOOL_NAME,
-            success=False,
-            data=data,
-            model_observation=observation,
-            error=errors[0]["message"] if errors else result.summary,
-            output_ref=output_ref,
-            latency_ms=result.latency_ms,
-            contract=contract,
-        )
-    return ToolResult(
-        tool_name=SHOPPING_SEARCH_TOOL_NAME,
-        success=True,
-        data=data,
-        model_observation=observation,
-        output_ref=output_ref,
-        latency_ms=result.latency_ms,
-        contract=contract,
-    )
+    return result
 
 
 def _build_result(
