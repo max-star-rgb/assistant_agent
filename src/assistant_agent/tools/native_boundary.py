@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from langchain_core.tools import BaseTool, ToolException
@@ -13,6 +13,21 @@ from pydantic import ValidationError
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.providers.provider_errors import sanitize_error_message
 from assistant_agent.tools.models import ToolResult
+
+
+def native_content_and_artifact(
+    model_observation: Mapping[str, Any],
+    artifact: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    return (
+        [{"type": "text", "text": json.dumps(dict(model_observation), ensure_ascii=False, sort_keys=True, indent=2)}],
+        dict(artifact),
+    )
+
+
+def native_tool_exception(exc: BaseException) -> ToolException:
+    return ToolException(sanitize_error_message(str(exc)))
+
 
 def native_tool_response(
     tool_name: str,
