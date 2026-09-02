@@ -27,6 +27,7 @@ from assistant_agent.tools.ids import LIVE_VIEW_INSPECT_TOOL_NAME
 from assistant_agent.tools.native_boundary import (
     configure_builtin_tool,
     native_content_and_artifact,
+    native_tool_exception,
 )
 from assistant_agent.media.video.understanding_service import (
     VideoUnderstandingService,
@@ -114,7 +115,12 @@ def create_live_view_inspect_tool(
                 raise ToolException(outcome.error or "live view is unavailable")
             return native_content_and_artifact(outcome.model_observation, outcome.data)
 
-        return inspect_live_view()
+        try:
+            return inspect_live_view()
+        except ToolException:
+            raise
+        except Exception as exc:
+            raise native_tool_exception(exc, tool_name=LIVE_VIEW_INSPECT_TOOL_NAME) from exc
 
     return configure_builtin_tool(
         live_view_inspect,

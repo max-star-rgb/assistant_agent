@@ -132,12 +132,16 @@ def create_visual_reminder_manage_tool(
                 coordinator_store=coordinator_store,
                 reminder_registry=reminder_registry,
             )
+            if output.status == "unavailable":
+                raise ToolException("visual reminder connection is unavailable")
+            data = output.model_dump(mode="json")
+            return native_content_and_artifact(data, data)
+        except ToolException:
+            raise
         except Exception as exc:
-            raise native_tool_exception(exc, tool_name=VISUAL_REMINDER_MANAGE_TOOL_NAME) from exc
-        if output.status == "unavailable":
-            raise ToolException("visual reminder connection is unavailable")
-        data = output.model_dump(mode="json")
-        return native_content_and_artifact(data, data)
+            raise native_tool_exception(
+                exc, tool_name=VISUAL_REMINDER_MANAGE_TOOL_NAME
+            ) from exc
 
     return configure_builtin_tool(
         visual_reminder_manage,

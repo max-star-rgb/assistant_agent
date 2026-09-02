@@ -21,6 +21,7 @@ from assistant_agent.media.video.understanding_service import VideoUnderstanding
 from assistant_agent.media.vision.models import VideoInspectionOutcome, VideoUnderstandingRequest, VideoUnderstandingResult
 from assistant_agent.native_agent.context import AssistantRunContext, AssistantRuntimeFacts, assistant_runtime_metadata
 from assistant_agent.tools.availability import ToolAvailability
+from assistant_agent.tools.plugins.builtin.media_inspection.live_tool import create_live_view_inspect_tool
 from assistant_agent.tools.plugins.builtin.media_inspection.uploaded_tool import create_uploaded_media_inspect_tool
 from assistant_agent.tools.plugins.builtin.media_inspection.visual_memory_tool import create_visual_memory_search_tool
 from assistant_agent.tools.plugins.builtin.media_inspection.visual_reminder_tool import create_visual_reminder_manage_tool
@@ -46,6 +47,16 @@ class _FailingClient:
 class _User(dict):
     identity = "user"
     permissions = ()
+
+
+class _ExplodingClient:
+    def understand(self, _request):  # type: ignore[no-untyped-def]
+        raise RuntimeError("api_key=uploaded-tool-sentinel")
+
+
+class _ExplodingRegistry:
+    def peek(self, _user_id: str, _session_id: str):  # type: ignore[no-untyped-def]
+        raise RuntimeError("api_key=reminder-tool-sentinel")
 
 
 def test_video_understanding_service_is_domain_only_and_projects_outcomes() -> None:
@@ -171,6 +182,54 @@ def test_media_tool_modules_are_direct_handlers() -> None:
         imports = _imported_names(root / relative)
         assert "assistant_agent.tools.models" not in imports
         assert "assistant_agent.tools.runtime" not in imports
+
+
+def test_media_tools_keep_native_schemas_availability_and_sanitize_runtime_failures(tmp_path: Path) -> None:
+    pool = SessionVisualSemanticStorePool(root=tmp_path / "semantic")
+    uploaded = create_uploaded_media_inspect_tool(_ExplodingClient())
+    live = create_live_view_inspect_tool(
+        _SuccessfulClient(),
+        live_view_resolver=lambda *_: (_ for _ in ()).throw(RuntimeError("api_key=live-tool-sentinel")),
+    )
+    memory = create_visual_memory_search_tool(
+        semantic_store_pool=pool,
+        text_index=UnavailableVisualMemoryTextIndex(code="offline", message="offline"),
+        live_view_resolver=lambda *_: (_ for _ in ()).throw(RuntimeError("api_key=memory-tool-sentinel")),
+    )
+    reminder = create_visual_reminder_manage_tool(
+        coordinator_store=SessionEmbeddingCoordinatorStore(factory=lambda *_: None),  # type: ignore[arg-type]
+        reminder_registry=_ExplodingRegistry(),  # type: ignore[arg-type]
+    )
+    try:
+        failures = (
+            _invoke(uploaded, {"question": "图片是什么？"}, [{"type": "image", "source": "uploaded", "id": "image-1"}]),
+            _invoke(live, {"question": "当前画面是什么？"}),
+            _invoke(memory, {"query": "钥匙"}),
+            _invoke(reminder, {"action": "list"}),
+        )
+    finally:
+        pool.close()
+
+    assert set(uploaded.args) == {"question"}
+    assert uploaded.args["question"]["minLength"] == 1
+    assert uploaded.args["question"]["maxLength"] == 500
+    assert set(live.args) == {"question"}
+    assert live.args["question"]["minLength"] == 1
+    assert live.args["question"]["maxLength"] == 500
+    assert set(memory.args) == {"query", "time_window", "search_mode"}
+    assert set(reminder.args) == {"action", "target", "message", "reminder_id"}
+    assert [tool.metadata["availability"] for tool in (uploaded, live, memory, reminder)] == [
+        ToolAvailability.UPLOADED_MEDIA_PRESENT.value,
+        ToolAvailability.VIDEO_FRAME_RECEIVED.value,
+        ToolAvailability.VISUAL_HISTORY_AVAILABLE.value,
+        ToolAvailability.VIDEO_FRAME_RECEIVED.value,
+    ]
+    for message, sentinel in zip(
+        failures,
+        ("uploaded-tool-sentinel", "live-tool-sentinel", "memory-tool-sentinel", "reminder-tool-sentinel"),
+    ):
+        assert message.status == "error"
+        assert sentinel not in str(message.content)
 
 
 def _invoke(

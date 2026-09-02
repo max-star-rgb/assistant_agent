@@ -29,3 +29,21 @@ PYTHONPATH=src MULTIMODAL_AGENT_PROVIDER_MODE=mock /home/lenovo1/miniconda3/envs
 
 - 未运行真实 Provider；仅 mock/offline 验证。
 - live exact-target 仍保持原有最多 4 秒等待和视觉后台并行流水线；本任务未更改 selector、observer 或语义 store。
+
+## Fix round 1
+
+RED：扩展真实 ToolNode 的四个普通异常 sentinel 覆盖后，`uploaded_media_inspect` 将
+`api_key=uploaded-tool-sentinel` 原样投影到 error ToolMessage。
+
+GREEN：`uploaded_media_inspect`、`live_view_inspect`、`visual_memory_search` 和
+`visual_reminder_manage` 的完整 handler 主体均在顶层保留 `ToolException`、将普通
+`Exception` 交给 `native_tool_exception`；不捕获取消/中断使用的 `BaseException`。
+
+```bash
+MULTIMODAL_AGENT_PROVIDER_MODE=mock /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q tests/tdd/langgraph-native-tools/test_media_tools.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m compileall -q src/assistant_agent/tools/plugins/builtin/media_inspection tests/tdd/langgraph-native-tools/test_media_tools.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_system_realtime_visual_target_window_eval.py --dry-run
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m ruff check src/assistant_agent/tools/plugins/builtin/media_inspection/live_tool.py src/assistant_agent/tools/plugins/builtin/media_inspection/uploaded_tool.py src/assistant_agent/tools/plugins/builtin/media_inspection/visual_memory_tool.py src/assistant_agent/tools/plugins/builtin/media_inspection/visual_reminder_tool.py tests/tdd/langgraph-native-tools/test_media_tools.py
+```
+
+结果：pytest `6 passed`；compile 与 ruff 通过；dry-run 保持 mock，`network_called=false`。

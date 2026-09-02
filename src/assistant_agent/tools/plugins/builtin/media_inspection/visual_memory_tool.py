@@ -37,6 +37,7 @@ from assistant_agent.tools.ids import VISUAL_MEMORY_SEARCH_TOOL_NAME
 from assistant_agent.tools.native_boundary import (
     configure_builtin_tool,
     native_content_and_artifact,
+    native_tool_exception,
 )
 
 
@@ -292,7 +293,14 @@ def create_visual_memory_search_tool(
             data = result.model_dump(mode="json", exclude_none=True)
             return native_content_and_artifact(data, data)
 
-        return search_visual_memory()
+        try:
+            return search_visual_memory()
+        except ToolException:
+            raise
+        except Exception as exc:
+            raise native_tool_exception(
+                exc, tool_name=VISUAL_MEMORY_SEARCH_TOOL_NAME
+            ) from exc
 
     return configure_builtin_tool(
         visual_memory_search,

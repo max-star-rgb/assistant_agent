@@ -135,7 +135,14 @@ def create_uploaded_media_inspect_tool(
             data = result.model_dump(mode="json")
             return native_content_and_artifact(_vision_model_observation(data), data)
 
-        return inspect_uploaded_media()
+        try:
+            return inspect_uploaded_media()
+        except ToolException:
+            raise
+        except Exception as exc:
+            raise native_tool_exception(
+                exc, tool_name=UPLOADED_MEDIA_INSPECT_TOOL_NAME
+            ) from exc
 
     return configure_builtin_tool(
         uploaded_media_inspect,
