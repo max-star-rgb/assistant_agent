@@ -23,30 +23,14 @@ from assistant_agent.native_agent.context import (
     authenticated_user_identity,
 )
 from assistant_agent.tools.availability import ToolAvailability
-from assistant_agent.tools.runtime import ToolContext
 from assistant_agent.tools.ids import LIVE_VIEW_INSPECT_TOOL_NAME
-from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.native_boundary import (
     configure_builtin_tool,
-    invoke_native_tool,
+    native_content_and_artifact,
 )
-from assistant_agent.tools.plugins.builtin.media_inspection.video_branch import (
-    VideoUnderstandingBranch,
+from assistant_agent.media.video.understanding_service import (
+    VideoUnderstandingService,
 )
-
-
-class LiveViewInspector:
-    """Execute governed live-view reads while keeping Tool wrapping separate."""
-
-    def __init__(self, branch: VideoUnderstandingBranch) -> None:
-        self.branch = branch
-
-    def inspect(
-        self,
-        request: VideoUnderstandingRequest,
-        context: ToolContext,
-    ) -> ToolResult:
-        return self.branch.execute(request, context)
 
 
 def create_live_view_inspect_tool(
@@ -60,15 +44,12 @@ def create_live_view_inspect_tool(
 ) -> BaseTool:
     """Create a native live-view Tool over the process-owned visual resources."""
 
-    inspector = LiveViewInspector(
-        VideoUnderstandingBranch(
-            tool_name=LIVE_VIEW_INSPECT_TOOL_NAME,
-            client=client,
-            adapter=video_adapter,
-            context_store=context_store,
-            memory_store=memory_store,
-            semantic_store_pool=semantic_store_pool,
-        )
+    service = VideoUnderstandingService(
+        client=client,
+        adapter=video_adapter,
+        context_store=context_store,
+        memory_store=memory_store,
+        semantic_store_pool=semantic_store_pool,
     )
 
     @tool(LIVE_VIEW_INSPECT_TOOL_NAME, response_format="content_and_artifact")
@@ -94,7 +75,7 @@ def create_live_view_inspect_tool(
         不要暴露 Tool 名和描述。
         """
 
-        def inspect_live_view() -> ToolResult:
+        def inspect_live_view() -> tuple[list[dict[str, Any]], dict[str, Any]]:
             state = runtime.state if isinstance(runtime.state, Mapping) else {}
             execution = runtime.execution_info
             user_id = authenticated_user_identity(runtime)
@@ -117,11 +98,6 @@ def create_live_view_inspect_tool(
                 user_id=user_id,
                 session_id=session_id,
                 memory_context=list(state.get("memory_context", ())) or None,
-            )
-            context = ToolContext(
-                user_id=user_id,
-                session_id=session_id,
-                run_id=getattr(execution, "run_id", None),
                 metadata={
                     "entry_profile": runtime_facts.entry_profile,
                     "media_source": "live_camera",
@@ -133,18 +109,19 @@ def create_live_view_inspect_tool(
                     "visual_target_video_id": live.target_video_id,
                 },
             )
-            return inspector.inspect(request, context)
+            outcome = service.inspect(request)
+            if outcome.status == "failed":
+                raise ToolException(outcome.error or "live view is unavailable")
+            return native_content_and_artifact(outcome.model_observation, outcome.data)
 
-        return invoke_native_tool(
-            LIVE_VIEW_INSPECT_TOOL_NAME,
-            inspect_live_view,
-        )
+        return inspect_live_view()
 
     return configure_builtin_tool(
         live_view_inspect,
         availability=ToolAvailability.VIDEO_FRAME_RECEIVED.value,
         bounded_expected_errors=True,
+        bounded_validation_errors=True,
     )
 
 
-__all__ = ["LiveViewInspector", "create_live_view_inspect_tool"]
+__all__ = ["create_live_view_inspect_tool"]

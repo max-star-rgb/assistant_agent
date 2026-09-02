@@ -31,10 +31,9 @@ from assistant_agent.media.visual_perception.observation_service import (
     RealtimeVisualObservationService,
 )
 from assistant_agent.observability.trace_store import InMemoryTraceStore
-from assistant_agent.tools.plugins.builtin.media_inspection.video_branch import (
-    VideoUnderstandingBranch,
+from assistant_agent.media.video.understanding_service import (
+    VideoUnderstandingService,
 )
-from assistant_agent.tools.runtime import ToolContext
 
 
 DEFAULT_OUTPUT_ROOT = Path(".data/evals/system/realtime_visual_target_window")
@@ -173,7 +172,7 @@ async def _run_window(
             )
             for sequence, path in frame_paths
         )
-        branch = VideoUnderstandingBranch(
+        service = VideoUnderstandingService(
             client=create_vision_understanding_client(
                 vision_config,
                 provider_mode=provider_mode,
@@ -197,12 +196,10 @@ async def _run_window(
             logical_sequences = frozen_window.sequences
             start_sequence = frozen_window.start_sequence
             target_sequence = frozen_window.target_sequence
-            context = ToolContext(
+            request = VideoUnderstandingRequest(
+                video_ref=video_id,
                 user_id=user_id,
                 session_id=session_id,
-                run_id=f"run-{uuid4().hex}",
-                trace_id=f"trace-{uuid4().hex}",
-                trace_store=trace_store,
                 metadata={
                     "entry_profile": "agent_service",
                     "visual_window_id": frozen_window.window_id,
@@ -213,9 +210,8 @@ async def _run_window(
             )
             tool_started_ns = perf_counter_ns()
             tool_result = await asyncio.to_thread(
-                branch.execute,
-                VideoUnderstandingRequest(video_ref=video_id),
-                context,
+                service.inspect,
+                request,
             )
             tool_returned_ns = perf_counter_ns()
             await observer.wait_idle()
