@@ -56,6 +56,7 @@ def create_email_search_tool(backend: EmailBackend) -> BaseTool:
                 user_id=authenticated_user_identity(runtime),
             )
             _raise_result_error(
+                result.success,
                 [item.model_dump(mode="json") for item in result.errors],
                 EMAIL_SEARCH_TOOL_NAME,
             )
@@ -99,6 +100,7 @@ def create_email_read_tool(backend: EmailBackend) -> BaseTool:
                 user_id=authenticated_user_identity(runtime),
             )
             _raise_result_error(
+                result.success,
                 [item.model_dump(mode="json") for item in result.errors],
                 EMAIL_READ_TOOL_NAME,
             )
@@ -166,13 +168,19 @@ def _email_read_observation(result: EmailReadResult) -> dict[str, Any]:
     )
 
 
-def _raise_result_error(errors: list[dict[str, Any]], tool_name: str) -> None:
-    if not errors:
+def _raise_result_error(
+    success: bool,
+    errors: list[dict[str, Any]],
+    tool_name: str,
+) -> None:
+    if success:
         return
-    first = errors[0]
-    raise ToolException(
-        f"{first.get('code', 'provider_error')}: "
-        f"{first.get('message', f'{tool_name} failed')}"
+    first = errors[0] if errors else {}
+    raise native_tool_exception(
+        RuntimeError(
+            f"{first.get('code', 'provider_error')}: "
+            f"{first.get('message', f'{tool_name} failed')}"
+        )
     )
 
 

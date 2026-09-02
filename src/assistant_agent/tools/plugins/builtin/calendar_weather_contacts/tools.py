@@ -73,7 +73,11 @@ def create_calendar_search_tool(adapter: CalendarAdapter | None = None) -> BaseT
                 ),
                 user_id=authenticated_user_identity(runtime),
             )
-            _raise_result_error(result.errors, CALENDAR_SEARCH_TOOL_NAME)
+            _raise_result_error(
+                result.success,
+                result.errors,
+                CALENDAR_SEARCH_TOOL_NAME,
+            )
             return native_content_and_artifact(
                 _calendar_search_observation(result),
                 result.model_dump(mode="json"),
@@ -127,7 +131,11 @@ def create_calendar_create_tool(adapter: CalendarAdapter | None = None) -> BaseT
                 request,
                 user_id=authenticated_user_identity(runtime),
             )
-            _raise_result_error(result.errors, CALENDAR_CREATE_TOOL_NAME)
+            _raise_result_error(
+                result.success,
+                result.errors,
+                CALENDAR_CREATE_TOOL_NAME,
+            )
             return native_content_and_artifact(
                 _calendar_create_observation(result),
                 {
@@ -171,7 +179,11 @@ def create_contacts_search_tool(adapter: ContactsAdapter | None = None) -> BaseT
                 ContactsSearchRequest(query=query),
                 user_id=authenticated_user_identity(runtime),
             )
-            _raise_result_error(result.errors, CONTACTS_SEARCH_TOOL_NAME)
+            _raise_result_error(
+                result.success,
+                result.errors,
+                CONTACTS_SEARCH_TOOL_NAME,
+            )
             return native_content_and_artifact(
                 _contacts_observation(result),
                 result.model_dump(mode="json"),
@@ -222,13 +234,19 @@ def _calendar_adapter_for_user(
     return resolver(user_id)
 
 
-def _raise_result_error(errors: list[dict[str, object]], tool_name: str) -> None:
-    if not errors:
+def _raise_result_error(
+    success: bool,
+    errors: list[dict[str, object]],
+    tool_name: str,
+) -> None:
+    if success:
         return
-    first = errors[0]
-    raise ToolException(
-        f"{first.get('code', 'provider_error')}: "
-        f"{first.get('message', f'{tool_name} failed')}"
+    first = errors[0] if errors else {}
+    raise native_tool_exception(
+        RuntimeError(
+            f"{first.get('code', 'provider_error')}: "
+            f"{first.get('message', f'{tool_name} failed')}"
+        )
     )
 
 

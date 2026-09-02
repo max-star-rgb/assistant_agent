@@ -18,6 +18,7 @@ from assistant_agent.tools.plugins.builtin.web_access.fetch_backend import (
     WebFetchAdapter,
 )
 from assistant_agent.tools.plugins.builtin.web_access.fetch_models import (
+    WebFetchProviderError,
     WebFetchRequest,
     WebFetchResult,
 )
@@ -51,12 +52,11 @@ def create_web_fetch_tool(adapter: WebFetchAdapter | None = None) -> BaseTool:
                 fetch_adapter,
                 WebFetchRequest(url=url),
             )
-            if not result.success:
-                first = result.errors[0] if result.errors else None
-                raise ToolException(
-                    f"{first.code if first else 'provider_error'}: "
-                    f"{first.message if first else f'{WEB_FETCH_TOOL_NAME} failed'}"
-                )
+            _raise_result_error(
+                result.success,
+                result.errors,
+                WEB_FETCH_TOOL_NAME,
+            )
             data = result.model_dump(mode="json")
             return native_content_and_artifact(
                 _web_fetch_model_observation(data),
@@ -75,6 +75,22 @@ def _execute_web_fetch(
     input: WebFetchRequest,
 ) -> WebFetchResult:
     return adapter.fetch(input)
+
+
+def _raise_result_error(
+    success: bool,
+    errors: list[WebFetchProviderError],
+    tool_name: str,
+) -> None:
+    if success:
+        return
+    first = errors[0] if errors else None
+    raise native_tool_exception(
+        RuntimeError(
+            f"{first.code if first else 'provider_error'}: "
+            f"{first.message if first else f'{tool_name} failed'}"
+        )
+    )
 
 
 def _web_fetch_model_observation(data: dict[str, Any]) -> dict[str, Any]:

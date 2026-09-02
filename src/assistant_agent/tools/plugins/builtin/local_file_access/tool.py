@@ -104,9 +104,11 @@ def create_local_file_read_tool(
             )
             if result.status == "failed":
                 first = result.errors[0] if result.errors else None
-                raise ToolException(
-                    f"{first.code if first else 'file_read_failed'}: "
-                    f"{first.message if first else '文件读取失败。'}"
+                raise native_tool_exception(
+                    RuntimeError(
+                        f"{first.code if first else 'file_read_failed'}: "
+                        f"{first.message if first else '文件读取失败。'}"
+                    )
                 )
             return native_content_and_artifact(
                 _file_read_observation(result),

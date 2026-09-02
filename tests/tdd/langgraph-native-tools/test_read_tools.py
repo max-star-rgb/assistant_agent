@@ -72,12 +72,40 @@ class _FailingEmailBackend:
         raise AssertionError("email_read is not used by this test")
 
 
+class _FailedWithoutErrorsEmailBackend:
+    def search(self, request: EmailSearchRequest) -> EmailSearchResult:
+        return EmailSearchResult(
+            success=False,
+            query_used=request.query,
+            summary="Mailbox failed without provider detail.",
+            provider="email-error",
+            output_ref="error://email/search",
+        )
+
+    def read(self, request):  # type: ignore[no-untyped-def]
+        raise AssertionError("email_read is not used by this test")
+
+
 class _FailingWebAdapter:
     def fetch(self, request: WebFetchRequest) -> WebFetchResult:
         return WebFetchResult(
             url=request.url,
             provider="web-error",
             errors=[WebFetchProviderError(code="web_unavailable", message="Web unavailable.")],
+        )
+
+
+class _SensitiveFailingWebAdapter:
+    def fetch(self, request: WebFetchRequest) -> WebFetchResult:
+        return WebFetchResult(
+            url=request.url,
+            provider="web-error",
+            errors=[
+                WebFetchProviderError(
+                    code="web_unavailable",
+                    message="api_key=secret-sentinel path=/home/private/result.json",
+                )
+            ],
         )
 
 
@@ -181,6 +209,28 @@ def test_local_file_read_returns_native_content_and_artifact(tmp_path: Path) -> 
     }
     assert message.artifact["status"] == "succeeded"
     assert message.status == "success"
+
+
+def test_failed_result_without_errors_becomes_toolnode_error() -> None:
+    message = _invoke(
+        create_email_search_tool(_FailedWithoutErrorsEmailBackend()),
+        {"query": "project"},
+    )
+
+    assert message.content == "provider_error: email_search failed"
+    assert message.artifact is None
+    assert message.status == "error"
+
+
+def test_sensitive_provider_error_is_sanitized_before_toolnode_observation() -> None:
+    message = _invoke(
+        create_web_fetch_tool(_SensitiveFailingWebAdapter()),
+        {"url": "https://example.test/page"},
+    )
+
+    assert message.content == "web_unavailable: [redacted] path=[redacted]"
+    assert message.artifact is None
+    assert message.status == "error"
 
 
 @pytest.mark.parametrize(
