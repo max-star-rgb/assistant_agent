@@ -112,7 +112,6 @@ def create_image_to_3d_tool(
     return configure_builtin_tool(
         image_to_3d,
         bounded_expected_errors=True,
-        bounded_validation_errors=True,
     )
 
 

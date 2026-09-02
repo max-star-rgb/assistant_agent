@@ -6,10 +6,7 @@ from langchain_core.tools import BaseTool, ToolException, tool
 from langgraph.prebuilt import ToolRuntime
 from pydantic import Field
 
-from assistant_agent.native_agent.context import (
-    AssistantRunContext,
-    authenticated_user_identity,
-)
+from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.tools.native_boundary import (
     configure_builtin_tool,
     native_content_and_artifact,
@@ -53,7 +50,6 @@ def create_email_search_tool(backend: EmailBackend) -> BaseTool:
             result = _execute_email_search(
                 backend,
                 EmailSearchRequest(query=query, page_token=page_token),
-                user_id=authenticated_user_identity(runtime),
             )
             _raise_result_error(
                 result.success,
@@ -97,7 +93,6 @@ def create_email_read_tool(backend: EmailBackend) -> BaseTool:
             result = _execute_email_read(
                 backend,
                 EmailReadRequest(message_ids=message_ids),
-                user_id=authenticated_user_identity(runtime),
             )
             _raise_result_error(
                 result.success,
@@ -119,10 +114,7 @@ def create_email_read_tool(backend: EmailBackend) -> BaseTool:
 def _execute_email_search(
     backend: EmailBackend,
     input: EmailSearchRequest,
-    *,
-    user_id: str,
 ) -> EmailSearchResult:
-    del user_id
     return backend.search(input)
 
 
@@ -145,10 +137,7 @@ def _email_search_observation(result: EmailSearchResult) -> dict[str, Any]:
 def _execute_email_read(
     backend: EmailBackend,
     input: EmailReadRequest,
-    *,
-    user_id: str,
 ) -> EmailReadResult:
-    del user_id
     return backend.read(input)
 
 

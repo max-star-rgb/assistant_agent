@@ -54,15 +54,6 @@ LIVE_VIEW_SNAPSHOT_WAIT_SECONDS = 4.0
 LIVE_VIEW_TEXT_TIMELINE_LIMIT = 8
 
 
-class _InspectionContext:
-    """Request-owned facts needed by the domain implementation."""
-
-    def __init__(self, request: VideoUnderstandingRequest) -> None:
-        self.user_id = request.user_id
-        self.session_id = request.session_id
-        self.metadata = request.metadata
-
-
 class VideoUnderstandingService:
     """Shared explicit-video and governed live-view domain service."""
 
@@ -102,24 +93,21 @@ class VideoUnderstandingService:
         self.context_window_size = context_window_size
         self.wall_clock_ms = wall_clock_ms or (lambda: int(time() * 1000))
 
-    def inspect(self, input: VideoUnderstandingRequest) -> VideoInspectionOutcome:
-        return self._inspect(input, _InspectionContext(input))
-
-    def _inspect(
-        self, input: VideoUnderstandingRequest, context: _InspectionContext
-    ) -> VideoInspectionOutcome:
-        video_ref = input.video_ref or (input.video_ids[0] if input.video_ids else None)
-        observation_mode = context.metadata.get("realtime_video_observation") is True
+    def inspect(self, request: VideoUnderstandingRequest) -> VideoInspectionOutcome:
+        video_ref = request.video_ref or (
+            request.video_ids[0] if request.video_ids else None
+        )
+        observation_mode = request.metadata.get("realtime_video_observation") is True
         agent_service_text_only = (
-            not observation_mode and _is_agent_service_realtime_video_tool_call(context)
+            not observation_mode and _is_agent_service_realtime_video_tool_call(request)
         )
         snapshot = None
         status_snapshot = None
         text_observations: list[dict[str, object]] | None = None
-        visual_target_sequence = self._live_target_sequence(context)
-        visual_window_sequences = self._live_window_sequences(context)
-        visual_window_timestamps_ms = self._live_window_timestamps_ms(context)
-        visual_window_start_sequence = self._live_window_start_sequence(context)
+        visual_target_sequence = self._live_target_sequence(request)
+        visual_window_sequences = self._live_window_sequences(request)
+        visual_window_timestamps_ms = self._live_window_timestamps_ms(request)
+        visual_window_start_sequence = self._live_window_start_sequence(request)
         if (
             video_ref
             and agent_service_text_only
@@ -127,11 +115,11 @@ class VideoUnderstandingService:
         ):
             snapshot = self._live_snapshot_for_request(
                 video_ref,
-                context=context,
+                request=request,
             )
             text_observations = self._live_text_observations(
                 video_ref,
-                context=context,
+                request=request,
                 snapshot=snapshot,
             )
             status_snapshot = snapshot
@@ -168,7 +156,7 @@ class VideoUnderstandingService:
                 video_ref
                 and visual_target_sequence is not None
             ):
-                semantic_store = self._semantic_store(context)
+                semantic_store = self._semantic_store(request)
                 target_failed = (
                     semantic_store.sequence_failed(
                         video_ref,
@@ -195,7 +183,7 @@ class VideoUnderstandingService:
             )
             return result
 
-        input = self._with_context_frames(input)
+        request = self._with_context_frames(request)
         self._sync_client_video_adapter()
         trace_links: list[VisionInferenceTraceLink] = []
         source = (
@@ -206,30 +194,30 @@ class VideoUnderstandingService:
             "realtime-single-frame-v1" if observation_mode else "video-understanding-v1"
         )
         frame_sequence = (
-            input.metadata.get("frame_sequence")
-            if isinstance(input.metadata.get("frame_sequence"), int)
-            and not isinstance(input.metadata.get("frame_sequence"), bool)
+            request.metadata.get("frame_sequence")
+            if isinstance(request.metadata.get("frame_sequence"), int)
+            and not isinstance(request.metadata.get("frame_sequence"), bool)
             else None
         )
         try:
             result = video_result_from_vision_result(
                 observe_vision_inference(
                     lambda: self.client.understand(
-                        vision_request_from_video_request(input)
+                        vision_request_from_video_request(request)
                     ),
                     context=None,
                     capability="video_understanding",
                     source=source,
                     media_kind=media_kind,
                     media_count=max(
-                        len(input.frame_refs),
-                        len(input.video_ids),
-                        1 if input.video_ref else 0,
+                        len(request.frame_refs),
+                        len(request.video_ids),
+                        1 if request.video_ref else 0,
                     ),
                     frame_sequence=frame_sequence,
                     prompt_version=prompt_version,
                     local_input_content=self._local_vlm_input_content(
-                        input,
+                        request,
                         mode=source,
                         media_kind=media_kind,
                         prompt_version=prompt_version,
@@ -274,10 +262,10 @@ class VideoUnderstandingService:
         self,
         video_ref: str,
         *,
-        context: _InspectionContext,
+        request: VideoUnderstandingRequest,
     ) -> RealtimeVideoSnapshot | None:
-        semantic_store = self._semantic_store(context)
-        target_sequence = self._live_target_sequence(context)
+        semantic_store = self._semantic_store(request)
+        target_sequence = self._live_target_sequence(request)
         if semantic_store is not None:
             if target_sequence is not None:
                 semantic_store.wait_for_sequence(
@@ -288,7 +276,7 @@ class VideoUnderstandingService:
                 record = semantic_store.exact_sequence(
                     video_ref,
                     sequence=target_sequence,
-                    visual_window_id=self._live_window_id(context),
+                    visual_window_id=self._live_window_id(request),
                 )
             else:
                 record = semantic_store.latest(video_ref)
@@ -308,26 +296,26 @@ class VideoUnderstandingService:
             )
         return self.memory_store.snapshot(video_ref)
 
-    def _semantic_store(self, context: _InspectionContext):
+    def _semantic_store(self, request: VideoUnderstandingRequest):
         if (
             self.semantic_store_pool is None
-            or not context.user_id
-            or not context.session_id
+            or not request.user_id
+            or not request.session_id
         ):
             return None
-        return self.semantic_store_pool.peek(context.user_id, context.session_id)
+        return self.semantic_store_pool.peek(request.user_id, request.session_id)
 
     def _live_text_observations(
         self,
         video_ref: str,
         *,
-        context: _InspectionContext,
+        request: VideoUnderstandingRequest,
         snapshot: RealtimeVideoSnapshot | None,
     ) -> list[dict[str, object]]:
-        semantic_store = self._semantic_store(context)
-        target_sequence = self._live_target_sequence(context)
-        window_start_sequence = self._live_window_start_sequence(context)
-        window_sequences = self._live_window_sequences(context)
+        semantic_store = self._semantic_store(request)
+        target_sequence = self._live_target_sequence(request)
+        window_start_sequence = self._live_window_start_sequence(request)
+        window_sequences = self._live_window_sequences(request)
         if semantic_store is not None:
             sequence = target_sequence
             if sequence is None and snapshot is not None:
@@ -379,15 +367,15 @@ class VideoUnderstandingService:
         return [observation]
 
     @staticmethod
-    def _live_target_sequence(context: _InspectionContext) -> int | None:
-        direct_target = context.metadata.get("visual_target_sequence")
+    def _live_target_sequence(request: VideoUnderstandingRequest) -> int | None:
+        direct_target = request.metadata.get("visual_target_sequence")
         if (
             not isinstance(direct_target, bool)
             and isinstance(direct_target, int)
             and direct_target >= 0
         ):
             return direct_target
-        request_metadata = context.metadata.get("request_metadata")
+        request_metadata = request.metadata.get("request_metadata")
         agent_service = (
             request_metadata.get("agent_service")
             if isinstance(request_metadata, dict)
@@ -407,12 +395,14 @@ class VideoUnderstandingService:
         return None
 
     @classmethod
-    def _live_window_start_sequence(cls, context: _InspectionContext) -> int | None:
-        window_sequences = cls._live_window_sequences(context)
+    def _live_window_start_sequence(
+        cls, request: VideoUnderstandingRequest
+    ) -> int | None:
+        window_sequences = cls._live_window_sequences(request)
         if window_sequences:
             return window_sequences[0]
-        target_sequence = cls._live_target_sequence(context)
-        start_sequence = context.metadata.get("visual_window_start_sequence")
+        target_sequence = cls._live_target_sequence(request)
+        start_sequence = request.metadata.get("visual_window_start_sequence")
         if (
             target_sequence is not None
             and not isinstance(start_sequence, bool)
@@ -424,8 +414,10 @@ class VideoUnderstandingService:
         return None
 
     @classmethod
-    def _live_window_sequences(cls, context: _InspectionContext) -> tuple[int, ...]:
-        value = context.metadata.get("visual_window_sequences")
+    def _live_window_sequences(
+        cls, request: VideoUnderstandingRequest
+    ) -> tuple[int, ...]:
+        value = request.metadata.get("visual_window_sequences")
         if not isinstance(value, (list, tuple)) or not value:
             return ()
         if len(value) > REALTIME_VISUAL_TARGET_WINDOW_SIZE:
@@ -437,7 +429,7 @@ class VideoUnderstandingService:
             if sequences and sequence <= sequences[-1]:
                 return ()
             sequences.append(sequence)
-        target_sequence = cls._live_target_sequence(context)
+        target_sequence = cls._live_target_sequence(request)
         if target_sequence is None or sequences[-1] != target_sequence:
             return ()
         return tuple(sequences)
@@ -445,10 +437,10 @@ class VideoUnderstandingService:
     @classmethod
     def _live_window_timestamps_ms(
         cls,
-        context: _InspectionContext,
+        request: VideoUnderstandingRequest,
     ) -> tuple[int | None, ...]:
-        sequences = cls._live_window_sequences(context)
-        value = context.metadata.get("visual_window_timestamps_ms")
+        sequences = cls._live_window_sequences(request)
+        value = request.metadata.get("visual_window_timestamps_ms")
         if not sequences or not isinstance(value, (list, tuple)):
             return tuple(None for _ in sequences)
         if len(value) != len(sequences):
@@ -468,8 +460,8 @@ class VideoUnderstandingService:
         return tuple(timestamps)
 
     @staticmethod
-    def _live_window_id(context: _InspectionContext) -> str | None:
-        value = context.metadata.get("visual_window_id")
+    def _live_window_id(request: VideoUnderstandingRequest) -> str | None:
+        value = request.metadata.get("visual_window_id")
         return value if isinstance(value, str) and 1 <= len(value) <= 160 else None
 
     def _sync_client_video_adapter(self) -> None:
@@ -854,12 +846,14 @@ def _error_code(message: str) -> str:
     return "video_understanding_failed"
 
 
-def _is_agent_service_realtime_video_tool_call(context: _InspectionContext) -> bool:
-    if context.metadata.get("media_source") == "uploaded":
+def _is_agent_service_realtime_video_tool_call(
+    request: VideoUnderstandingRequest,
+) -> bool:
+    if request.metadata.get("media_source") == "uploaded":
         return False
-    if context.metadata.get("entry_profile") == "agent_service":
+    if request.metadata.get("entry_profile") == "agent_service":
         return True
-    request_metadata = context.metadata.get("request_metadata")
+    request_metadata = request.metadata.get("request_metadata")
     if not isinstance(request_metadata, dict):
         return False
     return is_trusted_agent_service_request(request_metadata)

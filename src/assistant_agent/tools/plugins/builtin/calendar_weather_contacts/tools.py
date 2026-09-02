@@ -177,7 +177,6 @@ def create_contacts_search_tool(adapter: ContactsAdapter | None = None) -> BaseT
             result = _execute_contacts_search(
                 contacts_adapter,
                 ContactsSearchRequest(query=query),
-                user_id=authenticated_user_identity(runtime),
             )
             _raise_result_error(
                 result.success,
@@ -217,10 +216,7 @@ def _execute_calendar_create(
 def _execute_contacts_search(
     adapter: ContactsAdapter,
     input: ContactsSearchRequest,
-    *,
-    user_id: str,
 ) -> ContactsSearchResult:
-    del user_id
     return adapter.search(input)
 
 

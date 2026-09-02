@@ -97,7 +97,6 @@ def create_hotel_price_watch_create_tool(service: DurableTaskService) -> BaseToo
     return configure_builtin_tool(
         hotel_price_watch_create,
         bounded_expected_errors=True,
-        bounded_validation_errors=True,
     )
 
 

@@ -5,6 +5,7 @@ import asyncio
 import json
 from pathlib import Path
 
+import pytest
 from langchain.agents import AgentState
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
@@ -12,6 +13,12 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 
 from assistant_agent.media.embedding.coordinator_store import SessionEmbeddingCoordinatorStore
+from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
+from assistant_agent.media.embedding.models import EmbeddingFailureEvent
+from assistant_agent.media.embedding.provider import (
+    MockMultimodalEmbeddingProvider,
+    UnavailableMultimodalEmbeddingProvider,
+)
 from assistant_agent.media.video.realtime_video_memory import RealtimeVideoMemoryStore, SemanticKeyframeRecord
 from assistant_agent.media.video.semantic_store_pool import SessionVisualSemanticStorePool
 from assistant_agent.media.video.visual_memory_index import UnavailableVisualMemoryTextIndex
@@ -75,6 +82,26 @@ class _ExplodingRegistry:
     def peek(self, _user_id: str, _session_id: str):  # type: ignore[no-untyped-def]
         self.calls += 1
         raise RuntimeError("api_key=reminder-tool-sentinel")
+
+
+class _TextFailureProvider(MockMultimodalEmbeddingProvider):
+    def embed_text(self, observation):  # type: ignore[no-untyped-def]
+        return EmbeddingFailureEvent(
+            modality="text",
+            session_id=observation.session_id,
+            source_observation_id=observation.observation_id,
+            code="text_embedding_failed",
+            safe_message="text embedding failed",
+            recoverable=True,
+            latency_ms=0,
+        )
+
+
+class _IncompatibleTextProvider(MockMultimodalEmbeddingProvider):
+    def embed_text(self, observation):  # type: ignore[no-untyped-def]
+        return super().embed_text(observation).model_copy(
+            update={"model_id": "incompatible-model"}
+        )
 
 
 def test_video_understanding_service_is_domain_only_and_projects_outcomes() -> None:
@@ -189,6 +216,56 @@ def test_visual_memory_and_reminder_toolnodes_keep_content_artifact_and_metadata
     assert reminder.metadata["availability"] == ToolAvailability.VIDEO_FRAME_RECEIVED.value
 
 
+@pytest.mark.parametrize(
+    ("case", "expected_error"),
+    (
+        ("connection", "visual reminder connection is unavailable"),
+        ("joint", "visual reminder joint embedding space is unavailable"),
+        ("text", "visual reminder text embedding is unavailable"),
+        ("incompatible", "visual reminder text embedding is incompatible"),
+    ),
+)
+def test_visual_reminder_create_preserves_safe_specific_failures(
+    case: str,
+    expected_error: str,
+) -> None:
+    provider = {
+        "connection": MockMultimodalEmbeddingProvider,
+        "joint": UnavailableMultimodalEmbeddingProvider,
+        "text": _TextFailureProvider,
+        "incompatible": _IncompatibleTextProvider,
+    }[case]()
+    coordinator_store = SessionEmbeddingCoordinatorStore(
+        factory=lambda _user_id, session_id: SessionEmbeddingCoordinator(
+            session_id,
+            provider,
+        )
+    )
+    registry = VisualReminderRegistry()
+    if case != "connection":
+        registry.register(VisualReminderManager(user_id="user", session_id="thread"))
+    tool = create_visual_reminder_manage_tool(
+        coordinator_store=coordinator_store,
+        reminder_registry=registry,
+    )
+    try:
+        message = _invoke(
+            tool,
+            {
+                "action": "create",
+                "target": "target-sensitive-sentinel",
+                "message": "message-sensitive-sentinel",
+            },
+        )
+    finally:
+        coordinator_store.close()
+
+    assert message.status == "error"
+    assert message.content == expected_error
+    assert "target-sensitive-sentinel" not in message.content
+    assert "message-sensitive-sentinel" not in message.content
+
+
 def test_media_tool_modules_are_direct_handlers() -> None:
     root = Path(__file__).parents[3] / "src"
     for relative in (
@@ -261,6 +338,7 @@ def test_media_tools_keep_native_schemas_availability_and_sanitize_runtime_failu
         ("uploaded-tool-sentinel", "live-tool-sentinel", "memory-tool-sentinel", "reminder-tool-sentinel"),
     ):
         assert message.status == "error"
+        assert "[redacted]" in str(message.content)
         assert sentinel not in str(message.content)
 
 

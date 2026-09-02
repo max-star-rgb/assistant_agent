@@ -51,7 +51,6 @@ def configure_builtin_tool(
     *,
     availability: str | None = None,
     bounded_expected_errors: bool = False,
-    bounded_validation_errors: bool = False,
 ) -> BaseTool:
     """Apply standard metadata and the production ToolException policy."""
 
@@ -60,10 +59,7 @@ def configure_builtin_tool(
     )
     if bounded_expected_errors:
         tool.handle_tool_error = _bounded_tool_error
-    if bounded_validation_errors:
-        tool.handle_validation_error = lambda exc: _validation_error_message(
-            tool.name, exc
-        )
+    tool.handle_validation_error = lambda exc: _validation_error_message(tool.name, exc)
     return tool
 
 

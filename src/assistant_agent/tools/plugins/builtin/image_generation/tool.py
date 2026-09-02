@@ -127,7 +127,6 @@ def create_image_generation_tool(
     return configure_builtin_tool(
         image_generation,
         bounded_expected_errors=True,
-        bounded_validation_errors=True,
     )
 
 

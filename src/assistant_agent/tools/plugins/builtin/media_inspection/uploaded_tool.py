@@ -147,7 +147,6 @@ def create_uploaded_media_inspect_tool(
     return configure_builtin_tool(
         uploaded_media_inspect,
         availability=ToolAvailability.UPLOADED_MEDIA_PRESENT.value,
-        bounded_validation_errors=True,
     )
 
 

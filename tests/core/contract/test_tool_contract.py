@@ -138,16 +138,17 @@ def test_sensitive_expected_failure_uses_default_toolnode_error_message() -> Non
 
 
 @pytest.mark.core_invariant("TOOL-001")
-def test_sensitive_unknown_failure_is_sanitized_by_default_toolnode() -> None:
+def test_production_unknown_failure_handler_sanitizes_before_toolnode() -> None:
     @tool("unknown_failure_probe", response_format="content_and_artifact")
     def unknown_failure_probe():
         """Raise one unexpected implementation failure."""
 
-        raise native_boundary.native_tool_exception(
-            RuntimeError(
+        try:
+            raise RuntimeError(
                 "api_key=secret-sentinel path=/home/private-sentinel/result.json"
             )
-        )
+        except Exception as exc:
+            raise native_boundary.native_tool_exception(exc) from exc
 
     configured = _configure_builtin_probe(
         unknown_failure_probe,

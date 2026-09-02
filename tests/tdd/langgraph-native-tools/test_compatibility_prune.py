@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 from pathlib import Path
 
+import pytest
+from langchain.agents import AgentState
+from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import BaseTool
+from langgraph.graph import END, START, StateGraph
+from langgraph.prebuilt import ToolNode
 
 from assistant_agent.automation.durable_tasks.service import DurableTaskService
 from assistant_agent.automation.durable_tasks.store import InMemoryTaskStore
@@ -13,6 +19,7 @@ from assistant_agent.media.video.visual_memory_index import UnavailableVisualMem
 from assistant_agent.media.video.visual_reminder import VisualReminderRegistry
 from assistant_agent.media.vision.vision_client import MockVisionUnderstandingClient
 from assistant_agent.runtime.thread_resources import ThreadResourceConfig, ThreadResourceManager
+from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.tools import native_boundary
 from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.tools import (
     create_calendar_create_tool,
@@ -64,6 +71,26 @@ COMPATIBILITY_SYMBOLS = frozenset(
     }
 )
 
+BUSINESS_TOOL_NAMES = (
+    "calendar_create",
+    "calendar_search",
+    "contacts_search",
+    "email_read",
+    "email_search",
+    "file_read",
+    "hotel_price_watch_create",
+    "image_generation",
+    "image_to_3d",
+    "live_view_inspect",
+    "lodging_search",
+    "shopping_search",
+    "uploaded_media_inspect",
+    "visual_image_search",
+    "visual_memory_search",
+    "visual_reminder_manage",
+    "web_fetch",
+)
+
 
 def test_builtin_tool_modules_have_no_compatibility_references() -> None:
     references = {
@@ -91,28 +118,38 @@ def test_all_builtin_factories_return_native_tools_with_hidden_runtime(tmp_path:
         semantic_pool.close()
 
     assert len(tools) == 17
-    assert {tool.name for tool in tools} == {
-        "calendar_create",
-        "calendar_search",
-        "contacts_search",
-        "email_read",
-        "email_search",
-        "file_read",
-        "hotel_price_watch_create",
-        "image_generation",
-        "image_to_3d",
-        "live_view_inspect",
-        "lodging_search",
-        "shopping_search",
-        "uploaded_media_inspect",
-        "visual_image_search",
-        "visual_memory_search",
-        "visual_reminder_manage",
-        "web_fetch",
-    }
+    assert {tool.name for tool in tools} == set(BUSINESS_TOOL_NAMES)
     for tool in tools:
         assert isinstance(tool, BaseTool)
         assert "runtime" not in tool.tool_call_schema.model_fields
+
+
+@pytest.fixture(scope="module")
+def business_tools(tmp_path_factory: pytest.TempPathFactory):
+    tmp_path = tmp_path_factory.mktemp("business-tools")
+    semantic_pool = SessionVisualSemanticStorePool(root=tmp_path / "semantic")
+    try:
+        yield {tool.name: tool for tool in _builtin_factories(tmp_path, semantic_pool)}
+    finally:
+        semantic_pool.close()
+
+
+@pytest.mark.parametrize("tool_name", BUSINESS_TOOL_NAMES)
+def test_business_tool_schema_errors_do_not_echo_call_kwargs(
+    tool_name: str,
+    business_tools: dict[str, BaseTool],
+) -> None:
+    tool = business_tools[tool_name]
+    sentinel = f"{tool_name}-schema-sentinel"
+    visible_field = next(iter(tool.tool_call_schema.model_fields))
+
+    message = _invoke_default_toolnode(
+        tool,
+        {visible_field: {"raw": sentinel}},
+    )
+
+    assert message.status == "error"
+    assert sentinel not in str(message.content)
 
 
 def _builtin_factories(
@@ -187,3 +224,36 @@ def _source_root() -> Path:
 
 def _builtin_root() -> Path:
     return _source_root() / "assistant_agent/tools/plugins/builtin"
+
+
+def _invoke_default_toolnode(
+    tool: BaseTool,
+    args: dict[str, object],
+) -> ToolMessage:
+    builder = StateGraph(AgentState, context_schema=AssistantRunContext)
+    builder.add_node("tools", ToolNode([tool]))
+    builder.add_edge(START, "tools")
+    builder.add_edge("tools", END)
+    result = asyncio.run(
+        builder.compile().ainvoke(
+            {
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": tool.name,
+                                "args": args,
+                                "id": f"call-{tool.name}",
+                                "type": "tool_call",
+                            }
+                        ],
+                    )
+                ]
+            },
+            context=AssistantRunContext(),
+        )
+    )
+    message = result["messages"][-1]
+    assert isinstance(message, ToolMessage)
+    return message

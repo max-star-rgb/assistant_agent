@@ -9,10 +9,7 @@ from langchain_core.tools import BaseTool, ToolException, tool
 from langgraph.prebuilt import ToolRuntime
 from pydantic import Field
 
-from assistant_agent.native_agent.context import (
-    AssistantRunContext,
-    authenticated_user_identity,
-)
+from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.tools.native_boundary import (
     configure_builtin_tool,
     native_content_and_artifact,
@@ -99,8 +96,6 @@ def create_local_file_read_tool(
                 resolved_root,
                 max_file_bytes,
                 FileReadRequest(path=path, cursor=cursor),
-                cwd=runtime.context.cwd,
-                user_id=authenticated_user_identity(runtime),
             )
             if result.status == "failed":
                 first = result.errors[0] if result.errors else None
@@ -126,11 +121,7 @@ def _execute_local_file_read(
     root: Path,
     max_file_bytes: int,
     input: FileReadRequest,
-    *,
-    cwd: Path,
-    user_id: str,
 ) -> FileReadResult:
-    del cwd, user_id
     try:
         relative_path = _validated_relative_path(input.path)
         resolved_path = (root / relative_path).resolve(strict=True)

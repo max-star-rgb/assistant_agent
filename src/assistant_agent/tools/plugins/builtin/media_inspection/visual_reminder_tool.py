@@ -132,8 +132,6 @@ def create_visual_reminder_manage_tool(
                 coordinator_store=coordinator_store,
                 reminder_registry=reminder_registry,
             )
-            if output.status == "unavailable":
-                raise ToolException("visual reminder connection is unavailable")
             data = output.model_dump(mode="json")
             return native_content_and_artifact(data, data)
         except ToolException:
@@ -147,7 +145,6 @@ def create_visual_reminder_manage_tool(
         visual_reminder_manage,
         availability=ToolAvailability.VIDEO_FRAME_RECEIVED.value,
         bounded_expected_errors=True,
-        bounded_validation_errors=True,
     )
 
 
@@ -186,9 +183,7 @@ def _execute_visual_reminder_manage(
 ) -> VisualReminderManageOutput:
     manager = reminder_registry.peek(user_id, input.session_id)
     if manager is None:
-        return _visual_reminder_result(
-            {"status": "unavailable", "count": 0, "reminders": []},
-        )
+        raise ToolException("visual reminder connection is unavailable")
     if input.action == "list":
         reminders = [
             record.model_dump(mode="json") for record in manager.list_records()
@@ -237,8 +232,8 @@ def _create_visual_reminder(
             and readiness.embedding_space_id
             and readiness.dimension
         ):
-            return _visual_reminder_result(
-                {"status": "unavailable", "count": 0, "reminders": []},
+            raise ToolException(
+                "visual reminder joint embedding space is unavailable"
             )
         observation_id = f"visual-reminder:{run_id or 'run'}:{uuid4().hex}"
         outcome = lease.coordinator.embed_text(
@@ -252,9 +247,7 @@ def _create_visual_reminder(
     finally:
         lease.release()
     if not isinstance(outcome, EmbeddingEvent):
-        return _visual_reminder_result(
-            {"status": "unavailable", "count": 0, "reminders": []},
-        )
+        raise ToolException("visual reminder text embedding is unavailable")
     if (
         outcome.embedding_space_id != readiness.embedding_space_id
         or outcome.dimension != readiness.dimension
@@ -264,18 +257,14 @@ def _create_visual_reminder(
             and outcome.model_revision != readiness.model_revision
         )
     ):
-        return _visual_reminder_result(
-            {"status": "unavailable", "count": 0, "reminders": []},
-        )
+        raise ToolException("visual reminder text embedding is incompatible")
     try:
         validate_visual_reminder_target_embedding(
             outcome,
             session_id=input.session_id,
         )
     except ValueError:
-        return _visual_reminder_result(
-            {"status": "unavailable", "count": 0, "reminders": []},
-        )
+        raise ToolException("visual reminder text embedding is incompatible") from None
     record = manager.create(
         target=input.target or "",
         message=input.message or "",

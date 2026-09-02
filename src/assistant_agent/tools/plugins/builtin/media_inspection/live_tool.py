@@ -126,7 +126,6 @@ def create_live_view_inspect_tool(
         live_view_inspect,
         availability=ToolAvailability.VIDEO_FRAME_RECEIVED.value,
         bounded_expected_errors=True,
-        bounded_validation_errors=True,
     )
 
 
