@@ -50,12 +50,30 @@ class _User(dict):
 
 
 class _ExplodingClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
     def understand(self, _request):  # type: ignore[no-untyped-def]
+        self.calls += 1
         raise RuntimeError("api_key=uploaded-tool-sentinel")
 
 
+class _ExplodingResolver:
+    def __init__(self, sentinel: str) -> None:
+        self.sentinel = sentinel
+        self.calls = 0
+
+    def __call__(self, *_args: object) -> object:
+        self.calls += 1
+        raise RuntimeError(f"api_key={self.sentinel}")
+
+
 class _ExplodingRegistry:
+    def __init__(self) -> None:
+        self.calls = 0
+
     def peek(self, _user_id: str, _session_id: str):  # type: ignore[no-untyped-def]
+        self.calls += 1
         raise RuntimeError("api_key=reminder-tool-sentinel")
 
 
@@ -186,19 +204,23 @@ def test_media_tool_modules_are_direct_handlers() -> None:
 
 def test_media_tools_keep_native_schemas_availability_and_sanitize_runtime_failures(tmp_path: Path) -> None:
     pool = SessionVisualSemanticStorePool(root=tmp_path / "semantic")
-    uploaded = create_uploaded_media_inspect_tool(_ExplodingClient())
+    uploaded_client = _ExplodingClient()
+    live_resolver = _ExplodingResolver("live-tool-sentinel")
+    memory_resolver = _ExplodingResolver("memory-tool-sentinel")
+    reminder_registry = _ExplodingRegistry()
+    uploaded = create_uploaded_media_inspect_tool(uploaded_client)
     live = create_live_view_inspect_tool(
         _SuccessfulClient(),
-        live_view_resolver=lambda *_: (_ for _ in ()).throw(RuntimeError("api_key=live-tool-sentinel")),
+        live_view_resolver=live_resolver,
     )
     memory = create_visual_memory_search_tool(
         semantic_store_pool=pool,
         text_index=UnavailableVisualMemoryTextIndex(code="offline", message="offline"),
-        live_view_resolver=lambda *_: (_ for _ in ()).throw(RuntimeError("api_key=memory-tool-sentinel")),
+        live_view_resolver=memory_resolver,
     )
     reminder = create_visual_reminder_manage_tool(
         coordinator_store=SessionEmbeddingCoordinatorStore(factory=lambda *_: None),  # type: ignore[arg-type]
-        reminder_registry=_ExplodingRegistry(),  # type: ignore[arg-type]
+        reminder_registry=reminder_registry,  # type: ignore[arg-type]
     )
     try:
         failures = (
@@ -218,12 +240,22 @@ def test_media_tools_keep_native_schemas_availability_and_sanitize_runtime_failu
     assert live.args["question"]["maxLength"] == 500
     assert set(memory.args) == {"query", "time_window", "search_mode"}
     assert set(reminder.args) == {"action", "target", "message", "reminder_id"}
+    assert [tool.name for tool in (uploaded, live, memory, reminder)] == [
+        "uploaded_media_inspect",
+        "live_view_inspect",
+        "visual_memory_search",
+        "visual_reminder_manage",
+    ]
     assert [tool.metadata["availability"] for tool in (uploaded, live, memory, reminder)] == [
         ToolAvailability.UPLOADED_MEDIA_PRESENT.value,
         ToolAvailability.VIDEO_FRAME_RECEIVED.value,
         ToolAvailability.VISUAL_HISTORY_AVAILABLE.value,
         ToolAvailability.VIDEO_FRAME_RECEIVED.value,
     ]
+    assert uploaded_client.calls == 1
+    assert live_resolver.calls == 1
+    assert memory_resolver.calls == 1
+    assert reminder_registry.calls == 1
     for message, sentinel in zip(
         failures,
         ("uploaded-tool-sentinel", "live-tool-sentinel", "memory-tool-sentinel", "reminder-tool-sentinel"),

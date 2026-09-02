@@ -47,3 +47,19 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock /home/lenovo1/miniconda3/envs/hello_agent/bi
 ```
 
 结果：pytest `6 passed`；compile 与 ruff 通过；dry-run 保持 mock，`network_called=false`。
+
+## Fix round 2
+
+RED：为四个失败依赖增加 ToolNode 到达计数断言后，旧 fixture 缺少 `calls`，pytest 以
+`AttributeError` 失败，证明此前只有“不回显 sentinel”而没有到达依赖的证据。
+
+GREEN：失败 client、两个 resolver 和 reminder registry 都记录调用次数；四个 ToolNode 调用后断言
+各自恰好一次，同时断言完整的工具名映射、schema、availability、`status=error` 与 sentinel 不回显。
+
+```bash
+MULTIMODAL_AGENT_PROVIDER_MODE=mock /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q tests/tdd/langgraph-native-tools/test_media_tools.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m ruff check tests/tdd/langgraph-native-tools/test_media_tools.py
+git diff --check
+```
+
+结果：pytest `6 passed`；ruff 与 diff check 通过。
