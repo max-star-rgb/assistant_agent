@@ -65,7 +65,6 @@ source_globs = [
   "src/assistant_agent/media/generated_artifacts.py",
   "src/assistant_agent/media/image_to_3d.py",
   "src/assistant_agent/media/image_to_3d_jobs.py",
-  "src/assistant_agent/media/video/**",
   "scripts/media_simulator.py",
 ]
 thin_references = ["README.md", "docs/agent-server-architecture.md", "scripts/README.md"]

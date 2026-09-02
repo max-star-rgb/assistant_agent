@@ -9,7 +9,7 @@ Last updated: 2026-09-02
 | 定位 | 与 Agent 运行框架解耦的视觉感知、低延迟关键帧文本化和语义关键帧算法权威 |
 | Owns | SigLIP2 latest-wins、独立并行关键帧 VLM、逻辑关键帧窗口、目标帧实时屏障、视觉时间线、Qdrant 检索、历史找物、连接级视觉提醒与视觉 trace 语义 |
 | Does not own | LangGraph/Agent Server 生命周期、Media-Agent wire、通用 Tool 执行链、长期记忆、VLM Provider 私有协议 |
-| 源码与 schema 入口 | `src/assistant_agent/media/visual_perception/`、`media/embedding/`、`media/video/`、`media/proactive_messages.py`、`tools/plugins/builtin/media_inspection/` |
+| 源码与 schema 入口 | `src/assistant_agent/media/visual_perception/`、`media/embedding/`、`media/video/understanding_service.py`、`media/video/`、`media/proactive_messages.py`；媒体 Tool adapter 见 `tools/plugins/builtin/media_inspection/` |
 | 验证入口 | `docs/authority.toml` 中 `visual-perception.verification` |
 | 相邻 authority | 媒体 wire 见 [`media-agent-service-websocket.md`](media-agent-service-websocket.md)；Tool 集成见 [`tool-calling-architecture.md`](tool-calling-architecture.md)；部署资源见 [`agent-server-architecture.md`](agent-server-architecture.md) |
 
@@ -279,7 +279,7 @@ durable task 或 notification outbox，不能跨连接恢复。仅执行 `visual
 成功 server send 会在同一 runtime session 保存有界的 proactive session event，供下一轮主 LLM 理解
 “知道了”等指代；该事件在连接关闭时清除，不进入 ConversationStore、长期记忆 backend 或跨连接恢复。
 
-查询时 Runtime 绑定 user/session，ToolContext 提供可信 as-of sequence/time；模型只能提交
+查询时 `ToolRuntime` 绑定 user/session 和可信 as-of sequence/time；模型只能提交
 `query/time_window/search_mode`。Tool 先按可信边界读取 Store 最后最多 256 条记录，再把 Store 最早保留
 时间作为 Qdrant 下界，避免派生索引返回已经越过本地 retention 的旧记录。Qdrant 对 BM25 和 dense 两路
 应用相同的 user/session/sequence/time filter，使用原生 Weighted RRF 返回最多 12 条。结果分别报告 `observation_count`、
