@@ -115,7 +115,7 @@ def build_turn_summary_from_state(
         entry_status=_terminal_status(state.status),
         runtime_status=_terminal_status(state.status),
         response_present=state.response is not None,
-        tool_count=len(state.tool_calls),
+        tool_count=0,
         error_count=len(state.errors),
         failure_summary=_failure_summary_from_state(state),
         latency_summary_ref=_safe_latency_summary_ref(latency_summary_ref),

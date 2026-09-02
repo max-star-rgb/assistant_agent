@@ -262,8 +262,6 @@ def agent_run_response_from_state(
         response_text=state.response.message if state.response else "",
         annotations=list(state.response.annotations) if state.response else [],
         data=state.response.data if state.response and state.response.data else {},
-        tool_calls=[call.model_dump(mode="json") for call in state.tool_calls],
-        tool_results=[result.model_dump(mode="json") for result in state.tool_results],
         react_steps=_public_react_steps(state.request.metadata.get("assistant_loop_steps")),
         decision_trace=_public_decision_trace(state.request.metadata.get("decision_trace")),
         runtime_info=runtime_info or {},

@@ -16,11 +16,9 @@ from assistant_agent.runtime.capability_grants import (
     validate_capability_grant,
 )
 from assistant_agent.runtime.requests import AgentResponse, UserRequest
-from assistant_agent.tools.models import RunToolCatalog, ToolCallRecord, ToolResult
 from assistant_agent.multi_agent.models import DEFAULT_AGENT_ID
 from assistant_agent.identifiers import (
     new_run_id,
-    new_tool_call_id,
     new_trace_id,
 )
 
@@ -62,9 +60,6 @@ class AgentState(BaseModel):
     perception: PerceptionBundle | None = None
     capability_grants: list[CapabilityGrantValue] = Field(default_factory=list)
     session_restored_grant_ids: list[str] = Field(default_factory=list)
-    run_tool_catalog: RunToolCatalog | None = None
-    tool_calls: list[ToolCallRecord] = Field(default_factory=list)
-    tool_results: list[ToolResult] = Field(default_factory=list)
     response: AgentResponse | None = None
     errors: list[AgentError] = Field(default_factory=list)
     status: AgentStatus = "created"
@@ -94,25 +89,6 @@ class AgentState(BaseModel):
     def session_id(self) -> str:
         return self.request.session_id
 
-    def add_tool_call(
-        self,
-        tool_name: str,
-        input: dict[str, Any] | None = None,
-        tool_call_id: str | None = None,
-    ) -> ToolCallRecord:
-        """Append a running tool call record and mark the run as active."""
-
-        record = ToolCallRecord(
-            tool_call_id=tool_call_id or new_tool_call_id(),
-            tool_name=tool_name,
-            input=input or {},
-            status="running",
-            started_at=datetime.now(timezone.utc),
-        )
-        self.tool_calls.append(record)
-        self.status = "running"
-        return record
-
     def upsert_capability_grant(self, grant: CapabilityGrantValue) -> None:
         """Add or replace one trusted grant in deterministic order."""
 
@@ -123,51 +99,6 @@ class AgentState(BaseModel):
             if existing.grant_id != grant.grant_id
         ]
         self.capability_grants.append(grant)
-
-    def complete_tool_call(
-        self,
-        tool_call_id: str,
-        result: ToolResult,
-        output_ref: str | None = None,
-    ) -> ToolCallRecord:
-        """Mark a tool call as succeeded and append its result."""
-
-        record = self._get_tool_call(tool_call_id)
-        record.status = "succeeded"
-        record.finished_at = datetime.now(timezone.utc)
-        record.output_ref = output_ref or result.output_ref
-        self.tool_results.append(result)
-        self.status = "running"
-        return record
-
-    def fail_tool_call(
-        self,
-        tool_call_id: str,
-        error_message: str,
-        result: ToolResult | None = None,
-        error_details: dict[str, Any] | None = None,
-        stop_run: bool = True,
-    ) -> ToolCallRecord:
-        """Mark a tool call as failed and record a structured error."""
-
-        record = self._get_tool_call(tool_call_id)
-        record.status = "failed"
-        record.finished_at = datetime.now(timezone.utc)
-        record.error_message = error_message
-        details = {"tool_call_id": tool_call_id}
-        if error_details is not None:
-            details.update(error_details)
-        self.errors.append(
-            AgentError(
-                message=error_message,
-                source=record.tool_name,
-                details=details,
-            )
-        )
-        if result is not None:
-            self.tool_results.append(result)
-        self.status = "failed" if stop_run else "running"
-        return record
 
     def set_response(self, response: AgentResponse) -> None:
         """Set final response and complete the run."""
@@ -200,9 +131,3 @@ class AgentState(BaseModel):
             )
         self.response = None
         self.status = "cancelled"
-
-    def _get_tool_call(self, tool_call_id: str) -> ToolCallRecord:
-        for record in self.tool_calls:
-            if record.tool_call_id == tool_call_id:
-                return record
-        raise ValueError(f"Tool call not found: {tool_call_id}")

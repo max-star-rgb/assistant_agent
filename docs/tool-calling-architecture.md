@@ -56,8 +56,9 @@ filesystem 与 `execute`；`browser-operator` 只接收 Playwright Tool。角色
 只读 Tool 使用官方 `ToolRetryMiddleware` 有界重试；`live_view_inspect` 为避免重复
 当前画面推理不进入自动 retry 清单。
 
-`ToolContext`、`invoke_native_tool` 和以 `ToolResult` 为中心的生产兼容执行链均已删除。`ToolResult` 类型仅由
-历史兼容切面 `runtime/state.py` 保存，不能作为新 Tool 的输入、执行或结果边界。
+`ToolContext`、`invoke_native_tool` 和以 `ToolResult` 为中心的生产兼容执行链均已删除，
+`runtime/state.py` 的平行 Tool catalog/call/result ledger 也已删除。公开兼容 response 的同名字段属于
+各自协议 owner，不能作为新 Tool 的输入、执行或结果边界。
 
 `ToolProfileMiddleware` 先用当前 Graph 的真实 Tool inventory 裁剪受信静态 catalog，只保留非空 Profile 和其中
 实际注册的 Tool；没有可用 Profile 时不暴露 `activate_tool_profile`。模型调用
