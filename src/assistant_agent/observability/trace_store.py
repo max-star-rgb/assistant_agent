@@ -9,8 +9,11 @@ from typing import Any, Literal, Protocol, TypeVar
 
 from pydantic import BaseModel, Field
 
+from assistant_agent.observability.hook_dispatch import (
+    HookDispatchError,
+    build_hook_dispatch_error,
+)
 from assistant_agent.providers.provider_errors import sanitize_error_detail, sanitize_error_message
-from assistant_agent.runtime.hook_dispatch import HookDispatchError, build_hook_dispatch_error
 from assistant_agent.identifiers import (
     new_span_id,
     new_trace_id as new_trace_id,
