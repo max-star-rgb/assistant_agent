@@ -88,7 +88,8 @@ composition 启动时先创建配置的离线 token counter，并把同一个 `c
 `compaction_trigger_ratio` 和 `compaction_target_ratio` 投影同时传给 main 与 worker。real DeepSeek V4 或 native LLM compactor 缺少本地
 tokenizer 时启动直接失败，不回退近似计数或发起网络调用。
 
-旧 `ContextService`、prompt-json compiler、动态 catalog/exposure、renderer、平行 compactor 与旧 source/policy 已删除。
+旧 `ContextService`、prompt-json compiler、独立 runtime system prompt policy、动态 catalog/exposure、renderer、
+平行 compactor 与旧 source/policy 已删除。
 `src/assistant_agent/context/` 只保留离线报告、视觉预算、token 计数和中立 model DTO；生产 Agent Server/native graph
 不导入平行 context runtime。
 

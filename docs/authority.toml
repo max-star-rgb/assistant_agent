@@ -184,7 +184,6 @@ source_globs = [
   "src/assistant_agent/native_agent/state.py",
   "src/assistant_agent/native_agent/user_context.py",
   "src/assistant_agent/context/**",
-  "src/assistant_agent/runtime/system_prompt_policy.py",
 ]
 thin_references = ["README.md", "docs/runtime-event-stream-architecture.md"]
 verification = [
