@@ -7,7 +7,7 @@ from typing import Any, Sequence
 import pytest
 from deepagents.backends import FilesystemBackend, LocalShellBackend
 from deepagents.middleware import FilesystemMiddleware
-from langchain.agents.middleware import SummarizationMiddleware, TodoListMiddleware
+from langchain.agents.middleware import TodoListMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableLambda
@@ -19,6 +19,7 @@ from langgraph.types import Command
 from assistant_agent.agent_server import media_app
 from assistant_agent.native_agent import assistant_agent
 from assistant_agent.native_agent.assistant_agent import (
+    RuntimeConfigurableSummarizationMiddleware,
     build_assistant_agent,
     build_general_purpose_worker,
 )
@@ -158,7 +159,7 @@ def test_main_and_worker_use_the_configured_summarization_budget(
         summarizer = next(
             item
             for item in captured[key]["middleware"]
-            if isinstance(item, SummarizationMiddleware)
+            if isinstance(item, RuntimeConfigurableSummarizationMiddleware)
         )
         assert summarizer.trigger == ("tokens", 55_800)
         assert summarizer.keep == ("tokens", 18_900)
@@ -167,7 +168,7 @@ def test_main_and_worker_use_the_configured_summarization_budget(
         next(
             item
             for item in captured["worker"]["middleware"]
-            if isinstance(item, SummarizationMiddleware)
+            if isinstance(item, RuntimeConfigurableSummarizationMiddleware)
         ).model
         is captured["worker"]["model"]
     )

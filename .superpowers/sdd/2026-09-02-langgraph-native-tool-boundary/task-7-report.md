@@ -71,3 +71,51 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
 Core invariant: TOOL-001 implementation updated; structured contract unchanged.
 Tests: added/updated tests/tdd/langgraph-native-tools for temporary RED/GREEN; user may delete the directory manually.
 Provider: mock/offline only; no real Provider called.
+
+## Fix round 1：Deep Agents summarization 类型断言
+
+联合 TDD 的 RED 已在本任务初次验证中稳定复现：
+
+```bash
+MULTIMODAL_AGENT_PROVIDER_MODE=mock \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
+  tests/tdd/langgraph-native-tools \
+  tests/tdd/image-generation-studio-link \
+  tests/tdd/unified-assistant-agent
+# 89 passed, 1 failed
+```
+
+根因是 `test_main_and_worker_use_the_configured_summarization_budget` 仍检查 LangChain 的
+`SummarizationMiddleware`，但生产已装配 Deep Agents 的
+`RuntimeConfigurableSummarizationMiddleware`。后者是前者的不同基类；通过 Python MRO 检查确认它是
+Deep Agents summarizer 的子类、不是 LangChain summarizer 的子类。
+
+测试仅将两处类型判断改为实际生产 middleware；既有 trigger、keep、token counter 与 worker model 断言保持不变，未改生产代码。
+
+```bash
+MULTIMODAL_AGENT_PROVIDER_MODE=mock \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
+  tests/tdd/unified-assistant-agent/test_unified_graph.py::test_main_and_worker_use_the_configured_summarization_budget
+# 1 passed in 3.01s
+
+MULTIMODAL_AGENT_PROVIDER_MODE=mock \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
+  tests/tdd/unified-assistant-agent
+# 51 passed in 3.50s
+
+MULTIMODAL_AGENT_PROVIDER_MODE=mock \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
+  tests/tdd/langgraph-native-tools \
+  tests/tdd/image-generation-studio-link \
+  tests/tdd/unified-assistant-agent
+# 90 passed in 4.93s
+
+MULTIMODAL_AGENT_PROVIDER_MODE=mock \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q tests/core
+# 81 passed in 7.27s
+
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m ruff check \
+  tests/tdd/unified-assistant-agent/test_unified_graph.py
+git diff --check
+# All checks passed; exit 0
+```
