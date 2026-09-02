@@ -12,14 +12,12 @@ from assistant_agent.runtime.thread_resources import (
     ThreadResourceConfig,
     ThreadResourceManager,
 )
-from assistant_agent.tools.native_boundary import native_tool_response
 from assistant_agent.tools.plugins.builtin.image_generation.models import (
     ImageGenerationRequest,
     ImageGenerationResult,
 )
 from assistant_agent.tools.plugins.builtin.image_generation.tool import (
     create_image_generation_tool,
-    _execute_image_generation,
 )
 
 
@@ -49,18 +47,20 @@ class _GeneratedImageAdapter:
 
 
 def test_model_observation_exposes_only_backend_owned_image_url(tmp_path) -> None:
-    thread_ref = "a" * 32
-    output_ref = f"/artifacts/{thread_ref}/generated/cake.png"
-    result = _execute_image_generation(
-        _GeneratedImageAdapter(output_ref),
-        ImageGenerationRequest(prompt="cake"),
-        artifact_dir=tmp_path,
-        public_prefix=f"/artifacts/{thread_ref}/generated",
-        artifact_base_url="http://127.0.0.1:8089",
+    manager = ThreadResourceManager(ThreadResourceConfig(root=tmp_path / "threads"))
+    resources = manager.resolve("user-sentinel", "thread-sentinel")
+    generated = resources.artifact_root / "generated"
+    generated.mkdir()
+    (generated / "cake.png").write_bytes(PNG_BYTES)
+    output_ref = f"/artifacts/{resources.thread_ref}/generated/cake.png"
+    message = _invoke_image_tool(
+        create_image_generation_tool(
+            _GeneratedImageAdapter(output_ref),
+            thread_resource_manager=manager,
+            artifact_base_url="http://127.0.0.1:8089",
+        )
     )
-
-    content, artifact = native_tool_response("image_generation", result)
-    observation = json.loads(content[0]["text"])
+    observation = json.loads(message.content[0]["text"])
 
     assert "image_id" not in observation
     assert observation["images"] == [
@@ -69,8 +69,8 @@ def test_model_observation_exposes_only_backend_owned_image_url(tmp_path) -> Non
             "url": f"http://127.0.0.1:8089{output_ref}",
         }
     ]
-    assert artifact["images"][0]["url"] == observation["images"][0]["url"]
-    assert "provider.example" not in content[0]["text"]
+    assert message.artifact["images"][0]["url"] == observation["images"][0]["url"]
+    assert "provider.example" not in message.content[0]["text"]
 
 
 def test_image_generation_returns_native_image_content_block(tmp_path: Path) -> None:
@@ -80,10 +80,18 @@ def test_image_generation_returns_native_image_content_block(tmp_path: Path) -> 
     generated.mkdir()
     (generated / "cake.png").write_bytes(PNG_BYTES)
     output_ref = f"/artifacts/{resources.thread_ref}/generated/cake.png"
-    image_tool = create_image_generation_tool(
-        _GeneratedImageAdapter(output_ref),
-        thread_resource_manager=manager,
+    message = _invoke_image_tool(
+        create_image_generation_tool(
+            _GeneratedImageAdapter(output_ref),
+            thread_resource_manager=manager,
+        )
     )
+    image = next(block for block in message.content if block["type"] == "image")
+    assert image["mime_type"] == "image/png"
+    assert base64.b64decode(image["base64"]) == PNG_BYTES
+
+
+def _invoke_image_tool(image_tool) -> ToolMessage:
     builder = StateGraph(AgentState, context_schema=AssistantRunContext)
     builder.add_node("tools", ToolNode([image_tool]))
     builder.add_edge(START, "tools")
@@ -116,6 +124,4 @@ def test_image_generation_returns_native_image_content_block(tmp_path: Path) -> 
 
     message = result["messages"][-1]
     assert isinstance(message, ToolMessage)
-    image = next(block for block in message.content if block["type"] == "image")
-    assert image["mime_type"] == "image/png"
-    assert base64.b64decode(image["base64"]) == PNG_BYTES
+    return message

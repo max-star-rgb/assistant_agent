@@ -6,24 +6,21 @@ from collections.abc import Mapping
 from typing import Annotated, Any, Protocol
 
 from langchain_core.messages import HumanMessage, ToolMessage
-from langchain_core.tools import BaseTool, tool
+from langchain_core.tools import BaseTool, ToolException, tool
 from langgraph.prebuilt import ToolRuntime
 from pydantic import Field
 
 from assistant_agent.identifiers import new_prefixed_uuid7
-from assistant_agent.media.image_to_3d import (
-    ImageTo3DError,
-    ImageTo3DSubmission,
-)
+from assistant_agent.media.image_to_3d import ImageTo3DSubmission
 from assistant_agent.native_agent.context import (
     AssistantRunContext,
     authenticated_user_identity,
 )
 from assistant_agent.tools.ids import IMAGE_GENERATION_TOOL_NAME
-from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.native_boundary import (
     configure_builtin_tool,
-    invoke_native_tool,
+    native_content_and_artifact,
+    native_tool_exception,
 )
 from assistant_agent.tools.plugins.builtin.image_to_3d.models import ImageTo3DRequest
 
@@ -86,14 +83,31 @@ def create_image_to_3d_tool(
         3D 成品。
         """
 
-        return invoke_native_tool(
-            IMAGE_TO_3D_TOOL_NAME,
-            lambda: _execute_image_to_3d_from_runtime(
+        try:
+            submission = _execute_image_to_3d_from_runtime(
                 image_to_3d_adapter,
                 src_image,
                 runtime,
-            ),
-        )
+            )
+            data = {
+                "status": submission.status,
+                "source_image_id": submission.source_image_id,
+            }
+            if submission.job_id:
+                data["job_id"] = submission.job_id
+            if submission.status == "failed":
+                raise RuntimeError("3D生成服务返回失败状态")
+            return native_content_and_artifact(
+                {
+                    "status": submission.status,
+                    "message": "3D生成任务已接收，正在生成。",
+                },
+                data,
+            )
+        except ToolException:
+            raise
+        except Exception as exc:
+            raise native_tool_exception(exc) from exc
 
     return configure_builtin_tool(image_to_3d, bounded_expected_errors=True)
 
@@ -102,7 +116,7 @@ def _execute_image_to_3d_from_runtime(
     adapter: ImageTo3DStarter,
     src_image: str | None,
     runtime: ToolRuntime[AssistantRunContext],
-) -> ToolResult:
+) -> ImageTo3DSubmission:
     state = runtime.state if isinstance(runtime.state, Mapping) else {}
     return _execute_image_to_3d(
         adapter,
@@ -120,69 +134,17 @@ def _execute_image_to_3d(
     user_id: str,
     session_id: str | None,
     latest_image_id: str | None,
-) -> ToolResult:
+) -> ImageTo3DSubmission:
     if not session_id:
-        return ToolResult(
-            tool_name=IMAGE_TO_3D_TOOL_NAME,
-            success=False,
-            error="image_to_3d requires runtime session identity",
-            model_observation={
-                "status": "failed",
-                "message": "缺少会话身份，无法生成3D模型。",
-            },
-        )
+        raise ValueError("image_to_3d requires runtime session identity")
     src_image = latest_image_id or input.src_image
     if not isinstance(src_image, str) or not src_image.strip():
-        return ToolResult(
-            tool_name=IMAGE_TO_3D_TOOL_NAME,
-            success=False,
-            error="image_to_3d requires a generated image",
-            data={"status": "failed", "result": "请先生成图片，再生成3D。"},
-            model_observation={
-                "status": "failed",
-                "message": "请先调用 image_generation 生成图片，再调用 image_to_3d。",
-            },
-        )
-    try:
-        submission = adapter.start(
-            user_id=user_id,
-            session_id=session_id,
-            src_image=src_image,
-            output_format="mp4",
-        )
-    except ImageTo3DError as exc:
-        return ToolResult(
-            tool_name=IMAGE_TO_3D_TOOL_NAME,
-            success=False,
-            error=str(exc),
-            data={"status": "failed", "result": str(exc)},
-            model_observation={"status": "failed", "message": str(exc)},
-        )
-    data = {
-        "status": submission.status,
-        "source_image_id": submission.source_image_id,
-    }
-    if submission.job_id:
-        data["job_id"] = submission.job_id
-    if submission.status == "failed":
-        return ToolResult(
-            tool_name=IMAGE_TO_3D_TOOL_NAME,
-            success=False,
-            error="3D生成服务返回失败状态",
-            data=data,
-            model_observation={
-                "status": "failed",
-                "message": "3D生成服务未能接收当前任务。",
-            },
-        )
-    return ToolResult(
-        tool_name=IMAGE_TO_3D_TOOL_NAME,
-        success=True,
-        data=data,
-        model_observation={
-            "status": submission.status,
-            "message": "3D生成任务已接收，正在生成。",
-        },
+        raise ValueError("image_to_3d requires a generated image")
+    return adapter.start(
+        user_id=user_id,
+        session_id=session_id,
+        src_image=src_image,
+        output_format="mp4",
     )
 
 

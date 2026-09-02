@@ -17,10 +17,10 @@ from assistant_agent.native_agent.context import (
 from assistant_agent.tools.ids import (
     HOTEL_PRICE_WATCH_CREATE_TOOL_NAME,
 )
-from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.native_boundary import (
     configure_builtin_tool,
-    invoke_native_tool,
+    native_content_and_artifact,
+    native_tool_exception,
 )
 from assistant_agent.tools.plugins.builtin.lodging.models import (
     HotelPriceWatchGoal,
@@ -77,9 +77,8 @@ def create_hotel_price_watch_create_tool(service: DurableTaskService) -> BaseToo
         或付款。
         """
 
-        return invoke_native_tool(
-            HOTEL_PRICE_WATCH_CREATE_TOOL_NAME,
-            lambda: _execute_hotel_price_watch_create_from_runtime(
+        try:
+            task = _execute_hotel_price_watch_create_from_runtime(
                 service,
                 search=search,
                 max_nightly_price=max_nightly_price,
@@ -88,8 +87,10 @@ def create_hotel_price_watch_create_tool(service: DurableTaskService) -> BaseToo
                 ends_at=ends_at,
                 notification_channel=notification_channel,
                 runtime=runtime,
-            ),
-        )
+            )
+            return native_content_and_artifact({"task": task}, {"task": task})
+        except Exception as exc:
+            raise native_tool_exception(exc) from exc
 
     return configure_builtin_tool(
         hotel_price_watch_create,
@@ -107,7 +108,7 @@ def _execute_hotel_price_watch_create_from_runtime(
     ends_at: datetime,
     notification_channel: str,
     runtime: ToolRuntime[AssistantRunContext],
-) -> ToolResult:
+) -> dict[str, Any]:
     execution = runtime.execution_info
     goal = HotelPriceWatchGoal(
         search=search,
@@ -133,33 +134,22 @@ def _execute_hotel_price_watch_create(
     user_id: str,
     session_id: str | None,
     run_id: str | None,
-) -> ToolResult:
+) -> dict[str, Any]:
     if not user_id or not session_id or not run_id:
-        return ToolResult(
-            tool_name=HOTEL_PRICE_WATCH_CREATE_TOOL_NAME,
-            success=False,
-            error="Trusted run identity is required for watch creation.",
-        )
+        raise ValueError("Trusted run identity is required for watch creation.")
     from assistant_agent.automation.durable_tasks.hotel_price_watch import (
         HotelPriceWatchService,
     )
 
-    try:
-        bundle = HotelPriceWatchService(service).create_watch(
-            identity=RequestIdentity.for_user(
-                user_id=user_id,
-                session_id=session_id,
-            ),
-            ingress_run_id=run_id,
-            goal=input,
-        )
-    except (ValueError, RuntimeError) as exc:
-        return ToolResult(
-            tool_name=HOTEL_PRICE_WATCH_CREATE_TOOL_NAME,
-            success=False,
-            error=str(exc),
-        )
-    task = {
+    bundle = HotelPriceWatchService(service).create_watch(
+        identity=RequestIdentity.for_user(
+            user_id=user_id,
+            session_id=session_id,
+        ),
+        ingress_run_id=run_id,
+        goal=input,
+    )
+    return {
         "submission_status": "accepted",
         "task_id": bundle.task.task_id,
         "task_status": bundle.task.status,
@@ -167,15 +157,3 @@ def _execute_hotel_price_watch_create(
         "progress_url": f"/tasks/{bundle.task.task_id}/events",
         "cancel_supported": True,
     }
-    return ToolResult(
-        tool_name=HOTEL_PRICE_WATCH_CREATE_TOOL_NAME,
-        success=True,
-        data={"task": task},
-        model_observation={"task": task},
-        trace_summary={
-            "task_id": bundle.task.task_id,
-            "status": bundle.task.status,
-            "execution_profile": bundle.task.execution_profile,
-        },
-        output_ref=f"task://{bundle.task.task_id}",
-    )
