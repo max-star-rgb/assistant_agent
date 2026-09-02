@@ -141,3 +141,15 @@ class VideoUnderstandingResult(BaseModel):
     source: str | None = None
     media_kind: Literal["explicit_video", "live_view"] | None = None
     media_refs: list[str] = Field(default_factory=list)
+
+
+class VideoInspectionOutcome(BaseModel):
+    """Domain result for one uploaded or live video inspection."""
+
+    status: Literal["succeeded", "partial", "failed"]
+    data: dict[str, Any] = Field(default_factory=dict)
+    model_observation: dict[str, Any] = Field(default_factory=dict)
+    error: str | None = None
+    output_ref: str | None = None
+    latency_ms: int | None = Field(default=None, ge=0)
+    trace_summary: dict[str, Any] = Field(default_factory=dict)

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from langchain_core.tools import BaseTool, tool
+from langchain_core.tools import BaseTool, ToolException, tool
 from langgraph.prebuilt import ToolRuntime
 from pydantic import Field
 
-from assistant_agent.native_agent.context import AssistantRunContext
-from assistant_agent.tools.capability_output import build_capability_output_contract
+from assistant_agent.native_agent.context import (
+    AssistantRunContext,
+    authenticated_user_identity,
+)
 from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.models import (
     CalendarCreateRequest,
     CalendarCreateResult,
@@ -18,7 +20,6 @@ from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.models impo
     ContactsSearchRequest,
     ContactsSearchResult,
 )
-from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.adapters import (
     CalendarAdapter,
     ContactsAdapter,
@@ -32,10 +33,10 @@ from assistant_agent.tools.ids import (
 )
 from assistant_agent.tools.native_boundary import (
     configure_builtin_tool,
-    invoke_native_tool,
+    native_content_and_artifact,
     native_idempotency_key,
+    native_tool_exception,
 )
-from assistant_agent.tools.runtime import ToolContext, tool_context
 
 
 def create_calendar_search_tool(adapter: CalendarAdapter | None = None) -> BaseTool:
@@ -62,18 +63,29 @@ def create_calendar_search_tool(adapter: CalendarAdapter | None = None) -> BaseT
         返回事件 ID、标题、起止时间、时区、地点和参与人数。只读，不创建或修改事件。
         """
 
-        return invoke_native_tool(
-            CALENDAR_SEARCH_TOOL_NAME,
-            lambda: _execute_calendar_search(
+        try:
+            result = _execute_calendar_search(
                 calendar_adapter,
                 CalendarSearchRequest(
                     query=query,
                     start_time=start_time,
                     end_time=end_time,
                 ),
-                tool_context(runtime),
-            ),
-        )
+                user_id=authenticated_user_identity(runtime),
+            )
+            _raise_result_error(
+                result.success,
+                result.errors,
+                CALENDAR_SEARCH_TOOL_NAME,
+            )
+            return native_content_and_artifact(
+                _calendar_search_observation(result),
+                result.model_dump(mode="json"),
+            )
+        except ToolException:
+            raise
+        except Exception as exc:
+            raise native_tool_exception(exc) from exc
 
     return configure_builtin_tool(calendar_search)
 
@@ -103,23 +115,42 @@ def create_calendar_create_tool(adapter: CalendarAdapter | None = None) -> BaseT
         会写入外部日历，不负责后续修改或删除。
         """
 
-        return invoke_native_tool(
-            CALENDAR_CREATE_TOOL_NAME,
-            lambda: _execute_calendar_create(
+        try:
+            request = CalendarCreateRequest(
+                title=title,
+                start_time=start_time,
+                end_time=end_time,
+                timezone=timezone,
+                location=location,
+                attendees=attendees,
+                notes=notes,
+                idempotency_key=native_idempotency_key(runtime),
+            )
+            result = _execute_calendar_create(
                 calendar_adapter,
-                CalendarCreateRequest(
-                    title=title,
-                    start_time=start_time,
-                    end_time=end_time,
-                    timezone=timezone,
-                    location=location,
-                    attendees=attendees,
-                    notes=notes,
-                    idempotency_key=native_idempotency_key(runtime),
-                ),
-                tool_context(runtime),
-            ),
-        )
+                request,
+                user_id=authenticated_user_identity(runtime),
+            )
+            _raise_result_error(
+                result.success,
+                result.errors,
+                CALENDAR_CREATE_TOOL_NAME,
+            )
+            return native_content_and_artifact(
+                _calendar_create_observation(result),
+                {
+                    **result.model_dump(mode="json"),
+                    "idempotency": {
+                        "key": request.idempotency_key,
+                        "present": request.idempotency_key is not None,
+                        "required": True,
+                    },
+                },
+            )
+        except ToolException:
+            raise
+        except Exception as exc:
+            raise native_tool_exception(exc) from exc
 
     return configure_builtin_tool(calendar_create, bounded_expected_errors=True)
 
@@ -142,14 +173,24 @@ def create_contacts_search_tool(adapter: ContactsAdapter | None = None) -> BaseT
         返回联系人 ID、显示名称、邮箱和电话号码。只读，不新增、修改或联系任何人。
         """
 
-        return invoke_native_tool(
-            CONTACTS_SEARCH_TOOL_NAME,
-            lambda: _execute_contacts_search(
+        try:
+            result = _execute_contacts_search(
                 contacts_adapter,
                 ContactsSearchRequest(query=query),
-                tool_context(runtime),
-            ),
-        )
+            )
+            _raise_result_error(
+                result.success,
+                result.errors,
+                CONTACTS_SEARCH_TOOL_NAME,
+            )
+            return native_content_and_artifact(
+                _contacts_observation(result),
+                result.model_dump(mode="json"),
+            )
+        except ToolException:
+            raise
+        except Exception as exc:
+            raise native_tool_exception(exc) from exc
 
     return configure_builtin_tool(contacts_search)
 
@@ -157,121 +198,52 @@ def create_contacts_search_tool(adapter: ContactsAdapter | None = None) -> BaseT
 def _execute_calendar_search(
     adapter: CalendarAdapter,
     input: CalendarSearchRequest,
-    context: ToolContext,
-) -> ToolResult:
-    result = _calendar_adapter_for_context(adapter, context).search(input)
-    return _tool_result(
-        tool_name=CALENDAR_SEARCH_TOOL_NAME,
-        capability=CALENDAR_SEARCH_TOOL_NAME,
-        success=result.success,
-        data=result.model_dump(mode="json"),
-        model_observation=_calendar_search_observation(result),
-        output_ref=result.output_ref,
-        raw_data_ref=result.raw_data_ref,
-        latency_ms=result.latency_ms,
-        errors=result.errors,
-        provider=result.provider,
-    )
+    *,
+    user_id: str,
+) -> CalendarSearchResult:
+    return _calendar_adapter_for_user(adapter, user_id).search(input)
 
 
 def _execute_calendar_create(
     adapter: CalendarAdapter,
     input: CalendarCreateRequest,
-    context: ToolContext,
-) -> ToolResult:
-    result = _calendar_adapter_for_context(adapter, context).create(input)
-    return _tool_result(
-        tool_name=CALENDAR_CREATE_TOOL_NAME,
-        capability=CALENDAR_CREATE_TOOL_NAME,
-        success=result.success,
-        data={
-            **result.model_dump(mode="json"),
-            "idempotency": {
-                "key": input.idempotency_key,
-                "present": input.idempotency_key is not None,
-                "required": True,
-            },
-        },
-        model_observation=_calendar_create_observation(result),
-        output_ref=result.output_ref,
-        latency_ms=result.latency_ms,
-        errors=result.errors,
-        provider=result.provider,
-    )
+    *,
+    user_id: str,
+) -> CalendarCreateResult:
+    return _calendar_adapter_for_user(adapter, user_id).create(input)
 
 
 def _execute_contacts_search(
     adapter: ContactsAdapter,
     input: ContactsSearchRequest,
-    context: ToolContext,
-) -> ToolResult:
-    result = adapter.search(input)
-    return _tool_result(
-        tool_name=CONTACTS_SEARCH_TOOL_NAME,
-        capability=CONTACTS_SEARCH_TOOL_NAME,
-        success=result.success,
-        data=result.model_dump(mode="json"),
-        model_observation=_contacts_observation(result),
-        output_ref=result.output_ref,
-        raw_data_ref=result.raw_data_ref,
-        latency_ms=result.latency_ms,
-        errors=result.errors,
-        provider=result.provider,
-    )
+) -> ContactsSearchResult:
+    return adapter.search(input)
 
 
-def _tool_result(
-    *,
-    tool_name: str,
-    capability: str,
-    success: bool,
-    data: dict[str, Any],
-    model_observation: dict[str, Any],
-    output_ref: str | None,
-    latency_ms: int,
-    errors: list[dict[str, object]],
-    provider: str,
-    raw_data_ref: str | None = None,
-) -> ToolResult:
-    contract = build_capability_output_contract(
-        capability=capability,
-        status="succeeded" if success else "failed",
-        output_ref=output_ref,
-        data=model_observation,
-        errors=errors,
-        metadata={"provider": provider, "latency_ms": latency_ms},
-    )
-    error = None
-    if not success and errors:
-        first = errors[0]
-        error = f"{first.get('code', 'provider_error')}: {first.get('message', 'Tool failed.')}"
-    return ToolResult(
-        tool_name=tool_name,
-        success=success,
-        data=data,
-        model_observation=model_observation,
-        trace_summary={
-            "summary": model_observation.get("summary"),
-            "provider": provider,
-        },
-        audit_payload={"provider": provider, "redacted": True},
-        raw_data_ref=raw_data_ref,
-        error=error,
-        output_ref=output_ref,
-        latency_ms=latency_ms,
-        contract=contract,
-    )
-
-
-def _calendar_adapter_for_context(
+def _calendar_adapter_for_user(
     adapter: CalendarAdapter,
-    context: ToolContext,
+    user_id: str,
 ) -> CalendarAdapter:
     resolver = getattr(adapter, "for_namespace", None)
     if not callable(resolver):
         return adapter
-    namespace = context.user_id or context.session_id or context.run_id or "local"
-    return resolver(namespace)
+    return resolver(user_id)
+
+
+def _raise_result_error(
+    success: bool,
+    errors: list[dict[str, object]],
+    tool_name: str,
+) -> None:
+    if success:
+        return
+    first = errors[0] if errors else {}
+    raise native_tool_exception(
+        RuntimeError(
+            f"{first.get('code', 'provider_error')}: "
+            f"{first.get('message', f'{tool_name} failed')}"
+        )
+    )
 
 
 def _calendar_search_observation(result: CalendarSearchResult) -> dict[str, Any]:

@@ -27,7 +27,7 @@ from pydantic import (
     model_validator,
 )
 
-from assistant_agent.tools.native_boundary import configure_builtin_tool
+from assistant_agent.tools.native_boundary import builtin_tool_metadata
 
 
 ACTIVATE_TOOL_PROFILE_TOOL_NAME = "activate_tool_profile"
@@ -303,12 +303,11 @@ class ToolProfileMiddleware(AgentMiddleware[ToolProfileState, Any]):
                 }
             )
 
-        configured = configure_builtin_tool(activate_tool_profile)
-        configured.metadata = {
-            **(configured.metadata or {}),
+        activate_tool_profile.metadata = {
+            **builtin_tool_metadata(),
             "retryable": False,
         }
-        return configured
+        return activate_tool_profile
 
     def _create_deactivate_tool(self) -> BaseTool:
         profiles_by_id = self._profiles_by_id
@@ -377,12 +376,11 @@ class ToolProfileMiddleware(AgentMiddleware[ToolProfileState, Any]):
                 }
             )
 
-        configured = configure_builtin_tool(deactivate_tool_profile)
-        configured.metadata = {
-            **(configured.metadata or {}),
+        deactivate_tool_profile.metadata = {
+            **builtin_tool_metadata(),
             "retryable": False,
         }
-        return configured
+        return deactivate_tool_profile
 
 
 def project_tool_profiles() -> tuple[ToolProfile, ...]:

@@ -65,7 +65,6 @@ source_globs = [
   "src/assistant_agent/media/generated_artifacts.py",
   "src/assistant_agent/media/image_to_3d.py",
   "src/assistant_agent/media/image_to_3d_jobs.py",
-  "src/assistant_agent/media/video/**",
   "scripts/media_simulator.py",
 ]
 thin_references = ["README.md", "docs/agent-server-architecture.md", "scripts/README.md"]
@@ -229,9 +228,9 @@ read_when = [
 source_globs = [
   "src/assistant_agent/media/embedding/**",
   "src/assistant_agent/media/proactive_messages.py",
+  "src/assistant_agent/media/vision/models.py",
   "src/assistant_agent/media/visual_perception/**",
   "src/assistant_agent/media/video/**",
-  "src/assistant_agent/tools/plugins/builtin/media_inspection/**",
   "scripts/run_system_multimodal_embedding_eval.py",
   "scripts/run_system_realtime_visual_target_window_eval.py",
 ]

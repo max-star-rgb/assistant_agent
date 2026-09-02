@@ -33,12 +33,11 @@ from assistant_agent.native_agent.context import (
     authenticated_user_identity,
 )
 from assistant_agent.tools.availability import ToolAvailability
-from assistant_agent.tools.runtime import ToolContext
 from assistant_agent.tools.ids import VISUAL_MEMORY_SEARCH_TOOL_NAME
-from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.native_boundary import (
     configure_builtin_tool,
-    invoke_native_tool,
+    native_content_and_artifact,
+    native_tool_exception,
 )
 
 
@@ -91,9 +90,13 @@ class VisualMemorySearcher:
             self.timeline_context_service = service
 
     def search(
-        self, input: VisualMemorySearchInput, context: ToolContext
-    ) -> ToolResult:
-        user_id = context.user_id or ""
+        self,
+        input: VisualMemorySearchInput,
+        *,
+        user_id: str,
+        as_of_sequence: int | None,
+        request_id: str | None,
+    ) -> VisualMemorySearchResult:
         semantic_store = self.semantic_store_pool.peek(user_id, input.session_id)
         if semantic_store is None:
             result = VisualMemorySearchResult(status="empty")
@@ -103,14 +106,7 @@ class VisualMemorySearcher:
                 input.session_id,
             )
             try:
-                request_metadata = context.metadata.get("request_metadata")
-                request_metadata = (
-                    request_metadata if isinstance(request_metadata, dict) else {}
-                )
-                as_of_sequence = _non_negative_int(
-                    request_metadata.get("_trusted_visual_memory_as_of_sequence")
-                )
-                since_ms, until_ms = _time_bounds(input.time_window, request_metadata)
+                since_ms, until_ms = _time_bounds(input.time_window, {})
                 service = VisualMemorySearchService(
                     semantic_store=semantic_lease.store,
                     text_index=self.text_index,
@@ -120,9 +116,7 @@ class VisualMemorySearcher:
                     VisualMemorySearchRequest(
                         user_id=user_id,
                         session_id=input.session_id,
-                        request_id=(
-                            context.run_id or f"visual-memory-{int(time() * 1000)}"
-                        ),
+                        request_id=(request_id or f"visual-memory-{int(time() * 1000)}"),
                         query=input.query,
                         search_mode=input.search_mode,
                         as_of_sequence=as_of_sequence,
@@ -142,19 +136,7 @@ class VisualMemorySearcher:
                     )
             finally:
                 semantic_lease.release()
-        data = result.model_dump(mode="json", exclude_none=True)
-        return ToolResult(
-            tool_name=VISUAL_MEMORY_SEARCH_TOOL_NAME,
-            success=result.status != "unavailable",
-            data=data,
-            model_observation=data,
-            voice_summary=_voice_summary(result),
-            error=(
-                "visual memory history is unavailable"
-                if result.status == "unavailable"
-                else None
-            ),
-        )
+        return result
 
     def _compact_timeline(
         self,
@@ -274,7 +256,7 @@ def create_visual_memory_search_tool(
         跨会话历史。用户询问当前画面时应使用 live_view_inspect。
         """
 
-        def search_visual_memory() -> ToolResult:
+        def search_visual_memory() -> tuple[list[dict[str, Any]], dict[str, Any]]:
             execution = runtime.execution_info
             session_id = getattr(execution, "thread_id", None)
             if not isinstance(session_id, str) or not session_id:
@@ -300,23 +282,25 @@ def create_visual_memory_search_tool(
                 )
             if live.target_sequence is None:
                 raise ToolException("visual_target_required: 当前视觉窗口尚未就绪")
-            context = ToolContext(
+            result = searcher.search(
+                request,
                 user_id=user_id,
-                session_id=session_id,
-                run_id=run_id,
-                metadata={
-                    "entry_profile": runtime_facts.entry_profile,
-                    "request_metadata": {
-                        "_trusted_visual_memory_as_of_sequence": (live.target_sequence)
-                    },
-                },
+                as_of_sequence=live.target_sequence,
+                request_id=run_id,
             )
-            return searcher.search(request, context)
+            if result.status == "unavailable":
+                raise ToolException("visual memory history is unavailable")
+            data = result.model_dump(mode="json", exclude_none=True)
+            return native_content_and_artifact(data, data)
 
-        return invoke_native_tool(
-            VISUAL_MEMORY_SEARCH_TOOL_NAME,
-            search_visual_memory,
-        )
+        try:
+            return search_visual_memory()
+        except ToolException:
+            raise
+        except Exception as exc:
+            raise native_tool_exception(
+                exc, tool_name=VISUAL_MEMORY_SEARCH_TOOL_NAME
+            ) from exc
 
     return configure_builtin_tool(
         visual_memory_search,
@@ -349,11 +333,3 @@ def _non_negative_int(value) -> int | None:
         if isinstance(value, int) and not isinstance(value, bool) and value >= 0
         else None
     )
-
-
-def _voice_summary(result: VisualMemorySearchResult) -> str:
-    if result.status == "records":
-        return f"已读取当前会话保留的 {result.observation_count} 条历史画面文本。"
-    if result.status == "empty":
-        return "当前会话没有保留的历史画面文本。"
-    return "当前无法读取会话视觉历史。"

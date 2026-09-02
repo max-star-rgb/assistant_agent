@@ -32,8 +32,8 @@ adapter；对话 Agent 中的 Tool 才走标准 `BaseTool -> ToolNode` 与原生
 
 ## 物理归属
 
-`TaskPlan/TaskStep` 已从通用 `runtime/` 迁入 `automation/durable_tasks/models.py`。Tool adapter 只依赖这里的
-service 契约；Runtime 和 Tool 包不得重新定义 plan、lease、checkpoint 或状态转换。
+`TaskPlan/TaskStep` 已从通用 `runtime/` 迁入 `automation/durable_tasks/models.py`。Tool adapter 只通过该 service
+创建或查询任务；它不得携带状态机、lease、checkpoint 或状态转换实现。Runtime 和 Tool 包不得重新定义这些契约。
 
 ## 验证
 

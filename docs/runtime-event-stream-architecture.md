@@ -1,6 +1,6 @@
 # LangGraph-native Assistant 运行与流式架构
 
-最后更新：2026-09-01
+最后更新：2026-09-02
 
 ## Authority contract
 
@@ -87,6 +87,9 @@ Memory middleware、Provider composition、Tool/Profile middleware 和模型循�
 - `state.py`、`cancellation.py`、`capability_grants.py`：不进入统一 native Agent 主图，当前仅供 durable task、
   旧 multi-agent/API 与历史观测兼容路径使用；它们是切面四按消费者迁移或删除的明确候选，
   不得作为新生产功能的依赖入口。
+
+其中历史 `runtime/state.py` 仍保存 `ToolResult` 记录，供兼容消费者读取；它不参与 native Agent 的 Tool
+执行边界。生产 Tool 的 `ToolRuntime`、`ToolMessage(content, artifact)` 与 `ToolException` 语义由 Tool authority 所有。
 
 Durable task 的 `TaskPlan/TaskStep` 归 `automation/durable_tasks/models.py`；生成媒体、3D job 与主动媒体消息契约
 归 `media/`。Observability helper 已归 `observability/`。仓库内部不保留旧 Runtime import shim。
