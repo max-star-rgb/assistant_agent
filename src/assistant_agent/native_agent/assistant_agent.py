@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from typing import Annotated, Any, NotRequired
+from uuid import uuid4
 
 from deepagents import create_deep_agent
 from deepagents.backends.protocol import BackendProtocol
@@ -25,6 +26,7 @@ from langchain.agents.middleware.types import (
     ModelResponse,
     PrivateStateAttr,
     ToolCallRequest,
+    hook_config,
 )
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
@@ -79,6 +81,13 @@ _FINAL_SYNTHESIS_INSTRUCTION = """工具调用阶段已经结束。请基于当�
 直接完成对用户的最终答复。不要请求或假设新的工具调用；如果信息仍不完整，请明确说明限制，并交付当前能够确定的内容。"""
 _DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000
 _MODEL_UNAVAILABLE_MESSAGE_ZH = "模型服务暂时不可用，请稍后重试。"
+_MAX_VERIFICATION_ATTEMPTS = 2
+_VERIFICATION_FAILURE_MESSAGE_ZH = (
+    "验证 Agent 连续失败，当前结果未能通过强制验证，请稍后重试。"
+)
+_REVIEWER_MODEL_FAILURE_MESSAGE_ZH = "reviewer_unavailable"
+_MIN_REMAINING_STEPS_FOR_REVIEW = 10
+_MIN_REMAINING_STEPS_FOR_MUTATION = 16
 
 
 def _model_failure_message(exc: Exception) -> str:
@@ -129,6 +138,11 @@ _GENERAL_PURPOSE_DESCRIPTION_ZH = (
     "通用执行 Agent；与主助理使用相同的业务 Tool、filesystem、execute、Skills 和审批配置，"
     "但不能继续委派其他 Agent。"
 )
+_REVIEWER_DESCRIPTION_ZH = "只读审查 Agent；检查候选答案并给出是否需要修订及具体修改建议。"
+_REVIEWER_SYSTEM_PROMPT_ZH = """你是只读审查 Agent。只审查主助理提供的候选答案，不直接完成原始任务。
+
+检查事实性、完整性、逻辑一致性和用户约束遵循情况。明确返回 `pass` 或 `revise`；需要修订时列出具体问题和最小修改建议。
+不要声称调用工具、访问文件或验证未提供的外部事实。"""
 _CODER_DESCRIPTION_ZH = (
     "代码执行 Agent；负责文件修改、命令执行、Git 和测试，不使用业务或浏览器 Tool。"
 )
@@ -350,6 +364,155 @@ class ToolProgressMiddleware(AgentMiddleware):
         return result
 
 
+class VerificationGateMiddleware(AgentMiddleware):
+    """Require one successful reviewer task after governed mutations."""
+
+    def __init__(self, governed_tool_names: set[str] | frozenset[str]) -> None:
+        super().__init__()
+        self._mutation_tool_names = frozenset(
+            {*_LOCAL_SIDE_EFFECTS, *governed_tool_names}
+        )
+
+    @hook_config(can_jump_to=["tools", "end"])
+    def after_model(self, state, runtime) -> dict[str, Any] | None:
+        del runtime
+        last_message = state["messages"][-1]
+        remaining_steps = state.get("remaining_steps")
+        if (
+            isinstance(last_message, AIMessage)
+            and any(self._is_mutation(call) for call in last_message.tool_calls)
+            and remaining_steps is not None
+            and remaining_steps < _MIN_REMAINING_STEPS_FOR_MUTATION
+        ):
+            return self._failure_update()
+
+        required = self._is_required(
+            state["messages"],
+            initial=state.get("needs_verification", False),
+        )
+        if not required:
+            return {"needs_verification": False, "verification_attempts": 0}
+
+        if not isinstance(last_message, AIMessage) or last_message.tool_calls:
+            return {"needs_verification": True}
+
+        attempts = state.get("verification_attempts", 0)
+        if attempts >= _MAX_VERIFICATION_ATTEMPTS or (
+            remaining_steps is not None
+            and remaining_steps < _MIN_REMAINING_STEPS_FOR_REVIEW
+        ):
+            return self._failure_update()
+
+        return {
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "task",
+                            "args": {
+                                "subagent_type": "reviewer",
+                                "description": _review_request(state["messages"]),
+                            },
+                            "id": f"forced-review-{uuid4()}",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            ],
+            "needs_verification": True,
+            "verification_attempts": attempts + 1,
+            "jump_to": "tools",
+        }
+
+    @hook_config(can_jump_to=["tools", "end"])
+    async def aafter_model(self, state, runtime) -> dict[str, Any] | None:
+        return self.after_model(state, runtime)
+
+    @staticmethod
+    def _failure_update() -> dict[str, Any]:
+        return {
+            "messages": [AIMessage(content=_VERIFICATION_FAILURE_MESSAGE_ZH)],
+            "needs_verification": False,
+            "verification_attempts": 0,
+            "jump_to": "end",
+        }
+
+    def _is_required(
+        self,
+        messages: Sequence[MessageLikeRepresentation],
+        *,
+        initial: bool,
+    ) -> bool:
+        required = initial
+        calls: dict[str, Mapping[str, Any]] = {}
+        successful_calls: list[tuple[Mapping[str, Any], ToolMessage]] = []
+
+        def apply_batch() -> None:
+            nonlocal required
+            if any(self._is_mutation(call) for call, _ in successful_calls):
+                required = True
+            elif any(
+                self._is_successful_reviewer(call, result)
+                for call, result in successful_calls
+            ):
+                required = False
+            successful_calls.clear()
+
+        for message in messages:
+            if isinstance(message, AIMessage):
+                apply_batch()
+                calls = {call["id"]: call for call in message.tool_calls}
+            elif isinstance(message, ToolMessage) and message.status != "error":
+                call = calls.get(message.tool_call_id)
+                if call is not None:
+                    successful_calls.append((call, message))
+        apply_batch()
+        return required
+
+    def _is_mutation(self, call: Mapping[str, Any]) -> bool:
+        if call.get("name") in self._mutation_tool_names:
+            return True
+        return call.get("name") == "task" and _subagent_type(call) == "coder"
+
+    @staticmethod
+    def _is_successful_reviewer(
+        call: Mapping[str, Any],
+        result: ToolMessage,
+    ) -> bool:
+        return (
+            call.get("name") == "task"
+            and _subagent_type(call) == "reviewer"
+            and result.text != _REVIEWER_MODEL_FAILURE_MESSAGE_ZH
+        )
+
+
+def _subagent_type(call: Mapping[str, Any]) -> object:
+    args = call.get("args")
+    return args.get("subagent_type") if isinstance(args, Mapping) else None
+
+
+def _review_request(messages: Sequence[MessageLikeRepresentation]) -> str:
+    user_request = ""
+    candidate = ""
+    for message in reversed(messages):
+        if not candidate and isinstance(message, AIMessage):
+            candidate = message.text
+        elif not user_request and isinstance(message, HumanMessage):
+            user_request = message.text
+        if user_request and candidate:
+            break
+    return (
+        "请审查主助理的候选答复，返回 pass 或 revise 及具体理由。\n\n"
+        f"用户请求：\n{user_request}\n\n候选答复：\n{candidate}"
+    )
+
+
+def _reviewer_model_failure_message(exc: Exception) -> str:
+    del exc
+    return _REVIEWER_MODEL_FAILURE_MESSAGE_ZH
+
+
 def _tool_progress_event(
     request: ToolCallRequest,
     *,
@@ -447,6 +610,21 @@ def build_assistant_agent(
     browser_interrupt_on = {
         name: _APPROVAL for name in governed_tool_names & browser_tool_names
     }
+    reviewer_graph = create_agent(
+        model=model,
+        tools=[],
+        system_prompt=_REVIEWER_SYSTEM_PROMPT_ZH,
+        middleware=[
+            ModelRetryMiddleware(
+                max_retries=1,
+                on_failure=_reviewer_model_failure_message,
+                initial_delay=0,
+                backoff_factor=0,
+                jitter=False,
+            )
+        ],
+        name="AssistantReviewer",
+    )
     return create_deep_agent(
         model=model,
         tools=list(tools),
@@ -456,6 +634,11 @@ def build_assistant_agent(
                 "name": "general-purpose",
                 "description": _GENERAL_PURPOSE_DESCRIPTION_ZH,
                 "runnable": isolated_general_purpose_worker(worker_graph),
+            },
+            {
+                "name": "reviewer",
+                "description": _REVIEWER_DESCRIPTION_ZH,
+                "runnable": reviewer_graph,
             },
             {
                 "name": "coder",
@@ -526,6 +709,7 @@ def build_assistant_agent(
             MemoryContextMiddleware(),
             RecursionFinalSynthesisMiddleware(),
             create_assistant_runtime_prompt(current_location),
+            VerificationGateMiddleware(governed_tool_names),
             ToolProgressMiddleware(),
             ToolRetryMiddleware(
                 max_retries=2,

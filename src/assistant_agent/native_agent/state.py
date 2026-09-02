@@ -43,6 +43,8 @@ class MemoryExtractionInput(BaseModel):
 class AssistantAgentState(DeepAgentState):
     """State used by the main assistant agent."""
 
+    needs_verification: NotRequired[Annotated[bool, PrivateStateAttr]]
+    verification_attempts: NotRequired[Annotated[int, PrivateStateAttr]]
     memory_context: NotRequired[Annotated[tuple[str, ...], OmitFromInput]]
     memory_status: NotRequired[Annotated[MemoryStatus, OmitFromInput]]
     provider_search_profile: NotRequired[

@@ -665,7 +665,14 @@ def test_deep_agent_owns_summary_retry_todo_hitl_and_tool_policy(
     assert "delegated_probe" not in captured["interrupt_on"]
     assert "mcp_playwright_browser_snapshot" not in captured["interrupt_on"]
     subagents = {item["name"]: item for item in captured["subagents"]}
-    assert set(subagents) == {"general-purpose", "coder", "browser-operator"}
+    assert set(subagents) == {
+        "general-purpose",
+        "reviewer",
+        "coder",
+        "browser-operator",
+    }
+    assert "runnable" in subagents["reviewer"]
+    assert "tools" not in subagents["reviewer"]
     assert subagents["coder"]["tools"] == []
     assert {tool.name for tool in subagents["browser-operator"]["tools"]} == {
         "mcp_playwright_browser_snapshot",

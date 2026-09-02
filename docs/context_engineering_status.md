@@ -57,7 +57,8 @@ working-directory backend 一起交给同一套 filesystem Tool，因此 Prompt 
 
 Todo、`async_tasks`、Provider search profile、Tool Profile、Skill metadata、文件读取 transcript 和未知未来字段都不会
 跨越该边界。worker 内部 transcript 也不回灌父级。middleware 自有 channel 使用 `PrivateStateAttr`，包括
-`ToolProfileMiddleware.active_tool_profile_ids` 和递归收尾的 `remaining_steps`；它们不是 task 或公开 context 合同。
+`ToolProfileMiddleware.active_tool_profile_ids`、递归收尾的 `remaining_steps`，以及主 loop 的
+`needs_verification` / `verification_attempts`；它们不是 task 或公开 context 合同。
 若 worker 既没有非空 `AIMessage`，也没有非空 structured response，输出投影会生成一条有界的明确失败报告，
 不会用空 `AIMessage` 伪装成功；已有非空文本或 structured response 的投影语义不变。
 
