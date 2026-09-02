@@ -43,6 +43,9 @@ def test_legacy_tool_ledger_is_not_restored_into_runtime_state() -> None:
     response = agent_run_response_from_state(state)
     assert response.tool_calls == []
     assert response.tool_results == []
+    public = response.model_dump(mode="json", exclude_unset=True)
+    assert public["tool_calls"] == []
+    assert public["tool_results"] == []
     assert build_turn_summary_from_state(state).tool_count == 0
     assert summarize_graph_state({"state": state}) == {
         "status": "created",
