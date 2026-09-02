@@ -1438,7 +1438,9 @@ def native_response_from_state(state: dict[str, Any] | None) -> dict[str, Any]:
             continue
         if text:
             delivered_text = (
-                f"{text}\n{delivery.text_suffix}" if delivery.text_suffix else text
+                f"{text}\n{delivery.text_suffix}"
+                if delivery.text_suffix and delivery.text_suffix not in text
+                else text
             )
             citations = _terminal_source_citations(text, response_metadata)
             return {

@@ -151,8 +151,9 @@ Agent Server 的 `messages/partial` 是同一 message 的累计快照，适配�
 最新 assistant message 不一致，则完整发送权威终态，避免丢失正文。已发送中间包且终包不含媒体 detail 时，
 终包的 `displayOnly/display_only=true`；citation 的 `fullDescription` 始终保留完整权威终态。
 
-若当前用户轮次存在成功的 `shopping_search` 标准 `ToolMessage`，媒体终态会从其结构化 `artifact` 确定性追加
-兼容购物卡片块，而不是要求模型生成协议标签：
+若当前用户轮次存在成功 Tool 的标准 `ToolMessage`，媒体终态会从其 artifact 内严格校验的
+`assistant_agent_delivery_v1` 确定性追加用户可见文本或受管生成物引用，而不是要求模型复述。例如购物 Tool
+可声明兼容卡片块：
 
 ```text
 <detail>
@@ -160,21 +161,10 @@ Agent Server 的 `messages/partial` 是同一 message 的累计快照，适配�
 </detail>
 ```
 
-只使用当前轮最新成功购物结果，最多三项；商品名会移除协议标签和控制字符，购买链接与图片必须是无空白、
-无尖括号的 HTTP(S) URL。没有安全完整的链接与图片时不输出对应卡片，也不会复用历史轮次结果。
-
-同一终态投影还机械处理当前轮最新相关 ToolMessage 的以下产物，不依赖最终 `AIMessage` 复述链接：
-
-- `lodging_search.artifact` 经 `LodgingSearchResult` 校验后追加最多三项酒店 `<detail>`；预订链接必须为安全
-  HTTP(S) URL，图片无效时仍可交付预订链接；
-- 高德路线 MCP interceptor 除保留 model-visible Markdown 外，还把服务端根据已校验经纬度构造的导航 URL
-  写入 `ToolMessage.artifact.structured_content.assistant_agent_navigation_v1`，终态从该字段追加导航链接；
-- 任意成功 ToolMessage 的最新标准 `type=file` content block 可确定性追加下载链接，但只接受 HTTP(S) URL，
-  不把宿主任意路径转换成公开下载地址；
-- `image_generation` 继续只使用最新一次成功调用的后端托管 artifact refs，交付其同一次调用产生的有界图片集。
-
-如果当前轮同类 Tool 的最后一次调用失败，终态不会回退并重新交付该轮更早的同类成功结果。购物、酒店、导航、
-下载链接和图片 refs 的选择都在 terminal `values` 消费边界完成；Graph 拓扑、ToolNode 和 checkpoint 生命周期不变。
+Tool 负责从已校验的领域结果构造卡片、导航链接或 `output_refs`；媒体 Runtime 不识别购物、酒店、AMap 或
+图片 Tool 名，也不导入其领域 model。它只查看最后一个 HumanMessage 之后的消息，按 `ToolMessage.name`
+保留最后一条；如果该条失败，不回退同名旧结果。标准 `type=file` block 可通用交付安全 HTTP(S)
+下载链接。所有文本、URL 和 refs 均有界、去重；Graph 拓扑、ToolNode 和 checkpoint 生命周期不变。
 
 Memory debounce 是所有入口共享的
 主图规则：生成回答后通过官方 Agent Server SDK，在由 chat thread 确定性派生的 companion Memory thread 上

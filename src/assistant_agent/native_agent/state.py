@@ -6,7 +6,11 @@ from typing import Annotated, Literal, NotRequired
 
 from deepagents import DeepAgentState
 from langchain.agents import AgentState
-from langchain.agents.middleware.types import OmitFromInput, PrivateStateAttr
+from langchain.agents.middleware.types import (
+    OmitFromInput,
+    OmitFromOutput,
+    PrivateStateAttr,
+)
 from langchain_core.messages import AnyMessage
 from langgraph.graph import MessagesState
 from pydantic import BaseModel, ConfigDict, JsonValue
@@ -28,7 +32,7 @@ def merge_async_tasks(
 AsyncTasks = Annotated[
     dict[str, dict[str, JsonValue]],
     merge_async_tasks,
-    OmitFromInput,
+    PrivateStateAttr,
 ]
 
 
@@ -45,8 +49,10 @@ class AssistantAgentState(DeepAgentState):
 
     needs_verification: NotRequired[Annotated[bool, PrivateStateAttr]]
     verification_attempts: NotRequired[Annotated[int, PrivateStateAttr]]
-    memory_context: NotRequired[Annotated[tuple[str, ...], OmitFromInput]]
-    memory_status: NotRequired[Annotated[MemoryStatus, OmitFromInput]]
+    memory_context: NotRequired[
+        Annotated[tuple[str, ...], OmitFromInput, OmitFromOutput]
+    ]
+    memory_status: NotRequired[Annotated[MemoryStatus, PrivateStateAttr]]
     provider_search_profile: NotRequired[
         Annotated[ProviderSearchProfile, PrivateStateAttr]
     ]

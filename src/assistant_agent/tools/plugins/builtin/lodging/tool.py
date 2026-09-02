@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from math import isfinite
 from typing import Annotated, Any, Literal
 
 from langchain_core.tools import BaseTool, tool
@@ -23,6 +24,7 @@ from assistant_agent.tools.plugins.builtin.lodging.backend import (
     LodgingSearchAdapter,
     MockLodgingSearchAdapter,
 )
+from assistant_agent.tools.delivery import safe_http_url, with_tool_delivery
 
 
 def create_lodging_search_tool(adapter: LodgingSearchAdapter | None = None) -> BaseTool:
@@ -114,6 +116,8 @@ def create_lodging_search_tool(adapter: LodgingSearchAdapter | None = None) -> B
             if not result.success:
                 raise RuntimeError(result.error_message or "Lodging search failed.")
             data = result.model_dump(mode="json")
+            if delivery := _lodging_delivery(result):
+                data = with_tool_delivery(data, text=delivery)
             return native_content_and_artifact(
                 {
                     "status": "succeeded",
@@ -127,6 +131,33 @@ def create_lodging_search_tool(adapter: LodgingSearchAdapter | None = None) -> B
             raise native_tool_exception(exc) from exc
 
     return configure_builtin_tool(lodging_search)
+
+
+def _lodging_delivery(result: LodgingSearchResult, *, max_items: int = 3) -> str:
+    lines: list[str] = []
+    for offer in result.offers:
+        currency = offer.currency.upper()
+        if (
+            not safe_http_url(offer.booking_url)
+            or not isfinite(offer.total_price)
+            or not (currency.isascii() and currency.isalpha())
+        ):
+            continue
+        name = " ".join(offer.property_name.replace("<", "").replace(">", "").split())[
+            :240
+        ]
+        price = f"{offer.total_price:.2f}".rstrip("0").rstrip(".")
+        image = (
+            f"<pic>{offer.image_url}</pic>" if safe_http_url(offer.image_url) else ""
+        )
+        if name:
+            lines.append(
+                f"{len(lines) + 1}. 酒店 - {name} {price} {offer.currency} "
+                f"<link>{offer.booking_url}</link>{image}"
+            )
+        if len(lines) >= max_items:
+            break
+    return "<detail>\n" + "\n".join(lines) + "\n</detail>" if lines else ""
 
 
 def _execute_lodging_search(

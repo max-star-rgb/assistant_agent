@@ -5,15 +5,20 @@ from contextlib import nullcontext
 import importlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableLambda
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.store.memory import InMemoryStore
 import pytest
 
 from assistant_agent.native_agent import memory_graph as memory_graph_module
+from assistant_agent.native_agent import memory as memory_module
+from assistant_agent.config import ChatConfig, MemoryConfig
 from assistant_agent.native_agent.assistant_agent import isolated_general_purpose_worker
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.providers import MockAssistantChatModel
@@ -143,7 +148,7 @@ class _PagedClient(_Client):
         self.runs = _PagedRuns()
 
 
-def _assistant_graph(backend: _Memory):
+def _assistant_graph(backend: _Memory, *, checkpointer=None):
     middleware_module = importlib.import_module(
         "assistant_agent.native_agent.memory_middleware"
     )
@@ -153,6 +158,7 @@ def _assistant_graph(backend: _Memory):
         state_schema=AssistantAgentState,
         context_schema=AssistantRunContext,
         middleware=[middleware_module.MemoryLifecycleMiddleware(backend)],
+        checkpointer=checkpointer,
         name="AssistantAgent",
     )
 
@@ -167,20 +173,22 @@ def test_unified_chat_recall_once_then_rolls_back_and_enqueues_extraction(
         "assistant_agent.native_agent.memory_middleware"
     )
     monkeypatch.setattr(middleware_module, "get_client", lambda: client)
-    graph = _assistant_graph(backend)
+    graph = _assistant_graph(backend, checkpointer=InMemorySaver())
+
+    config = {
+        "configurable": {
+            "thread_id": "thread-sentinel",
+            "assistant_id": "assistant-sentinel",
+            "graph_id": "graph-sentinel",
+            "langgraph_auth_user": _User(),
+        }
+    }
 
     result = asyncio.run(
         graph.ainvoke(
             {"messages": [HumanMessage(content="request-sentinel")]},
             context=AssistantRunContext(),
-            config={
-                "configurable": {
-                    "thread_id": "thread-sentinel",
-                    "assistant_id": "assistant-sentinel",
-                    "graph_id": "graph-sentinel",
-                    "langgraph_auth_user": _User(),
-                }
-            },
+            config=config,
         )
     )
 
@@ -188,7 +196,10 @@ def test_unified_chat_recall_once_then_rolls_back_and_enqueues_extraction(
         uuid5(NAMESPACE_URL, "assistant-agent:memory:thread-sentinel")
     )
     assert backend.events == ["recall"]
-    assert result["memory_context"] == ("memory-sentinel",)
+    assert "memory_context" not in result
+    assert tuple(graph.get_state(config).values["memory_context"]) == (
+        "memory-sentinel",
+    )
     assert "trusted_runtime_facts" not in result
     assert client.threads.requests == [
         {
@@ -260,8 +271,8 @@ def test_disable_memory_skips_recall_and_extraction(monkeypatch) -> None:
     )
 
     assert backend.events == []
-    assert result["memory_context"] == ()
-    assert result["memory_status"] == "empty"
+    assert "memory_context" not in result
+    assert "memory_status" not in result
     assert client.threads.requests == []
     assert client.runs.cancellations == []
     assert client.runs.requests == []
@@ -330,7 +341,9 @@ def test_task_worker_cannot_see_parent_memory_status() -> None:
         "memory_context": ("memory-sentinel",),
         "memory_status": "ready",
     }
-    result = isolated_general_purpose_worker(RunnableLambda(worker)).invoke(parent_state)
+    result = isolated_general_purpose_worker(RunnableLambda(worker)).invoke(
+        parent_state
+    )
 
     assert set(observed[0]) == {"messages", "memory_context"}
     assert "memory_status" not in observed[0]
@@ -395,6 +408,35 @@ def test_independent_memory_graph_reports_error_after_native_retries() -> None:
         )
 
     assert backend.events == ["commit", "commit", "commit"]
+
+
+@pytest.mark.core_invariant("MEMORY-001")
+def test_langmem_manager_uses_a_durable_structured_schema(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def create_manager(_model, **kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(
+        memory_module.importlib,
+        "import_module",
+        lambda _name: SimpleNamespace(create_memory_store_manager=create_manager),
+    )
+    monkeypatch.setattr(
+        memory_module, "create_chat_model", lambda *_args, **_kwargs: object()
+    )
+
+    memory_module._create_langmem_manager(
+        MemoryConfig(memory_backend="langmem", langmem_model="memory-model"),
+        provider_mode="real",
+        chat_config=ChatConfig(),
+        store=InMemoryStore(),
+    )
+
+    schema = captured["schemas"][0]
+    assert set(schema.model_json_schema()["properties"]) == {"content", "kind"}
+    assert schema.model_validate({"content": "stable-sentinel", "kind": "stable_fact"})
 
 
 @pytest.mark.core_invariant("MEMORY-001")

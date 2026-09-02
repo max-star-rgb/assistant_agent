@@ -19,6 +19,10 @@
 实际执行树由 LangSmith native tracing 观察；生产 composition 不创建 `ProductEventProjector`、canonical
 run tree、JSONL lifecycle shadow tree 或 OTel 重建层。
 
+Graph root run 的 Outputs 就是生产 Graph 公开返回值：完整标准 `messages` 以及存在时的原生
+`todos/structured_response`。`memory_context/status`、验证状态、Provider profile 和异步任务只留在内部
+state/checkpoint，不是 root Outputs。LLM、Tool 和 single-step 信息仍由原生 child runs 表达，不展平或复制到 Outputs。
+
 Agent Server 的原生 LangChain/LangGraph callback tracing 由标准 `LANGSMITH_TRACING=true`、
 `LANGSMITH_API_KEY` 与 `LANGSMITH_PROJECT` 控制。`ASSISTANT_AGENT_LANGSMITH_ENABLED` 只控制项目自有的
 显式 LangSmith helper/client 路径，不能替代原生 tracing 开关。未显式启用时，mock pytest 不得创建远端

@@ -1,6 +1,7 @@
 """Unified native shopping search for one or more product needs."""
 
 from itertools import product
+from math import isfinite
 from typing import Annotated, Any
 
 from langchain_core.tools import BaseTool, tool
@@ -34,6 +35,16 @@ from assistant_agent.tools.native_boundary import (
     native_content_and_artifact,
     native_tool_exception,
 )
+from assistant_agent.tools.delivery import safe_http_url, with_tool_delivery
+
+
+_PLATFORM_LABELS = {
+    "jd": "京东",
+    "jingdong": "京东",
+    "taobao": "淘宝",
+    "tmall": "天猫",
+    "pdd": "拼多多",
+}
 
 
 def create_shopping_search_tool(
@@ -47,7 +58,11 @@ def create_shopping_search_tool(
     def shopping_search(
         needs: Annotated[
             list[ShoppingListNeed],
-            Field(min_length=1, max_length=8, description="需要分别搜索的商品清单项，最多八项。"),
+            Field(
+                min_length=1,
+                max_length=8,
+                description="需要分别搜索的商品清单项，最多八项。",
+            ),
         ],
         runtime: ToolRuntime[AssistantRunContext],
         scenario: Annotated[
@@ -77,8 +92,6 @@ def create_shopping_search_tool(
         预算结果。只读，不加入购物车、下单或付款。
 
         优先采用本次检索得到的商品信息，其他渠道例如网络搜索仅可作为补充。
-
-        如果使用了该公工具，请在最终回复中，基于返回的"product_url"生成商品链接
         """
 
         try:
@@ -98,11 +111,41 @@ def create_shopping_search_tool(
                 error = result.errors[0].message if result.errors else result.summary
                 raise RuntimeError(error)
             data = result.model_dump(mode="json")
+            if delivery := _shopping_delivery(result):
+                data = with_tool_delivery(data, text=delivery)
             return native_content_and_artifact(_model_observation(data), data)
         except Exception as exc:
             raise native_tool_exception(exc) from exc
 
     return configure_builtin_tool(shopping_search)
+
+
+def _shopping_delivery(result: ShoppingSearchResult, *, max_items: int = 3) -> str:
+    lines: list[str] = []
+    for selection in result.selections:
+        product = selection.product
+        product_url = product.product_url or product.url
+        if not safe_http_url(product_url) or not isfinite(selection.subtotal):
+            continue
+        title = " ".join(product.title.replace("<", "").replace(">", "").split())[:240]
+        platform = " ".join(product.platform.replace("<", "").replace(">", "").split())[
+            :80
+        ]
+        platform = _PLATFORM_LABELS.get(platform.casefold(), platform)
+        price = f"{selection.subtotal:.2f}".rstrip("0").rstrip(".")
+        image = (
+            f"<pic>{product.image_url}</pic>"
+            if safe_http_url(product.image_url)
+            else ""
+        )
+        if title and platform:
+            lines.append(
+                f"{len(lines) + 1}. {platform} - {title} {price}元 "
+                f"<link>{product_url}</link>{image}"
+            )
+        if len(lines) >= max_items:
+            break
+    return "<detail>\n" + "\n".join(lines) + "\n</detail>" if lines else ""
 
 
 def _execute_shopping_search(
@@ -423,9 +466,7 @@ def _model_observation(data: dict[str, Any]) -> dict[str, Any]:
         "schema_version": "shopping_observation_v1",
         "outcome": data.get("outcome"),
         "summary": data.get("summary"),
-        "budget": {
-            key: value for key, value in budget.items() if value is not None
-        },
+        "budget": {key: value for key, value in budget.items() if value is not None},
         "results": [
             _need_result_observation(item)
             for item in need_results
@@ -479,9 +520,7 @@ def _need_result_observation(need_result: dict[str, Any]) -> dict[str, Any]:
             if isinstance(item, dict) and item.get("product_id") != selected_product_id
         ][:2],
     }
-    return {
-        key: value for key, value in result.items() if value not in (None, [], {})
-    }
+    return {key: value for key, value in result.items() if value not in (None, [], {})}
 
 
 def _selection_observation(selection: dict[str, Any]) -> dict[str, Any]:
@@ -509,9 +548,7 @@ def _product_observation(
     )
     ranking_reason = product.get("ranking_reason")
     ranking_explanation = (
-        ranking_reason.get("explanation")
-        if isinstance(ranking_reason, dict)
-        else None
+        ranking_reason.get("explanation") if isinstance(ranking_reason, dict) else None
     )
     return {
         key: value

@@ -98,7 +98,11 @@ internal capability 当前是进程内随机 secret，适配本地单进程部�
 配置文件。多进程 Agent Server 启用前必须改为共享 secret 或正式 service identity。
 
 主图以标准 messages 为事实源，只增加冻结的 `memory_context/memory_status` 与按 task ID 合并的 `async_tasks`；
-这些字段通过官方 schema metadata 从公开 input 隐藏。
+这些项目自定义字段使用官方 schema metadata，仍可由 middleware、Tool 和 checkpoint 读写，但不进入公开
+input/output schema。生产终态返回标准 `messages` 及 Deep Agents/LangChain 原生可选字段
+`todos/structured_response`，不另造 `final_response` 或顶层 Memory 投影。
+`memory_context` 使用 `OmitFromInput + OmitFromOutput`，以便 Deep Agents 仍能按已有显式 allowlist 传给
+`general-purpose` worker；其余不得进入任何 subagent 的内部字段使用 `PrivateStateAttr`。
 Tool Profile 和递归步数属于 middleware 私有 state。当前生产图是 `assistant-native-v4`；retired native v1/v2/v3
 和 worker-v1 的 thread/checkpoint 只能检查或 drain/cancel，不能进入 v4 run/resume/replay/stream。
 

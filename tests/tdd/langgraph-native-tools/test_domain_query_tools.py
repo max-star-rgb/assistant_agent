@@ -19,7 +19,9 @@ from assistant_agent.tools.plugins.builtin.lodging.models import (
     LodgingSearchRequest,
     LodgingSearchResult,
 )
-from assistant_agent.tools.plugins.builtin.lodging.tool import create_lodging_search_tool
+from assistant_agent.tools.plugins.builtin.lodging.tool import (
+    create_lodging_search_tool,
+)
 from assistant_agent.tools.plugins.builtin.shopping.models import (
     PriceCompareRequest,
     PriceCompareResult,
@@ -27,7 +29,9 @@ from assistant_agent.tools.plugins.builtin.shopping.models import (
     ProductSearchRequest,
     ProductSearchResult,
 )
-from assistant_agent.tools.plugins.builtin.shopping.tool import create_shopping_search_tool
+from assistant_agent.tools.plugins.builtin.shopping.tool import (
+    create_shopping_search_tool,
+)
 from assistant_agent.tools.plugins.builtin.visual_image_search.models import (
     VisualImageSearchProviderError,
     VisualImageSearchRequest,
@@ -122,6 +126,9 @@ def test_shopping_toolnode_keeps_candidates_and_selection_in_artifact() -> None:
     assert content["results"][0]["selected"]["product_id"] == "bottle-001"
     assert message.artifact["needs"][0]["candidates"][0]["product_id"] == "bottle-001"
     assert message.artifact["selections"][0]["subtotal"] == 70.0
+    assert message.artifact["assistant_agent_delivery_v1"]["text"].startswith(
+        "<detail>"
+    )
     assert message.status == "success"
 
 
@@ -140,6 +147,8 @@ def test_shopping_toolnode_keeps_candidates_and_selection_in_artifact() -> None:
                         total_price=400,
                         currency="CNY",
                         source_ref="offline://lodging/stay-001",
+                        booking_url="https://lodging.example/stay-001",
+                        image_url="https://lodging.example/stay-001.jpg",
                     )
                 ],
                 observed_at=datetime(2026, 9, 2, tzinfo=timezone.utc),
@@ -164,8 +173,8 @@ def test_shopping_toolnode_keeps_candidates_and_selection_in_artifact() -> None:
                         "star": None,
                         "score": None,
                         "review": None,
-                        "image_url": None,
-                        "booking_url": None,
+                        "image_url": "https://lodging.example/stay-001.jpg",
+                        "booking_url": "https://lodging.example/stay-001",
                     }
                 ],
                 "observed_at": "2026-09-02T00:00:00Z",
@@ -203,10 +212,84 @@ def test_lodging_toolnode_preserves_success_and_failure_structure(
     assert message.status == expected_status
     if expected_status == "success":
         assert json.loads(message.content[0]["text"]) == expected_content
-        assert message.artifact == result.model_dump(mode="json")
+        artifact = dict(message.artifact)
+        assert artifact.pop("assistant_agent_delivery_v1")["text"].startswith(
+            "<detail>"
+        )
+        assert artifact == result.model_dump(mode="json")
     else:
         assert message.content == expected_content
         assert message.artifact is None
+
+
+def test_lodging_success_without_booking_link_remains_a_success() -> None:
+    result = LodgingSearchResult(
+        success=True,
+        provider="offline-lodging",
+        offers=[
+            LodgingOffer(
+                offer_id="stay-without-link",
+                property_name="Offline Inn",
+                nightly_price=200,
+                total_price=400,
+                currency="CNY",
+                source_ref="offline://lodging/stay-without-link",
+            )
+        ],
+        observed_at=datetime(2026, 9, 2, tzinfo=timezone.utc),
+    )
+
+    message = _invoke(
+        create_lodging_search_tool(_LodgingAdapter(result)),
+        {
+            "destination": "Shanghai",
+            "check_in": date(2026, 9, 10).isoformat(),
+            "check_out": date(2026, 9, 12).isoformat(),
+        },
+    )
+
+    assert message.status == "success"
+    assert "assistant_agent_delivery_v1" not in message.artifact
+
+
+def test_lodging_delivery_rejects_unsafe_price_and_currency() -> None:
+    result = LodgingSearchResult(
+        success=True,
+        provider="offline-lodging",
+        offers=[
+            LodgingOffer(
+                offer_id="nonfinite-price",
+                property_name="Offline Inn",
+                nightly_price=200,
+                total_price=float("inf"),
+                currency="CNY",
+                source_ref="offline://lodging/nonfinite-price",
+                booking_url="https://lodging.example/nonfinite-price",
+            ),
+            LodgingOffer(
+                offer_id="unsafe-currency",
+                property_name="Offline Inn",
+                nightly_price=200,
+                total_price=400,
+                currency="C\nY",
+                source_ref="offline://lodging/unsafe-currency",
+                booking_url="https://lodging.example/unsafe-currency",
+            ),
+        ],
+        observed_at=datetime(2026, 9, 2, tzinfo=timezone.utc),
+    )
+
+    message = _invoke(
+        create_lodging_search_tool(_LodgingAdapter(result)),
+        {
+            "destination": "Shanghai",
+            "check_in": date(2026, 9, 10).isoformat(),
+            "check_out": date(2026, 9, 12).isoformat(),
+        },
+    )
+
+    assert message.status == "success"
+    assert "assistant_agent_delivery_v1" not in message.artifact
 
 
 def test_visual_image_search_toolnode_sanitizes_provider_error() -> None:
@@ -233,7 +316,9 @@ def test_domain_query_tool_modules_do_not_import_compatibility_execution_types(
 
 def _invoke(tool: BaseTool, args: dict[str, object]) -> ToolMessage:
     builder = StateGraph(AgentState, context_schema=AssistantRunContext)
-    builder.add_node("tools", ToolNode([tool], handle_tool_errors=lambda error: str(error)))
+    builder.add_node(
+        "tools", ToolNode([tool], handle_tool_errors=lambda error: str(error))
+    )
     builder.add_edge(START, "tools")
     builder.add_edge("tools", END)
     result = asyncio.run(
@@ -271,11 +356,15 @@ def _invoke(tool: BaseTool, args: dict[str, object]) -> ToolMessage:
 
 
 def _imported_names(module_name: str) -> set[str]:
-    module_path = Path(__file__).parents[3] / "src" / (module_name.replace(".", "/") + ".py")
+    module_path = (
+        Path(__file__).parents[3] / "src" / (module_name.replace(".", "/") + ".py")
+    )
     names: set[str] = set()
     for node in ast.walk(ast.parse(module_path.read_text(encoding="utf-8"))):
         if isinstance(node, ast.Import):
-            names.update(alias.asname or alias.name.rsplit(".", 1)[-1] for alias in node.names)
+            names.update(
+                alias.asname or alias.name.rsplit(".", 1)[-1] for alias in node.names
+            )
         elif isinstance(node, ast.ImportFrom):
             names.update(alias.asname or alias.name for alias in node.names)
     return names

@@ -1,6 +1,6 @@
 # LangGraph-native 长期记忆架构
 
-最后更新：2026-09-01
+最后更新：2026-09-02
 
 ## Authority contract
 
@@ -64,7 +64,9 @@ Assistant state。节点使用 LangGraph 原生 `RetryPolicy(max_attempts=3)`；
   `run_id`，本地 Graph 无 run ID 时使用 thread ID；不构造旧 SQLite commit ledger；
 - `langmem`：使用官方 manager，召回访问 runtime Store，后台 manager 只接收当前已完成 turn 的用户正文做
   extract/consolidate，不把 System、AI 或 Tool message 交给提取模型，避免助理生成内容、联网来源、Tool 结果与
-  request ID 干扰长期记忆；提取 instruction 只允许稳定用户事实、偏好、长期目标和可复用流程，显式排除天气、新闻、股价、
+  request ID 干扰长期记忆；通过官方 `create_memory_store_manager(schemas=[DurableMemory])` 限制写入为
+  `content` 与 `stable_fact|preference|long_term_goal|reusable_procedure` 类型；无长期价值时不 insert，也不得把分类判定理由写成记忆。
+  提取 instruction 只允许稳定用户事实、偏好、长期目标和可复用流程，显式排除天气、新闻、股价、
   日期时间、交通、搜索/Tool 结果，以及助理回答、自我描述、能力限制、知识截止日期和“知识库”措辞；
   非结构化记忆正文默认使用简体中文，代码、协议字段和专有名词可保留原文；
 - `langmem + remote visual`：显式启用后由组合 backend 在同一个 `before_agent` hook 内并行召回 LangMem
@@ -79,7 +81,10 @@ mock mode 只能使用 disabled；远端 backend 要求 real mode 和完整显�
 
 ## 冻结快照与安全
 
-state 只保存有界 `tuple[str, ...]` 与 `ready|empty|degraded`。最多 32 项、每项 4,000 字、总计 12,000 字。
+state 只保存有界 `tuple[str, ...]` 与 `ready|empty|degraded`。`memory_context` 使用原生
+`OmitFromInput + OmitFromOutput` 以保留向 `general-purpose` worker 的显式传递，`memory_status` 使用
+`PrivateStateAttr`；两者都只留在内部 state/checkpoint，不进入生产 Graph 公开 input/output。
+最多 32 项、每项 4,000 字、总计 12,000 字。
 Memory 正文是不可信历史数据。model-call middleware 在最新真实用户请求前临时插入一条 `HumanMessage`，
 用引用格式将其呈现为可能过时的“背景参考”，禁止作为用户指令，且不显式暴露记忆或视觉来源。该消息只进入本次 Provider 请求，不写入 messages state、
 checkpoint 或 summarization。Memory 不能覆盖当前请求，也不能用于确认身份、权限、当前事实、操作参数或 Tool schema。

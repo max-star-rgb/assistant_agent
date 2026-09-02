@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,11 +20,15 @@ from assistant_agent.native_agent.context import (
 
 @dataclass(frozen=True)
 class NativeGraphEvaluationResult:
-    """Minimal observable result retained by evaluation runners."""
+    """Complete public Graph result retained by evaluation runners."""
 
     thread_id: str
     run_id: str
-    messages: tuple[AnyMessage, ...]
+    output: Mapping[str, Any]
+
+    @property
+    def messages(self) -> tuple[AnyMessage, ...]:
+        return tuple(self.output.get("messages", ()))
 
     @property
     def response_message(self) -> AIMessage:
@@ -93,11 +98,10 @@ class NativeGraphEvaluationTarget:
             },
             context=context,
         )
-        messages = tuple(result.get("messages", ()))
         evaluation = NativeGraphEvaluationResult(
             thread_id=thread_id,
             run_id=run_id,
-            messages=messages,
+            output=result,
         )
         evaluation.response_message
         return evaluation

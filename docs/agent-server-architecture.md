@@ -1,6 +1,6 @@
 # LangGraph Agent Server 部署架构
 
-最后更新：2026-09-01
+最后更新：2026-09-02
 
 ## Authority contract
 
@@ -123,7 +123,8 @@ Assistant 会让原本受 HITL 管理的 Tool 自动执行。身份、入口和�
 developer hook 从 `X-Assistant-User` 取得 identity，省略时为 `local-developer`，因此端口不得暴露给不受信网络。
 
 `/agent-service/v1` custom route 只做 vendor frame 校验、connection/session/thread/run/delivery 关联、公开 SDK
-stream/cancel/join、终态 `AIMessage` 投影、视觉引用接入和 callback。它不读取 checkpoint，不执行 Tool/Memory，
+stream/cancel/join、终态 `AIMessage` 与通用 Tool delivery artifact 投影、视觉引用接入和 callback。它不读取 checkpoint，
+不按 Tool 名解析业务 artifact，不执行 Tool/Memory，
 不选择 Assistant 模式，也不构造第二套 Runtime。旧 coding behavior attestation route 已删除。
 
 回答后 `MemoryLifecycleMiddleware.after_agent` 在确定性 companion thread 上 rollback 自己标记的旧 pending Memory run，再 enqueue 新的

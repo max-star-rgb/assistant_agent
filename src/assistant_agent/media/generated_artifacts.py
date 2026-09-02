@@ -7,19 +7,14 @@ import hashlib
 import mimetypes
 import urllib.error
 import urllib.request
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 from urllib.parse import urlparse
-
-from langchain_core.messages import HumanMessage, ToolMessage
 
 from assistant_agent.tools.plugins.builtin.image_generation.models import (
     ImageGenerationResult,
 )
 from assistant_agent.providers.provider_errors import ProviderAdapterError
-from assistant_agent.tools.ids import IMAGE_GENERATION_TOOL_NAME
 from assistant_agent.runtime.thread_resources import (
     ThreadResourceError,
     ThreadResourceManager,
@@ -88,29 +83,6 @@ def generated_artifact_payload_for_ref(
         artifact_dir=root,
         public_prefix=f"/artifacts/{thread_ref}/generated",
     )
-
-
-def generated_image_output_refs(messages: Sequence[Any]) -> list[str]:
-    """Return managed image refs produced by successful tools in the latest turn."""
-
-    refs: list[str] = []
-    for message in reversed(messages):
-        if _is_human_message(message):
-            break
-        data = _message_data(message)
-        if not _is_successful_image_tool_message(message, data):
-            continue
-        artifact = data.get("artifact")
-        if not isinstance(artifact, Mapping):
-            continue
-        candidates = _artifact_output_ref_candidates(artifact)
-        for candidate in candidates:
-            if not _is_managed_generated_ref(candidate) or candidate in refs:
-                continue
-            refs.append(candidate)
-            if len(refs) >= MAX_DELIVERED_IMAGE_COUNT:
-                return refs
-    return refs
 
 
 def materialize_image_generation_result(
@@ -318,67 +290,6 @@ def _thread_generated_artifact_ref(output_ref: str) -> tuple[str, str] | None:
     ):
         return None
     return parts[2], parts[4]
-
-
-def _artifact_output_ref_candidates(artifact: Mapping[str, Any]) -> list[Any]:
-    images = artifact.get("images")
-    if isinstance(images, list):
-        return [
-            image.get("output_ref") for image in images if isinstance(image, Mapping)
-        ]
-    legacy_urls = artifact.get("download_urls")
-    if isinstance(legacy_urls, (list, tuple)) and legacy_urls:
-        return list(legacy_urls)
-    return [artifact.get("output_ref")]
-
-
-def _message_data(message: Any) -> Mapping[str, Any]:
-    if isinstance(message, Mapping):
-        nested = message.get("data")
-        return nested if isinstance(nested, Mapping) else message
-    return {
-        "type": getattr(message, "type", None),
-        "name": getattr(message, "name", None),
-        "status": getattr(message, "status", None),
-        "artifact": getattr(message, "artifact", None),
-    }
-
-
-def _is_human_message(message: Any) -> bool:
-    if isinstance(message, HumanMessage):
-        return True
-    data = _message_data(message)
-    return data.get("type") == "human" or data.get("role") == "user"
-
-
-def _is_successful_image_tool_message(
-    message: Any,
-    data: Mapping[str, Any],
-) -> bool:
-    if not isinstance(message, ToolMessage) and data.get("type") != "tool":
-        return False
-    if data.get("name") != IMAGE_GENERATION_TOOL_NAME:
-        return False
-    if data.get("status") == "error":
-        return False
-    artifact = data.get("artifact")
-    return isinstance(artifact, Mapping) and artifact.get("status") == "succeeded"
-
-
-def _is_managed_generated_ref(value: Any) -> bool:
-    if not isinstance(value, str):
-        return False
-    parts = Path(value).parts
-    if (
-        len(parts) != 5
-        or parts[0] != "/"
-        or parts[1] != "artifacts"
-        or not _valid_thread_ref(parts[2])
-        or parts[3] != "generated"
-    ):
-        return False
-    filename = parts[4]
-    return bool(filename) and Path(filename).name == filename
 
 
 def _valid_thread_ref(value: str) -> bool:

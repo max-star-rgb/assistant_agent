@@ -70,6 +70,9 @@ def test_model_observation_exposes_only_backend_owned_image_url(tmp_path) -> Non
         }
     ]
     assert message.artifact["images"][0]["url"] == observation["images"][0]["url"]
+    assert message.artifact["assistant_agent_delivery_v1"]["output_refs"] == [
+        output_ref
+    ]
     assert "provider.example" not in message.content[0]["text"]
 
 

@@ -48,8 +48,10 @@ Outputs；evaluation target 丢弃了部分公开 Graph 结果；媒体终态又
 └─ async_tasks
 ```
 
-项目自定义内部字段使用 `PrivateStateAttr`，而不是只用 `OmitFromInput`。这不会删除 channel，也不会阻止
-middleware、Tool、checkpoint 或 resume 使用字段，只会从原生公开 input/output schema 中排除它们。
+项目自定义内部字段使用官方 schema metadata，而不是只用 `OmitFromInput`。不进入 subagent 的字段用
+`PrivateStateAttr`；`memory_context` 需继续经显式 allowlist 传给 `general-purpose` worker，因此组合
+`OmitFromInput + OmitFromOutput`。这不会删除 channel，也不会阻止 middleware、Tool、checkpoint 或 resume
+使用字段，只会从原生公开 input/output schema 中排除它们。
 
 `messages` 不做二次裁剪。Tool trajectory 由 `AIMessage.tool_calls` 与对应 `ToolMessage.tool_call_id` 表达；最终回答由
 最后一个非空 `AIMessage` 表达。
@@ -131,7 +133,8 @@ Registry 或自研 extraction graph。历史污染记录不自动删除。
 - Tool 领域数据仍先经过现有 Pydantic/URL/路径校验；Runtime 不重新解释业务字段。
 - 标准 file block 只接受无控制字符、不会突破 Markdown 边界的 HTTP(S) URL。
 - `output_refs` 只由受信内建 Tool 生成，媒体发送前仍经过现有受管 artifact 解析。
-- MCP 外部服务不能直接覆盖受信导航 delivery；interceptor 使用服务端校验过的经纬度重建 URL 并覆盖 namespaced key。
+- MCP 外部服务不能直接声明 delivery；全局 interceptor 先删除外部结果中的 namespaced key，仅对服务端校验过的
+  AMap 路线重建 URL 和 delivery。
 - Memory 正文不再进入根 Graph Outputs；是否记录内部 node state 继续服从 LangSmith 部署脱敏策略。
 
 ## 9. 迁移与删除

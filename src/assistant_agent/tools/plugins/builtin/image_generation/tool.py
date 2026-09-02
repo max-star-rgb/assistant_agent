@@ -44,6 +44,7 @@ from assistant_agent.tools.native_boundary import (
     native_tool_exception,
 )
 from assistant_agent.runtime.thread_resources import ThreadResourceManager
+from assistant_agent.tools.delivery import with_tool_delivery
 
 
 IMAGE_GENERATION_FIXTURE = Path(
@@ -99,6 +100,13 @@ def create_image_generation_tool(
                 public_prefix=f"/artifacts/{resources.thread_ref}/generated",
                 artifact_base_url=public_artifact_base_url,
             )
+            output_refs = [
+                image["output_ref"]
+                for image in artifact.get("images", [])
+                if isinstance(image, Mapping) and image.get("output_ref")
+            ]
+            if output_refs:
+                artifact = with_tool_delivery(artifact, output_refs=output_refs)
             content, artifact = native_content_and_artifact(
                 _image_generation_model_observation(artifact), artifact
             )

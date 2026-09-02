@@ -125,10 +125,9 @@ def test_local_shell_backend_resolves_runtime_cwd_and_os_absolute_paths(
     monkeypatch.setattr(
         local_backend_module,
         "get_runtime",
-        lambda _schema: SimpleNamespace(
-            context=SimpleNamespace(cwd=working_directory)
-        ),
+        lambda _schema: SimpleNamespace(context=SimpleNamespace(cwd=working_directory)),
     )
+
     async def create_backend() -> LocalShellBackend:
         with blockbuster_ctx():
             return create_local_backend()
@@ -219,10 +218,9 @@ def test_public_input_and_context_expose_no_private_run_facts() -> None:
     assert context.require_tool_approval is False
     assert context.context_compaction_trigger_tokens is None
     assert context.context_compaction_keep_tokens is None
-    assert (
-        AssistantRunContext.model_json_schema()["properties"]["cwd"]["default"]
-        == str(Path.home().resolve())
-    )
+    assert AssistantRunContext.model_json_schema()["properties"]["cwd"][
+        "default"
+    ] == str(Path.home().resolve())
     assert (
         AssistantRunContext.model_json_schema()["properties"]["enable_memory"][
             "default"
@@ -230,9 +228,9 @@ def test_public_input_and_context_expose_no_private_run_facts() -> None:
         is True
     )
     assert (
-        AssistantRunContext.model_json_schema()["properties"][
-            "require_tool_approval"
-        ]["default"]
+        AssistantRunContext.model_json_schema()["properties"]["require_tool_approval"][
+            "default"
+        ]
         is True
     )
     with pytest.raises(ValidationError):
@@ -255,6 +253,16 @@ def test_native_assistant_input_schema_exposes_only_messages(monkeypatch) -> Non
         schema = owner.graph.get_input_jsonschema()
         assert set(schema["properties"]) == {"messages"}
         assert schema["required"] == ["messages"]
+        output_fields = set(owner.graph.get_output_jsonschema()["properties"])
+        assert "messages" in output_fields
+        assert {
+            "memory_context",
+            "memory_status",
+            "async_tasks",
+            "needs_verification",
+            "verification_attempts",
+            "provider_search_profile",
+        }.isdisjoint(output_fields)
     finally:
         asyncio.run(owner.aclose())
 

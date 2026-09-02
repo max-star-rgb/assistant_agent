@@ -8,11 +8,12 @@ from dataclasses import replace
 import hashlib
 import importlib
 import logging
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from langgraph.runtime import Runtime
 from langgraph.store.base import BaseStore
+from pydantic import BaseModel, ConfigDict, Field
 
 from assistant_agent.config import ChatConfig, MediaConfig, MemoryConfig
 from assistant_agent.provider_mode import ProviderMode
@@ -38,6 +39,20 @@ class MemoryBackendConfigurationError(RuntimeError):
     """The selected native memory backend cannot be constructed safely."""
 
 
+class DurableMemory(BaseModel):
+    """Long-lived user knowledge accepted by the LangMem store manager."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    content: str = Field(min_length=1, max_length=4_000)
+    kind: Literal[
+        "stable_fact",
+        "preference",
+        "long_term_goal",
+        "reusable_procedure",
+    ]
+
+
 _LANGMEM_MEMORY_INSTRUCTIONS = """\
 你是长期记忆管理器，负责维护语义记忆、程序性记忆和情景记忆。
 
@@ -50,6 +65,9 @@ _LANGMEM_MEMORY_INSTRUCTIONS = """\
    即使用户随后可能再次询问，这些信息也必须在当次请求中重新获取。
 5. 严格排除助理生成的内容：不要把助理的回答、自我描述、能力限制、知识截止日期、所谓“知识库”状态、
    引用来源或对当前运行环境的猜测保存为长期记忆。只有用户明确表达且具有长期价值的事实才可写入。
+
+如果没有符合 schema 的长期信息，不得执行 insert。不得把“一次性查询”、“不构成长期记忆”、
+“无需保存”或其他分类判定理由写入 `content`。
 
 所有新增或更新的记忆正文必须使用简体中文。代码、协议字段、产品名和其他专有名词可保留原文；引用外语内容时，
 应以中文说明其含义。记忆应当紧凑、完整、可独立理解，并保留必要的置信度与理由。
@@ -448,6 +466,7 @@ def _create_langmem_manager(
         return create_manager(
             model,
             instructions=_LANGMEM_MEMORY_INSTRUCTIONS,
+            schemas=[DurableMemory],
             namespace=("assistant_agent", "{langgraph_user_id}"),
             store=store,
         )

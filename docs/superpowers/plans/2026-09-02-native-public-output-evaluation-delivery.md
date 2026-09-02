@@ -58,7 +58,7 @@ Expected: evaluation result 缺少 `output`，且公开 schema 仍含 Memory/异
 
 ```python
 AsyncTasks = Annotated[dict[str, dict[str, JsonValue]], merge_async_tasks, PrivateStateAttr]
-memory_context: NotRequired[Annotated[tuple[str, ...], PrivateStateAttr]]
+memory_context: NotRequired[Annotated[tuple[str, ...], OmitFromInput, OmitFromOutput]]
 memory_status: NotRequired[Annotated[MemoryStatus, PrivateStateAttr]]
 
 @dataclass(frozen=True)

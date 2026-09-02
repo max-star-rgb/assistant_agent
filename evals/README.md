@@ -19,7 +19,10 @@ Memory 或媒体真实能力，并把有限、脱敏的结果写入 `.data/evals
 框架 Tool 的集成覆盖。`run_all.py` 递归运行该目录的非 helper 冒烟脚本。
 
 仓库继续提供 `NativeGraphEvaluationTarget`，它直接调用生产 `AssistantAgent` graph，不经过旧 Runtime facade 或
-mock fallback。旧 Runtime Regression、Workflow Regression、Release Review 和 CodingGraph behavior baseline
+mock fallback。其 `NativeGraphEvaluationResult.output` 无损保留生产 Graph 的完整公开返回值，`messages`、
+`response_message/response_text` 只是从 `output` 派生的 evaluator 便利访问器。Experiment 可以用完整 messages
+评估 trajectory 与 Tool，用 `response_text` 构造纯文本 correctness judge 输入；single-step、latency、token 和 error
+继续以 LangSmith 原生 child runs/trace 为权威，不展平进 Outputs。旧 Runtime Regression、Workflow Regression、Release Review 和 CodingGraph behavior baseline
 runner 均已删除；当前没有上线前统一 Agent 行为门禁。
 
 未来若建立 unified coding behavior eval，必须直接消费 `assistant-native-v4` 或

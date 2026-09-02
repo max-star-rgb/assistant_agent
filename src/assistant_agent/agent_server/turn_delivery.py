@@ -1,27 +1,18 @@
-"""Deterministic current-turn projection of ToolMessage artifacts."""
+"""Deterministic current-turn projection of native ToolMessage deliveries."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlsplit
 
 from langchain_core.messages import HumanMessage, ToolMessage
-from pydantic import ValidationError
 
-from assistant_agent.agent_server.shopping_detail import shopping_detail_block
-from assistant_agent.media.generated_artifacts import generated_image_output_refs
-from assistant_agent.mcp.amap_route_links import AMAP_NAVIGATION_ARTIFACT_KEY
-from assistant_agent.tools.plugins.builtin.lodging.models import LodgingSearchResult
+from assistant_agent.tools.delivery import read_tool_delivery, safe_http_url
 
 
-_AMAP_ROUTE_TOOL_SUFFIXES = (
-    "maps_direction_driving",
-    "maps_direction_transit_integrated",
-    "maps_bicycling",
-    "maps_direction_walking",
-)
+_MAX_TEXT_CHARS = 16_000
+_MAX_OUTPUT_REFS = 4
 
 
 @dataclass(frozen=True)
@@ -33,48 +24,41 @@ class TurnDelivery:
 
 
 def turn_delivery(messages: Sequence[Any]) -> TurnDelivery:
-    """Project the latest relevant successful tools from the current user turn."""
+    """Project each Tool name's latest successful result from the current turn."""
 
     current = _current_turn(messages)
+    latest_by_name: dict[str, tuple[int, Mapping[str, Any]]] = {}
+    for index, message in enumerate(current):
+        data = _message_data(message)
+        if _is_tool_message(message, data) and (name := str(data.get("name") or "")):
+            latest_by_name[name] = (index, data)
+
     text_parts: list[str] = []
+    output_refs: list[str] = []
+    for _, message in sorted(latest_by_name.values()):
+        if not _successful(message):
+            continue
+        delivery = read_tool_delivery(message.get("artifact"))
+        if delivery is not None:
+            _append_text(text_parts, delivery.text)
+            for output_ref in delivery.output_refs:
+                if (
+                    output_ref not in output_refs
+                    and len(output_refs) < _MAX_OUTPUT_REFS
+                ):
+                    output_refs.append(output_ref)
+        for link in _file_links(message.get("content")):
+            _append_text(text_parts, link)
 
-    shopping = _latest_tool(current, lambda name: name == "shopping_search")
-    if shopping is not None and _successful(shopping):
-        detail = shopping_detail_block(current)
-        if detail:
-            text_parts.append(detail)
+    return TurnDelivery("\n".join(text_parts), tuple(output_refs))
 
-    lodging = _latest_tool(current, lambda name: name == "lodging_search")
-    if lodging is not None and _successful(lodging):
-        detail = _lodging_detail(lodging.get("artifact"))
-        if detail:
-            text_parts.append(detail)
 
-    navigation = _latest_tool(
-        current,
-        lambda name: any(name.endswith(suffix) for suffix in _AMAP_ROUTE_TOOL_SUFFIXES),
-    )
-    if navigation is not None and _successful(navigation):
-        link = _navigation_link(navigation.get("artifact"))
-        if link:
-            text_parts.append(link)
-
-    file_message = _latest_file_message(current)
-    if file_message is not None and _successful(file_message):
-        links = _file_links(file_message.get("content"))
-        if links:
-            text_parts.append("\n".join(links))
-
-    image = _latest_tool(current, lambda name: name == "image_generation")
-    output_refs = (
-        tuple(generated_image_output_refs([image]))
-        if image is not None and _successful(image)
-        else ()
-    )
-    return TurnDelivery(
-        text_suffix="\n".join(text_parts),
-        output_refs=output_refs,
-    )
+def _append_text(parts: list[str], text: str) -> None:
+    if not text or text in parts:
+        return
+    projected_length = sum(map(len, parts)) + len(parts) + len(text)
+    if projected_length <= _MAX_TEXT_CHARS:
+        parts.append(text)
 
 
 def _current_turn(messages: Sequence[Any]) -> list[Any]:
@@ -84,77 +68,7 @@ def _current_turn(messages: Sequence[Any]) -> list[Any]:
     return list(messages)
 
 
-def _latest_tool(
-    messages: Sequence[Any],
-    matches: Callable[[str], bool],
-) -> Mapping[str, Any] | None:
-    for message in reversed(messages):
-        data = _message_data(message)
-        if _is_tool_message(message, data) and matches(str(data.get("name") or "")):
-            return data
-    return None
-
-
-def _latest_file_message(messages: Sequence[Any]) -> Mapping[str, Any] | None:
-    file_tool_names = {
-        str(data.get("name") or "")
-        for message in messages
-        if _is_tool_message(message, data := _message_data(message))
-        and isinstance(data.get("content"), (list, tuple))
-        and any(
-            isinstance(block, Mapping) and block.get("type") == "file"
-            for block in data["content"]
-        )
-    }
-    for message in reversed(messages):
-        data = _message_data(message)
-        if _is_tool_message(message, data) and str(data.get("name") or "") in file_tool_names:
-            return data
-    return None
-
-
-def _lodging_detail(artifact: Any, *, max_items: int = 3) -> str:
-    if not isinstance(artifact, Mapping):
-        return ""
-    try:
-        result = LodgingSearchResult.model_validate(artifact)
-    except ValidationError:
-        return ""
-    if not result.success:
-        return ""
-    lines: list[str] = []
-    for offer in result.offers:
-        if not _safe_http_url(offer.booking_url):
-            continue
-        image = (
-            f"<pic>{offer.image_url}</pic>"
-            if _safe_http_url(offer.image_url)
-            else ""
-        )
-        lines.append(
-            f"{len(lines) + 1}. 酒店 - {_clean_text(offer.property_name)} "
-            f"{_format_number(offer.total_price)} {offer.currency} "
-            f"<link>{offer.booking_url}</link>{image}"
-        )
-        if len(lines) >= max_items:
-            break
-    return "<detail>\n" + "\n".join(lines) + "\n</detail>" if lines else ""
-
-
-def _navigation_link(artifact: Any) -> str:
-    if not isinstance(artifact, Mapping):
-        return ""
-    structured = artifact.get("structured_content")
-    if not isinstance(structured, Mapping):
-        return ""
-    navigation = structured.get(AMAP_NAVIGATION_ARTIFACT_KEY)
-    if not isinstance(navigation, Mapping):
-        return ""
-    url = navigation.get("url")
-    return f"[打开高德地图导航]({url})" if _safe_http_url(url) else ""
-
-
-def _file_links(content: Any, *, max_items: int = 4) -> list[str]:
+def _file_links(content: Any) -> list[str]:
     if not isinstance(content, (list, tuple)):
         return []
     urls = [
@@ -162,9 +76,9 @@ def _file_links(content: Any, *, max_items: int = 4) -> list[str]:
         for block in content
         if isinstance(block, Mapping)
         and block.get("type") == "file"
-        and _safe_http_url(block.get("url"))
+        and safe_http_url(block.get("url"))
     ]
-    return [f"[下载文件]({url})" for url in dict.fromkeys(urls)][:max_items]
+    return [f"[下载文件]({url})" for url in dict.fromkeys(urls)][:4]
 
 
 def _message_data(message: Any) -> Mapping[str, Any]:
@@ -194,24 +108,4 @@ def _successful(message: Mapping[str, Any]) -> bool:
     return message.get("status") in {None, "success"}
 
 
-def _safe_http_url(value: Any) -> bool:
-    if not isinstance(value, str) or value != value.strip():
-        return False
-    if any(character.isspace() or character in "<>[]()" for character in value):
-        return False
-    try:
-        parsed = urlsplit(value)
-        return parsed.scheme in {"http", "https"} and bool(parsed.hostname)
-    except (UnicodeError, ValueError):
-        return False
-
-
-def _clean_text(value: str) -> str:
-    return " ".join(value.replace("<", "").replace(">", "").split())[:240]
-
-
-def _format_number(value: float) -> str:
-    return f"{value:.2f}".rstrip("0").rstrip(".")
-
-
-__all__ = ["AMAP_NAVIGATION_ARTIFACT_KEY", "TurnDelivery", "turn_delivery"]
+__all__ = ["TurnDelivery", "turn_delivery"]

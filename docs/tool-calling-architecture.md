@@ -53,6 +53,12 @@ filesystem 与 `execute`；`browser-operator` 只接收 Playwright Tool。角色
 在文本 observation 后追加标准 `image` content block；结构化图片元数据继续保存在同一 ToolMessage 的 artifact。
 高德路线 MCP interceptor 在保留模型可见导航 Markdown 的同时，把同一受校验 URL 写入 namespaced
 `structuredContent`；终端入口只从转换后的标准 ToolMessage artifact 确定性交付，不解析模型正文。
+
+需要确定性交付时，Tool 在自身 artifact 中写入严格、有界的
+`assistant_agent_delivery_v1={text, output_refs}`。购物、酒店和图片生成只在领域结果完成校验后写入；
+全局 MCP interceptor 先删除外部结果中的同名保留字段，仅在成功校验 AMap 路线后重建并写入
+`structuredContent`。这是 `ToolMessage.artifact` 的应用数据，不是自定义
+message/state 协议。传输层只通用读取该 key 和标准 `type=file` block，不依赖模型复述，也不按 Tool 名解析业务 artifact。
 只读 Tool 使用官方 `ToolRetryMiddleware` 有界重试；`live_view_inspect` 为避免重复
 当前画面推理不进入自动 retry 清单。
 
