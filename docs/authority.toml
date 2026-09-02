@@ -189,7 +189,6 @@ source_globs = [
 thin_references = ["README.md", "docs/runtime-event-stream-architecture.md"]
 verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/integration/test_context_lifecycle.py",
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/unified-assistant-agent",
 ]
 exclusive_literals = []
 exclusive_allowlist = []

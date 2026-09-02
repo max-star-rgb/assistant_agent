@@ -1,6 +1,6 @@
 # LangChain-native Context Engineering
 
-最后更新：2026-09-01
+最后更新：2026-09-02
 
 ## Authority contract
 
@@ -88,13 +88,13 @@ composition 启动时先创建配置的离线 token counter，并把同一个 `c
 `compaction_trigger_ratio` 和 `compaction_target_ratio` 投影同时传给 main 与 worker。real DeepSeek V4 或 native LLM compactor 缺少本地
 tokenizer 时启动直接失败，不回退近似计数或发起网络调用。
 
-旧 `ContextService`、prompt-json compiler、动态 catalog/exposure 与 renderer 已删除。仍保留的 context 代码只服务
-明确的离线报告、媒体压缩或中立 token/model DTO；生产 Agent Server/native graph 不导入平行 context runtime。
+旧 `ContextService`、prompt-json compiler、动态 catalog/exposure、renderer、平行 compactor 与旧 source/policy 已删除。
+`src/assistant_agent/context/` 只保留离线报告、视觉预算、token 计数和中立 model DTO；生产 Agent Server/native graph
+不导入平行 context runtime。
 
 ## 验证
 
 ```bash
 MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
-  tests/core/integration/test_context_lifecycle.py \
-  tests/tdd/unified-assistant-agent
+  tests/core/integration/test_context_lifecycle.py
 ```
