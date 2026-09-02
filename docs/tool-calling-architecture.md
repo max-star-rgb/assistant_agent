@@ -48,6 +48,8 @@ filesystem 与 `execute`；`browser-operator` 只接收 Playwright Tool。角色
 失败由 `ToolException` 或 `handle_tool_error` 转为可解释 error `ToolMessage`。Provider 原始响应、secret 和宿主路径
 不进入模型上下文或 artifact。`image_generation` 成功后复用已经落盘且经过大小、路径和媒体类型校验的生成物，
 在文本 observation 后追加标准 `image` content block；结构化图片元数据继续保存在同一 ToolMessage 的 artifact。
+高德路线 MCP interceptor 在保留模型可见导航 Markdown 的同时，把同一受校验 URL 写入 namespaced
+`structuredContent`；终端入口只从转换后的标准 ToolMessage artifact 确定性交付，不解析模型正文。
 只读 Tool 使用官方 `ToolRetryMiddleware` 有界重试；`live_view_inspect` 为避免重复
 当前画面推理不进入自动 retry 清单。
 

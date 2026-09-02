@@ -42,7 +42,7 @@ from assistant_agent.agent_server.media_protocol import (
     artifact_completed_response,
 )
 from assistant_agent.agent_server.media_session import MediaConnectionSession
-from assistant_agent.agent_server.shopping_detail import shopping_detail_block
+from assistant_agent.agent_server.turn_delivery import turn_delivery
 from assistant_agent.agent_server.proactive_delivery import (
     MediaProactiveDeliveryPump,
 )
@@ -80,7 +80,6 @@ from assistant_agent.media.generated_artifacts import (
     GeneratedArtifactFile,
     generated_artifact_file,
     generated_artifact_payload_for_ref,
-    generated_image_output_refs,
 )
 from assistant_agent.runtime.thread_resources import (
     ThreadResourceError,
@@ -1419,8 +1418,7 @@ def native_response_from_state(state: dict[str, Any] | None) -> dict[str, Any]:
     messages = state.get("messages") if isinstance(state, Mapping) else None
     if not isinstance(messages, (list, tuple)):
         raise MediaProtocolError("Agent Server run returned no standard messages")
-    output_refs = generated_image_output_refs(messages)
-    shopping_detail = shopping_detail_block(messages)
+    delivery = turn_delivery(messages)
     for message in reversed(messages):
         if isinstance(message, AIMessage):
             text = _message_content_text(message.content)
@@ -1439,7 +1437,9 @@ def native_response_from_state(state: dict[str, Any] | None) -> dict[str, Any]:
         else:
             continue
         if text:
-            delivered_text = f"{text}\n{shopping_detail}" if shopping_detail else text
+            delivered_text = (
+                f"{text}\n{delivery.text_suffix}" if delivery.text_suffix else text
+            )
             citations = _terminal_source_citations(text, response_metadata)
             return {
                 "message": delivered_text,
@@ -1449,7 +1449,11 @@ def native_response_from_state(state: dict[str, Any] | None) -> dict[str, Any]:
                     if isinstance(message_id, str) and message_id
                     else {}
                 ),
-                **({"output_refs": output_refs} if output_refs else {}),
+                **(
+                    {"output_refs": list(delivery.output_refs)}
+                    if delivery.output_refs
+                    else {}
+                ),
                 **({"citations": citations} if citations else {}),
             }
     raise MediaProtocolError("Agent Server run returned no final AIMessage")

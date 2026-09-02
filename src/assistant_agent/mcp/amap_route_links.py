@@ -15,6 +15,7 @@ from mcp.types import CallToolResult, TextContent
 
 
 _AMAP_SERVER_NAME = "amap_maps"
+AMAP_NAVIGATION_ARTIFACT_KEY = "assistant_agent_navigation_v1"
 _AMAP_ROUTE_MODES = {
     "maps_direction_driving": "car",
     "maps_direction_transit_integrated": "bus",
@@ -45,12 +46,15 @@ async def amap_route_link_interceptor(
     if route_url is None:
         return result
     link = f"[打开高德地图导航]({route_url})"
+    structured_content = dict(result.structuredContent or {})
+    structured_content[AMAP_NAVIGATION_ARTIFACT_KEY] = {"url": route_url}
     return result.model_copy(
         update={
             "content": [
                 *result.content,
                 TextContent(type="text", text=link),
-            ]
+            ],
+            "structuredContent": structured_content,
         }
     )
 
@@ -97,4 +101,4 @@ def _normalize_coordinate(value: Any) -> str | None:
     return ",".join(parts)
 
 
-__all__ = ["amap_route_link_interceptor"]
+__all__ = ["AMAP_NAVIGATION_ARTIFACT_KEY", "amap_route_link_interceptor"]

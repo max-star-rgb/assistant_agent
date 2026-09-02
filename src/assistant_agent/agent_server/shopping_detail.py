@@ -123,8 +123,11 @@ def _safe_http_url(value: str | None) -> bool:
         character.isspace() or character in "<>" for character in value
     ):
         return False
-    parsed = urlsplit(value)
-    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+    try:
+        parsed = urlsplit(value)
+        return parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+    except (UnicodeError, ValueError):
+        return False
 
 
 def _format_price(value: float) -> str | None:
