@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from importlib import import_module
 
 import pytest
 
@@ -28,4 +29,4 @@ def test_retired_context_module_is_not_importable(module_name: str) -> None:
 def test_live_context_module_remains_importable(module_name: str) -> None:
     qualified_name = f"assistant_agent.context.{module_name}"
 
-    assert importlib.util.find_spec(qualified_name) is not None
+    assert import_module(qualified_name) is not None

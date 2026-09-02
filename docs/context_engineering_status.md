@@ -96,6 +96,5 @@ tokenizer 时启动直接失败，不回退近似计数或发起网络调用。
 
 ```bash
 MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
-  tests/core/integration/test_context_lifecycle.py \
-  tests/tdd/unified-assistant-agent
+  tests/core/integration/test_context_lifecycle.py
 ```
