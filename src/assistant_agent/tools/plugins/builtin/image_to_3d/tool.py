@@ -107,7 +107,7 @@ def create_image_to_3d_tool(
         except ToolException:
             raise
         except Exception as exc:
-            raise native_tool_exception(exc) from exc
+            raise native_tool_exception(exc, tool_name=IMAGE_TO_3D_TOOL_NAME) from exc
 
     return configure_builtin_tool(image_to_3d, bounded_expected_errors=True)
 

@@ -53,3 +53,44 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
 Core invariant: unchanged.
 
 Tests: added/updated `tests/tdd/langgraph-native-tools` and `tests/tdd/image-generation-studio-link` for temporary RED/GREEN; user may delete the directories manually.
+
+## Fix round 1：ValidationError 输入清洗与 calendar effect
+
+RED：
+
+```bash
+PYTHONPATH=src MULTIMODAL_AGENT_PROVIDER_MODE=mock \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
+  tests/tdd/langgraph-native-tools/test_effect_tools.py \
+  tests/tdd/image-generation-studio-link/test_image_generation_output.py
+```
+
+结果：`1 failed, 5 passed`。真实 ToolNode 的 `image_generation` / `hotel_price_watch_create` 内部 Pydantic `ValidationError` 错误含有 `input_value`；3D 同类错误路径也纳入回归测试。
+
+GREEN：
+
+```bash
+PYTHONPATH=src MULTIMODAL_AGENT_PROVIDER_MODE=mock \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
+  tests/tdd/langgraph-native-tools/test_effect_tools.py \
+  tests/tdd/image-generation-studio-link/test_image_generation_output.py
+```
+
+结果：`6 passed`。
+
+额外检查：
+
+```bash
+PYTHONPATH=src MULTIMODAL_AGENT_PROVIDER_MODE=mock \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m ruff check \
+  src/assistant_agent/tools/native_boundary.py \
+  src/assistant_agent/tools/plugins/builtin/image_generation/tool.py \
+  src/assistant_agent/tools/plugins/builtin/image_to_3d/tool.py \
+  src/assistant_agent/tools/plugins/builtin/lodging/watch_tool.py \
+  tests/tdd/langgraph-native-tools/test_effect_tools.py \
+  tests/tdd/image-generation-studio-link/test_image_generation_output.py
+```
+
+结果：`All checks passed!`，`git diff --check` 通过。
+
+修复：`native_tool_exception` 对 `ValidationError` 复用既有无 input 的 `_validation_error_message`；三个 effect handler 显式传入 Tool 名。calendar 测试保留 adapter 实例，验证只创建一次且实际收到 `native:thread:run:call-calendar_create`。

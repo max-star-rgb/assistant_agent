@@ -90,7 +90,9 @@ def create_hotel_price_watch_create_tool(service: DurableTaskService) -> BaseToo
             )
             return native_content_and_artifact({"task": task}, {"task": task})
         except Exception as exc:
-            raise native_tool_exception(exc) from exc
+            raise native_tool_exception(
+                exc, tool_name=HOTEL_PRICE_WATCH_CREATE_TOOL_NAME
+            ) from exc
 
     return configure_builtin_tool(
         hotel_price_watch_create,

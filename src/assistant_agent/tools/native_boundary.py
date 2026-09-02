@@ -25,7 +25,13 @@ def native_content_and_artifact(
     )
 
 
-def native_tool_exception(exc: BaseException) -> ToolException:
+def native_tool_exception(
+    exc: BaseException,
+    *,
+    tool_name: str = "tool",
+) -> ToolException:
+    if isinstance(exc, ValidationError):
+        return ToolException(_validation_error_message(tool_name, exc))
     return ToolException(sanitize_error_message(str(exc)))
 
 

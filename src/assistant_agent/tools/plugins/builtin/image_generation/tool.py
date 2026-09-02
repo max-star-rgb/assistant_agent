@@ -120,7 +120,9 @@ def create_image_generation_tool(
         except ToolException:
             raise
         except Exception as exc:
-            raise native_tool_exception(exc) from exc
+            raise native_tool_exception(
+                exc, tool_name=IMAGE_GENERATION_TOOL_NAME
+            ) from exc
 
     return configure_builtin_tool(image_generation, bounded_expected_errors=True)
 

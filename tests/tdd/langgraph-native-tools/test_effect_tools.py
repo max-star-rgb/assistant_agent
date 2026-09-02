@@ -134,7 +134,8 @@ def test_effect_tools_hide_runtime_parameters_and_keep_native_handoffs(tmp_path:
 
 
 def test_calendar_create_keeps_runtime_idempotency_without_compatibility_wrapper() -> None:
-    tool = create_calendar_create_tool(MockCalendarAdapter())
+    adapter = _RecordingCalendarAdapter()
+    tool = create_calendar_create_tool(adapter)
     message = _invoke(
         tool,
         {"title": "Native meeting", "start_time": "2026-09-02T09:00:00+08:00"},
@@ -147,6 +148,39 @@ def test_calendar_create_keeps_runtime_idempotency_without_compatibility_wrapper
         "present": True,
         "required": True,
     }
+    assert adapter.created_event_titles == ["Native meeting"]
+    assert adapter.received_idempotency_keys == [
+        "native:thread:run:call-calendar_create"
+    ]
+
+
+def test_effect_toolnode_validation_errors_do_not_echo_input_values(tmp_path: Path) -> None:
+    manager = ThreadResourceManager(ThreadResourceConfig(root=tmp_path / "threads"))
+    image = _invoke(
+        create_image_generation_tool(thread_resource_manager=manager),
+        {"prompt": " "},
+    )
+    watch = _invoke(
+        create_hotel_price_watch_create_tool(_durable_service()),
+        {
+            "search": {
+                "destination": "hotel-input-sentinel",
+                "check_in": "2026-09-10",
+                "check_out": "2026-09-12",
+            },
+            "max_nightly_price": 500,
+            "ends_at": "2026-09-02T01:02:03",
+        },
+    )
+    three_d = _invoke(create_image_to_3d_tool(), {"src_image": " "})
+
+    for message in (image, watch, three_d):
+        assert message.status == "error"
+        assert "input_value" not in message.content
+    assert "ImageGenerationRequest" not in image.content
+    assert "HotelPriceWatchGoal" not in watch.content
+    assert "hotel-input-sentinel" not in watch.content
+    assert three_d.content == "image_to_3d requires a generated image"
 
 
 def _durable_service() -> DurableTaskService:
@@ -155,6 +189,16 @@ def _durable_service() -> DurableTaskService:
         allowed_tool_names={"lodging_search"},
         tool_side_effect_levels={"lodging_search": "external_read"},
     )
+
+
+class _RecordingCalendarAdapter(MockCalendarAdapter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.received_idempotency_keys: list[str | None] = []
+
+    def create(self, request):  # type: ignore[no-untyped-def]
+        self.received_idempotency_keys.append(request.idempotency_key)
+        return super().create(request)
 
 
 def _invoke(tool: BaseTool, args: dict[str, object]) -> ToolMessage:
