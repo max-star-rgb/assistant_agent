@@ -1,6 +1,6 @@
 # LangGraph-native 可观测性
 
-最后更新：2026-09-01
+最后更新：2026-09-02
 
 ## Authority contract
 
@@ -9,7 +9,7 @@
 | 定位 | 生产 Graph 原生 tracing 与脱敏边界的当前权威 |
 | Owns | LangSmith native tracing、callback/parent 传播、thread 关联与脱敏边界 |
 | Does not own | Graph 路由、Agent Server/media wire、历史 trace store/query、Provider 语义、评测 Dataset 与发布决策 |
-| 源码与 schema 入口 | `native_agent/assistant_agent.py`、`agent_server/services.py`、`media/vision/observability.py`、`observability/langsmith_*.py`、`observability/trace_content_policy.py` |
+| 源码与 schema 入口 | `native_agent/assistant_agent.py`、`agent_server/services.py`、`media/vision/observability.py`、`observability/langsmith_*.py`、`observability/trace_content_policy.py`、`observability/recovery.py` |
 | 验证入口 | `docs/authority.toml` 中 `runtime-observability.verification`；核心不变量 `OBS-001` |
 | 相邻 authority | [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md)、[`visual-perception-architecture.md`](visual-perception-architecture.md)、[`observability-diagnosis-runbook.md`](observability-diagnosis-runbook.md)、[`../evals/README.md`](../evals/README.md) |
 

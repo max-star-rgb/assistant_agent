@@ -1,4 +1,4 @@
-"""Stable error classification for retained runtime observations."""
+"""Stable error classification for retained observability records."""
 
 from assistant_agent.providers.provider_errors import normalize_provider_error_code
 

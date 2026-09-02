@@ -1,4 +1,4 @@
-"""Prompt-safe diagnostics for harness hook dispatch."""
+"""Prompt-safe diagnostics for observability hook dispatch."""
 
 from __future__ import annotations
 

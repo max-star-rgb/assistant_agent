@@ -818,6 +818,6 @@ def _optional_text(value: Any) -> str | None:
 def _tool_error_code(error: Any) -> str | None:
     if not isinstance(error, str) or not error:
         return None
-    from assistant_agent.runtime.recovery import classify_error
+    from assistant_agent.observability.recovery import classify_error
 
     return classify_error(error)
