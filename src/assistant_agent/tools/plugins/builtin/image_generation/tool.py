@@ -124,7 +124,11 @@ def create_image_generation_tool(
                 exc, tool_name=IMAGE_GENERATION_TOOL_NAME
             ) from exc
 
-    return configure_builtin_tool(image_generation, bounded_expected_errors=True)
+    return configure_builtin_tool(
+        image_generation,
+        bounded_expected_errors=True,
+        bounded_validation_errors=True,
+    )
 
 
 def _execute_image_generation_from_runtime(

@@ -183,6 +183,38 @@ def test_effect_toolnode_validation_errors_do_not_echo_input_values(tmp_path: Pa
     assert three_d.content == "image_to_3d requires a generated image"
 
 
+def test_effect_toolnode_schema_errors_do_not_echo_tool_call_kwargs(tmp_path: Path) -> None:
+    manager = ThreadResourceManager(ThreadResourceConfig(root=tmp_path / "threads"))
+    image = _invoke(
+        create_image_generation_tool(thread_resource_manager=manager),
+        {"prompt": {"raw": "image-schema-sentinel"}},
+    )
+    three_d = _invoke(
+        create_image_to_3d_tool(),
+        {"src_image": {"raw": "three-d-schema-sentinel"}},
+    )
+    watch = _invoke(
+        create_hotel_price_watch_create_tool(_durable_service()),
+        {
+            "search": {
+                "destination": "hotel-schema-sentinel",
+                "check_in": "2026-09-10",
+                "check_out": "2026-09-12",
+            },
+            "max_nightly_price": 500,
+        },
+    )
+
+    for message, sentinel in (
+        (image, "image-schema-sentinel"),
+        (three_d, "three-d-schema-sentinel"),
+        (watch, "hotel-schema-sentinel"),
+    ):
+        assert message.status == "error"
+        assert sentinel not in message.content
+        assert "input_value" not in message.content
+
+
 def _durable_service() -> DurableTaskService:
     return DurableTaskService(
         store=InMemoryTaskStore(),

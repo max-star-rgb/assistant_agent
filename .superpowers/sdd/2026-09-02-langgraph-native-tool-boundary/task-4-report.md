@@ -94,3 +94,44 @@ PYTHONPATH=src MULTIMODAL_AGENT_PROVIDER_MODE=mock \
 结果：`All checks passed!`，`git diff --check` 通过。
 
 修复：`native_tool_exception` 对 `ValidationError` 复用既有无 input 的 `_validation_error_message`；三个 effect handler 显式传入 Tool 名。calendar 测试保留 adapter 实例，验证只创建一次且实际收到 `native:thread:run:call-calendar_create`。
+
+## Fix round 2：pre-handler schema validation 输入清洗
+
+已安装 LangChain `BaseTool.handle_validation_error` 支持 `ValidationError -> str` callable，并在 Tool handler 前将该字符串作为 error `ToolMessage` content。三个 effect Tool 之前未配置该原生字段，因此默认 ToolNode 错误会回显完整 kwargs。
+
+RED：
+
+```bash
+PYTHONPATH=src MULTIMODAL_AGENT_PROVIDER_MODE=mock \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
+  tests/tdd/langgraph-native-tools/test_effect_tools.py \
+  tests/tdd/image-generation-studio-link/test_image_generation_output.py
+```
+
+结果：`1 failed, 6 passed`。`image_generation` 的错误内容回显 `{'raw': 'image-schema-sentinel'}`；同一新增 ToolNode 测试覆盖了 3D 的错误 `src_image` 与 hotel watch 缺失 `ends_at`。
+
+GREEN：
+
+```bash
+PYTHONPATH=src MULTIMODAL_AGENT_PROVIDER_MODE=mock \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
+  tests/tdd/langgraph-native-tools/test_effect_tools.py \
+  tests/tdd/image-generation-studio-link/test_image_generation_output.py
+```
+
+结果：`7 passed`。
+
+修复：为现有 `configure_builtin_tool` 增加窄的 `bounded_validation_errors` opt-in；仅本任务的 image generation、image-to-3D 与 hotel watch 设置它。该配置把 LangChain 原生 `handle_validation_error` 指向既有无 input 的 `_validation_error_message`，未扩展到其他任务的 Tool。
+
+额外检查：
+
+```bash
+PYTHONPATH=src MULTIMODAL_AGENT_PROVIDER_MODE=mock \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
+  tests/tdd/langgraph-native-tools/test_effect_tools.py \
+  tests/tdd/image-generation-studio-link/test_image_generation_output.py \
+  tests/core/integration/test_context_lifecycle.py \
+  tests/core/integration/test_durable_lifecycle.py
+```
+
+结果：`31 passed`（覆盖既有成功图片、HITL/context 与 durable lifecycle）；Ruff 和 `git diff --check` 通过。
