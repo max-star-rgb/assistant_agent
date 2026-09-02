@@ -9,7 +9,7 @@ from deepagents.backends import FilesystemBackend, LocalShellBackend
 from langchain.agents import AgentState
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableLambda
-from langchain_core.tools import BaseTool, tool
+from langchain_core.tools import BaseTool, ToolException, tool
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode, ToolRuntime
 
@@ -20,10 +20,8 @@ from assistant_agent.native_agent.context import (
 from assistant_agent.native_agent.assistant_agent import build_assistant_agent
 from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.tools import native_boundary
-from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.native_boundary import (
     builtin_tool_metadata,
-    invoke_native_tool,
 )
 
 
@@ -127,14 +125,7 @@ def test_sensitive_expected_failure_uses_default_toolnode_error_message() -> Non
     def write_failure_probe(value: str):
         """Return a deterministic expected write failure."""
 
-        return invoke_native_tool(
-            "write_failure_probe",
-            lambda: ToolResult(
-                tool_name="write_failure_probe",
-                success=False,
-                error=f"expected-write-failure:{value}",
-            ),
-        )
+        raise ToolException(f"expected-write-failure:{value}")
 
     configured = _configure_builtin_probe(
         write_failure_probe,
@@ -152,12 +143,11 @@ def test_sensitive_unknown_failure_is_sanitized_by_default_toolnode() -> None:
     def unknown_failure_probe():
         """Raise one unexpected implementation failure."""
 
-        def fail() -> ToolResult:
-            raise RuntimeError(
+        raise native_boundary.native_tool_exception(
+            RuntimeError(
                 "api_key=secret-sentinel path=/home/private-sentinel/result.json"
             )
-
-        return invoke_native_tool("unknown_failure_probe", fail)
+        )
 
     configured = _configure_builtin_probe(
         unknown_failure_probe,
@@ -180,15 +170,8 @@ def test_read_failure_retries_before_becoming_a_tool_message(tmp_path: Path) -> 
     def read_failure_probe(value: str):
         """Return a deterministic expected read failure."""
 
-        def fail() -> ToolResult:
-            attempts.append(len(attempts) + 1)
-            return ToolResult(
-                tool_name="read_failure_probe",
-                success=False,
-                error=f"expected-read-failure:{value}",
-            )
-
-        return invoke_native_tool("read_failure_probe", fail)
+        attempts.append(len(attempts) + 1)
+        raise ToolException(f"expected-read-failure:{value}")
 
     configured = _configure_builtin_probe(read_failure_probe)
     graph = build_assistant_agent(
