@@ -1,4 +1,4 @@
-"""Runtime contracts for LLM-authored, system-triggered proactive messages."""
+"""Media contracts for LLM-authored, system-triggered proactive messages."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ class ProactiveDeliveryAttempt(BaseModel):
 
 
 class ProactiveMessageSink(Protocol):
-    """Entry-owned channel adapter used by Runtime notification orchestration."""
+    """Entry-owned channel adapter used by notification orchestration."""
 
     def publish(
         self,

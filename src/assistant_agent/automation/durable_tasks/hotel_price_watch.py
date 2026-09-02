@@ -13,6 +13,8 @@ from assistant_agent.automation.durable_tasks.models import (
     DurableTaskSnapshot,
     TaskCheckpoint,
     TaskNotificationRequest,
+    TaskPlan,
+    TaskStep,
     TaskWaitState,
     TrustedTaskBinding,
     utc_now,
@@ -27,7 +29,6 @@ from assistant_agent.tools.plugins.builtin.lodging.backend import (
     LodgingSearchAdapter,
     MockLodgingSearchAdapter,
 )
-from assistant_agent.runtime.planning_models import TaskPlan, TaskStep
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.automation.durable_tasks.service import DurableTaskService
 from assistant_agent.automation.durable_tasks.worker import TaskQuantumResult

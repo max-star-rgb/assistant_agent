@@ -10,7 +10,7 @@ from assistant_agent.media.artifact_delivery import (
     MediaArtifactDeliveryHub,
     get_media_artifact_delivery_hub,
 )
-from assistant_agent.runtime.image_to_3d_jobs import (
+from assistant_agent.media.image_to_3d_jobs import (
     ImageTo3DArtifact,
     ImageTo3DJobRegistry,
     get_image_to_3d_job_registry,

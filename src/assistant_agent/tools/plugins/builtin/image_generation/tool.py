@@ -29,7 +29,7 @@ from assistant_agent.tools.plugins.builtin.image_generation.backend import (
     ImageGenerationAdapter,
     MockImageGenerationAdapter,
 )
-from assistant_agent.runtime.generated_artifacts import (
+from assistant_agent.media.generated_artifacts import (
     MAX_DELIVERED_IMAGE_COUNT,
     generated_artifact_payload,
     generated_artifact_payload_for_ref,

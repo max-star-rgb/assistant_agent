@@ -1,4 +1,4 @@
-"""Local artifact storage for generated media returned by providers."""
+"""Media-owned artifact storage for generated outputs returned by providers."""
 
 from __future__ import annotations
 

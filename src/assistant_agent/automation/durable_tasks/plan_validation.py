@@ -6,7 +6,7 @@ from collections.abc import Collection
 
 from pydantic import BaseModel, Field
 
-from assistant_agent.runtime.planning_models import TaskPlan
+from assistant_agent.automation.durable_tasks.models import TaskPlan
 
 
 class PlanValidationResult(BaseModel):

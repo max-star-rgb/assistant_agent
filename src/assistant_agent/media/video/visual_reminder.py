@@ -25,7 +25,7 @@ from assistant_agent.media.embedding.observability import (
     EmbeddingObserver,
     emit_visual_reminder_observation,
 )
-from assistant_agent.runtime.proactive_messages import (
+from assistant_agent.media.proactive_messages import (
     ProactiveDeliveryAttempt,
     ProactiveMessage,
     ProactiveMessageSink,

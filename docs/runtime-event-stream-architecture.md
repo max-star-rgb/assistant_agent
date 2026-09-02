@@ -65,6 +65,25 @@ OS identity 有权访问的真实路径。Git 操作使用独立
 项目指令使用同一个 cwd，但 task handle 仍不保存 Workspace、仓库快照或文件副本。
 worker thread/run 必须来自进程内 async adapter 签发的 internal capability；普通外部身份即使伪造完整 metadata 也会被拒绝。
 
+## 物理模块边界
+
+`native_agent/` 是当前生产 Agent 核心，包含统一 Assistant/worker factory、Prompt 与公开 context、原生 state、
+Memory middleware、Provider composition、Tool/Profile middleware 和模型循环限制。这里的模块均由当前
+`assistant-native-v4` composition 或其 worker/Memory 图消费，不再与旧 Runtime 实现并列分类。
+
+`runtime/` 只保留以下跨领域契约：
+
+- `local_backend.py`、`thread_resources.py`：生产 composition、filesystem 和 thread 资源使用的执行基础设施；
+- `chat_adapter.py`、`output_models.py`、`citations.py`、`requests.py`：被 Provider、Context、媒体兼容路径和
+  durable task 共同消费的
+  provider-neutral 请求与输出契约；
+- `state.py`、`cancellation.py`、`capability_grants.py`：不进入统一 native Agent 主图，当前仅供 durable task、
+  旧 multi-agent/API 与历史观测兼容路径使用；它们是切面四按消费者迁移或删除的明确候选，
+  不得作为新生产功能的依赖入口。
+
+Durable task 的 `TaskPlan/TaskStep` 归 `automation/durable_tasks/models.py`；生成媒体、3D job 与主动媒体消息契约
+归 `media/`。Observability helper 已归 `observability/`。仓库内部不保留旧 Runtime import shim。
+
 internal capability 当前是进程内随机 secret，适配本地单进程部署且不会写入 state、thread/run metadata、日志或
 配置文件。多进程 Agent Server 启用前必须改为共享 secret 或正式 service identity。
 

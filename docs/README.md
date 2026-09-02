@@ -20,6 +20,7 @@
 | Media-Agent WebSocket、音视频 wire contract | [media-agent-service-websocket.md](media-agent-service-websocket.md) |
 | 统一 Assistant、Memory middleware、通用 worker、stream 与原生 state | [runtime-event-stream-architecture.md](runtime-event-stream-architecture.md) |
 | Tool、MCP、Tool Profile、Provider-native 能力和副作用治理 | [tool-calling-architecture.md](tool-calling-architecture.md) |
+| Durable task 计划、状态机、Store、lease 与 worker | [durable-task-architecture.md](durable-task-architecture.md) |
 | 长期 Memory Graph、冻结上下文和 backend | [memory-service-architecture.md](memory-service-architecture.md) |
 | Mem0 与远端视觉 Memory Service API | [memory_server_api_spec.md](memory_server_api_spec.md) |
 | Prompt、conversation、context budget 和 compaction | [context_engineering_status.md](context_engineering_status.md) |

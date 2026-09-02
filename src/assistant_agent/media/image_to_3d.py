@@ -11,11 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from assistant_agent.runtime.generated_artifacts import generated_artifact_payload
-from assistant_agent.runtime.image_to_3d_jobs import (
+from assistant_agent.media.image_to_3d_jobs import (
     ImageTo3DJobRegistry,
     get_image_to_3d_job_registry,
 )
+from assistant_agent.media.generated_artifacts import generated_artifact_payload
 
 RequestJson = Callable[[str, str, bytes | None, dict[str, str]], dict[str, Any]]
 

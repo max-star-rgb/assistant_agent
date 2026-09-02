@@ -58,7 +58,7 @@ from assistant_agent.media.visual_perception.history_probe import (
     PoolVisualObservationHistoryProbe,
     VisualObservationHistoryProbe,
 )
-from assistant_agent.runtime.proactive_messages import ProactiveMessageSink
+from assistant_agent.media.proactive_messages import ProactiveMessageSink
 from assistant_agent.provider_mode import ProviderMode
 
 

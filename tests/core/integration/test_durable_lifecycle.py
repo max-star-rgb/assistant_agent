@@ -8,7 +8,9 @@ import pytest
 from assistant_agent.automation.durable_tasks.models import (
     TaskCheckpoint,
     TaskNotificationRequest,
+    TaskPlan,
     TaskResumeRequest,
+    TaskStep,
     TaskWaitState,
     utc_now,
 )
@@ -23,7 +25,6 @@ from assistant_agent.automation.durable_tasks.worker import (
     TaskQuantumResult,
 )
 from assistant_agent.identity import RequestIdentity
-from assistant_agent.runtime.planning_models import TaskPlan, TaskStep
 from assistant_agent.runtime.state import AgentState
 from tests.core.support import create_probe_tool
 

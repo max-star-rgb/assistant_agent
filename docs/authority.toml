@@ -62,7 +62,9 @@ source_globs = [
   "src/assistant_agent/agent_server/media_session.py",
   "src/assistant_agent/api/rendering_3d_callback.py",
   "src/assistant_agent/media/artifact_delivery.py",
-  "src/assistant_agent/runtime/generated_artifacts.py",
+  "src/assistant_agent/media/generated_artifacts.py",
+  "src/assistant_agent/media/image_to_3d.py",
+  "src/assistant_agent/media/image_to_3d_jobs.py",
   "src/assistant_agent/media/video/**",
   "scripts/media_simulator.py",
 ]
@@ -85,7 +87,15 @@ source_globs = [
   "src/assistant_agent/native_agent/memory_middleware.py",
   "src/assistant_agent/native_agent/state.py",
   "src/assistant_agent/native_agent/models.py",
+  "src/assistant_agent/runtime/__init__.py",
+  "src/assistant_agent/runtime/cancellation.py",
+  "src/assistant_agent/runtime/capability_grants.py",
+  "src/assistant_agent/runtime/chat_adapter.py",
+  "src/assistant_agent/runtime/citations.py",
   "src/assistant_agent/runtime/local_backend.py",
+  "src/assistant_agent/runtime/output_models.py",
+  "src/assistant_agent/runtime/requests.py",
+  "src/assistant_agent/runtime/state.py",
   "src/assistant_agent/runtime/thread_resources.py",
 ]
 thin_references = ["README.md", "docs/agent-server-architecture.md"]
@@ -101,7 +111,7 @@ id = "tool-calling"
 authority = "docs/tool-calling-architecture.md"
 read_when = [
   "Tool、Tool schema、catalog、exposure、ToolNode 或 ToolRuntime",
-  "Plugin、MCP、durable task、Provider-native 能力或副作用治理",
+  "Plugin、MCP、durable task Tool 接入、Provider-native 能力或副作用治理",
 ]
 source_globs = [
   ".env.example",
@@ -112,12 +122,10 @@ source_globs = [
   "src/assistant_agent/native_agent/tools.py",
   "src/assistant_agent/runtime/local_backend.py",
   "src/assistant_agent/runtime/thread_resources.py",
-  "src/assistant_agent/runtime/generated_artifacts.py",
   "src/assistant_agent/skills/**",
   "src/assistant_agent/tools/**",
   "src/assistant_agent/improvement/evaluator.py",
   "src/assistant_agent/mcp/**",
-  "src/assistant_agent/automation/durable_tasks/**",
   "skills/**",
 ]
 thin_references = ["README.md", "scripts/README.md"]
@@ -125,6 +133,24 @@ verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_tool_contract.py",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_extension_contract.py",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/unified-assistant-agent",
+]
+exclusive_literals = []
+exclusive_allowlist = []
+
+[[domains]]
+id = "durable-tasks"
+authority = "docs/durable-task-architecture.md"
+read_when = [
+  "durable task 状态机、schedule、resume、lease、checkpoint 或 background worker",
+  "TaskPlan、TaskStep、TaskStore、hotel price watch 或 durable failure atomicity",
+]
+source_globs = [
+  "src/assistant_agent/automation/durable_tasks/**",
+  "tests/core/integration/test_durable_lifecycle.py",
+]
+thin_references = ["docs/tool-calling-architecture.md", "tests/README.md"]
+verification = [
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/integration/test_durable_lifecycle.py",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
@@ -202,6 +228,7 @@ read_when = [
 ]
 source_globs = [
   "src/assistant_agent/media/embedding/**",
+  "src/assistant_agent/media/proactive_messages.py",
   "src/assistant_agent/media/visual_perception/**",
   "src/assistant_agent/media/video/**",
   "src/assistant_agent/tools/plugins/builtin/media_inspection/**",

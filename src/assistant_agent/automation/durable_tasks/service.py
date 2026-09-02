@@ -17,9 +17,11 @@ from assistant_agent.automation.durable_tasks.models import (
     TaskArtifactRef,
     TaskCheckpoint,
     TaskEvent,
+    TaskPlan,
     TaskPlanVersion,
     TaskRecord,
     TaskResumeRequest,
+    TaskStep,
     TaskStepRun,
     TrustedTaskBinding,
     utc_now,
@@ -29,7 +31,6 @@ from assistant_agent.automation.notification_models import (
     NotificationEnvelope,
     NotificationOwner,
 )
-from assistant_agent.runtime.planning_models import TaskPlan, TaskStep
 from assistant_agent.automation.durable_tasks.store import TaskStore
 
 if TYPE_CHECKING:

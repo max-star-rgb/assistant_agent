@@ -1,4 +1,4 @@
-"""Runtime-owned image-to-3D job and completion contracts."""
+"""Media-owned image-to-3D job and completion contracts."""
 
 from __future__ import annotations
 

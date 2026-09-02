@@ -75,8 +75,8 @@ from assistant_agent.proactive_delivery import (
     ProactiveMessage,
     SQLiteProactiveDeliveryStore,
 )
-from assistant_agent.runtime.proactive_messages import ProactiveDeliveryAttempt
-from assistant_agent.runtime.generated_artifacts import (
+from assistant_agent.media.proactive_messages import ProactiveDeliveryAttempt
+from assistant_agent.media.generated_artifacts import (
     GeneratedArtifactFile,
     generated_artifact_file,
     generated_artifact_payload_for_ref,

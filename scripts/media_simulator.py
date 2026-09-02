@@ -20,7 +20,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from assistant_agent.identifiers import new_prefixed_uuid7  # noqa: E402
-from assistant_agent.runtime.generated_artifacts import (  # noqa: E402
+from assistant_agent.media.generated_artifacts import (  # noqa: E402
     MAX_ARTIFACT_BYTES,
     MAX_DELIVERED_IMAGE_COUNT,
 )
