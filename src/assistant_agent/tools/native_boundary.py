@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Mapping
 from typing import Any
 
 from langchain_core.tools import BaseTool, ToolException
@@ -12,49 +12,26 @@ from pydantic import ValidationError
 
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.providers.provider_errors import sanitize_error_message
-from assistant_agent.tools.models import ToolResult
 
-def native_tool_response(
-    tool_name: str,
-    result: ToolResult,
+
+def native_content_and_artifact(
+    model_observation: Mapping[str, Any],
+    artifact: Mapping[str, Any],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Project a successful result into LangChain content and artifact values."""
-
-    if not result.success:
-        raise ToolException(result.error or f"{tool_name} failed")
-    observation = result.model_observation
-    if observation is None:
-        observation = result.data or {"status": "succeeded"}
     return (
-        [
-            {
-                "type": "text",
-                "text": json.dumps(
-                    observation,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    indent=2,
-                ),
-            }
-        ],
-        dict(result.data or {}),
+        [{"type": "text", "text": json.dumps(dict(model_observation), ensure_ascii=False, sort_keys=True, indent=2)}],
+        dict(artifact),
     )
 
 
-def invoke_native_tool(
-    tool_name: str,
-    operation: Callable[[], ToolResult],
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Execute a business operation with native ToolException semantics."""
-
-    try:
-        return native_tool_response(tool_name, operation())
-    except ToolException:
-        raise
-    except ValidationError as exc:
-        raise ToolException(_validation_error_message(tool_name, exc)) from exc
-    except Exception as exc:
-        raise ToolException(sanitize_error_message(str(exc))) from exc
+def native_tool_exception(
+    exc: BaseException,
+    *,
+    tool_name: str = "tool",
+) -> ToolException:
+    if isinstance(exc, ValidationError):
+        return ToolException(_validation_error_message(tool_name, exc))
+    return ToolException(sanitize_error_message(str(exc)))
 
 
 def builtin_tool_metadata(
@@ -82,6 +59,7 @@ def configure_builtin_tool(
     )
     if bounded_expected_errors:
         tool.handle_tool_error = _bounded_tool_error
+    tool.handle_validation_error = lambda exc: _validation_error_message(tool.name, exc)
     return tool
 
 

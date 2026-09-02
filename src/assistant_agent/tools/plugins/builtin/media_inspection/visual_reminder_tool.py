@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal
 from uuid import uuid4
 
-from langchain_core.tools import BaseTool, tool
+from langchain_core.tools import BaseTool, ToolException, tool
 from langgraph.prebuilt import ToolRuntime
 from pydantic import BaseModel, Field, model_validator
 
@@ -17,15 +17,14 @@ from assistant_agent.media.video.visual_reminder import (
     VisualReminderRegistry,
     validate_visual_reminder_target_embedding,
 )
-from assistant_agent.native_agent.context import AssistantRunContext
+from assistant_agent.native_agent.context import AssistantRunContext, authenticated_user_identity
 from assistant_agent.tools.availability import ToolAvailability
 from assistant_agent.tools.ids import VISUAL_REMINDER_MANAGE_TOOL_NAME
-from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.native_boundary import (
     configure_builtin_tool,
-    invoke_native_tool,
+    native_content_and_artifact,
+    native_tool_exception,
 )
-from assistant_agent.tools.runtime import ToolContext, tool_context
 
 
 VisualReminderAction = Literal["create", "list", "cancel"]
@@ -123,9 +122,8 @@ def create_visual_reminder_manage_tool(
         才能视为已创建或取消。提醒只在本次连接内有效，不持久化或跨连接重放。
         """
 
-        return invoke_native_tool(
-            VISUAL_REMINDER_MANAGE_TOOL_NAME,
-            lambda: _execute_visual_reminder_manage_from_runtime(
+        try:
+            output = _execute_visual_reminder_manage_from_runtime(
                 action=action,
                 target=target,
                 message=message,
@@ -133,8 +131,15 @@ def create_visual_reminder_manage_tool(
                 runtime=runtime,
                 coordinator_store=coordinator_store,
                 reminder_registry=reminder_registry,
-            ),
-        )
+            )
+            data = output.model_dump(mode="json")
+            return native_content_and_artifact(data, data)
+        except ToolException:
+            raise
+        except Exception as exc:
+            raise native_tool_exception(
+                exc, tool_name=VISUAL_REMINDER_MANAGE_TOOL_NAME
+            ) from exc
 
     return configure_builtin_tool(
         visual_reminder_manage,
@@ -152,7 +157,7 @@ def _execute_visual_reminder_manage_from_runtime(
     runtime: ToolRuntime[AssistantRunContext],
     coordinator_store: SessionEmbeddingCoordinatorStore,
     reminder_registry: VisualReminderRegistry,
-) -> ToolResult:
+) -> VisualReminderManageOutput:
     return _execute_visual_reminder_manage(
         VisualReminderManageInput(
             action=action,
@@ -161,7 +166,8 @@ def _execute_visual_reminder_manage_from_runtime(
             reminder_id=reminder_id,
             session_id=runtime.execution_info.thread_id or "",
         ),
-        tool_context(runtime),
+        user_id=authenticated_user_identity(runtime),
+        run_id=runtime.execution_info.run_id,
         coordinator_store=coordinator_store,
         reminder_registry=reminder_registry,
     )
@@ -169,19 +175,15 @@ def _execute_visual_reminder_manage_from_runtime(
 
 def _execute_visual_reminder_manage(
     input: VisualReminderManageInput,
-    context: ToolContext,
+    user_id: str,
+    run_id: str | None,
     *,
     coordinator_store: SessionEmbeddingCoordinatorStore,
     reminder_registry: VisualReminderRegistry,
-) -> ToolResult:
-    user_id = context.user_id or ""
+) -> VisualReminderManageOutput:
     manager = reminder_registry.peek(user_id, input.session_id)
     if manager is None:
-        return _visual_reminder_result(
-            {"status": "unavailable", "count": 0, "reminders": []},
-            success=False,
-            error="visual reminder connection is unavailable",
-        )
+        raise ToolException("visual reminder connection is unavailable")
     if input.action == "list":
         reminders = [
             record.model_dump(mode="json") for record in manager.list_records()
@@ -204,8 +206,9 @@ def _execute_visual_reminder_manage(
         )
     return _create_visual_reminder(
         input,
-        context,
-        manager,
+        user_id=user_id,
+        run_id=run_id,
+        manager=manager,
         coordinator_store=coordinator_store,
         reminder_registry=reminder_registry,
     )
@@ -213,13 +216,14 @@ def _execute_visual_reminder_manage(
 
 def _create_visual_reminder(
     input: VisualReminderManageInput,
-    context: ToolContext,
+    user_id: str,
+    run_id: str | None,
     manager,
     *,
     coordinator_store: SessionEmbeddingCoordinatorStore,
     reminder_registry: VisualReminderRegistry,
-) -> ToolResult:
-    lease = coordinator_store.acquire(context.user_id or "", input.session_id)
+) -> VisualReminderManageOutput:
+    lease = coordinator_store.acquire(user_id, input.session_id)
     try:
         readiness = lease.coordinator.provider.readiness()
         if not (
@@ -228,12 +232,10 @@ def _create_visual_reminder(
             and readiness.embedding_space_id
             and readiness.dimension
         ):
-            return _visual_reminder_result(
-                {"status": "unavailable", "count": 0, "reminders": []},
-                success=False,
-                error="visual reminder joint embedding space is unavailable",
+            raise ToolException(
+                "visual reminder joint embedding space is unavailable"
             )
-        observation_id = f"visual-reminder:{context.run_id or 'run'}:{uuid4().hex}"
+        observation_id = f"visual-reminder:{run_id or 'run'}:{uuid4().hex}"
         outcome = lease.coordinator.embed_text(
             TextObservation(
                 session_id=input.session_id,
@@ -245,11 +247,7 @@ def _create_visual_reminder(
     finally:
         lease.release()
     if not isinstance(outcome, EmbeddingEvent):
-        return _visual_reminder_result(
-            {"status": "unavailable", "count": 0, "reminders": []},
-            success=False,
-            error="visual reminder text embedding is unavailable",
-        )
+        raise ToolException("visual reminder text embedding is unavailable")
     if (
         outcome.embedding_space_id != readiness.embedding_space_id
         or outcome.dimension != readiness.dimension
@@ -259,28 +257,20 @@ def _create_visual_reminder(
             and outcome.model_revision != readiness.model_revision
         )
     ):
-        return _visual_reminder_result(
-            {"status": "unavailable", "count": 0, "reminders": []},
-            success=False,
-            error="visual reminder text embedding is incompatible",
-        )
+        raise ToolException("visual reminder text embedding is incompatible")
     try:
         validate_visual_reminder_target_embedding(
             outcome,
             session_id=input.session_id,
         )
     except ValueError:
-        return _visual_reminder_result(
-            {"status": "unavailable", "count": 0, "reminders": []},
-            success=False,
-            error="visual reminder text embedding is incompatible",
-        )
+        raise ToolException("visual reminder text embedding is incompatible") from None
     record = manager.create(
         target=input.target or "",
         message=input.message or "",
         target_embedding=outcome,
-        run_id=context.run_id,
-        trace_id=context.trace_id,
+        run_id=run_id,
+        trace_id=None,
     )
     return _visual_reminder_result(
         {
@@ -293,29 +283,5 @@ def _create_visual_reminder(
 
 def _visual_reminder_result(
     data: dict,
-    *,
-    success: bool = True,
-    error: str | None = None,
-) -> ToolResult:
-    output = VisualReminderManageOutput.model_validate(data).model_dump(mode="json")
-    return ToolResult(
-        tool_name=VISUAL_REMINDER_MANAGE_TOOL_NAME,
-        success=success,
-        data=output,
-        model_observation=output,
-        voice_summary=_voice_summary(output),
-        error=error,
-    )
-
-
-def _voice_summary(data: dict) -> str:
-    status = data.get("status")
-    if status == "pending":
-        return "已创建当前视频连接的一次性视觉提醒。"
-    if status == "cancelled":
-        return "已取消视觉提醒。"
-    if status == "available":
-        return f"当前视频连接有 {data.get('count', 0)} 条视觉提醒记录。"
-    if status == "not_found":
-        return "没有找到该视觉提醒。"
-    return "当前视频连接无法完成视觉提醒操作。"
+) -> VisualReminderManageOutput:
+    return VisualReminderManageOutput.model_validate(data)

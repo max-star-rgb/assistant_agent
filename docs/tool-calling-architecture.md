@@ -1,6 +1,6 @@
 # LangChain-native Tool 与扩展架构
 
-最后更新：2026-08-31
+最后更新：2026-09-02
 
 ## Authority contract
 
@@ -40,9 +40,12 @@ filesystem 与 `execute`；`browser-operator` 只接收 Playwright Tool。角色
 
 ## Tool schema、可见性与结果
 
-每个内建业务 Tool 都是官方 `@tool` factory 返回的标准 `BaseTool`。`ToolRuntime[AssistantRunContext]` 是框架注入
-的隐藏参数，不进入模型可见 schema；认证 identity 只从 `server_info.user.identity` 读取。Tool metadata 只保存
-`source=builtin|deepagents|mcp`、availability 等观测或条件暴露事实，不参与授权、重试或 HITL。
+17 个内建业务 Tool（calendar/contacts、email、`file_read`、web、lodging 与价格订阅、shopping、图片搜索、
+图片生成、图生 3D 和四个媒体 Tool）均由官方 `@tool` factory 返回标准 `BaseTool`。handler 直接接收
+`ToolRuntime[AssistantRunContext]`，它是框架注入的隐藏参数，不进入模型可见 schema；认证 identity 只从
+`server_info.user.identity` 读取。handler 成功直接返回 `content_and_artifact` 的 `(content, artifact)`，预期或
+清洗后的领域失败抛出 `ToolException`。Tool metadata 只保存 `source=builtin|deepagents|mcp`、availability 等观测或
+条件暴露事实，不参与授权、重试或 HITL。
 
 成功结果使用标准 `ToolMessage(content, artifact)`：`content` 是有界模型投影，`artifact` 保存结构化业务结果；
 失败由 `ToolException` 或 `handle_tool_error` 转为可解释 error `ToolMessage`。Provider 原始响应、secret 和宿主路径
@@ -52,6 +55,9 @@ filesystem 与 `execute`；`browser-operator` 只接收 Playwright Tool。角色
 `structuredContent`；终端入口只从转换后的标准 ToolMessage artifact 确定性交付，不解析模型正文。
 只读 Tool 使用官方 `ToolRetryMiddleware` 有界重试；`live_view_inspect` 为避免重复
 当前画面推理不进入自动 retry 清单。
+
+`ToolContext`、`invoke_native_tool` 和以 `ToolResult` 为中心的生产兼容执行链均已删除。`ToolResult` 类型仅由
+历史兼容切面 `runtime/state.py` 保存，不能作为新 Tool 的输入、执行或结果边界。
 
 `ToolProfileMiddleware` 先用当前 Graph 的真实 Tool inventory 裁剪受信静态 catalog，只保留非空 Profile 和其中
 实际注册的 Tool；没有可用 Profile 时不暴露 `activate_tool_profile`。模型调用

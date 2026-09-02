@@ -13,7 +13,6 @@ from assistant_agent.media.video.video_adapter import VideoUnderstandingAdapter
 from assistant_agent.media.video.video_context import VideoContextStore
 from assistant_agent.media.vision.models import (
     VisionUnderstandingRequest,
-    VisionUnderstandingResult,
 )
 from assistant_agent.media.vision.observability import (
     invoke_native_vision_model,
@@ -26,7 +25,6 @@ from assistant_agent.media.vision.vision_client import (
 )
 from assistant_agent.native_agent.context import (
     AssistantRunContext,
-    assistant_runtime_facts,
     authenticated_user_identity,
 )
 from assistant_agent.providers.provider_errors import (
@@ -34,135 +32,18 @@ from assistant_agent.providers.provider_errors import (
     build_provider_error,
 )
 from assistant_agent.tools.availability import ToolAvailability
-from assistant_agent.tools.runtime import ToolContext
-from assistant_agent.tools.capability_output import build_capability_output_contract
 from assistant_agent.tools.ids import (
     IMAGE_UNDERSTANDING_CAPABILITY,
     UPLOADED_MEDIA_INSPECT_TOOL_NAME,
 )
-from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.native_boundary import (
     configure_builtin_tool,
-    invoke_native_tool,
+    native_content_and_artifact,
+    native_tool_exception,
 )
-from assistant_agent.tools.plugins.builtin.media_inspection.video_branch import (
-    VideoUnderstandingBranch,
+from assistant_agent.media.video.understanding_service import (
+    VideoUnderstandingService,
 )
-
-
-class UploadedMediaInspector:
-    """Execute uploaded image or explicit-video understanding."""
-
-    def __init__(
-        self,
-        *,
-        client: VisionUnderstandingClient,
-        video_branch: VideoUnderstandingBranch,
-    ) -> None:
-        self.client = client
-        self.adapter = getattr(client, "image_adapter", None)
-        self.video_branch = video_branch
-
-    def inspect(
-        self,
-        request: VisionUnderstandingRequest,
-        context: ToolContext,
-    ) -> ToolResult:
-        if vision_request_has_video(request):
-            result = self.video_branch.execute(
-                video_request_from_vision_request(request),
-                context,
-            )
-            return result.model_copy(
-                update={"tool_name": UPLOADED_MEDIA_INSPECT_TOOL_NAME}
-            )
-        return self._inspect_images(request, context)
-
-    def _inspect_images(
-        self,
-        request: VisionUnderstandingRequest,
-        context: ToolContext,
-    ) -> ToolResult:
-        try:
-            if getattr(self.client, "traces_as_chat_model", False):
-                result = invoke_native_vision_model(
-                    lambda config: self.client.understand(request, config=config),
-                    context=None,
-                    capability=IMAGE_UNDERSTANDING_CAPABILITY,
-                    source="request_image",
-                    media_kind="image",
-                    media_count=len(request.image_ids),
-                    query_provided=bool(request.question or request.user_query),
-                )
-            else:
-                result = observe_vision_inference(
-                    lambda: self.client.understand(request),
-                    context=context,
-                    capability=IMAGE_UNDERSTANDING_CAPABILITY,
-                    source="request_image",
-                    media_kind="image",
-                    media_count=len(request.image_ids),
-                )
-        except ProviderAdapterError as exc:
-            provider = getattr(
-                getattr(self.adapter, "config", None),
-                "provider",
-                "unknown",
-            )
-            error = build_provider_error(
-                exc.code,
-                exc.message,
-                provider=provider,
-                capability=IMAGE_UNDERSTANDING_CAPABILITY,
-            )
-            contract = build_capability_output_contract(
-                capability=IMAGE_UNDERSTANDING_CAPABILITY,
-                status="failed",
-                errors=[error.model_dump(mode="json")],
-            )
-            return ToolResult(
-                tool_name=UPLOADED_MEDIA_INSPECT_TOOL_NAME,
-                success=False,
-                model_observation=_vision_error_model_observation(
-                    error.model_dump(mode="json")
-                ),
-                error=f"{error.code}: {error.message}",
-                contract=contract,
-            )
-        except ValueError as exc:
-            message = build_provider_error(
-                "provider_request_invalid",
-                str(exc),
-                recoverable=True,
-            ).message
-            contract = build_capability_output_contract(
-                capability=IMAGE_UNDERSTANDING_CAPABILITY,
-                status="failed",
-                errors=[
-                    {
-                        "code": "missing_required_input",
-                        "message": message,
-                        "recoverable": True,
-                    }
-                ],
-            )
-            return ToolResult(
-                tool_name=UPLOADED_MEDIA_INSPECT_TOOL_NAME,
-                success=False,
-                model_observation={
-                    "summary": message,
-                    "errors": [
-                        {
-                            "code": "missing_required_input",
-                            "message": message,
-                            "recoverable": True,
-                        }
-                    ],
-                },
-                error=message,
-                contract=contract,
-            )
-        return _vision_tool_result(result)
 
 
 def create_uploaded_media_inspect_tool(
@@ -173,14 +54,10 @@ def create_uploaded_media_inspect_tool(
 ) -> BaseTool:
     """Create the native Tool while retaining one process-owned VLM client."""
 
-    inspector = UploadedMediaInspector(
+    video_service = VideoUnderstandingService(
         client=client,
-        video_branch=VideoUnderstandingBranch(
-            tool_name=UPLOADED_MEDIA_INSPECT_TOOL_NAME,
-            client=client,
-            adapter=video_adapter,
-            context_store=context_store,
-        ),
+        adapter=video_adapter,
+        context_store=context_store,
     )
 
     @tool(
@@ -200,8 +77,7 @@ def create_uploaded_media_inspect_tool(
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """分析当前请求中由用户主动上传的图片或视频附件。"""
 
-        def inspect_uploaded_media() -> ToolResult:
-            runtime_facts = assistant_runtime_facts(runtime.config)
+        def inspect_uploaded_media() -> tuple[list[dict[str, Any]], dict[str, Any]]:
             state = runtime.state if isinstance(runtime.state, dict) else {}
             media = latest_runtime_media(state)
             if not media.has_uploaded_media:
@@ -219,49 +95,58 @@ def create_uploaded_media_inspect_tool(
                 metadata={"media_source": "uploaded"},
                 memory_context=list(state.get("memory_context", ())) or None,
             )
-            context = ToolContext(
-                user_id=request.user_id,
-                session_id=request.session_id,
-                run_id=getattr(execution, "run_id", None),
-                metadata={
-                    "entry_profile": runtime_facts.entry_profile,
-                    "media_source": "uploaded",
-                },
-            )
-            return inspector.inspect(request, context)
+            if vision_request_has_video(request):
+                outcome = video_service.inspect(
+                    video_request_from_vision_request(request)
+                )
+                if outcome.status == "failed":
+                    raise ToolException(outcome.error or "uploaded media inspection failed")
+                return native_content_and_artifact(outcome.model_observation, outcome.data)
+            try:
+                if getattr(client, "traces_as_chat_model", False):
+                    result = invoke_native_vision_model(
+                        lambda config: client.understand(request, config=config),
+                        context=None,
+                        capability=IMAGE_UNDERSTANDING_CAPABILITY,
+                        source="request_image",
+                        media_kind="image",
+                        media_count=len(request.image_ids),
+                        query_provided=bool(request.question or request.user_query),
+                    )
+                else:
+                    result = observe_vision_inference(
+                        lambda: client.understand(request), context=None,
+                        capability=IMAGE_UNDERSTANDING_CAPABILITY, source="request_image",
+                        media_kind="image", media_count=len(request.image_ids),
+                    )
+            except ProviderAdapterError as exc:
+                adapter_config = getattr(
+                    getattr(client, "image_adapter", None), "config", None
+                )
+                error = build_provider_error(
+                    exc.code,
+                    exc.message,
+                    provider=getattr(adapter_config, "provider", "unknown"),
+                    capability=IMAGE_UNDERSTANDING_CAPABILITY,
+                )
+                raise ToolException(f"{error.code}: {error.message}") from exc
+            except ValueError as exc:
+                raise native_tool_exception(exc, tool_name=UPLOADED_MEDIA_INSPECT_TOOL_NAME) from exc
+            data = result.model_dump(mode="json")
+            return native_content_and_artifact(_vision_model_observation(data), data)
 
-        return invoke_native_tool(
-            UPLOADED_MEDIA_INSPECT_TOOL_NAME,
-            inspect_uploaded_media,
-        )
+        try:
+            return inspect_uploaded_media()
+        except ToolException:
+            raise
+        except Exception as exc:
+            raise native_tool_exception(
+                exc, tool_name=UPLOADED_MEDIA_INSPECT_TOOL_NAME
+            ) from exc
 
     return configure_builtin_tool(
         uploaded_media_inspect,
         availability=ToolAvailability.UPLOADED_MEDIA_PRESENT.value,
-    )
-
-
-def _vision_tool_result(result: VisionUnderstandingResult) -> ToolResult:
-    data = result.model_dump(mode="json")
-    contract = build_capability_output_contract(
-        capability=IMAGE_UNDERSTANDING_CAPABILITY,
-        status="succeeded",
-        output_ref=result.output_ref,
-        data=data,
-        metadata={
-            "provider": result.provider,
-            "model": result.model,
-            "latency_ms": result.latency_ms,
-        },
-    )
-    return ToolResult(
-        tool_name=UPLOADED_MEDIA_INSPECT_TOOL_NAME,
-        success=True,
-        data=data,
-        model_observation=_vision_model_observation(data),
-        output_ref=result.output_ref,
-        latency_ms=result.latency_ms,
-        contract=contract,
     )
 
 
@@ -292,10 +177,4 @@ def _vision_model_observation(data: dict[str, Any]) -> dict[str, Any]:
         if data.get(key) not in (None, "", [], {})
     }
 
-
-def _vision_error_model_observation(error: dict[str, Any]) -> dict[str, Any]:
-    message = str(error.get("message") or "Vision understanding failed.")
-    return {"summary": message, "errors": [error]}
-
-
-__all__ = ["UploadedMediaInspector", "create_uploaded_media_inspect_tool"]
+__all__ = ["create_uploaded_media_inspect_tool"]

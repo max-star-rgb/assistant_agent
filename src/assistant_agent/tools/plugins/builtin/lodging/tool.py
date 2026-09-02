@@ -12,17 +12,17 @@ from pydantic import Field
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.tools.plugins.builtin.lodging.models import (
     LodgingSearchRequest,
+    LodgingSearchResult,
 )
-from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.native_boundary import (
     configure_builtin_tool,
-    invoke_native_tool,
+    native_content_and_artifact,
+    native_tool_exception,
 )
 from assistant_agent.tools.plugins.builtin.lodging.backend import (
     LodgingSearchAdapter,
     MockLodgingSearchAdapter,
 )
-from assistant_agent.tools.runtime import ToolContext, tool_context
 
 
 def create_lodging_search_tool(adapter: LodgingSearchAdapter | None = None) -> BaseTool:
@@ -92,9 +92,8 @@ def create_lodging_search_tool(adapter: LodgingSearchAdapter | None = None) -> B
         仅代表查询时结果；只读，不预订、占房或付款。
         """
 
-        return invoke_native_tool(
-            "lodging_search",
-            lambda: _execute_lodging_search(
+        try:
+            result = _execute_lodging_search(
                 search_adapter,
                 LodgingSearchRequest(
                     destination=destination,
@@ -111,9 +110,21 @@ def create_lodging_search_tool(adapter: LodgingSearchAdapter | None = None) -> B
                     max_nightly_price=max_nightly_price,
                     sort=sort,
                 ),
-                tool_context(runtime),
-            ),
-        )
+            )
+            if not result.success:
+                raise RuntimeError(result.error_message or "Lodging search failed.")
+            data = result.model_dump(mode="json")
+            return native_content_and_artifact(
+                {
+                    "status": "succeeded",
+                    "offers": data["offers"][:3],
+                    "observed_at": data["observed_at"],
+                    "provider_notice": data["provider_notice"],
+                },
+                data,
+            )
+        except Exception as exc:
+            raise native_tool_exception(exc) from exc
 
     return configure_builtin_tool(lodging_search)
 
@@ -121,36 +132,5 @@ def create_lodging_search_tool(adapter: LodgingSearchAdapter | None = None) -> B
 def _execute_lodging_search(
     adapter: LodgingSearchAdapter,
     input: LodgingSearchRequest,
-    context: ToolContext,
-) -> ToolResult:
-    result = adapter.search(input)
-    data = result.model_dump(mode="json")
-    if not result.success:
-        return ToolResult(
-            tool_name="lodging_search",
-            success=False,
-            data=data,
-            model_observation={
-                "status": "failed",
-                "error_code": result.error_code,
-                "summary": result.error_message,
-            },
-            error=result.error_message or "Lodging search failed.",
-            output_ref=result.output_ref,
-        )
-    return ToolResult(
-        tool_name="lodging_search",
-        success=True,
-        data=data,
-        model_observation={
-            "status": "succeeded",
-            "offers": data["offers"][:3],
-            "observed_at": data["observed_at"],
-            "provider_notice": data["provider_notice"],
-        },
-        output_ref=result.output_ref,
-        trace_summary={
-            "provider": result.provider,
-            "offer_count": len(result.offers),
-        },
-    )
+) -> LodgingSearchResult:
+    return adapter.search(input)
