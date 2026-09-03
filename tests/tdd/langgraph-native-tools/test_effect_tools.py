@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import base64
 import json
 from datetime import timedelta
 from pathlib import Path
@@ -34,7 +33,11 @@ from assistant_agent.tools.plugins.builtin.image_generation.models import (
 from assistant_agent.tools.plugins.builtin.image_generation.tool import (
     create_image_generation_tool,
 )
-from assistant_agent.tools.plugins.builtin.image_to_3d.tool import create_image_to_3d_tool
+from assistant_agent.tools.ids import IMAGE_GENERATION_TOOL_NAME
+from assistant_agent.tools.plugins.builtin.image_to_3d.tool import (
+    _latest_generated_image_ref,
+    create_image_to_3d_tool,
+)
 from assistant_agent.tools.plugins.builtin.lodging.watch_tool import (
     create_hotel_price_watch_create_tool,
 )
@@ -83,7 +86,7 @@ def test_effect_tools_hide_runtime_parameters_and_keep_native_handoffs(tmp_path:
     generated = resources.artifact_root / "generated"
     generated.mkdir()
     (generated / "cake.png").write_bytes(PNG_BYTES)
-    output_ref = f"/artifacts/{resources.thread_ref}/generated/cake.png"
+    output_ref = f"artifact://v1/{resources.thread_ref}/generated/cake.png"
 
     image_tool = create_image_generation_tool(
         _GeneratedImageAdapter(output_ref), thread_resource_manager=manager
@@ -91,15 +94,15 @@ def test_effect_tools_hide_runtime_parameters_and_keep_native_handoffs(tmp_path:
     image = _invoke(image_tool, {"prompt": "cake"})
     assert "runtime" not in image_tool.args
     assert json.loads(image.content[0]["text"]) == {
-        "summary": "Image generation succeeded."
+        "images": [{"image_id": "cake", "url": output_ref}]
     }
-    image_block = next(block for block in image.content if block["type"] == "image")
-    assert base64.b64decode(image_block["base64"]) == PNG_BYTES
+    assert [block["type"] for block in image.content] == ["text"]
     assert image.artifact["images"] == [
         {
             "image_id": "cake",
             "output_ref": output_ref,
             "mime_type": "image/png",
+            "url": output_ref,
         }
     ]
     assert "base64" not in image.artifact["images"][0]
@@ -131,6 +134,18 @@ def test_effect_tools_hide_runtime_parameters_and_keep_native_handoffs(tmp_path:
     assert task["submission_status"] == "accepted"
     assert task["task_id"].startswith("task_")
     assert task["progress_url"] == f"/tasks/{task['task_id']}/events"
+
+
+def test_image_to_3d_reuses_the_generation_artifact_ref() -> None:
+    output_ref = "artifact://v1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/generated/cake.png"
+    message = ToolMessage(
+        content="generated",
+        name=IMAGE_GENERATION_TOOL_NAME,
+        tool_call_id="call-image",
+        artifact={"images": [{"image_id": "cake", "output_ref": output_ref}]},
+    )
+
+    assert _latest_generated_image_ref({"messages": [message]}) == output_ref
 
 
 def test_calendar_create_keeps_runtime_idempotency_without_compatibility_wrapper() -> None:
@@ -260,8 +275,8 @@ def _invoke(tool: BaseTool, args: dict[str, object]) -> ToolMessage:
                 "run_id": "run",
                 "configurable": {
                     "thread_id": "thread",
-                    "langgraph_auth_user": _User(),
-                }
+                    "langgraph_auth_user": _User()
+                },
             },
         )
     )

@@ -71,7 +71,7 @@ def create_image_to_3d_tool(
             Field(
                 min_length=1,
                 description=(
-                    "原始图片ID，例如 cake_001；同一轮已调用 image_generation "
+                    "image_generation 返回的 artifact:// 图片引用；同一轮已调用 image_generation "
                     "时应省略。"
                 ),
             ),
@@ -126,7 +126,7 @@ def _execute_image_to_3d_from_runtime(
         ImageTo3DRequest(src_image=src_image),
         user_id=authenticated_user_identity(runtime),
         session_id=runtime.execution_info.thread_id,
-        latest_image_id=_latest_generated_image_id(state),
+        latest_image_ref=_latest_generated_image_ref(state),
     )
 
 
@@ -136,11 +136,11 @@ def _execute_image_to_3d(
     *,
     user_id: str,
     session_id: str | None,
-    latest_image_id: str | None,
+    latest_image_ref: str | None,
 ) -> ImageTo3DSubmission:
     if not session_id:
         raise ValueError("image_to_3d requires runtime session identity")
-    src_image = latest_image_id or input.src_image
+    src_image = latest_image_ref or input.src_image
     if not isinstance(src_image, str) or not src_image.strip():
         raise ValueError("image_to_3d requires a generated image")
     return adapter.start(
@@ -151,7 +151,7 @@ def _execute_image_to_3d(
     )
 
 
-def _latest_generated_image_id(state: Mapping[str, Any]) -> str | None:
+def _latest_generated_image_ref(state: Mapping[str, Any]) -> str | None:
     for message in reversed(state.get("messages", ())):
         if isinstance(message, HumanMessage):
             break
@@ -162,6 +162,14 @@ def _latest_generated_image_id(state: Mapping[str, Any]) -> str | None:
             or not isinstance(message.artifact, Mapping)
         ):
             continue
+        images = message.artifact.get("images")
+        if isinstance(images, (list, tuple)):
+            for image in reversed(images):
+                if not isinstance(image, Mapping):
+                    continue
+                output_ref = image.get("output_ref")
+                if isinstance(output_ref, str) and output_ref.strip():
+                    return output_ref.strip()
         image_ids = message.artifact.get("image_id")
         if isinstance(image_ids, str) and image_ids.strip():
             return image_ids.strip()

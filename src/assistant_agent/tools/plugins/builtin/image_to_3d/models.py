@@ -8,7 +8,7 @@ class ImageTo3DRequest(BaseModel):
         default=None,
         min_length=1,
         description=(
-            "原始图片ID，例如 cake_001；不包含目录和图片后缀。"
+            "image_generation 返回的 artifact:// 图片引用。"
             "同一轮已调用 image_generation 时应省略，运行时会自动使用最近生成的图片。"
         ),
     )

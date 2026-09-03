@@ -15,9 +15,10 @@ from assistant_agent.media.image_to_3d_jobs import (
     ImageTo3DJobRegistry,
     get_image_to_3d_job_registry,
 )
-from assistant_agent.media.generated_artifacts import generated_artifact_payload
+from assistant_agent.media.generated_artifacts import GeneratedArtifactPayload
 
 RequestJson = Callable[[str, str, bytes | None, dict[str, str]], dict[str, Any]]
+ArtifactPayloadResolver = Callable[[str, str, str], GeneratedArtifactPayload | None]
 
 
 @dataclass(frozen=True)
@@ -43,12 +44,12 @@ class ImageTo3DAdapter:
         self,
         settings: ImageTo3DSettings,
         *,
-        artifact_root_resolver: Callable[[str, str], Path],
+        artifact_payload_resolver: ArtifactPayloadResolver,
         request_json: RequestJson | None = None,
         job_registry: ImageTo3DJobRegistry | None = None,
     ) -> None:
         self.settings = settings
-        self._artifact_root_resolver = artifact_root_resolver
+        self._artifact_payload_resolver = artifact_payload_resolver
         self._request_json = request_json or self._urlopen_json
         self._job_registry = job_registry or get_image_to_3d_job_registry()
 
@@ -60,14 +61,17 @@ class ImageTo3DAdapter:
         src_image: str,
         output_format: str = "mp4",
     ) -> ImageTo3DSubmission:
-        image_id = src_image.strip()
-        if not image_id or Path(image_id).name != image_id:
+        output_ref = src_image.strip()
+        if not output_ref:
             raise ImageTo3DError(f"图片不存在：{src_image}")
-        artifact = self._resolve_artifact(
+        artifact = self._artifact_payload_resolver(
             user_id or session_id,
             session_id,
-            image_id,
+            output_ref,
         )
+        if artifact is None:
+            raise ImageTo3DError(f"图片不存在：{src_image}")
+        image_id = Path(artifact.image_id).stem
         job = self._job_registry.register(
             user_id=user_id or session_id,
             session_id=session_id,
@@ -104,30 +108,6 @@ class ImageTo3DAdapter:
             status="generating",
             source_image_id=image_id,
         )
-
-    def _resolve_artifact(
-        self,
-        user_id: str,
-        session_id: str,
-        image_id: str,
-    ):
-        root = (
-            self._artifact_root_resolver(user_id, session_id) / "generated"
-        ).resolve()
-        for suffix in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
-            filename = f"{image_id}{suffix}"
-            candidate = (root / filename).resolve()
-            if candidate.parent != root or not candidate.is_file():
-                continue
-            output_ref = f"/generated/{filename}"
-            artifact = generated_artifact_payload(
-                output_ref,
-                artifact_dir=root,
-                public_prefix="/generated",
-            )
-            if artifact is not None:
-                return artifact
-        raise ImageTo3DError(f"图片不存在：{image_id}")
 
     def _urlopen_json(
         self,

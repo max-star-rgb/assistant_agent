@@ -1,5 +1,8 @@
 """Image-to-3D tool plugin assembly."""
 
+from assistant_agent.media.generated_artifacts import (
+    generated_artifact_payload_for_thread,
+)
 from assistant_agent.media.image_to_3d import ImageTo3DAdapter, ImageTo3DSettings
 from langchain_core.tools import BaseTool
 from assistant_agent.tools.plugins.builtin.image_to_3d.tool import (
@@ -35,11 +38,13 @@ class ImageTo3DToolPlugin:
             create_image_to_3d_tool(
                 adapter=ImageTo3DAdapter(
                     settings,
-                    artifact_root_resolver=lambda user_id, thread_id: (
-                        context.thread_resource_manager.resolve(
-                            user_id,
-                            thread_id,
-                        ).artifact_root
+                    artifact_payload_resolver=lambda user_id, thread_id, ref: (
+                        generated_artifact_payload_for_thread(
+                            ref,
+                            context.thread_resource_manager,
+                            identity=user_id,
+                            thread_id=thread_id,
+                        )
                     ),
                 )
             )

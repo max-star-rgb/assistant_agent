@@ -1,4 +1,3 @@
-import base64
 import json
 from pathlib import Path
 
@@ -52,12 +51,11 @@ def test_model_observation_exposes_only_backend_owned_image_url(tmp_path) -> Non
     generated = resources.artifact_root / "generated"
     generated.mkdir()
     (generated / "cake.png").write_bytes(PNG_BYTES)
-    output_ref = f"/artifacts/{resources.thread_ref}/generated/cake.png"
+    output_ref = f"artifact://v1/{resources.thread_ref}/generated/cake.png"
     message = _invoke_image_tool(
         create_image_generation_tool(
             _GeneratedImageAdapter(output_ref),
             thread_resource_manager=manager,
-            artifact_base_url="http://127.0.0.1:8089",
         )
     )
     observation = json.loads(message.content[0]["text"])
@@ -66,7 +64,7 @@ def test_model_observation_exposes_only_backend_owned_image_url(tmp_path) -> Non
     assert observation["images"] == [
         {
             "image_id": "cake",
-            "url": f"http://127.0.0.1:8089{output_ref}",
+            "url": output_ref,
         }
     ]
     assert message.artifact["images"][0]["url"] == observation["images"][0]["url"]
@@ -76,22 +74,21 @@ def test_model_observation_exposes_only_backend_owned_image_url(tmp_path) -> Non
     assert "provider.example" not in message.content[0]["text"]
 
 
-def test_image_generation_returns_native_image_content_block(tmp_path: Path) -> None:
+def test_image_generation_keeps_binary_out_of_tool_message(tmp_path: Path) -> None:
     manager = ThreadResourceManager(ThreadResourceConfig(root=tmp_path / "threads"))
     resources = manager.resolve("user-sentinel", "thread-sentinel")
     generated = resources.artifact_root / "generated"
     generated.mkdir()
     (generated / "cake.png").write_bytes(PNG_BYTES)
-    output_ref = f"/artifacts/{resources.thread_ref}/generated/cake.png"
+    output_ref = f"artifact://v1/{resources.thread_ref}/generated/cake.png"
     message = _invoke_image_tool(
         create_image_generation_tool(
             _GeneratedImageAdapter(output_ref),
             thread_resource_manager=manager,
         )
     )
-    image = next(block for block in message.content if block["type"] == "image")
-    assert image["mime_type"] == "image/png"
-    assert base64.b64decode(image["base64"]) == PNG_BYTES
+    assert [block["type"] for block in message.content] == ["text"]
+    assert message.artifact["images"][0]["output_ref"] == output_ref
 
 
 def _invoke_image_tool(image_tool) -> ToolMessage:

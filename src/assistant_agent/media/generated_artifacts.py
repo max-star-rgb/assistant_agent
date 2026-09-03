@@ -23,6 +23,7 @@ from assistant_agent.runtime.thread_resources import (
 
 MAX_ARTIFACT_BYTES = 25 * 1024 * 1024
 MAX_DELIVERED_IMAGE_COUNT = 4
+GENERATED_ARTIFACT_URI_AUTHORITY = "v1"
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,14 @@ class GeneratedArtifactFile:
     media_type: str
 
 
+def generated_artifact_prefix(thread_ref: str) -> str:
+    """Return the canonical URI prefix for one thread's generated images."""
+
+    if not _valid_thread_ref(thread_ref):
+        raise ValueError("invalid generated artifact thread reference")
+    return f"artifact://{GENERATED_ARTIFACT_URI_AUTHORITY}/{thread_ref}/generated"
+
+
 def generated_artifact_location(
     output_ref: str,
     manager: ThreadResourceManager,
@@ -73,15 +82,42 @@ def generated_artifact_payload_for_ref(
     parsed = _thread_generated_artifact_ref(output_ref)
     if parsed is None:
         return None
-    thread_ref, _filename = parsed
+    thread_ref, filename = parsed
     try:
         root = manager.resolve_artifact_root(thread_ref) / "generated"
     except ThreadResourceError:
         return None
+    public_prefix = output_ref[: -(len(filename) + 1)]
     return generated_artifact_payload(
         output_ref,
         artifact_dir=root,
-        public_prefix=f"/artifacts/{thread_ref}/generated",
+        public_prefix=public_prefix,
+    )
+
+
+def generated_artifact_payload_for_thread(
+    output_ref: str,
+    manager: ThreadResourceManager,
+    *,
+    identity: str,
+    thread_id: str,
+) -> GeneratedArtifactPayload | None:
+    """Resolve a generated artifact only when it belongs to the current thread."""
+
+    parsed = _thread_generated_artifact_ref(output_ref)
+    if parsed is None:
+        return None
+    thread_ref, filename = parsed
+    try:
+        resources = manager.resolve(identity, thread_id)
+    except ThreadResourceError:
+        return None
+    if thread_ref != resources.thread_ref:
+        return None
+    return generated_artifact_payload(
+        output_ref,
+        artifact_dir=resources.artifact_root / "generated",
+        public_prefix=output_ref[: -(len(filename) + 1)],
     )
 
 
@@ -135,15 +171,9 @@ def generated_artifact_data_url(
         raise ValueError("max_bytes must be positive")
     parsed = urlparse(output_ref)
     prefix = public_prefix.rstrip("/") + "/"
-    if (
-        parsed.scheme
-        or parsed.netloc
-        or parsed.query
-        or parsed.fragment
-        or not parsed.path.startswith(prefix)
-    ):
+    if parsed.query or parsed.fragment or not output_ref.startswith(prefix):
         return None
-    filename = parsed.path.removeprefix(prefix)
+    filename = output_ref.removeprefix(prefix)
     if not filename or Path(filename).name != filename:
         return None
 
@@ -276,7 +306,24 @@ def _is_remote_http_url(value: str) -> bool:
 
 def _thread_generated_artifact_ref(output_ref: str) -> tuple[str, str] | None:
     parsed = urlparse(output_ref)
-    if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
+    if parsed.query or parsed.fragment:
+        return None
+    if (
+        parsed.scheme == "artifact"
+        and parsed.netloc == GENERATED_ARTIFACT_URI_AUTHORITY
+    ):
+        parts = Path(parsed.path).parts
+        if (
+            len(parts) == 4
+            and parts[0] == "/"
+            and _valid_thread_ref(parts[1])
+            and parts[2] == "generated"
+            and parts[3]
+            and Path(parts[3]).name == parts[3]
+        ):
+            return parts[1], parts[3]
+        return None
+    if parsed.scheme or parsed.netloc:
         return None
     parts = Path(parsed.path).parts
     if (

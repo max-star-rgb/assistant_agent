@@ -49,8 +49,10 @@ filesystem 与 `execute`；`browser-operator` 只接收 Playwright Tool。角色
 
 成功结果使用标准 `ToolMessage(content, artifact)`：`content` 是有界模型投影，`artifact` 保存结构化业务结果；
 失败由 `ToolException` 或 `handle_tool_error` 转为可解释 error `ToolMessage`。Provider 原始响应、secret 和宿主路径
-不进入模型上下文或 artifact。`image_generation` 成功后复用已经落盘且经过大小、路径和媒体类型校验的生成物，
-在文本 observation 后追加标准 `image` content block；结构化图片元数据继续保存在同一 ToolMessage 的 artifact。
+不进入模型上下文或 artifact。`image_generation` 成功后只把
+`artifact://v1/{thread_ref}/generated/{filename}` 短引用写入文本 observation 和 artifact，不在
+`ToolMessage` 中写入 Base64 或 `image` content block；主模型默认不读取生成物。需要图片实体的媒体投影、
+`image_to_3d` 等消费者在自身边界按需通过统一 resolver 读取同一引用，并复核线程归属、大小、路径和媒体类型。
 高德路线 MCP interceptor 在保留模型可见导航 Markdown 的同时，把同一受校验 URL 写入 namespaced
 `structuredContent`；终端入口只从转换后的标准 ToolMessage artifact 确定性交付，不解析模型正文。
 

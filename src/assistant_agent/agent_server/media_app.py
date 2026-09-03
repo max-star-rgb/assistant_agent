@@ -79,7 +79,7 @@ from assistant_agent.media.proactive_messages import ProactiveDeliveryAttempt
 from assistant_agent.media.generated_artifacts import (
     GeneratedArtifactFile,
     generated_artifact_file,
-    generated_artifact_payload_for_ref,
+    generated_artifact_payload_for_thread,
 )
 from assistant_agent.runtime.thread_resources import (
     ThreadResourceError,
@@ -1077,9 +1077,11 @@ async def _run_chat(
                 delivery_id=delivery_id,
                 capabilities=session.client_capabilities,
                 artifact_payload_resolver=lambda output_ref: (
-                    generated_artifact_payload_for_ref(
+                    generated_artifact_payload_for_thread(
                         output_ref,
                         current_native_execution_owner().thread_resource_manager,
+                        identity=str(session.user_id or ""),
+                        thread_id=str(session.thread_id or ""),
                     )
                 ),
                 sequence=text_stream.sequence + 1,

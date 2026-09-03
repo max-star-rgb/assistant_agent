@@ -565,7 +565,6 @@ def _load_media_config(source: Mapping[str, str]) -> MediaConfig:
         remote_visual_memory_poll_interval_seconds=_float(
             source.get("REMOTE_VISUAL_MEMORY_POLL_INTERVAL_SECONDS"), 2.0
         ),
-        artifact_base_url=source.get("ARTIFACT_BASE_URL", "http://127.0.0.1:8089"),
         td_gen_ip=source.get("TD_GEN_IP"),
         td_gen_port=_positive_int(source.get("TD_GEN_PORT")),
         public_ip=source.get("PUBLIC_IP"),

@@ -5,7 +5,6 @@ from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any
 
-from langchain_core.messages.content import create_image_block
 from langchain_core.tools import BaseTool, ToolException, tool
 from langgraph.prebuilt import ToolRuntime
 from pydantic import Field
@@ -30,8 +29,8 @@ from assistant_agent.tools.plugins.builtin.image_generation.backend import (
 )
 from assistant_agent.media.generated_artifacts import (
     MAX_DELIVERED_IMAGE_COUNT,
+    generated_artifact_prefix,
     generated_artifact_payload,
-    generated_artifact_payload_for_ref,
     materialize_image_generation_result,
 )
 from assistant_agent.tools.ids import (
@@ -56,13 +55,11 @@ def create_image_generation_tool(
     adapter: ImageGenerationAdapter | None = None,
     *,
     thread_resource_manager: ThreadResourceManager,
-    artifact_base_url: str | None = None,
     use_fixture: bool = False,
 ) -> BaseTool:
     """Create the native image generation Tool."""
 
     image_adapter = adapter or MockImageGenerationAdapter()
-    public_artifact_base_url = str(artifact_base_url or "").strip().rstrip("/")
 
     @tool(IMAGE_GENERATION_TOOL_NAME, response_format="content_and_artifact")
     def image_generation(
@@ -97,8 +94,7 @@ def create_image_generation_tool(
                 raise RuntimeError(result.error or "image_generation_failed")
             artifact = _image_generation_output_contract(
                 result,
-                public_prefix=f"/artifacts/{resources.thread_ref}/generated",
-                artifact_base_url=public_artifact_base_url,
+                public_prefix=generated_artifact_prefix(resources.thread_ref),
             )
             output_refs = [
                 image["output_ref"]
@@ -110,20 +106,6 @@ def create_image_generation_tool(
             content, artifact = native_content_and_artifact(
                 _image_generation_model_observation(artifact), artifact
             )
-            for image in artifact.get("images", []):
-                if not isinstance(image, Mapping):
-                    continue
-                payload = generated_artifact_payload_for_ref(
-                    image.get("output_ref"),
-                    thread_resource_manager,
-                )
-                if payload is not None:
-                    content.append(
-                        create_image_block(
-                            base64=payload.base64_data,
-                            mime_type=payload.media_type,
-                        )
-                    )
             return content, artifact
         except ToolException:
             raise
@@ -157,7 +139,7 @@ def _execute_image_generation_from_runtime(
         request.user_id,
         str(request.session_id or ""),
     )
-    public_prefix = f"/artifacts/{resources.thread_ref}/generated"
+    public_prefix = generated_artifact_prefix(resources.thread_ref)
     return _execute_image_generation(
         adapter,
         request,
@@ -217,7 +199,6 @@ def _image_generation_output_contract(
     result: ImageGenerationResult,
     *,
     public_prefix: str,
-    artifact_base_url: str,
 ) -> dict[str, Any]:
     data = {
         "task_id": result.task_id,
@@ -232,7 +213,6 @@ def _image_generation_output_contract(
             for image in _generated_image_artifacts(
                 result,
                 public_prefix=public_prefix,
-                artifact_base_url=artifact_base_url,
             )
         ],
     }
@@ -257,7 +237,6 @@ def _generated_image_artifacts(
     result: ImageGenerationResult,
     *,
     public_prefix: str,
-    artifact_base_url: str,
 ) -> list[GeneratedImageArtifact]:
     refs = result.download_urls or (
         [result.download_url] if result.download_url else []
@@ -277,7 +256,7 @@ def _generated_image_artifacts(
             GeneratedImageArtifact(
                 image_id=path.stem,
                 output_ref=ref,
-                url=f"{artifact_base_url}{ref}" if artifact_base_url else None,
+                url=ref,
                 mime_type=_image_mime_type(path.suffix),
             )
         )

@@ -260,7 +260,6 @@ class MediaConfig:
     remote_visual_memory_spool_root: str = ".data/remote_visual_memory"
     remote_visual_memory_file_ttl_seconds: int = 86_400
     remote_visual_memory_poll_interval_seconds: float = 2.0
-    artifact_base_url: str | None = "http://127.0.0.1:8089"
     td_gen_ip: str | None = None
     td_gen_port: int | None = None
     public_ip: str | None = None
