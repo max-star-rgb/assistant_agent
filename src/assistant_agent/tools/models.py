@@ -1,11 +1,8 @@
-"""Tool selection, result, and call history schemas."""
+"""Tool selection schemas."""
 
-from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
-
-from assistant_agent.tools.capability_output import CapabilityOutputContract
 
 ToolCategory = Literal["read", "generate", "write", "dangerous"]
 ToolMediaRequirement = Literal["video", "image", "audio"]
@@ -19,37 +16,6 @@ def _empty_tool_input_schema() -> dict[str, Any]:
         "properties": {},
         "required": [],
     }
-
-
-class ToolTurnHandoff(BaseModel):
-    """Trusted Tool-owned terminal handoff for an asynchronously continuing job."""
-
-    kind: str = Field(min_length=1, max_length=120)
-    message: str = Field(min_length=1, max_length=1_000)
-    data: dict[str, Any] = Field(default_factory=dict)
-
-
-class ToolResult(BaseModel):
-    """Structured output from a tool execution.
-
-    ``data`` is the full runtime/API/trace payload. ``model_observation`` is the
-    tool-owned projection that the assistant loop may expose back to the main
-    LLM for reasoning and final-answer synthesis.
-    """
-
-    tool_name: str = Field(min_length=1)
-    success: bool
-    data: dict[str, Any] | None = None
-    voice_summary: str | None = None
-    model_observation: dict[str, Any] | None = None
-    trace_summary: dict[str, Any] | None = None
-    audit_payload: dict[str, Any] | None = None
-    raw_data_ref: str | None = None
-    error: str | None = None
-    output_ref: str | None = None
-    latency_ms: int | None = Field(default=None, ge=0)
-    contract: CapabilityOutputContract | None = None
-    turn_handoff: ToolTurnHandoff | None = None
 
 
 class ToolSpec(BaseModel):
@@ -80,16 +46,3 @@ class RunToolCatalog(BaseModel):
 
     def allows(self, tool_name: str) -> bool:
         return tool_name in self.available_tool_names
-
-
-class ToolCallRecord(BaseModel):
-    """Persistent record for one tool invocation."""
-
-    tool_call_id: str = Field(min_length=1)
-    tool_name: str = Field(min_length=1)
-    input: dict[str, Any] = Field(default_factory=dict)
-    status: Literal["pending", "running", "succeeded", "failed"]
-    started_at: datetime
-    finished_at: datetime | None = None
-    output_ref: str | None = None
-    error_message: str | None = None
