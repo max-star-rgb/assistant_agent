@@ -1,7 +1,7 @@
 # 项目物理架构重构总纲
 
 日期：2026-09-01  
-状态：宏观方向已确认；各切面分别分析、设计、批准和实施
+状态：五个切面已完成首轮收口；后续变更以当前 authority 和真实消费者为准
 
 ## 1. 文档定位
 
@@ -191,3 +191,20 @@ Tool adapter 与领域服务之间缺少足够明显的物理边界。
 
 第一切面的已确认详细设计见
 [`2026-09-01-production-composition-config-refactor-design.md`](2026-09-01-production-composition-config-refactor-design.md)。
+
+## 10. 首轮实施结果（2026-09-03）
+
+五个切面已经按“小范围迁移或删除、同步 authority、独立验证”的方式完成首轮收口：
+
+- 生产 composition、配置 schema/env 装载与原生 Graph factory 已分别定位；
+- 旧 Runtime state、wrapper graph、平行执行契约和无消费者 Context/Runtime 兼容层已删除；
+- 本地 Tool 已统一到原生 `BaseTool -> ToolNode -> ToolRuntime`，领域实现继续由各自 authority 管理；
+- 旧 `clients`、`api`、pilot identity/trial、断联 improvement lab、旧 evaluation contract，以及无消费者的
+  observability 投影与未接线 wrapper 已删除；媒体 callback 已归位 `agent_server`，multi-agent response DTO 已归位
+  `multi_agent`；
+- `DEFAULT_AGENT_ID` 已归位共享 `identity.py`，生产与外围包不再反向依赖可选 `multi_agent`；
+- 当前 authority、README 导航和源码 owner 已随每个子切面更新，历史材料继续保持非 authority 身份。
+
+当前停止边界不是“所有一级包越少越好”。`multi_agent` 仍承担明确声明的可选 A2A 协议；`context` 与剩余
+observability trace store/query 仍有真实消费者。继续删除它们将改变受支持协议或运行行为，必须作为新的产品/架构
+任务单独决策，不能再以物理重构名义推进。
