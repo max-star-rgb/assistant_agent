@@ -1,6 +1,6 @@
 # LangGraph-native 可观测性
 
-最后更新：2026-09-02
+最后更新：2026-09-03
 
 ## Authority contract
 
@@ -9,7 +9,7 @@
 | 定位 | 生产 Graph 原生 tracing 与脱敏边界的当前权威 |
 | Owns | LangSmith native tracing、callback/parent 传播、thread 关联、脱敏边界与保留兼容 trace 查询的限制 |
 | Does not own | Graph 路由、Agent Server/media wire、Provider 语义、评测 Dataset 与发布决策 |
-| 源码与 schema 入口 | `native_agent/assistant_agent.py`、`agent_server/services.py`、`media/vision/observability.py`、`observability/langsmith_*.py`、`observability/trace_content_policy.py`、`observability/recovery.py`、`observability/hook_dispatch.py`、`observability/trace_store.py`、`observability/trace_query.py`、`observability/turn_summary.py` |
+| 源码与 schema 入口 | `native_agent/assistant_agent.py`、`agent_server/services.py`、`media/vision/observability.py`、`observability/hook_dispatch.py`、`observability/trace_store.py`、`observability/trace_query.py`、`observability/turn_summary.py` |
 | 验证入口 | `docs/authority.toml` 中 `runtime-observability.verification`；核心不变量 `OBS-001` |
 | 相邻 authority | [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md)、[`visual-perception-architecture.md`](visual-perception-architecture.md)、[`observability-diagnosis-runbook.md`](observability-diagnosis-runbook.md)、[`../evals/README.md`](../evals/README.md) |
 
@@ -24,9 +24,8 @@ Graph root run 的 Outputs 就是生产 Graph 公开返回值：完整标准 `me
 state/checkpoint，不是 root Outputs。LLM、Tool 和 single-step 信息仍由原生 child runs 表达，不展平或复制到 Outputs。
 
 Agent Server 的原生 LangChain/LangGraph callback tracing 由标准 `LANGSMITH_TRACING=true`、
-`LANGSMITH_API_KEY` 与 `LANGSMITH_PROJECT` 控制。`ASSISTANT_AGENT_LANGSMITH_ENABLED` 只控制项目自有的
-显式 LangSmith helper/client 路径，不能替代原生 tracing 开关。未显式启用时，mock pytest 不得创建远端
-client 或发出网络请求。Provider 原始 payload、Authorization、Memory 正文和媒体正文不得进入 metadata；
+`LANGSMITH_API_KEY` 与 `LANGSMITH_PROJECT` 控制。项目不再维护第二套 LangSmith helper/client 开关。
+未显式启用时，mock pytest 不得创建远端 client 或发出网络请求。Provider 原始 payload、Authorization、Memory 正文和媒体正文不得进入 metadata；
 Tool artifact 和 message content 是否记录遵循 LangSmith/部署脱敏配置。
 
 ### 统一 Agent 与视觉 trace 定位
@@ -58,7 +57,8 @@ child usage 相加。
 
 ## 旧本地观测边界
 
-历史 delivery/latency/conversation/metrics/persistence/ledger/visual-content 投影已经删除。保留的兼容
+历史 delivery/latency/conversation/metrics/persistence/ledger/visual-content 投影和未接线的项目自有 LangSmith wrapper
+已经删除。保留的兼容
 `TraceStore` 与 trace query 只服务可选 multi-agent 协议和现有 visual eval，
 不是当前主图或视觉链路的执行依赖，也不得反向决定 graph route、resume、cancel 或 terminal。新视觉观测不再写
 自研 `TraceStore`/日志投影事件、解析日志或启动本地报告 UI。
