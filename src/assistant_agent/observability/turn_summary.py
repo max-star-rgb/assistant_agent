@@ -6,8 +6,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from assistant_agent.runtime.state import AgentState
-from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.providers.provider_errors import sanitize_error_message
 from assistant_agent.observability.trace_store import TraceEvent, TraceStore, new_span_id
 
@@ -61,65 +59,6 @@ class AssistantTurnSummary(BaseModel):
     error_count: int = Field(default=0, ge=0)
     failure_summary: dict[str, Any] | None = None
     latency_summary_ref: dict[str, Any] | None = None
-
-
-def should_defer_runtime_turn_summary(request: UserRequest) -> bool:
-    """Return whether an entry layer will write a richer summary after delivery."""
-
-    metadata = request.metadata
-    return metadata.get("transport") == "agent_service_websocket" or isinstance(
-        metadata.get("agent_service"), dict
-    )
-
-
-def append_runtime_turn_summary(
-    trace_store: TraceStore | None,
-    *,
-    state: AgentState,
-) -> bool:
-    """Append the ordinary runtime terminal summary unless an entry layer owns it."""
-
-    if trace_store is None or should_defer_runtime_turn_summary(state.request):
-        return False
-    return append_assistant_turn_summary_trace(
-        trace_store,
-        summary=build_turn_summary_from_state(state),
-        node_name="runtime",
-    )
-
-
-def build_turn_summary_from_state(
-    state: AgentState,
-    *,
-    turn_id: str | None = None,
-    session_turn: int | None = None,
-    client_type: str | None = None,
-    latency_summary_ref: dict[str, Any] | None = None,
-) -> AssistantTurnSummary:
-    """Build a safe terminal summary from final runtime state."""
-
-    metadata = state.request.metadata
-    resolved_turn_id = turn_id or _metadata_realtime_string(metadata, "turn_id")
-    resolved_session_turn = session_turn or _safe_positive_int(
-        metadata.get("conversation_turn_index")
-    )
-    return AssistantTurnSummary(
-        trace_id=state.trace_id,
-        run_id=state.run_id,
-        turn_id=resolved_turn_id,
-        user_id=state.user_id,
-        session_id=state.session_id,
-        session_turn=resolved_session_turn,
-        client_type=normalize_client_type(client_type or infer_client_type(metadata)),
-        terminal_status=_terminal_status(state.status),
-        entry_status=_terminal_status(state.status),
-        runtime_status=_terminal_status(state.status),
-        response_present=state.response is not None,
-        tool_count=0,
-        error_count=len(state.errors),
-        failure_summary=_failure_summary_from_state(state),
-        latency_summary_ref=_safe_latency_summary_ref(latency_summary_ref),
-    )
 
 
 def append_agent_service_turn_summary(
@@ -257,34 +196,6 @@ def latest_turn_summary_from_events(events: list[TraceEvent]) -> dict[str, Any] 
     return None
 
 
-def infer_client_type(metadata: dict[str, Any]) -> str:
-    """Classify entry client using only prompt-safe metadata."""
-
-    agent_service = metadata.get("agent_service")
-    if isinstance(agent_service, dict):
-        client = agent_service.get("client")
-        if isinstance(client, dict):
-            return normalize_client_type(client.get("client_type"), default="media_agent")
-        return "media_agent"
-    if metadata.get("transport") == "agent_service_websocket":
-        return "media_agent"
-    gateway = metadata.get("gateway")
-    if isinstance(gateway, dict):
-        if isinstance(gateway.get("http_response_capture_id"), str):
-            return "api"
-        return "gateway"
-    source = metadata.get("source")
-    if isinstance(source, str):
-        token = source.strip().lower()
-        if token in {"assistant_run_service", "assistant_runtime_app", "cli", "local_cli"}:
-            return "cli"
-        if token.endswith("_api") or token in {"api", "http"}:
-            return "api"
-        if token.startswith("gateway") or token.startswith("realtime"):
-            return "gateway"
-    return "unknown"
-
-
 def normalize_client_type(value: Any, *, default: str = "unknown") -> Any:
     """Normalize client type to the small public enum."""
 
@@ -317,13 +228,6 @@ def _runtime_status(status: str) -> Any:
     )
 
 
-def _metadata_realtime_string(metadata: dict[str, Any], key: str) -> str | None:
-    realtime = metadata.get("realtime")
-    if not isinstance(realtime, dict):
-        return None
-    return _optional_string(realtime.get(key))
-
-
 def _safe_positive_int(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         return None
@@ -342,24 +246,8 @@ def _optional_string(value: Any) -> str | None:
     return None
 
 
-def _failure_summary_from_state(state: AgentState) -> dict[str, Any] | None:
-    if state.status not in {"failed", "cancelled"} or not state.errors:
-        return None
-    error = state.errors[-1]
-    message = _safe_failure_message(error.message, request_text=state.request.text)
-    return _compact_failure_summary(
-        code=error.details.get("code"),
-        message=message,
-        source=error.source,
-        recovery_action=error.details.get("recovery_action"),
-    )
-
-
-def _safe_failure_message(value: Any, *, request_text: str | None = None) -> str:
+def _safe_failure_message(value: Any) -> str:
     message = sanitize_error_message(value)
-    request = (request_text or "").strip()
-    if request:
-        message = message.replace(request, "[redacted]")
     if len(message) > _FAILURE_MESSAGE_LIMIT:
         return message[: _FAILURE_MESSAGE_LIMIT - 3] + "..."
     return message
@@ -435,15 +323,4 @@ def _latency_ref(latency_summary: Any) -> dict[str, Any] | None:
         "delivery_id": delivery_id,
         "trace_id": _optional_string(getattr(latency_summary, "trace_id", None)),
         "run_id": _optional_string(getattr(latency_summary, "run_id", None)),
-    }
-
-
-def _safe_latency_summary_ref(value: dict[str, Any] | None) -> dict[str, Any] | None:
-    if not isinstance(value, dict):
-        return None
-    return {
-        str(key): item
-        for key, item in value.items()
-        if isinstance(key, str)
-        and (isinstance(item, (str, int, float, bool)) or item is None)
     }

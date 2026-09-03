@@ -21,7 +21,7 @@ plan version、step run、artifact、wait、notification 和 checkpoint schema �
 `DurableTaskService` 所有；内存与 SQLite Store 实现同一 `TaskStore` 协议。
 
 worker 每次领取一个受保护的 task lease，并把当前 `ready_step_ids` 集合交给对应窄 runtime；runtime 通过结构化
-checkpoint 提交成功、失败、等待或终态。
+`TaskQuantumResult(checkpoint, binding)` 提交成功、失败、等待或终态，不创建或返回对话 Agent state。
 service/worker 在同一 Store 上重建后，已登记 schedule 必须恢复且只执行一次；版本、lease token、wait ID 和
 幂等 key 共同阻止旧 worker 或重复 wake 覆盖新状态。durable runtime 使用受信 allowlist、side-effect 记录和窄业务
 adapter；对话 Agent 中的 Tool 才走标准 `BaseTool -> ToolNode` 与原生 HITL。durable 状态机不拥有通用 Tool executor。

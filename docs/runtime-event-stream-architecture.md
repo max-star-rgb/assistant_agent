@@ -84,12 +84,11 @@ Memory middleware、Provider composition、Tool/Profile middleware 和模型循�
 - `chat_adapter.py`、`output_models.py`、`citations.py`、`requests.py`：被 Provider、Context、媒体兼容路径和
   durable task 共同消费的
   provider-neutral 请求与输出契约；
-- `state.py`、`cancellation.py`、`capability_grants.py`：不进入统一 native Agent 主图，当前仅供 durable task、
-  旧 multi-agent/API 与历史观测兼容路径使用；其中旧 Tool catalog/call/result ledger 已删除，其余字段仍是切面四按消费者迁移或删除的候选，
+- `cancellation.py`、`capability_grants.py`：不进入统一 native Agent 主图，仍是切面四按消费者迁移或删除的候选，
   不得作为新生产功能的依赖入口。
 
-`runtime/state.py` 不再保存平行 Tool catalog/call/result，旧 state-to-response adapter 也不再投影这些
-记录；公开兼容 response 仍保留 `tool_calls/tool_results` 字段及空默认，其他 owner 可按自身协议填充。
+旧 `runtime/state.py`、state-to-response adapter 与 state-to-observability adapter 已随最后消费者一起删除；
+公开兼容 response 仍保留 `tool_calls/tool_results` 字段及空默认，其他 owner 可按自身协议填充。
 生产 Tool 的 `ToolRuntime`、`ToolMessage(content, artifact)` 与 `ToolException` 语义由 Tool authority 所有。
 
 Durable task 的 `TaskPlan/TaskStep` 归 `automation/durable_tasks/models.py`；生成媒体、3D job 与主动媒体消息契约

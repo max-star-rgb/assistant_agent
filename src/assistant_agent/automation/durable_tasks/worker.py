@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
-from assistant_agent.runtime.state import AgentState
 from assistant_agent.automation.durable_tasks.models import (
     DurableTaskLease,
     TaskCheckpoint,
@@ -29,7 +28,6 @@ class DurableTaskRuntime(Protocol):
 @dataclass(frozen=True)
 class TaskQuantumResult:
     checkpoint: TaskCheckpoint
-    state: AgentState
     binding: TrustedTaskBinding | None = None
 
 

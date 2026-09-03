@@ -94,7 +94,6 @@ source_globs = [
   "src/assistant_agent/runtime/local_backend.py",
   "src/assistant_agent/runtime/output_models.py",
   "src/assistant_agent/runtime/requests.py",
-  "src/assistant_agent/runtime/state.py",
   "src/assistant_agent/runtime/thread_resources.py",
 ]
 thin_references = ["README.md", "docs/agent-server-architecture.md"]
