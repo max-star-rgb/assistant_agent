@@ -46,7 +46,7 @@ from assistant_agent.agent_server.turn_delivery import turn_delivery
 from assistant_agent.agent_server.proactive_delivery import (
     MediaProactiveDeliveryPump,
 )
-from assistant_agent.api.rendering_3d_callback import (
+from assistant_agent.agent_server.rendering_3d_callback import (
     router as rendering_3d_callback_router,
 )
 from assistant_agent.config import MediaConfig, load_app_config

@@ -1,4 +1,4 @@
-"""Receive image-to-3D completions and publish neutral artifact events."""
+"""Receive image-to-3D completions through the Agent Server media adapter."""
 
 from __future__ import annotations
 

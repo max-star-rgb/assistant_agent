@@ -9,7 +9,7 @@ Last updated: 2026-09-02
 | 定位 | Media-Agent WebSocket envelope、消息字段与当前兼容面的协议权威 |
 | Owns | `/agent-service/v1` 的 assistantControl、chat、audio/video ACK、interrupt、chatResponseAck 与 3D callback wire |
 | Does not own | Agent Server thread/run/checkpoint、Assistant 推理、Tool/Memory 策略和媒体服务内部实现 |
-| 源码与 schema 入口 | `src/assistant_agent/agent_server/media_*.py`、`src/assistant_agent/api/rendering_3d_callback.py`、`src/assistant_agent/media/generated_artifacts.py`、`media/image_to_3d*.py` |
+| 源码与 schema 入口 | `src/assistant_agent/agent_server/media_*.py`、`src/assistant_agent/agent_server/rendering_3d_callback.py`、`src/assistant_agent/media/generated_artifacts.py`、`media/image_to_3d*.py` |
 | 验证入口 | `docs/authority.toml` 中 `media-agent-protocol.verification` |
 | 相邻 authority | Agent Server 部署见 [`agent-server-architecture.md`](agent-server-architecture.md)；视觉能力见 [`visual-perception-architecture.md`](visual-perception-architecture.md) |
 
