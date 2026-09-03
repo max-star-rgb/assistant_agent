@@ -40,8 +40,8 @@ filesystem 与 `execute`；`browser-operator` 只接收 Playwright Tool。角色
 
 ## Tool schema、可见性与结果
 
-15 个内建业务 Tool（calendar/contacts、email、lodging 与价格订阅、shopping、图片搜索、图片生成、
-图生 3D 和四个媒体 Tool）均由官方 `@tool` factory 返回标准 `BaseTool`。handler 直接接收
+17 个内建业务 Tool（calendar/contacts、email、`file_read`、web、lodging 与价格订阅、shopping、图片搜索、
+图片生成、图生 3D 和四个媒体 Tool）均由官方 `@tool` factory 返回标准 `BaseTool`。handler 直接接收
 `ToolRuntime[AssistantRunContext]`，它是框架注入的隐藏参数，不进入模型可见 schema；认证 identity 只从
 `server_info.user.identity` 读取。handler 成功直接返回 `content_and_artifact` 的 `(content, artifact)`，预期或
 清洗后的领域失败抛出 `ToolException`。Tool metadata 只保存 `source=builtin|deepagents|mcp`、availability 等观测或
