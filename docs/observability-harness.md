@@ -59,7 +59,7 @@ child usage 相加。
 
 历史 delivery/latency/conversation/metrics/persistence/ledger/visual-content 投影和未接线的项目自有 LangSmith wrapper
 已经删除。保留的兼容
-`TraceStore` 与 trace query 只服务可选 multi-agent 协议和现有 visual eval，
+`TraceStore` 与 run/trace summary query 只服务可选 multi-agent 协议和现有 visual eval，
 不是当前主图或视觉链路的执行依赖，也不得反向决定 graph route、resume、cancel 或 terminal。新视觉观测不再写
 自研 `TraceStore`/日志投影事件、解析日志或启动本地报告 UI。
 历史 trace 诊断按

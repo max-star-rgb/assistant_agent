@@ -93,9 +93,8 @@ composition 启动时先创建配置的离线 token counter，并把同一个 `c
 tokenizer 时启动直接失败，不回退近似计数或发起网络调用。
 
 旧 `ContextService`、prompt-json compiler、独立 runtime system prompt policy、动态 catalog/exposure、renderer、
-平行 compactor 与旧 source/policy 已删除。
-`src/assistant_agent/context/` 只保留离线报告和中立 model DTO；视觉预算由视觉感知域就近维护。生产 Agent Server/native graph
-不导入平行 context runtime。
+平行 compactor、旧 source/policy 与未接线 context report 已删除；视觉预算和实时视频 DTO 由视觉感知域就近维护。
+生产 Agent Server/native graph 不保留平行 `context` package。
 
 ## 验证
 
