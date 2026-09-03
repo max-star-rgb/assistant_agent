@@ -138,8 +138,8 @@ _GENERAL_PURPOSE_DESCRIPTION_ZH = (
     "通用执行 Agent；与主助理使用相同的业务 Tool、filesystem、execute、Skills 和审批配置，"
     "但不能继续委派其他 Agent。"
 )
-_REVIEWER_DESCRIPTION_ZH = "只读审查 Agent；检查候选答案并给出是否需要修订及具体修改建议。"
-_REVIEWER_SYSTEM_PROMPT_ZH = """你是只读审查 Agent。只审查主助理提供的候选答案，不直接完成原始任务。
+_REVIEWER_DESCRIPTION_ZH = "只读审查 Agent；检查执行结果并给出是否需要修订及具体修改建议。"
+_REVIEWER_SYSTEM_PROMPT_ZH = """你是只读审查 Agent。只审查主助理提供的执行结果与验证证据，不直接完成原始任务。
 
 检查事实性、完整性、逻辑一致性和用户约束遵循情况。明确返回 `pass` 或 `revise`；需要修订时列出具体问题和最小修改建议。
 不要声称调用工具、访问文件或验证未提供的外部事实。"""
@@ -374,27 +374,15 @@ class VerificationGateMiddleware(AgentMiddleware):
         )
 
     @hook_config(can_jump_to=["tools", "end"])
-    def after_model(self, state, runtime) -> dict[str, Any] | None:
+    def before_model(self, state, runtime) -> dict[str, Any] | None:
         del runtime
-        last_message = state["messages"][-1]
         remaining_steps = state.get("remaining_steps")
-        if (
-            isinstance(last_message, AIMessage)
-            and any(self._is_mutation(call) for call in last_message.tool_calls)
-            and remaining_steps is not None
-            and remaining_steps < _MIN_REMAINING_STEPS_FOR_MUTATION
-        ):
-            return self._failure_update()
-
         required = self._is_required(
             state["messages"],
             initial=state.get("needs_verification", False),
         )
         if not required:
             return {"needs_verification": False, "verification_attempts": 0}
-
-        if not isinstance(last_message, AIMessage) or last_message.tool_calls:
-            return {"needs_verification": True}
 
         attempts = state.get("verification_attempts", 0)
         if attempts >= _MAX_VERIFICATION_ATTEMPTS or (
@@ -426,6 +414,24 @@ class VerificationGateMiddleware(AgentMiddleware):
         }
 
     @hook_config(can_jump_to=["tools", "end"])
+    async def abefore_model(self, state, runtime) -> dict[str, Any] | None:
+        return self.before_model(state, runtime)
+
+    @hook_config(can_jump_to=["end"])
+    def after_model(self, state, runtime) -> dict[str, Any] | None:
+        del runtime
+        last_message = state["messages"][-1]
+        remaining_steps = state.get("remaining_steps")
+        if (
+            isinstance(last_message, AIMessage)
+            and any(self._is_mutation(call) for call in last_message.tool_calls)
+            and remaining_steps is not None
+            and remaining_steps < _MIN_REMAINING_STEPS_FOR_MUTATION
+        ):
+            return self._failure_update()
+        return None
+
+    @hook_config(can_jump_to=["end"])
     async def aafter_model(self, state, runtime) -> dict[str, Any] | None:
         return self.after_model(state, runtime)
 
@@ -494,17 +500,18 @@ def _subagent_type(call: Mapping[str, Any]) -> object:
 
 def _review_request(messages: Sequence[MessageLikeRepresentation]) -> str:
     user_request = ""
-    candidate = ""
+    evidence: list[str] = []
     for message in reversed(messages):
-        if not candidate and isinstance(message, AIMessage):
-            candidate = message.text
-        elif not user_request and isinstance(message, HumanMessage):
+        if isinstance(message, ToolMessage):
+            evidence.append(f"- {message.name or 'tool'}: {message.text}")
+        elif isinstance(message, HumanMessage):
             user_request = message.text
-        if user_request and candidate:
             break
+    evidence.reverse()
+    execution_evidence = "\n".join(evidence) or "- 工具调用已完成，但没有文本结果。"
     return (
-        "请审查主助理的候选答复，返回 pass 或 revise 及具体理由。\n\n"
-        f"用户请求：\n{user_request}\n\n候选答复：\n{candidate}"
+        "请审查主助理的执行结果与验证证据，返回 pass 或 revise 及具体理由。\n\n"
+        f"用户请求：\n{user_request}\n\n执行证据：\n{execution_evidence}"
     )
 
 

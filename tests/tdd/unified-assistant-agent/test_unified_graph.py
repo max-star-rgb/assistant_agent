@@ -263,7 +263,7 @@ class _WriteThenReviewModel(MockAssistantChatModel):
             ),
             "",
         )
-        if isinstance(query, str) and "候选答复" in query:
+        if isinstance(query, str) and "执行证据" in query:
             return AIMessage(content="pass")
         if any(
             isinstance(message, ToolMessage) and message.name == "task"
@@ -309,32 +309,28 @@ class _ReadOnceModel(MockAssistantChatModel):
         )
 
 
-class _AutonomousReviewModel(_WriteThenReviewModel):
+class _AutonomousReviewModel(MockAssistantChatModel):
     def _response_message(self, messages, **kwargs):
+        del kwargs
         if any(
             isinstance(message, ToolMessage) and message.name == "task"
             for message in messages
         ):
             return AIMessage(content="autonomous-review-final")
-        if any(
-            isinstance(message, ToolMessage) and message.name == "write_probe"
-            for message in messages
-        ):
-            return AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "task",
-                        "args": {
-                            "subagent_type": "reviewer",
-                            "description": "自主审查候选答复",
-                        },
-                        "id": "autonomous-review",
-                        "type": "tool_call",
-                    }
-                ],
-            )
-        return super()._response_message(messages, **kwargs)
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "task",
+                    "args": {
+                        "subagent_type": "reviewer",
+                        "description": "自主审查当前过程",
+                    },
+                    "id": "autonomous-review",
+                    "type": "tool_call",
+                }
+            ],
+        )
 
 
 class _FailingReviewerModel(_WriteThenReviewModel):
@@ -342,7 +338,7 @@ class _FailingReviewerModel(_WriteThenReviewModel):
         if any(
             isinstance(message, HumanMessage)
             and isinstance(message.content, str)
-            and "候选答复" in message.content
+            and "执行证据" in message.content
             for message in messages
         ):
             raise RuntimeError("reviewer unavailable")
@@ -408,6 +404,10 @@ def test_successful_write_forces_reviewer_task_before_final_answer(
         if call["name"] == "task"
     ]
     assert [call["args"]["subagent_type"] for call in task_calls] == ["reviewer"]
+    assert not any(
+        isinstance(message, AIMessage) and message.text == "candidate"
+        for message in result["messages"]
+    )
     assert result["messages"][-1].text == "verified-final"
 
 
@@ -433,14 +433,12 @@ def test_successful_read_does_not_force_reviewer_task(tmp_path: Path) -> None:
     )
 
 
-def test_autonomous_reviewer_task_satisfies_pending_verification(
+def test_model_can_call_reviewer_task_autonomously(
     tmp_path: Path,
 ) -> None:
     graph = _compiled_agent(
         tmp_path,
         _AutonomousReviewModel(),
-        [_tool("write_probe")],
-        interrupt_tool_names={"write_probe"},
     )
 
     result = graph.invoke(
@@ -541,13 +539,12 @@ def test_reviewer_model_failures_retry_then_fail_closed(tmp_path: Path) -> None:
     ],
 )
 def test_coder_or_parallel_mutation_still_requires_review(calls, results) -> None:
-    update = VerificationGateMiddleware({"write_probe"}).after_model(
+    update = VerificationGateMiddleware({"write_probe"}).before_model(
         {
             "messages": [
                 HumanMessage(content="change"),
                 AIMessage(content="", tool_calls=calls),
                 *results,
-                AIMessage(content="candidate"),
             ],
             "remaining_steps": 100,
         },

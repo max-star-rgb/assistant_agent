@@ -38,8 +38,8 @@ summarization、HITL 与 `ToolNode`。简单请求可直接回答；复杂请求
 
 主 Agent 以私有 `needs_verification` state 记录待验证状态。成功完成受治理的副作用 Tool、本机写入/执行/Git Tool，
 或完成 `coder` task 后，主 loop 必须在最终答复前成功调用一次 `task(subagent_type="reviewer")`；普通只读 Tool 不置位。
-模型仍可在执行过程中自主调用同一个 `reviewer`，成功调用会满足当前门禁；若模型准备直接结束，主 middleware 才注入
-reviewer Tool call 并跳转到原生 `ToolNode`。副作用调用前若剩余 graph step 不足以完成 Tool、reviewer 与最终综合，主 loop
+模型仍可在执行过程中自主调用同一个 `reviewer`；受治理 Tool 成功返回后，主 middleware 在下一次主模型调用前注入
+reviewer Tool call 并直接跳转到原生 `ToolNode`，确保候选答复不会先于强制审查进入标准 message stream。副作用调用前若剩余 graph step 不足以完成 Tool、reviewer 与最终综合，主 loop
 不执行该副作用并直接返回未验证状态；reviewer 模型调用会本地重试一次，连续两次 task 仍失败时 fail closed，避免无限循环。
 
 主 Agent 的同步 `task` 只选择受信 composition 预装的 `general-purpose`、`reviewer`、`coder` 和 `browser-operator`，不能在
@@ -50,7 +50,7 @@ state 不进入 worker，worker 的内部 transcript 与私有 state 也不回�
 
 `general-purpose` 接收与主 Agent 相同的业务 Tool inventory、filesystem、`execute`、Skills、Tool Profile 与 HITL
 配置；同步和异步形态复用同一 worker graph，异步形态固定为
-`general-purpose-background`。`reviewer` 是复用主模型的预编译只读 Agent，只接收 task 描述并返回候选答案审查结果；它不装配
+`general-purpose-background`。`reviewer` 是复用主模型的预编译只读 Agent，只接收 task 描述并返回执行结果与验证证据的审查结论；它不装配
 Tool、filesystem、Skills 或再委派能力。`coder` 由 Deep Agents 原生 declarative SubAgent 装配，只继承主 backend 的 filesystem
 与 `execute`，不接收业务或浏览器 Tool。`browser-operator` 只接收已发现的原生 Playwright Tool，不装配 filesystem
 或 shell；Playwright 进程及其截图、下载直接使用当前 run cwd。`reviewer`、`coder` 与 `browser-operator` 当前只支持同步 task；所有子 Agent
