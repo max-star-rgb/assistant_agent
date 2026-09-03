@@ -12,7 +12,6 @@
   "ark_vision_api_key": null,
   "ark_vision_base_url": "https://ark.cn-beijing.volces.com/api/v3",
   "ark_vision_model": "doubao-seed-2-0-lite-260215",
-  "chat_adapter_kind": "mock",
   "chat_api_key": null,
   "chat_base_url": null,
   "chat_model": null,

@@ -6,7 +6,8 @@ import asyncio
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 import json
 from typing import Any, Literal
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
+from urllib.request import Request, urlopen
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
@@ -34,15 +35,110 @@ from assistant_agent.native_agent.search_profiles import (
     SearchProfilePolicy,
     resolve_search_profile,
 )
-from assistant_agent.providers.dashscope_chat import (
-    UrllibDashScopeTransport,
-    dashscope_generation_url,
-    dashscope_multimodal_generation_url,
-)
-
-
 _MAX_SEARCH_SOURCES = 20
 _STREAM_END = object()
+
+
+class UrllibDashScopeTransport:
+    """Minimal HTTP transport for the native DashScope chat model."""
+
+    def post_json(
+        self,
+        *,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        request = Request(
+            url,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        with urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310
+            data = json.loads(response.read().decode("utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("DashScope returned a non-object response")
+        return data
+
+    def stream_sse(
+        self,
+        *,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        timeout_seconds: float,
+    ) -> Iterator[dict[str, Any]]:
+        request = Request(
+            url,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        with urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310
+            yield from _iter_dashscope_sse(response)
+
+
+def _iter_dashscope_sse(response: Any) -> Iterator[dict[str, Any]]:
+    data_lines: list[str] = []
+    for raw_line in response:
+        line = raw_line.decode("utf-8").rstrip("\r\n")
+        if not line:
+            if data_lines:
+                yield _dashscope_sse_data(data_lines)
+                data_lines = []
+            continue
+        if line.startswith(":"):
+            continue
+        field, separator, value = line.partition(":")
+        if separator and value.startswith(" "):
+            value = value[1:]
+        if field == "data":
+            data_lines.append(value)
+    if data_lines:
+        yield _dashscope_sse_data(data_lines)
+
+
+def _dashscope_sse_data(data_lines: list[str]) -> dict[str, Any]:
+    payload = json.loads("\n".join(data_lines))
+    if not isinstance(payload, dict):
+        raise ValueError("DashScope SSE data must be a JSON object")
+    return payload
+
+
+def dashscope_generation_url(base_url: str) -> str:
+    return _dashscope_service_url(
+        base_url,
+        "/api/v1/services/aigc/text-generation/generation",
+    )
+
+
+def dashscope_multimodal_generation_url(base_url: str) -> str:
+    return _dashscope_service_url(
+        base_url,
+        "/api/v1/services/aigc/multimodal-generation/generation",
+    )
+
+
+def _dashscope_service_url(base_url: str, service_path: str) -> str:
+    parsed = urlsplit(base_url.rstrip("/"))
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("DashScope base URL must be an absolute HTTP(S) URL.")
+    path = parsed.path
+    if "/compatible-mode" in path:
+        path = path.split("/compatible-mode", 1)[0]
+    if path.endswith("/api/v1"):
+        path = path.removesuffix("/api/v1")
+    return urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            f"{path.rstrip('/')}{service_path}",
+            "",
+            "",
+        )
+    )
 
 
 def _search_options_from_policy(policy: SearchProfilePolicy) -> dict[str, Any]:
