@@ -262,8 +262,8 @@ exclusive_allowlist = []
 id = "runtime-observability"
 authority = "docs/observability-harness.md"
 read_when = [
-  "trace、observability、canonical ledger 或 LangSmith native tracing",
-  "canonical event、trace lifecycle 或日常异常 trace 沉淀",
+  "trace、observability 或 LangSmith native tracing",
+  "trace lifecycle、兼容 trace store/query 或日常异常 trace 沉淀",
 ]
 source_globs = [
   "src/assistant_agent/agent_server/services.py",
@@ -271,7 +271,12 @@ source_globs = [
   "src/assistant_agent/observability/langsmith_config.py",
   "src/assistant_agent/observability/langsmith_native.py",
   "src/assistant_agent/observability/recovery.py",
+  "src/assistant_agent/observability/hook_dispatch.py",
   "src/assistant_agent/observability/trace_content_policy.py",
+  "src/assistant_agent/observability/trace_query.py",
+  "src/assistant_agent/observability/trace_store.py",
+  "src/assistant_agent/observability/trajectory_debug.py",
+  "src/assistant_agent/observability/turn_summary.py",
   "src/assistant_agent/media/vision/observability.py",
   "tests/core/contract/test_observability_contract.py",
 ]
