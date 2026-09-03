@@ -241,23 +241,6 @@ exclusive_literals = []
 exclusive_allowlist = []
 
 [[domains]]
-id = "agent-communication"
-authority = "docs/agent-communication-routing.md"
-read_when = [
-  "multi-agent、AgentRouter、delegation、agent directory 或 control plane",
-  "A2A、JSON-RPC、跨实例 session 或 transport",
-]
-source_globs = [
-  "src/assistant_agent/multi_agent/**",
-]
-thin_references = ["README.md", "scripts/README.md"]
-verification = [
-  "python -m compileall -q src/assistant_agent/multi_agent",
-]
-exclusive_literals = []
-exclusive_allowlist = []
-
-[[domains]]
 id = "runtime-observability"
 authority = "docs/observability-harness.md"
 read_when = [

@@ -49,7 +49,8 @@
   `after_agent` middleware 通过官方 Agent Server SDK rollback 旧 pending Memory run 并 enqueue 独立
   `assistant-memory-v1`，extract 只在该后台图执行。后端只实现最小 `MemoryBackend` 协议，可接 LangMem、Mem0
   或第三方服务。
-- MCP、A2A、API、CLI、demo、eval 等交互入口应复用 Agent Server/native graph；不属于对话 run 的 durable task 与后台感知只使用窄业务 service/adapter，不得重建第二套 Agent Runtime。
+- MCP、API、CLI、demo、eval 等交互入口应复用 Agent Server/native graph；不属于对话 run 的 durable task 与后台感知只使用窄业务 service/adapter，不得重建第二套 Agent Runtime。
+- 旧自研 A2A/router/transport/control-plane 已退休；未来如需恢复跨实例 Agent 通信，必须作为 Agent Server 的薄入口并由其 authority 所有。
 - 非 Python 的 Web UI、BFF、vendor adapter 或边缘入口只能做薄适配器；不要把旧 `runTime` agent loop 引入本项目。
 
 ## 3. 运行与安全
@@ -101,9 +102,9 @@
 
 - 功能、代码设计优先拥抱原生langgraph。
 - 新代码优先放入既有分层，公共契约优先使用 Pydantic model；不要为单次需求制造新架构。
-- Tool、Provider、Memory、Agent Server、Context、多 Agent 和 durable task 的具体规则以 manifest 匹配的 authority 为准。
+- Tool、Provider、Memory、Agent Server、Context、原生 Agent/worker 和 durable task 的具体规则以 manifest 匹配的 authority 为准。
 - 工具结果必须结构化，失败必须返回可解释错误；外部能力必须经过 adapter、mock/unconfigured 和安全 profile 边界。
-- Memory tool、MCP、A2A、durable task 和入口层都保持薄适配，不把治理逻辑散落到入口脚本或 route 中。
+- Memory tool、MCP、durable task 和入口层都保持薄适配，不把治理逻辑散落到入口脚本或 route 中。
 - 业务功能建议从具体模块导入；只有明确包级公共入口才放进 `__init__.py` 聚合导出。
 - 仅修改 system prompt / dynamic prompt 的自然语言文案、规则说明或措辞时，禁止使用 TDD，禁止为此新增或修改
   pytest；直接复核最终渲染内容。涉及 prompt 装配逻辑、上下文数据流、安全或权限边界时，仍按测试策略判断。

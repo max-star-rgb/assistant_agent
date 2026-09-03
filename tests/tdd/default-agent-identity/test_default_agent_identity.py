@@ -1,11 +1,10 @@
 from pathlib import Path
 
 from assistant_agent.identity import DEFAULT_AGENT_ID
-from assistant_agent.multi_agent.models import DEFAULT_AGENT_ID as MULTI_AGENT_DEFAULT
 
 
-def test_default_agent_id_is_owned_outside_optional_multi_agent() -> None:
-    assert DEFAULT_AGENT_ID == MULTI_AGENT_DEFAULT == "agent.default"
+def test_default_agent_id_is_owned_by_shared_identity() -> None:
+    assert DEFAULT_AGENT_ID == "agent.default"
 
     repo_root = Path(__file__).resolve().parents[3]
     consumers = (

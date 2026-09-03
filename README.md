@@ -15,7 +15,6 @@ Core project docs:
 - LangGraph 原生长期记忆（固定节点、冻结快照、Mem0/LangMem/disabled）: [docs/memory-service-architecture.md](docs/memory-service-architecture.md)
 - Mem0 graph backend 的私有 HTTP adapter 子集: [docs/memory_server_api_spec.md](docs/memory_server_api_spec.md)
 - Context engineering architecture: [docs/context_engineering_status.md](docs/context_engineering_status.md)
-- Multi-agent routing: [docs/agent-communication-routing.md](docs/agent-communication-routing.md)
 - Media-Agent WebSocket contract: [docs/media-agent-service-websocket.md](docs/media-agent-service-websocket.md)
 - 实时逐帧 VLM、语义关键帧、视觉提醒与历史找物: [docs/visual-perception-architecture.md](docs/visual-perception-architecture.md)
 - Core pytest、临时 TDD 与 incubating 边界: [tests/README.md](tests/README.md)
@@ -35,22 +34,21 @@ Provider profiles and external-provider configuration are documented in [docs/to
 | package | responsibility |
 | --- | --- |
 | `native_agent/` | 生产父 StateGraph、统一 `AssistantAgent`、只读 worker 与 Provider/Tool/Memory 装配 |
-| `runtime/` | Tool、Provider、媒体、Context 与 durable task 仍复用的中立 DTO/外围治理模块；不拥有 Graph 生命周期 |
+| `runtime/` | 生产 composition、thread resource 与 durable task 复用的最小外围契约；不拥有 Graph 生命周期 |
 | `skills/` | Skill 加载、召回、校验、目录、执行与持久化 |
 | `tools/` | 具体 Tool/Plugin 实现；生产内建 Tool 自身实现标准 `BaseTool`，由 `native_agent.tools` 静态装配 |
 | `agent_server/` | Agent Server graph factory、认证、公开 SDK client 与媒体 custom route |
 | `media/` | 音频边缘适配、视频摄取/观察、统一 image/text embedding 及视觉 adapter |
 | `automation/` | durable task、proactive wake 和通知 |
-| `multi_agent/` | Agent routing、delegation、transport 和 A2A |
-| `observability/` | 可选 multi-agent 协议与 visual eval 复用的 TraceStore/query 最小兼容层 |
+| `observability/` | visual eval 使用的 TraceStore/query 最小兼容层与生产 tracing 边界 |
 | `evaluation/` | 直接消费原生 Graph 的 evaluation target；不包含旧 Release Review runner |
 | `providers/` | 跨入口共享的 Provider 配置、错误治理和 adapter |
 | `memory/` | Mem0 transport 与旧 Memory bundle 兼容；生产最小 backend 位于 `native_agent.memory` |
 | `mcp/` | MCP 配置、client、registration 和 server adapter |
 | `config/` | 进程配置装配 |
 
-领域模型和稳定协议由所属 package 就近维护，例如 `tools/models.py`、
-`media/video/realtime_video_memory.py` 和 `multi_agent/a2a_protocol.py`。
+领域模型和稳定协议由所属 package 就近维护，例如 `tools/models.py` 和
+`media/video/realtime_video_memory.py`。
 
 旧外围入口仍可通过 `MULTIMODAL_AGENT_TOOL_PLUGIN_MODULES` 使用动态 Python Plugin；该机制会执行所配置
 module 的进程内代码，不是不可信代码沙箱。生产 `assistant-native-v4` 只使用受信静态 Tool 清单和官方 MCP
