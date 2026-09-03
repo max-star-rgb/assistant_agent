@@ -367,10 +367,10 @@ class ToolProgressMiddleware(AgentMiddleware):
 class VerificationGateMiddleware(AgentMiddleware):
     """Require one successful reviewer task after governed mutations."""
 
-    def __init__(self, governed_tool_names: set[str] | frozenset[str]) -> None:
+    def __init__(self, verification_tool_names: set[str] | frozenset[str]) -> None:
         super().__init__()
         self._mutation_tool_names = frozenset(
-            {*_LOCAL_SIDE_EFFECTS, *governed_tool_names}
+            {*_LOCAL_SIDE_EFFECTS, *verification_tool_names}
         )
 
     @hook_config(can_jump_to=["tools", "end"])
@@ -584,6 +584,7 @@ def build_assistant_agent(
     tool_profiles: Sequence[ToolProfile] = (),
     general_purpose_tool_names: set[str] | frozenset[str] = frozenset(),
     interrupt_tool_names: set[str] | frozenset[str] = frozenset(),
+    verification_tool_names: set[str] | frozenset[str] = frozenset(),
     browser_tools: Sequence[BaseTool] = (),
     additional_middleware: Sequence[AgentMiddleware] = (),
     visual_history_probe: VisualObservationHistoryProbe | None = None,
@@ -613,6 +614,7 @@ def build_assistant_agent(
     )
     runtime_tool_names = {tool.name for tool in (*tools, *middleware_tools)}
     governed_tool_names = set(interrupt_tool_names) & runtime_tool_names
+    verified_tool_names = set(verification_tool_names) & runtime_tool_names
     browser_tool_names = {tool.name for tool in browser_tools}
     browser_interrupt_on = {
         name: _APPROVAL for name in governed_tool_names & browser_tool_names
@@ -716,7 +718,7 @@ def build_assistant_agent(
             MemoryContextMiddleware(),
             RecursionFinalSynthesisMiddleware(),
             create_assistant_runtime_prompt(current_location),
-            VerificationGateMiddleware(governed_tool_names),
+            VerificationGateMiddleware(verified_tool_names),
             ToolProgressMiddleware(),
             ToolRetryMiddleware(
                 max_retries=2,

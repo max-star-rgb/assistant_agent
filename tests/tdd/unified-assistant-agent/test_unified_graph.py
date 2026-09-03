@@ -309,6 +309,37 @@ class _ReadOnceModel(MockAssistantChatModel):
         )
 
 
+class _ImageGenerationOnceModel(MockAssistantChatModel):
+    def _response_message(self, messages, **kwargs):
+        del kwargs
+        query = next(
+            (
+                message.content
+                for message in reversed(messages)
+                if isinstance(message, HumanMessage)
+            ),
+            "",
+        )
+        if isinstance(query, str) and "执行证据" in query:
+            return AIMessage(content="pass")
+        if any(
+            isinstance(message, ToolMessage) and message.name == "image_generation"
+            for message in messages
+        ):
+            return AIMessage(content="image-final")
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "image_generation",
+                    "args": {"value": "sentinel"},
+                    "id": "image-generation-call",
+                    "type": "tool_call",
+                }
+            ],
+        )
+
+
 class _AutonomousReviewModel(MockAssistantChatModel):
     def _response_message(self, messages, **kwargs):
         del kwargs
@@ -351,6 +382,7 @@ def _compiled_agent(
     tools: Sequence[BaseTool] = (),
     *,
     interrupt_tool_names=frozenset(),
+    verification_tool_names=frozenset(),
 ):
     worker = build_general_purpose_worker(
         model,
@@ -366,6 +398,7 @@ def _compiled_agent(
         skills_backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
         tool_profiles=(),
         interrupt_tool_names=interrupt_tool_names,
+        verification_tool_names=verification_tool_names,
     )
 
 
@@ -388,6 +421,7 @@ def test_successful_write_forces_reviewer_task_before_final_answer(
         _WriteThenReviewModel(),
         [_tool("write_probe")],
         interrupt_tool_names={"write_probe"},
+        verification_tool_names={"write_probe"},
     )
 
     result = graph.invoke(
@@ -433,6 +467,30 @@ def test_successful_read_does_not_force_reviewer_task(tmp_path: Path) -> None:
     )
 
 
+def test_interrupt_only_image_generation_does_not_force_reviewer(
+    tmp_path: Path,
+) -> None:
+    graph = _compiled_agent(
+        tmp_path,
+        _ImageGenerationOnceModel(),
+        [_tool("image_generation")],
+        interrupt_tool_names={"image_generation"},
+    )
+
+    result = graph.invoke(
+        {"messages": [HumanMessage(content="generate-image-sentinel")]},
+        context=AssistantRunContext(require_tool_approval=False),
+    )
+
+    assert result["messages"][-1].text == "image-final"
+    assert not any(
+        call["name"] == "task"
+        for message in result["messages"]
+        if isinstance(message, AIMessage)
+        for call in message.tool_calls
+    )
+
+
 def test_model_can_call_reviewer_task_autonomously(
     tmp_path: Path,
 ) -> None:
@@ -466,6 +524,7 @@ def test_low_recursion_budget_fails_closed_instead_of_exhausting_graph(
         _WriteThenReviewModel(),
         [_tool("write_probe")],
         interrupt_tool_names={"write_probe"},
+        verification_tool_names={"write_probe"},
     )
 
     result = graph.invoke(
@@ -483,6 +542,7 @@ def test_reviewer_model_failures_retry_then_fail_closed(tmp_path: Path) -> None:
         _FailingReviewerModel(),
         [_tool("write_probe")],
         interrupt_tool_names={"write_probe"},
+        verification_tool_names={"write_probe"},
     )
 
     result = graph.invoke(

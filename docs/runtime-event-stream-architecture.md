@@ -36,9 +36,10 @@ summarization、HITL 与 `ToolNode`。简单请求可直接回答；复杂请求
 业务 Tool、本机文件 Tool 与 `execute` 在同一个模型循环和 Tool surface 中，不再切换另一张 coding 子图，
 也不保留项目自研 planner、coding StateGraph、proposal/review/repair ledger 或 execution router。
 
-主 Agent 以私有 `needs_verification` state 记录待验证状态。成功完成受治理的副作用 Tool、本机写入/执行/Git Tool，
-或完成 `coder` task 后，主 loop 必须在最终答复前成功调用一次 `task(subagent_type="reviewer")`；普通只读 Tool 不置位。
-模型仍可在执行过程中自主调用同一个 `reviewer`；受治理 Tool 成功返回后，主 middleware 在下一次主模型调用前注入
+主 Agent 以私有 `needs_verification` state 记录待验证状态。成功完成本机写入/执行/Git Tool、显式列入
+`verification_tool_names` 的 Tool，或完成 `coder` task 后，主 loop 必须在最终答复前成功调用一次
+`task(subagent_type="reviewer")`；普通只读 Tool 和仅列入 HITL `interrupt_tool_names` 的业务 Tool（包括图片生成）不置位。
+模型仍可在执行过程中自主调用同一个 `reviewer`；需要验证的 Tool 成功返回后，主 middleware 在下一次主模型调用前注入
 reviewer Tool call 并直接跳转到原生 `ToolNode`，确保候选答复不会先于强制审查进入标准 message stream。副作用调用前若剩余 graph step 不足以完成 Tool、reviewer 与最终综合，主 loop
 不执行该副作用并直接返回未验证状态；reviewer 模型调用会本地重试一次，连续两次 task 仍失败时 fail closed，避免无限循环。
 
