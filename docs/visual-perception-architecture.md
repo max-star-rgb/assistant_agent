@@ -54,8 +54,8 @@ Tool artifact、contract 与 trace，不进入模型可见 ToolMessage。
 `visual_reminder_manage`。后者只管理当前
 可信 VIDEO 连接中的 `create/list/cancel`，不是 embedding Tool。`live_view_inspect` 继续回答当前实时画面，内部
 后台 observation service 继续生成 rolling VLM snapshot。`siglip2_embed*`、`find_object`、
-`visual_attention_manage` 都不是注册 Tool。Attention 仍只产生内部候选；连接级 reminder manager 是独立的
-一次性状态机，不复用 Attention consumer。media custom route 通过服务端 capability 与冻结投影暴露这三个 Tool：
+`visual_attention_manage` 都不是注册 Tool。连接级 reminder manager 是独立的一次性状态机。media custom route
+通过服务端 capability 与冻结投影暴露这三个 Tool：
 `live_view_inspect` 要求冻结投影已包含视频 ID，`visual_memory_search` 要求目标序号与可检索历史，
 `visual_reminder_manage` 要求连接已收到视频帧。这些条件均不依赖用户消息中的实时视频 block。
 
@@ -75,7 +75,7 @@ ImageObservation / TextObservation
         -> SessionEmbeddingCoordinator
         -> MultimodalEmbeddingProvider
         -> EmbeddingEvent | EmbeddingFailureEvent
-        -> 独立有界 consumer queues（alignment / attention 等可选消费者）
+        -> 调用方同步消费结果
 
 Realtime frame
         -> VisualPerceptionModule / connection session
@@ -106,8 +106,8 @@ space、dimension、normalization、有限值和非零 norm 都兼容时才计�
 证明的图文空间不能混用。
 
 Coordinator 按 session 隔离：相同 modality + observation id 的并发请求通过 `Future` 合并，成功结果
-进入有界 LRU，失败只分发不缓存。每个消费者有独立有界队列和 overflow policy；慢或异常 consumer
-不能阻塞其他 consumer。观测事件只记录摘要和 digest，不记录向量、文本、图片路径或原始标识。
+进入有界 LRU，失败返回但不缓存。关键帧选择与视觉提醒在各自流水线直接消费结果；Coordinator 不维护
+零注册的通用 consumer 调度层。观测事件只记录摘要和 digest，不记录向量、文本、图片路径或原始标识。
 
 ## SigLIP2 资产与 readiness
 
@@ -239,14 +239,10 @@ created/matched/delivery/cleared 使用带相同 `thread_id` 的 content-free La
 ## 文本、ASR 与跨模态消费者
 
 平台不直接处理语音。音频在上游转为稳定文本后，与键盘输入一样成为 `TextObservation`；`source`
-只说明来源。Runtime 只对非空 final `request.text` 编码，且 session 必须存在 text consumer。文本
-Runtime 的一般文本 embedding 不写入视觉语义存储或 Mem0。成功 VLM 结果的窗口文本直接进入 session
+只说明来源。文本 embedding 由视觉提醒等明确调用方按需请求，不写入视觉语义存储或 Mem0。成功 VLM 结果的窗口文本直接进入 session
 视觉时间线；`visual_memory_search` 只召回成功写入 Qdrant 派生索引的记录，并显式报告候选总数、
 可检索数、实际返回数和 index coverage 是否完整。Qdrant 或本地 BGE 不可用时返回结构化
 `unavailable`，禁止回退到 SigLIP2 text-text cosine。
-
-Alignment 按 similarity 降序、时间距离升序关联同空间事件。Attention 只有设置内部 text target 后才
-比较 image event 并保存 `visual_attention_candidate`；候选不会自动转为 Agent 行为。
 
 创建提醒时，`visual_reminder_manage` 只把模型提交的视觉条件 `target` 编码一次；通知文案 `message`
 不参与相似度计算。Manager 通过统一 `EmbeddingComparator` 校验图文 space、dimension、normalization、
@@ -364,6 +360,6 @@ pytest、dry-run 或检测到凭据都不得自动触发这些调用。
 ## 非目标
 
 本期不提供语音 embedding、跨 session/长期视觉记忆、全局图库搜索、目标检测坐标、跨连接或重复视觉提醒、
-离线提醒、自动任务、attention 管理 Tool、query-time VLM 复核，也不把 SigLIP2 当成完整 VLM。视觉提醒
+离线提醒、自动任务、query-time VLM 复核，也不把 SigLIP2 当成完整 VLM。视觉提醒
 命中只表示共同空间 cosine 达到服务端阈值，不升级为经 VLM 确认的事实。视觉塔做 semantic keyframe
-只是统一 embedding 平台的一个消费者，不是平台本身。
+只复用统一 embedding 推理，不改变平台边界。
