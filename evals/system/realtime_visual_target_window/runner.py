@@ -30,7 +30,6 @@ from assistant_agent.media.visual_perception.observation_service import (
     RealtimeVisualObservationRequest,
     RealtimeVisualObservationService,
 )
-from assistant_agent.observability.trace_store import InMemoryTraceStore
 from assistant_agent.media.video.understanding_service import (
     VideoUnderstandingService,
 )
@@ -119,7 +118,6 @@ async def _run_window(
     session_id = f"system-eval-{uuid4().hex}"
     video_id = f"video-{uuid4().hex}"
     registry = _ObservationRegistry()
-    trace_store = InMemoryTraceStore()
     memory_store = RealtimeVideoMemoryStore()
     trace_links: list[dict[str, object]] = []
 
@@ -157,7 +155,6 @@ async def _run_window(
                 code="system_eval_index_disabled",
                 message="visual-memory indexing is outside this system eval",
             ),
-            trace_store=trace_store,
             vision_config=vision_config,
             provider_mode=provider_mode,
             keyframe_root=temp_root / "keyframes",

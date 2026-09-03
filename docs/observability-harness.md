@@ -7,9 +7,9 @@
 | 字段 | 内容 |
 | --- | --- |
 | 定位 | 生产 Graph 原生 tracing 与脱敏边界的当前权威 |
-| Owns | LangSmith native tracing、callback/parent 传播、thread 关联、脱敏边界与保留兼容 trace 查询的限制 |
+| Owns | LangSmith native tracing、callback/parent 传播、thread 关联与脱敏边界 |
 | Does not own | Graph 路由、Agent Server/media wire、Provider 语义、评测 Dataset 与发布决策 |
-| 源码与 schema 入口 | `native_agent/assistant_agent.py`、`agent_server/services.py`、`media/vision/observability.py`、`observability/hook_dispatch.py`、`observability/trace_store.py`、`observability/trace_query.py`、`observability/turn_summary.py` |
+| 源码与 schema 入口 | `native_agent/assistant_agent.py`、`agent_server/services.py`、`media/vision/observability.py` |
 | 验证入口 | `docs/authority.toml` 中 `runtime-observability.verification`；核心不变量 `OBS-001` |
 | 相邻 authority | [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md)、[`visual-perception-architecture.md`](visual-perception-architecture.md)、[`observability-diagnosis-runbook.md`](observability-diagnosis-runbook.md)、[`../evals/README.md`](../evals/README.md) |
 
@@ -55,13 +55,12 @@ child usage 相加。
 `vision.observation -> vlm.infer`。具体 SDK 快速查询步骤只在
 [`observability-diagnosis-runbook.md`](observability-diagnosis-runbook.md) 维护，避免两份命令漂移。
 
-## 旧本地观测边界
+## 本地兼容层已退休
 
 历史 delivery/latency/conversation/metrics/persistence/ledger/visual-content 投影和未接线的项目自有 LangSmith wrapper
-已经删除。保留的兼容
-`TraceStore` 与 run/trace summary query 只服务现有 visual eval，
-不是当前主图或视觉链路的执行依赖，也不得反向决定 graph route、resume、cancel 或 terminal。新视觉观测不再写
-自研 `TraceStore`/日志投影事件、解析日志或启动本地报告 UI。
+已经删除。旧 `TraceStore`、run/trace summary query 与 turn summary 没有生产消费者；visual eval 也只读取领域
+记录中的原生 LangSmith trace link，因此这些兼容模块已经退休。新视觉观测不写本地 shadow trace、解析日志或启动
+本地报告 UI。
 历史 trace 诊断按
 [`observability-diagnosis-runbook.md`](observability-diagnosis-runbook.md) 的独立 owner 执行。
 

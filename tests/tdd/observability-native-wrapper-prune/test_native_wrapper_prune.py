@@ -11,8 +11,15 @@ def test_disconnected_observability_wrappers_are_absent() -> None:
         "langsmith_native",
         "recovery",
         "trace_content_policy",
+        "hook_dispatch",
+        "trace_query",
+        "trace_store",
+        "turn_summary",
     ):
         module_name = f"assistant_agent.observability.{name}"
         with pytest.raises(ModuleNotFoundError) as exc_info:
             import_module(module_name)
-        assert exc_info.value.name == module_name
+        assert exc_info.value.name in {
+            "assistant_agent.observability",
+            module_name,
+        }

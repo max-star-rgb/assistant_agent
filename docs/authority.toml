@@ -245,22 +245,18 @@ id = "runtime-observability"
 authority = "docs/observability-harness.md"
 read_when = [
   "trace、observability 或 LangSmith native tracing",
-  "trace lifecycle、兼容 trace store/query 或日常异常 trace 沉淀",
+  "trace lifecycle 或日常异常 trace 沉淀",
 ]
 source_globs = [
   "src/assistant_agent/agent_server/services.py",
   "src/assistant_agent/native_agent/assistant_agent.py",
-  "src/assistant_agent/observability/hook_dispatch.py",
-  "src/assistant_agent/observability/trace_query.py",
-  "src/assistant_agent/observability/trace_store.py",
-  "src/assistant_agent/observability/turn_summary.py",
   "src/assistant_agent/media/vision/observability.py",
   "tests/core/contract/test_observability_contract.py",
 ]
 thin_references = ["scripts/README.md"]
 verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_observability_contract.py",
-  "python -m compileall -q src/assistant_agent/agent_server/services.py src/assistant_agent/native_agent/assistant_agent.py src/assistant_agent/observability src/assistant_agent/media/vision/observability.py",
+  "python -m compileall -q src/assistant_agent/agent_server/services.py src/assistant_agent/native_agent/assistant_agent.py src/assistant_agent/media/vision/observability.py",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
