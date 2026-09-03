@@ -50,7 +50,7 @@ AgentRouter                     AgentCommunicationService
 
 | module | responsibility |
 | --- | --- |
-| `models.py` / `router_models.py` | message、task、artifact、session、route 与公开 metadata DTO |
+| `models.py` / `router_models.py` | message、task、artifact、session、route、response 与公开 metadata DTO |
 | `agent_directory.py` | agent/capability/transport 静态目录 |
 | `agent_routing_policy.py` | 确定性初始路由 |
 | `agent_delegation_policy.py` | delegation allowlist、depth、loop、timeout 与 budget policy |

@@ -17,7 +17,7 @@ from assistant_agent.multi_agent.a2a_protocol import (
 )
 from assistant_agent.multi_agent.agent_router import ROUTER_METADATA_KEY, AgentRouter
 from assistant_agent.multi_agent.router_models import AgentCollaborationMode, AgentRouteRequest
-from assistant_agent.api.models import AgentRunResponse
+from assistant_agent.multi_agent.router_models import AgentRunResponse
 from assistant_agent.tools.ids import (
     IMAGE_GENERATION_TOOL_NAME,
     UPLOADED_MEDIA_INSPECT_TOOL_NAME,

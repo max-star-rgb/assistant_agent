@@ -11,7 +11,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from assistant_agent.api.models import AgentRunResponse
+from assistant_agent.multi_agent.router_models import AgentRunResponse
 from assistant_agent.multi_agent.a2a_protocol import A2A_JSONRPC_VERSION
 from assistant_agent.multi_agent.models import (
     AgentArtifact,

@@ -1,4 +1,4 @@
-from assistant_agent.api.models import AgentRunResponse
+from assistant_agent.multi_agent.router_models import AgentRunResponse
 
 
 def test_public_response_keeps_empty_tool_ledger_compatibility_fields() -> None:
