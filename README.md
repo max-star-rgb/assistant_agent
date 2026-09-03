@@ -34,7 +34,7 @@ Provider profiles and external-provider configuration are documented in [docs/to
 | package | responsibility |
 | --- | --- |
 | `native_agent/` | 生产父 StateGraph、统一 `AssistantAgent`、只读 worker 与 Provider/Tool/Memory 装配 |
-| `runtime/` | 生产 composition、thread resource 与 durable task 复用的最小外围契约；不拥有 Graph 生命周期 |
+| `runtime/` | 生产 composition 与 thread resource 复用的最小执行基础设施；不拥有 Graph 生命周期 |
 | `skills/` | Skill 加载、召回、校验、目录、执行与持久化 |
 | `tools/` | 具体 Tool/Plugin 实现；生产内建 Tool 自身实现标准 `BaseTool`，由 `native_agent.tools` 静态装配 |
 | `agent_server/` | Agent Server graph factory、认证、公开 SDK client 与媒体 custom route |

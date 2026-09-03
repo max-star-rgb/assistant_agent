@@ -90,9 +90,7 @@ source_globs = [
   "src/assistant_agent/providers/dashscope_langchain.py",
   "src/assistant_agent/identity.py",
   "src/assistant_agent/runtime/__init__.py",
-  "src/assistant_agent/runtime/citations.py",
   "src/assistant_agent/runtime/local_backend.py",
-  "src/assistant_agent/runtime/requests.py",
   "src/assistant_agent/runtime/thread_resources.py",
 ]
 thin_references = ["README.md", "docs/agent-server-architecture.md"]

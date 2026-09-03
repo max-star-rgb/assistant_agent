@@ -81,8 +81,7 @@ Memory middleware、Provider composition、Tool/Profile middleware 和模型循�
 
 `runtime/` 只保留以下跨领域契约：
 
-- `local_backend.py`、`thread_resources.py`：生产 composition、filesystem 和 thread 资源使用的执行基础设施；
-- `citations.py`、`requests.py`：由 durable task 消费的兼容请求契约；
+- `local_backend.py`、`thread_resources.py`：生产 composition、filesystem 和 thread 资源使用的执行基础设施。
 共享 `identity.py` 持有跨 Memory 与 durable task 使用的最小 `RequestIdentity` 和默认 agent ID。
 
 主模型与维护脚本统一使用 `BaseChatModel`、标准 LangChain messages 和 `create_chat_model`。旧
@@ -94,7 +93,7 @@ state-to-observability adapter 已随最后消费者一起删除；
 旧 multi-agent `AgentRunResponse` 及其平行 `tool_calls/tool_results` ledger 已随最后消费者删除。
 生产 Tool 的 `ToolRuntime`、`ToolMessage(content, artifact)` 与 `ToolException` 语义由 Tool authority 所有。
 
-Durable task 的 `TaskPlan/TaskStep` 归 `automation/durable_tasks/models.py`；生成媒体、3D job 与主动媒体消息契约
+Durable task 的 `DurableTaskRequest/TaskPlan/TaskStep` 归 `automation/durable_tasks/models.py`；生成媒体、3D job 与主动媒体消息契约
 归 `media/`。生产与视觉 tracing 直接使用 LangChain/LangSmith 原生边界，不保留本地 observability 兼容包。
 仓库内部不保留旧 Runtime import shim。
 
