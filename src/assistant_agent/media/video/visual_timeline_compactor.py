@@ -5,16 +5,22 @@ from __future__ import annotations
 import json
 from typing import Any, Mapping
 
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import HumanMessage, SystemMessage
+
 from assistant_agent.config import VisionConfig
 from assistant_agent.provider_mode import ProviderMode
+from assistant_agent.media.video.token_budget import (
+    ContextWindowPolicy,
+    normalize_provider_token_usage,
+)
 from assistant_agent.media.video.visual_timeline_context import (
     VisualTimelineCompaction,
     VisualTimelineCompactionError,
+    VisualTimelineContextService,
     VisualTimelineItem,
     VisualTimelineTokenCounter,
 )
-from assistant_agent.media.video.token_budget import normalize_provider_token_usage
-from assistant_agent.runtime.chat_adapter import ChatAdapter, ChatRequest
 
 
 _SYSTEM_PROMPT = """你是视觉时间线压缩器。输入包含用户当前检索目标和按时间排序的单帧 VLM 文本。
@@ -26,15 +32,15 @@ index 必须来自输入，不能重复。"""
 
 
 class LLMVisualTimelineCompactor:
-    """Use the governed main ChatAdapter to compact one old timeline prefix."""
+    """Use the governed native chat model to compact one old timeline prefix."""
 
     def __init__(
         self,
-        chat_adapter: ChatAdapter,
+        model: BaseChatModel,
         *,
         token_counter: VisualTimelineTokenCounter,
     ) -> None:
-        self.chat_adapter = chat_adapter
+        self.model = model
         self.token_counter = token_counter
 
     def compact(
@@ -50,30 +56,38 @@ class LLMVisualTimelineCompactor:
         if summary_max_tokens <= 0:
             raise VisualTimelineCompactionError("visual_timeline_invalid_summary_budget")
 
-        result = self.chat_adapter.chat(
-            ChatRequest(
-                user_id="visual-timeline-compactor",
-                session_id="visual-timeline-compactor",
-                user_query="压缩视觉时间线 Tool observation",
-                messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": _source_payload(
+        try:
+            options: dict[str, Any] = {
+                "response_format": {"type": "json_object"},
+                "temperature": 0.0,
+                "max_tokens": max(1, summary_max_tokens),
+            }
+            if getattr(self.model, "enable_search", False):
+                options["provider_search_profile"] = "none"
+            extra_body = getattr(self.model, "extra_body", None)
+            if isinstance(extra_body, Mapping) and extra_body.get("enable_search"):
+                options["extra_body"] = {**extra_body, "enable_search": False}
+            response = self.model.bind(**options).invoke(
+                [
+                    SystemMessage(content=_SYSTEM_PROMPT),
+                    HumanMessage(
+                        content=_source_payload(
                             query=query,
                             observations=observations,
                             source_token_count=source_token_count,
-                        ),
-                    },
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.0,
-                max_tokens=max(1, summary_max_tokens),
+                        )
+                    ),
+                ]
             )
+        except Exception as exc:
+            raise VisualTimelineCompactionError(
+                "visual_timeline_compactor_unavailable"
+            ) from exc
+        provider_usage = normalize_provider_token_usage(
+            dict(response.usage_metadata or {})
         )
-        provider_usage = normalize_provider_token_usage(result.usage)
-        response_text = result.response_text.strip()
-        if not result.success or not response_text:
+        response_text = response.text.strip()
+        if not response_text:
             raise VisualTimelineCompactionError(
                 "visual_timeline_compactor_unavailable",
                 provider_usage=provider_usage,
@@ -112,7 +126,7 @@ class LLMVisualTimelineCompactor:
 
 def create_visual_timeline_compactor(
     config: VisionConfig,
-    chat_adapter: ChatAdapter,
+    model: BaseChatModel,
     *,
     provider_mode: ProviderMode,
     token_counter: VisualTimelineTokenCounter | None,
@@ -121,16 +135,48 @@ def create_visual_timeline_compactor(
 
     if config.visual_context_compactor_mode == "off":
         return None
-    if provider_mode != "real" or getattr(chat_adapter, "provider", "") == "mock":
+    if provider_mode != "real":
         return None
     if token_counter is None:
         raise ValueError(
             "LLM visual timeline compaction requires "
-            "REALTIME_VISUAL_CONTEXT_TOKENIZER_PATH"
+            "MULTIMODAL_AGENT_CONTEXT_TOKENIZER_PATH"
         )
     return LLMVisualTimelineCompactor(
-        chat_adapter,
+        model,
         token_counter=token_counter,
+    )
+
+
+def create_visual_timeline_context_service(
+    config: VisionConfig,
+    model: BaseChatModel,
+    *,
+    provider_mode: ProviderMode,
+    token_counter: VisualTimelineTokenCounter | None,
+) -> VisualTimelineContextService | None:
+    """Build the optional Tool-tail hard gate from native composition resources."""
+
+    compactor = create_visual_timeline_compactor(
+        config,
+        model,
+        provider_mode=provider_mode,
+        token_counter=token_counter,
+    )
+    if compactor is None:
+        return None
+    assert token_counter is not None
+    return VisualTimelineContextService(
+        compactor=compactor,
+        token_counter=token_counter,
+        window_policy=ContextWindowPolicy(
+            input_token_limit=config.visual_context_input_token_limit,
+            trigger_ratio=config.visual_context_compaction_trigger_ratio,
+            target_ratio=config.visual_context_compaction_target_ratio,
+            hard_ratio=config.visual_context_compaction_hard_ratio,
+            safety_margin_tokens=config.visual_context_compaction_safety_margin_tokens,
+            summary_max_tokens=config.visual_context_summary_max_tokens,
+        ),
     )
 
 

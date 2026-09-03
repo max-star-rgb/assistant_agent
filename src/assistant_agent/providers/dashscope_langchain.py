@@ -270,8 +270,29 @@ class DashScopeNativeChatModel(BaseChatModel):
             "result_format": "message",
             "enable_thinking": self.enable_thinking or deep_research,
         }
-        if self.temperature is not None:
-            parameters["temperature"] = self.temperature
+        temperature = kwargs.get("temperature", self.temperature)
+        if temperature is not None:
+            if (
+                isinstance(temperature, bool)
+                or not isinstance(temperature, (int, float))
+                or not 0 <= temperature < 2
+            ):
+                raise ValueError("DashScope temperature must be within [0, 2)")
+            parameters["temperature"] = temperature
+        max_tokens = kwargs.get("max_tokens")
+        if max_tokens is not None:
+            if (
+                isinstance(max_tokens, bool)
+                or not isinstance(max_tokens, int)
+                or max_tokens <= 0
+            ):
+                raise ValueError("DashScope max_tokens must be a positive integer")
+            parameters["max_tokens"] = max_tokens
+        response_format = kwargs.get("response_format")
+        if response_format is not None:
+            if response_format != {"type": "json_object"}:
+                raise ValueError("DashScope response_format must request json_object")
+            parameters["response_format"] = response_format
         if stream:
             parameters["incremental_output"] = True
         if stop:

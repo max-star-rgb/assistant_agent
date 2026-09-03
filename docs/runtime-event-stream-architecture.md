@@ -7,9 +7,9 @@
 | 字段 | 内容 |
 | --- | --- |
 | 定位 | 统一生产 Assistant、预装子 Agent 与原生 stream 的当前权威 |
-| Owns | 统一 Agent 拓扑、Memory middleware、标准 messages、task state 边界、原生 stream/interrupt/checkpoint |
-| Does not own | Agent Server HTTP 生命周期、Tool schema、Memory 后端、媒体 wire、Provider 凭据 |
-| 源码与 schema 入口 | `src/assistant_agent/native_agent/assistant_agent.py`、`native_agent/memory_middleware.py`、`native_agent/state.py`、`identity.py`、`runtime/local_backend.py`、`runtime/thread_resources.py` |
+| Owns | 统一 Agent 拓扑、Memory middleware、标准 messages、task state 边界、原生 stream/interrupt/checkpoint 与主 ChatModel adapter wire |
+| Does not own | Agent Server HTTP 生命周期、Tool schema、Memory 后端、媒体 wire、Provider 凭据或媒体 Provider adapter |
+| 源码与 schema 入口 | `src/assistant_agent/native_agent/assistant_agent.py`、`native_agent/memory_middleware.py`、`native_agent/state.py`、`providers/dashscope_langchain.py`、`identity.py`、`runtime/local_backend.py`、`runtime/thread_resources.py` |
 | 验证入口 | `docs/authority.toml` 中 `runtime-event-stream.verification` |
 | 相邻 authority | Agent Server 见 [`agent-server-architecture.md`](agent-server-architecture.md)；Tool 见 [`tool-calling-architecture.md`](tool-calling-architecture.md)；视觉能力见 [`visual-perception-architecture.md`](visual-perception-architecture.md) |
 

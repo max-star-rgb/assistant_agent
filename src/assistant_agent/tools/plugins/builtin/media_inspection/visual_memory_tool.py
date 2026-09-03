@@ -80,15 +80,6 @@ class VisualMemorySearcher:
         self.limit = limit
         self.timeline_context_service = timeline_context_service
 
-    def configure_timeline_context_service(
-        self,
-        service: VisualTimelineContextService | None,
-    ) -> None:
-        """Attach the runtime-owned Tool-tail compactor without replacing overrides."""
-
-        if self.timeline_context_service is None:
-            self.timeline_context_service = service
-
     def search(
         self,
         input: VisualMemorySearchInput,

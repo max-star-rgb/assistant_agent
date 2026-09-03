@@ -57,6 +57,9 @@ class MediaInspectionPlugin:
                     semantic_store_pool=context.visual_semantic_store_pool,
                     text_index=context.visual_memory_text_index,
                     limit=context.vision_config.visual_memory_result_limit,
+                    timeline_context_service=(
+                        context.visual_timeline_context_service
+                    ),
                     live_view_resolver=context.live_view_resolver,
                 )
             )

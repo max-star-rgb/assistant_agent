@@ -90,7 +90,8 @@ summarization 的绝对 token trigger/keep 分别由同一 composition 投影的
 `ChatConfig.context_input_token_limit * context_compaction_trigger_ratio/target_ratio` 计算，不写死模型窗口。
 composition 启动时先创建配置的离线 token counter，并把同一个 `count_messages`、`context_window_tokens`、
 `compaction_trigger_ratio` 和 `compaction_target_ratio` 投影同时传给 main 与 worker。real DeepSeek V4 或 native LLM compactor 缺少本地
-tokenizer 时启动直接失败，不回退近似计数或发起网络调用。
+tokenizer 时启动直接失败，不回退近似计数或发起网络调用。启用视觉时间线 LLM compactor 时同样复用该 counter 的
+`count_text`，不再加载第二份视觉 tokenizer。
 
 旧 `ContextService`、prompt-json compiler、独立 runtime system prompt policy、动态 catalog/exposure、renderer、
 平行 compactor、旧 source/policy 与未接线 context report 已删除；视觉预算和实时视频 DTO 由视觉感知域就近维护。
