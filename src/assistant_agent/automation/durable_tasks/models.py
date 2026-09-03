@@ -261,6 +261,14 @@ class DurableTaskSnapshot(BaseModel):
     remaining_budget: dict[str, int | float]
 
 
+class DurableTaskRequest(BaseModel):
+    """Trusted input for one durable worker quantum."""
+
+    user_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    snapshot: DurableTaskSnapshot
+
+
 class TrustedTaskBinding(BaseModel):
     task_id: str
     task_version: int

@@ -6,6 +6,7 @@ from datetime import timedelta
 import pytest
 
 from assistant_agent.automation.durable_tasks.models import (
+    DurableTaskRequest,
     TaskCheckpoint,
     TaskNotificationRequest,
     TaskPlan,
@@ -106,9 +107,11 @@ class ScheduleRuntime:
 class CompletionRuntime:
     def __init__(self) -> None:
         self.calls = 0
+        self.request = None
 
     def run_task_quantum(self, request, *, binding, cancel_token):
         self.calls += 1
+        self.request = request
         return TaskQuantumResult(
             checkpoint=TaskCheckpoint(
                 kind="completed",
@@ -204,6 +207,10 @@ def test_scheduled_wait_resumes_once_after_service_recreation() -> None:
     assert completed.task.status == "completed"
     assert completed.task.wait is None
     assert completion.calls == 1
+    assert isinstance(completion.request, DurableTaskRequest)
+    assert completion.request.user_id == "user-sentinel"
+    assert completion.request.session_id == "session-sentinel"
+    assert completion.request.snapshot.objective == "goal-sentinel"
     assert recreated_worker.run_once(
         now=due_at + timedelta(seconds=1)
     ) is False

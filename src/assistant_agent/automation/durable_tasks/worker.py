@@ -7,18 +7,19 @@ from datetime import datetime
 from typing import Any, Protocol
 
 from assistant_agent.automation.durable_tasks.models import (
+    DurableTaskRequest,
     DurableTaskLease,
+    DurableTaskSnapshot,
     TaskCheckpoint,
     TrustedTaskBinding,
 )
-from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.automation.durable_tasks.service import DurableTaskService, TaskConflict
 from assistant_agent.automation.durable_tasks.store import TaskLeaseConflict
 
 class DurableTaskRuntime(Protocol):
     def run_task_quantum(
         self,
-        request: UserRequest,
+        request: DurableTaskRequest,
         *,
         binding: TrustedTaskBinding,
         cancel_token: Any,
@@ -56,7 +57,7 @@ class DurableTaskWorker:
         if bundle is None:
             return True
         binding = _binding_for_lease(lease, bundle, snapshot.ready_step_ids)
-        request = _resume_request(bundle.task.user_id, bundle.task.session_id, snapshot, binding)
+        request = _resume_request(bundle.task.user_id, bundle.task.session_id, snapshot)
         try:
             result = self.runtime.run_task_quantum(
                 request,
@@ -132,14 +133,12 @@ class DurableTaskRuntimeRouter:
 
     def run_task_quantum(
         self,
-        request: UserRequest,
+        request: DurableTaskRequest,
         *,
         binding: TrustedTaskBinding,
         cancel_token: Any,
     ) -> TaskQuantumResult:
-        profile = str(
-            request.metadata.get("durable_execution_profile") or "agent"
-        )
+        profile = request.snapshot.execution_profile
         runtime = self.profile_runtimes.get(profile, self.default_runtime)
         return runtime.run_task_quantum(
             request,
@@ -172,29 +171,12 @@ def _binding_for_lease(lease: DurableTaskLease, bundle: Any, ready_step_ids: lis
 def _resume_request(
     user_id: str,
     session_id: str,
-    snapshot: Any,
-    binding: TrustedTaskBinding,
-) -> UserRequest:
-    metadata: dict[str, Any] = {
-        "durable_task_snapshot": snapshot.model_dump(mode="json"),
-        "durable_task_binding": binding.model_dump(mode="json"),
-        "durable_execution_profile": snapshot.execution_profile,
-        "durable_workflow_payload": snapshot.workflow_payload,
-        "durable_workflow_state": snapshot.workflow_state,
-        "ready_tool_names": [
-            step.tool_name
-            for step in snapshot.plan.steps
-            if step.step_id in snapshot.ready_step_ids and step.tool_name
-        ],
-        "_trusted_durable_execution": True,
-        "conversation_history_disabled": True,
-    }
-    return UserRequest(
+    snapshot: DurableTaskSnapshot,
+) -> DurableTaskRequest:
+    return DurableTaskRequest(
         user_id=user_id,
         session_id=session_id,
-        text=snapshot.objective,
-        task_execution_mode="durable",
-        metadata=metadata,
+        snapshot=snapshot,
     )
 
 

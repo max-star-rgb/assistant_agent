@@ -9,6 +9,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 
 from assistant_agent.automation.durable_tasks.models import (
+    DurableTaskRequest,
     DurableTaskSnapshot,
     TaskCheckpoint,
     TaskNotificationRequest,
@@ -28,7 +29,6 @@ from assistant_agent.tools.plugins.builtin.lodging.backend import (
     LodgingSearchAdapter,
     MockLodgingSearchAdapter,
 )
-from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.automation.durable_tasks.service import DurableTaskService
 from assistant_agent.automation.durable_tasks.worker import TaskQuantumResult
 
@@ -98,14 +98,12 @@ class HotelPriceWatchRuntime:
 
     def run_task_quantum(
         self,
-        request: UserRequest,
+        request: DurableTaskRequest,
         *,
         binding: TrustedTaskBinding,
         cancel_token,
     ) -> TaskQuantumResult:
-        snapshot = DurableTaskSnapshot.model_validate(
-            request.metadata["durable_task_snapshot"]
-        )
+        snapshot = request.snapshot
         goal = HotelPriceWatchGoal.model_validate(snapshot.workflow_payload)
         now = self.now_fn()
         if now >= goal.ends_at:
@@ -164,9 +162,6 @@ class HotelPriceWatchRuntime:
             step_id=step_id,
             tool_name=LODGING_SEARCH_TOOL_NAME,
             tool_input_digest=_digest(tool_input),
-        )
-        request.metadata["durable_task_binding"] = active_binding.model_dump(
-            mode="json"
         )
         result = self.adapter.search(
             LodgingSearchRequest.model_validate(goal.search.model_dump())

@@ -33,22 +33,6 @@ class RequestIdentity(BaseModel):
             session_id=session_id,
         )
 
-    @classmethod
-    def from_user_request(
-        cls,
-        request: Any,
-        *,
-        agent_id: str = DEFAULT_AGENT_ID,
-    ) -> "RequestIdentity":
-        """Build an identity from the local mock/offline UserRequest boundary."""
-
-        session_id = getattr(request, "session_id", None)
-        return cls.for_user(
-            user_id=str(getattr(request, "user_id")),
-            agent_id=agent_id,
-            session_id=str(session_id) if session_id else None,
-        )
-
     @field_validator("session_id", mode="before")
     @classmethod
     def _empty_optional_strings_to_none(cls, value: Any) -> Any:

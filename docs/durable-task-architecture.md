@@ -15,12 +15,13 @@
 
 ## 当前边界
 
-Durable task 是对话 run 之外的窄业务状态机，不是第二套 Agent Runtime。`TaskPlan`、`TaskStep`、task record、
+Durable task 是对话 run 之外的窄业务状态机，不是第二套 Agent Runtime。`DurableTaskRequest`、`TaskPlan`、`TaskStep`、task record、
 plan version、step run、artifact、wait、notification 和 checkpoint schema 统一位于
 `automation/durable_tasks/models.py`。计划校验、状态转换、identity 隔离、lease 与恢复由
 `DurableTaskService` 所有；内存与 SQLite Store 实现同一 `TaskStore` 协议。
 
-worker 每次领取一个受保护的 task lease，并把当前 `ready_step_ids` 集合交给对应窄 runtime；runtime 通过结构化
+worker 每次领取一个受保护的 task lease，并通过 `DurableTaskRequest` 把 identity 与当前持久化 snapshot 交给对应
+窄 runtime；runtime 通过结构化
 `TaskQuantumResult(checkpoint, binding)` 提交成功、失败、等待或终态，不创建或返回对话 Agent state。
 service/worker 在同一 Store 上重建后，已登记 schedule 必须恢复且只执行一次；版本、lease token、wait ID 和
 幂等 key 共同阻止旧 worker 或重复 wake 覆盖新状态。durable runtime 使用受信 allowlist、side-effect 记录和窄业务
@@ -32,7 +33,8 @@ adapter；对话 Agent 中的 Tool 才走标准 `BaseTool -> ToolNode` 与原生
 
 ## 物理归属
 
-`TaskPlan/TaskStep` 已从通用 `runtime/` 迁入 `automation/durable_tasks/models.py`。Tool adapter 只通过该 service
+`DurableTaskRequest` 与 `TaskPlan/TaskStep` 均由 `automation/durable_tasks/models.py` 所有；通用 `runtime/`
+不再保留对话式 request/response/citation 兼容 DTO。Tool adapter 只通过该 service
 创建或查询任务；它不得携带状态机、lease、checkpoint 或状态转换实现。Runtime 和 Tool 包不得重新定义这些契约。
 
 ## 验证
