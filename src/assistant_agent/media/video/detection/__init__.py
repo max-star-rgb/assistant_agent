@@ -1,1 +1,1 @@
-"""Low-cost and semantic video change detectors."""
+"""Image embedding compatibility helpers for realtime video."""

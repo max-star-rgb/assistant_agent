@@ -1,4 +1,4 @@
-"""Vision embedding providers for realtime video semantic change detection."""
+"""Image embedding providers and compatibility adapters for realtime video."""
 
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ class VisionEmbeddingResult:
 
 
 class VisionEmbeddingProvider(Protocol):
-    """Provider contract used by the semantic detector."""
+    """Image embedding contract used by the realtime video pipeline."""
 
     def embed_image(self, frame: VideoFrame) -> VisionEmbeddingResult:
         """Return a structured image embedding result for one frame."""
