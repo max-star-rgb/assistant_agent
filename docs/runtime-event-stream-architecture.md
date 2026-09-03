@@ -82,9 +82,8 @@ Memory middleware、Provider composition、Tool/Profile middleware 和模型循�
 `runtime/` 只保留以下跨领域契约：
 
 - `local_backend.py`、`thread_resources.py`：生产 composition、filesystem 和 thread 资源使用的执行基础设施；
-- `citations.py`、`requests.py`：由 durable task 与可选 multi-agent 消费的兼容请求契约；
-共享 `identity.py` 持有跨 Memory、durable task 与可选 multi-agent 使用的最小 `RequestIdentity` 和默认 agent ID，
-生产包不再为该默认值反向依赖可选 multi-agent 协议。
+- `citations.py`、`requests.py`：由 durable task 消费的兼容请求契约；
+共享 `identity.py` 持有跨 Memory 与 durable task 使用的最小 `RequestIdentity` 和默认 agent ID。
 
 主模型与维护脚本统一使用 `BaseChatModel`、标准 LangChain messages 和 `create_chat_model`。旧
 `ChatAdapter`、`ChatRequest/ChatResult`、`LLMEvent` accumulator 与平行 assistant output models 已随最后消费者删除；
@@ -92,7 +91,7 @@ DashScope HTTP/SSE transport 和 URL 归原生 `DashScopeNativeChatModel` 直接
 
 旧 `runtime/state.py`、`cancellation.py`、`capability_grants.py`、state-to-response adapter 与
 state-to-observability adapter 已随最后消费者一起删除；
-公开兼容 response 仍保留 `tool_calls/tool_results` 字段及空默认，其他 owner 可按自身协议填充。
+旧 multi-agent `AgentRunResponse` 及其平行 `tool_calls/tool_results` ledger 已随最后消费者删除。
 生产 Tool 的 `ToolRuntime`、`ToolMessage(content, artifact)` 与 `ToolException` 语义由 Tool authority 所有。
 
 Durable task 的 `TaskPlan/TaskStep` 归 `automation/durable_tasks/models.py`；生成媒体、3D job 与主动媒体消息契约

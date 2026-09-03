@@ -1,14 +1,32 @@
-from assistant_agent.multi_agent.router_models import AgentRunResponse
+from assistant_agent.agent_server.media_app import _NativeAssistantTextStream
 
 
-def test_public_response_keeps_empty_tool_ledger_compatibility_fields() -> None:
-    response = AgentRunResponse(
-        run_id="run-sentinel",
-        trace_id="trace-sentinel",
-        status="completed",
-        response_text="response-sentinel",
+def test_public_response_uses_native_message_stream() -> None:
+    stream = _NativeAssistantTextStream()
+    message_id = "native-response-message"
+    stream.consume(
+        {
+            "event": "messages/metadata",
+            "data": {
+                message_id: {
+                    "metadata": {
+                        "langgraph_node": "model",
+                        "langgraph_checkpoint_ns": "assistant_agent:sentinel",
+                    }
+                }
+            },
+        }
     )
 
-    public = response.model_dump(mode="json")
-    assert public["tool_calls"] == []
-    assert public["tool_results"] == []
+    assert stream.consume(
+        {
+            "event": "messages/partial",
+            "data": [
+                {
+                    "id": message_id,
+                    "type": "AIMessageChunk",
+                    "content": "response-sentinel",
+                }
+            ],
+        }
+    ) == [(1, "response-sentinel")]
