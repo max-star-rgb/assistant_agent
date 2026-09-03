@@ -13,14 +13,16 @@ from assistant_agent.multi_agent.models import (
     AgentInstance,
 )
 from assistant_agent.multi_agent.router_models import (
+    PROTOCOL_VERSION,
+    AgentRunResponse,
     AgentCollaborationMode,
     AgentRouteDecision,
     AgentRouteDelegatedTaskSummary,
     AgentRouteMetadata,
     AgentRouteReason,
     AgentRouteRequest,
+    api_error,
 )
-from assistant_agent.api.models import PROTOCOL_VERSION, AgentRunResponse, api_error
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.multi_agent.agent_communication import (
     AgentCommunicationService,

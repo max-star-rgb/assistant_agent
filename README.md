@@ -48,7 +48,7 @@ Provider profiles and external-provider configuration are documented in [docs/to
 | `improvement/` | 离线改进证据、提案、评估和报告 |
 | `providers/` | 跨入口共享的 Provider 配置、错误治理和 adapter |
 | `memory/` | Mem0 transport 与旧 Memory bundle 兼容；生产最小 backend 位于 `native_agent.memory` |
-| `api/` | 不执行 Graph 的 callback 与共享协议模型；生产 HTTP 由 Agent Server 提供 |
+| `api/` | 不执行 Graph 的 callback；生产 HTTP 与公开生命周期由 Agent Server 提供 |
 | `mcp/` | MCP 配置、client、registration 和 server adapter |
 | `config/` | 进程配置装配 |
 

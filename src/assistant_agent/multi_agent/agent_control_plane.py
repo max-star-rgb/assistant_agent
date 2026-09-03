@@ -18,7 +18,7 @@ from assistant_agent.multi_agent.control_plane_models import (
     AgentControlPlaneRunSummary,
 )
 from assistant_agent.multi_agent.router_models import AgentRouteRequest
-from assistant_agent.api.models import AgentRunResponse
+from assistant_agent.multi_agent.router_models import AgentRunResponse
 from assistant_agent.providers.provider_errors import sanitize_error_detail, sanitize_error_message
 from assistant_agent.observability.trace_query import RunSummary, TraceQueryService, TraceSummary
 
