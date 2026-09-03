@@ -87,8 +87,6 @@ source_globs = [
   "src/assistant_agent/native_agent/state.py",
   "src/assistant_agent/native_agent/models.py",
   "src/assistant_agent/runtime/__init__.py",
-  "src/assistant_agent/runtime/cancellation.py",
-  "src/assistant_agent/runtime/capability_grants.py",
   "src/assistant_agent/runtime/chat_adapter.py",
   "src/assistant_agent/runtime/citations.py",
   "src/assistant_agent/runtime/local_backend.py",
