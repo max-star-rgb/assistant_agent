@@ -21,6 +21,7 @@ EmbeddingProviderName = Literal["mock", "dashscope", "local_siglip2"]
 ShoppingSearchProviderName = Literal["mock", "http", "haodanku"]
 ShoppingCompareProviderName = Literal["mock", "http", "haodanku"]
 LodgingProviderName = Literal["mock", "flyai"]
+SearchProviderName = Literal["mock", "http", "tavily"]
 VisualImageSearchProviderName = Literal["mock", "qwen"]
 QwenChatApiProtocol = Literal["dashscope", "openai_compatible"]
 
@@ -326,6 +327,13 @@ class ImageGenerationConfig:
 
 @dataclass(frozen=True)
 class SearchConfig:
+    search_api_base_url: str | None = None
+    search_provider: SearchProviderName = "mock"
+    web_search_base_url: str | None = None
+    web_search_api_key: str | None = None
+    web_search_timeout_seconds: float = 10.0
+    tavily_api_key: str | None = None
+    tavily_base_url: str = "https://api.tavily.com"
     visual_image_search_provider: VisualImageSearchProviderName = "mock"
     qwen_image_search_api_key: str | None = None
     qwen_image_search_base_url: str = (
@@ -365,6 +373,7 @@ class LodgingConfig:
 
 @dataclass(frozen=True)
 class ToolConfig:
+    local_file_access_root: str = ".data/files"
     durable_tasks_enabled: bool = False
     image_generation: ImageGenerationConfig = field(
         default_factory=ImageGenerationConfig
@@ -420,6 +429,10 @@ class AppConfig:
                 self.chat.deepseek_api_key,
                 self.vision.seed_api_key,
                 self.tools.image_generation.comfyui_base_url,
+                self.tools.search.search_api_base_url,
+                self.tools.search.web_search_base_url,
+                self.tools.search.web_search_api_key,
+                self.tools.search.tavily_api_key,
                 self.tools.search.qwen_image_search_api_key,
                 self.tools.shopping.shopping_search_api_key,
                 self.tools.shopping.shopping_compare_api_key,
