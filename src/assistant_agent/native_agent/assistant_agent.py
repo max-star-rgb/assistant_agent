@@ -45,6 +45,7 @@ from langgraph.types import Command
 from assistant_agent.media.visual_perception.history_probe import (
     VisualObservationHistoryProbe,
 )
+from assistant_agent.media.runtime_media import without_uploaded_media_messages
 from assistant_agent.native_agent.assistant_prompt import (
     create_assistant_base_prompt,
     create_assistant_runtime_prompt,
@@ -297,6 +298,9 @@ class RuntimeConfigurableSummarizationMiddleware(
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
+        request = request.override(
+            messages=without_uploaded_media_messages(request.messages)
+        )
         middleware = self._runtime_middleware(request)
         if middleware is self:
             return super().wrap_model_call(request, handler)
@@ -307,6 +311,9 @@ class RuntimeConfigurableSummarizationMiddleware(
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
+        request = request.override(
+            messages=without_uploaded_media_messages(request.messages)
+        )
         middleware = self._runtime_middleware(request)
         if middleware is self:
             return await super().awrap_model_call(request, handler)

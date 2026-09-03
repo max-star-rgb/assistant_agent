@@ -184,7 +184,20 @@ def test_unified_chat_recall_once_then_rolls_back_and_enqueues_extraction(
 
     result = asyncio.run(
         graph.ainvoke(
-            {"messages": [HumanMessage(content="request-sentinel")]},
+            {
+                "messages": [
+                    HumanMessage(
+                        content=[
+                            {"type": "text", "text": "request-sentinel"},
+                            {
+                                "type": "file",
+                                "source": "uploaded",
+                                "id": "legacy-video-id",
+                            },
+                        ]
+                    )
+                ]
+            },
             context=AssistantRunContext(),
             config=config,
         )
@@ -221,6 +234,9 @@ def test_unified_chat_recall_once_then_rolls_back_and_enqueues_extraction(
     assert request["metadata"] == {"assistant_agent_run_kind": "memory_extraction"}
     assert request["after_seconds"] == 1800
     assert request["multitask_strategy"] == "enqueue"
+    assert request["input"]["messages"][0].content == [
+        {"type": "text", "text": "request-sentinel"}
+    ]
 
 
 @pytest.mark.core_invariant("MEMORY-001")

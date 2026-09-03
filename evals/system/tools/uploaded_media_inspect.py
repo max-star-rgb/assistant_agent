@@ -1,5 +1,7 @@
 """PyCharm-runnable fixed-input smoke for uploaded_media_inspect."""
 
+import base64
+
 from _smoke_runner import run_tool_smoke
 from _smoke_adapters import VisualToolSmokeClient
 
@@ -13,8 +15,8 @@ FIXED_REQUEST = [
     {"type": "text", "text": "图片里有什么？"},
     {
         "type": "image",
-        "id": "tool-smoke-image",
-        "source": "uploaded",
+        "base64": base64.b64encode(b"tool-smoke-image").decode("ascii"),
+        "mime_type": "image/png",
     },
 ]
 

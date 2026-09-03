@@ -37,7 +37,8 @@ class MediaInspectionPlugin:
                 [
                     create_uploaded_media_inspect_tool(
                         vision_client,
-                        context_store=context.video_context_store,
+                        max_video_bytes=context.media_config.max_video_bytes,
+                        max_video_seconds=context.media_config.max_video_seconds,
                     ),
                     create_live_view_inspect_tool(
                         vision_client,

@@ -26,7 +26,11 @@ embedding coordinator、`SessionVisualSemanticStorePool`、视觉检索派生索
 `RealtimeVideoObserver` 是模块内部的实时分析流水线，不与 Tool 或模块平级。
 
 `uploaded_media_inspect` 为用户主动上传的图片/视频附件执行受治理的同步 VLM 推理，并复用模块持有的
-进程级 `VisionUnderstandingClient`；它不读取摄像头实时视频。`live_view_inspect` 是实时视觉文本的
+进程级 `VisionUnderstandingClient`。Studio/LangChain 标准 `image|video` content block 可携带
+`base64 + mime_type`，图片也可使用 HTTP(S) URL；静态图片直接交给图片 VLM，单个最长 60 秒、最大 50 MiB 的 MP4 在一次
+Tool 调用内用 ffmpeg 均匀抽取最多 5 张临时 JPEG，再交给现有多图 VLM，调用结束即清理临时文件。本地附件路径
+只能位于本轮 `cwd`，输出不包含附件或临时帧引用。这条同步静态路径不读取摄像头实时视频，也不进入 H.264 ingestion、SigLIP2 selector、
+关键帧窗口、视觉时间线或提醒状态。`live_view_inspect` 是实时视觉文本的
 薄消费入口，不再为用户 query 二次调用 VLM。主 Agent LLM 根据模块已经发布的结构化文本回答 query。
 实时读取分为两种语义：没有冻结目标窗口时读取 latest 已完成结果；受信 video block 携带
 `window_id + window_start_sequence + target_sequence` 时，最多 4 秒等待 exact target。当前 Agent-Service media custom route 不生成该 block，
@@ -324,7 +328,8 @@ Tool 直接返回有界不可用结果，不再用额外 availability 层隐藏�
 历史视觉 Tool observation 不能替代本轮证据；同一用户问题失败后不以相同参数重试。
 如果工具暴露后因连接关闭或 capability 失效发生竞态，预期的 `ToolException` 必须由标准
 `BaseTool.handle_tool_error` 转为有界 error `ToolMessage`，不得终止 Graph。
-`uploaded_media_inspect` 只在最新用户消息含明确 `source=uploaded` 的图片或视频时可见。这三条条件与 Skill
+`uploaded_media_inspect` 只在最新用户消息含标准上传图片或视频块时可见；无 `source` 的 LangChain 标准块按
+主动上传处理，`source=live_camera` 明确排除。这三条条件与 Skill
 渐进加载正交。执行经过标准
 `BaseTool -> ToolNode` 路径，owner、session 与 as-of 边界由 `ToolRuntime` 注入，模型不可提交。
 媒体连接登记 live-view projection 时使用与 Agent Server run 相同的认证 identity 和 thread ID；vendor

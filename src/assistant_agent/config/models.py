@@ -1,5 +1,7 @@
 """Nested application configuration and section-local validation."""
 
+import math
+
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -292,6 +294,10 @@ class MediaConfig:
             raise ValueError("remote visual memory file TTL must be positive")
         if self.remote_visual_memory_poll_interval_seconds <= 0:
             raise ValueError("remote visual memory poll interval must be positive")
+        if self.max_video_bytes <= 0:
+            raise ValueError("max video bytes must be positive")
+        if not math.isfinite(self.max_video_seconds) or self.max_video_seconds <= 0:
+            raise ValueError("max video seconds must be finite and positive")
 
 
 @dataclass(frozen=True)

@@ -1,6 +1,6 @@
 # LangGraph Agent Server 部署架构
 
-最后更新：2026-09-02
+最后更新：2026-09-03
 
 ## Authority contract
 
@@ -113,6 +113,12 @@ internal capability 是当前本地单进程部署的进程内随机 secret，�
 ```json
 {"messages":[{"role":"user","content":"hello"}]}
 ```
+
+Studio/普通 Agent Server 客户端上传图片或视频时沿用 LangChain 标准多模态 content block，可使用
+`type=image|video`、`base64`、`mime_type`，无需增加 Graph input 字段或专属上传 Graph。缺少
+`source` 的标准多模态块按用户主动上传处理；`source=live_camera` 仍只属于实时视觉入口，不会误入静态上传。
+上传实体保留在 Graph state 供 `uploaded_media_inspect` 读取，但在每次主模型调用的投影中移除，主模型只接收
+文本和 Tool observation，Memory 后台抽取请求也只复制该文本投影，避免把历史 Base64 重复发送给 Provider。
 
 公开 `AssistantRunContext` 包含 `cwd`、`enable_memory`、`require_tool_approval`，以及可选的
 `context_compaction_trigger_tokens` / `context_compaction_keep_tokens`；`cwd` 默认为 OS 用户 Home，且只接受

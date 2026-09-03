@@ -1,6 +1,6 @@
 # Media-Agent WebSocket 接口权威文档
 
-Last updated: 2026-09-02
+Last updated: 2026-09-03
 
 ## Authority contract
 
@@ -233,8 +233,10 @@ pending，旧消息仍收到正常 `videoResponse`，但不再解码、提交 VL
 `contents[].time` 提供的上游帧时间，不得当作服务端收包或解码时间。日志不记录 H.264/JPEG 正文、路径、
 用户正文或 Provider payload；不满足安全字符约束的 `video_index` 只记录摘要。
 
-用户主动上传的图片或视频必须由普通请求入口标记为 `source=uploaded`，交给独立的
-`uploaded_media_inspect`。进程视觉模块仍冻结 live camera 窗口和 namespaced capability facts，也会继续运行
+用户主动上传的图片或视频从 Studio/普通 Agent Server 入口以 LangChain 标准 content block 进入；标准块缺少
+`source` 时按主动上传处理，兼容入口也可显式标记 `source=uploaded`，统一交给独立的
+`uploaded_media_inspect`。本 WebSocket chat wire 仍只投影文本，不承载静态附件；进程视觉模块仍冻结 live camera
+窗口和 namespaced capability facts，也会继续运行
 selector、并行 VLM 和 reminder manager；但当前 custom route 不向标准 message 注入 `source=live_camera` block。
 统一条件 middleware 只解析服务端签发的 capability 和冻结投影：有视频 ID 时暴露
 `live_view_inspect` 与 `visual_reminder_manage`，同时存在目标序号和可检索历史时暴露 `visual_memory_search`。

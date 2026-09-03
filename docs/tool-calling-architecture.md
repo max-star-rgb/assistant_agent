@@ -1,6 +1,6 @@
 # LangChain-native Tool 与扩展架构
 
-最后更新：2026-09-02
+最后更新：2026-09-03
 
 ## Authority contract
 
@@ -84,11 +84,18 @@ Git 使用独立 `git` Tool Profile。Tool 接收 `target_path` 与不含可执�
 coder 共用该 middleware；`execute` 的可见描述要求优先使用 `git` Tool，并在调用边界拒绝直接或 shell 链中的
 Git CLI，返回 `use_git_tool` 错误，不启动 shell。
 
-媒体 Tool 的条件暴露与 Skill/Profile 正交：`uploaded_media_inspect` 依赖受信 uploaded media block；
+媒体 Tool 的条件暴露与 Skill/Profile 正交：`uploaded_media_inspect` 依赖最新用户消息中的标准上传媒体 block；
 `live_view_inspect` 依赖本轮冻结 target；`visual_memory_search` 还要求当前 thread 有可检索文本；
 `visual_reminder_manage` 要求连接已经收到并绑定有效视频帧。条件来自入口签发的 capability 与服务端事实，不读取
 用户关键词；Tool handler 会再次校验身份、thread 和冻结边界。当前 media custom route 不注入
 `source=live_camera` message block，因此不会满足这三个实时 Tool 的条件；详见视觉 authority。
+
+Studio/LangChain 标准 `image|video` block 可直接携带 `base64 + mime_type`，图片也可使用 HTTP(S) URL；缺少 `source` 时视为
+用户主动上传；兼容入口显式标记的 `source=uploaded + id`。条件 middleware 只从主模型可见 messages 中移除上传
+二进制，Memory 后台抽取使用相同文本投影；原始 Graph state 保持不变，因此 Tool 仍通过 `ToolRuntime` 读取同一附件。
+图片本地路径必须位于本轮 `AssistantRunContext.cwd`；上传视频当前只接受单个 MP4，同样限制 cwd、大小、时长与
+解码分辨率，并在 Tool 内临时抽取最多 5 张 JPEG 后调用现有多图 VLM。Tool observation 和 artifact 不返回附件引用。
+该静态抽帧不进入实时 H.264 ingestion、SigLIP2 selector、视觉时间线或 `live_view_inspect`。
 
 ## 统一 HITL 与 LocalShell 边界
 

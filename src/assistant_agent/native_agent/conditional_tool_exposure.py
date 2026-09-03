@@ -11,7 +11,10 @@ from langchain_core.messages import AIMessage
 from langchain_core.tools import BaseTool
 from langgraph.config import get_config
 
-from assistant_agent.media.runtime_media import latest_runtime_media
+from assistant_agent.media.runtime_media import (
+    latest_runtime_media,
+    without_uploaded_media_messages,
+)
 from assistant_agent.media.visual_perception.history_probe import (
     VisualObservationHistoryProbe,
 )
@@ -57,7 +60,8 @@ class ConditionalToolExposureMiddleware(AgentMiddleware):
             for tool in request.tools
             if not isinstance(tool, BaseTool) or self._is_available(tool, request)
         ]
-        return request.override(tools=visible_tools)
+        messages = without_uploaded_media_messages(request.messages)
+        return request.override(tools=visible_tools, messages=messages)
 
     def _is_available(self, tool: BaseTool, request: ModelRequest) -> bool:
         availability = tool_availability(tool)

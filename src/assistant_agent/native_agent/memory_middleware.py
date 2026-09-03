@@ -11,6 +11,7 @@ from langchain_core.runnables import RunnableLambda
 from langgraph.runtime import Runtime
 from langgraph_sdk import get_client
 
+from assistant_agent.media.runtime_media import without_uploaded_media_messages
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.memory import MemoryBackend, recall_memory
 from assistant_agent.native_agent.state import AssistantAgentState
@@ -132,7 +133,11 @@ class MemoryLifecycleMiddleware(
         await client.runs.create(
             thread_id=memory_thread_id,
             assistant_id=MEMORY_ASSISTANT_ID,
-            input={"messages": list(state.get("messages", ()))},
+            input={
+                "messages": without_uploaded_media_messages(
+                    list(state.get("messages", ()))
+                )
+            },
             metadata={"assistant_agent_run_kind": MEMORY_EXTRACTION_RUN_KIND},
             after_seconds=self._delay_seconds,
             multitask_strategy="enqueue",

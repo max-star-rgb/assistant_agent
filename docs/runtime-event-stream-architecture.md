@@ -141,6 +141,11 @@ latest-wins、关键帧窗口和并行 VLM 始终由视觉 authority 负责，�
 根据服务端签发的 run-scoped capability 和冻结投影暴露，dynamic prompt 再根据最终可见 Tool 注入规则。
 主 LLM 不接收 video ID、sequence 或其他投影内部字段。
 
+Studio/普通 Agent Server 的静态图片和视频继续作为标准 HumanMessage content block 进入 Graph state；
+`ConditionalToolExposureMiddleware` 据此暴露 `uploaded_media_inspect`，并只在主模型调用视图中移除上传媒体块。
+ToolNode 仍从未改写的 state 取得附件，VLM 结果作为标准 ToolMessage 返回后由同一个主模型完成最终回复；不增加
+Graph node、旁路 Runtime 或 VLM 直出终态。
+
 ## 验证
 
 ```bash
