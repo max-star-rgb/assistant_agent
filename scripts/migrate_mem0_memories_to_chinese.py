@@ -20,7 +20,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from assistant_agent.config import ChatConfig, load_app_config
-from assistant_agent.identity import RequestIdentity
+from assistant_agent.identity import DEFAULT_AGENT_ID, RequestIdentity
 from assistant_agent.memory.mem0.chinese_migration import (
     migrate_memories_to_chinese,
 )
@@ -28,7 +28,6 @@ from assistant_agent.memory.mem0.transport import (
     Mem0HttpRequest,
     urllib_mem0_transport,
 )
-from assistant_agent.multi_agent.models import DEFAULT_AGENT_ID
 from assistant_agent.config_env import load_env_file
 from assistant_agent.runtime.chat_adapter import (
     ChatAdapter,

@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from assistant_agent.identifiers import new_prefixed_uuid7
+from assistant_agent.identity import DEFAULT_AGENT_ID
 
 
 AgentTransportName = Literal["local", "a2a_json_rpc"]
@@ -19,9 +20,6 @@ AgentDelegationAuditEventType = Literal[
     "delegation_dispatched",
     "delegation_completed",
 ]
-
-
-DEFAULT_AGENT_ID = "agent.default"
 
 
 def new_agent_task_id() -> str:

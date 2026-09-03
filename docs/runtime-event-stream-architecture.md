@@ -9,7 +9,7 @@
 | 定位 | 统一生产 Assistant、预装子 Agent 与原生 stream 的当前权威 |
 | Owns | 统一 Agent 拓扑、Memory middleware、标准 messages、task state 边界、原生 stream/interrupt/checkpoint |
 | Does not own | Agent Server HTTP 生命周期、Tool schema、Memory 后端、媒体 wire、Provider 凭据 |
-| 源码与 schema 入口 | `src/assistant_agent/native_agent/assistant_agent.py`、`native_agent/memory_middleware.py`、`native_agent/state.py`、`runtime/local_backend.py`、`runtime/thread_resources.py` |
+| 源码与 schema 入口 | `src/assistant_agent/native_agent/assistant_agent.py`、`native_agent/memory_middleware.py`、`native_agent/state.py`、`identity.py`、`runtime/local_backend.py`、`runtime/thread_resources.py` |
 | 验证入口 | `docs/authority.toml` 中 `runtime-event-stream.verification` |
 | 相邻 authority | Agent Server 见 [`agent-server-architecture.md`](agent-server-architecture.md)；Tool 见 [`tool-calling-architecture.md`](tool-calling-architecture.md)；视觉能力见 [`visual-perception-architecture.md`](visual-perception-architecture.md) |
 
@@ -84,6 +84,9 @@ Memory middleware、Provider composition、Tool/Profile middleware 和模型循�
 - `chat_adapter.py`、`output_models.py`、`citations.py`、`requests.py`：被 Provider、Context、媒体兼容路径和
   durable task 共同消费的
   provider-neutral 请求与输出契约；
+共享 `identity.py` 持有跨 Memory、durable task 与可选 multi-agent 使用的最小 `RequestIdentity` 和默认 agent ID，
+生产包不再为该默认值反向依赖可选 multi-agent 协议。
+
 旧 `runtime/state.py`、`cancellation.py`、`capability_grants.py`、state-to-response adapter 与
 state-to-observability adapter 已随最后消费者一起删除；
 公开兼容 response 仍保留 `tool_calls/tool_results` 字段及空默认，其他 owner 可按自身协议填充。
