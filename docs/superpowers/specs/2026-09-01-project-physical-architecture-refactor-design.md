@@ -205,6 +205,22 @@ Tool adapter 与领域服务之间缺少足够明显的物理边界。
 - `DEFAULT_AGENT_ID` 已归位共享 `identity.py`，生产与外围包不再反向依赖可选 `multi_agent`；
 - 当前 authority、README 导航和源码 owner 已随每个子切面更新，历史材料继续保持非 authority 身份。
 
-当前停止边界不是“所有一级包越少越好”。`multi_agent` 仍承担明确声明的可选 A2A 协议；`context` 与剩余
-observability trace store/query 仍有真实消费者。继续删除它们将改变受支持协议或运行行为，必须作为新的产品/架构
-任务单独决策，不能再以物理重构名义推进。
+首轮停止边界不是“所有一级包越少越好”。当时 `multi_agent` 仍承担明确声明的可选 A2A 协议，`context` 与剩余
+observability trace store/query 需要继续逐项核实消费者，不能仅凭生产主链不可达直接删除。
+
+## 11. 追加收口结果（2026-09-03）
+
+在逐符号消费者审计、临时 TDD、独立评审和 mock/offline 验证后，第二轮继续完成：
+
+- 通用 token counter 归位 `native_agent/token_counter.py`，生产上下文不再从可选包反向导入；
+- 视觉窗口实际使用的 token policy 与 Provider usage normalize 归位 `media/video/token_budget.py`；无消费者的旧
+  `TokenBudgetReporter`、`TokenBudgetEstimate` 和 metadata 估算路径删除；
+- 零消费者的 context report 构造、v1/v2 转换及 TraceQuery context/tool-call 查询删除；
+- 唯一仍存活的 `RealtimeVideoContext` DTO 归位 `media/video/realtime_video_memory.py`，随后删除整个
+  `src/assistant_agent/context/` 一级包；
+- observability 兼容层收窄为可选 multi-agent 实际消费的 run/trace summary，以及 visual eval 直接消费的
+  `TraceStore`。
+
+新的停止边界位于视觉 authority 明确保留的独立兼容代码：`VisualContextService`、旧视觉 summary compactor、
+semantic store 中的 summary 状态和相关配置当前未进入生产 realtime observer，但仍被文档声明为专项兼容能力。
+删除它们将改变受支持能力和配置契约，已超出物理归位；后续只有在明确决定退役该兼容能力时才继续。
