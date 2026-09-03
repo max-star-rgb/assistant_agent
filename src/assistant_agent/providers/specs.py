@@ -11,102 +11,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 
-AdapterKind = str
-
-
-@dataclass(frozen=True)
-class ProviderCapabilities:
-    """Provider capability facts used by runtime adapters and docs."""
-
-    supports_developer_role: bool = False
-    supports_response_format: bool = True
-    supports_native_tools: bool = True
-    supports_tool_choice: bool = True
-    supports_streaming: bool = False
-    supports_async_streaming: bool = False
-    max_tokens_param: str | None = "max_tokens"
-    include_stream_usage: bool = False
-    input_modalities: tuple[str, ...] = ("text",)
-    output_modalities: tuple[str, ...] = ("text",)
-
-
-OPENAI_COMPATIBLE_CHAT_CAPABILITIES = ProviderCapabilities(
-    supports_response_format=True,
-    supports_native_tools=True,
-    supports_tool_choice=True,
-    supports_streaming=True,
-    supports_async_streaming=True,
-    max_tokens_param="max_tokens",
-    include_stream_usage=False,
-    input_modalities=("text",),
-    output_modalities=("text", "tool_calls"),
-)
-
-MOCK_CHAT_CAPABILITIES = ProviderCapabilities(
-    supports_response_format=False,
-    supports_native_tools=False,
-    supports_tool_choice=False,
-    supports_streaming=True,
-    supports_async_streaming=True,
-    max_tokens_param=None,
-    input_modalities=("text",),
-    output_modalities=("text",),
-)
-
-LOCAL_CHAT_CAPABILITIES = ProviderCapabilities(
-    supports_response_format=False,
-    supports_native_tools=False,
-    supports_tool_choice=False,
-    supports_streaming=False,
-    supports_async_streaming=False,
-    max_tokens_param="max_tokens",
-    input_modalities=("text",),
-    output_modalities=("text",),
-)
-
-VISION_TEXT_IMAGE_CAPABILITIES = ProviderCapabilities(
-    supports_response_format=False,
-    supports_native_tools=False,
-    supports_tool_choice=False,
-    supports_streaming=False,
-    supports_async_streaming=False,
-    max_tokens_param=None,
-    input_modalities=("text", "image"),
-    output_modalities=("text",),
-)
-
-VISION_TEXT_IMAGE_VIDEO_CAPABILITIES = ProviderCapabilities(
-    supports_response_format=False,
-    supports_native_tools=False,
-    supports_tool_choice=False,
-    supports_streaming=False,
-    supports_async_streaming=False,
-    max_tokens_param=None,
-    input_modalities=("text", "image", "video"),
-    output_modalities=("text",),
-)
-
-IMAGE_GENERATION_CAPABILITIES = ProviderCapabilities(
-    supports_response_format=False,
-    supports_native_tools=False,
-    supports_tool_choice=False,
-    supports_streaming=False,
-    supports_async_streaming=False,
-    max_tokens_param=None,
-    input_modalities=("text", "image"),
-    output_modalities=("image",),
-)
-
-
 @dataclass(frozen=True)
 class ProviderSpec:
     """Metadata needed to configure and validate a provider."""
 
     name: str
-    capability: str
-    provider_env: str
-    adapter_kind: AdapterKind
-    capabilities: ProviderCapabilities
+    adapter_kind: str
     api_key_env: str | None = None
     base_url_env: str | None = None
     model_env: str | None = None
@@ -132,12 +42,8 @@ class ResolvedProviderSpec:
         return self.spec.name
 
     @property
-    def adapter_kind(self) -> AdapterKind:
+    def adapter_kind(self) -> str:
         return self.spec.adapter_kind
-
-    @property
-    def capabilities(self) -> ProviderCapabilities:
-        return self.spec.capabilities
 
     def missing_required_env(self) -> list[str]:
         missing: list[str] = []
@@ -154,27 +60,17 @@ class ResolvedProviderSpec:
         return missing
 
 
-CHAT_PROVIDER_ENV = "MULTIMODAL_AGENT_CHAT_PROVIDER"
-VISION_PROVIDER_ENV = "MULTIMODAL_AGENT_VISION_PROVIDER"
-IMAGE_GENERATION_PROVIDER_ENV = "MULTIMODAL_AGENT_IMAGE_PROVIDER"
-
 CHAT_PROVIDER_SPECS: dict[str, ProviderSpec] = {
     "mock": ProviderSpec(
         name="mock",
-        capability="direct_chat",
-        provider_env=CHAT_PROVIDER_ENV,
         adapter_kind="mock",
-        capabilities=MOCK_CHAT_CAPABILITIES,
         requires_api_key=False,
         requires_base_url=False,
         requires_model=False,
     ),
     "openai": ProviderSpec(
         name="openai",
-        capability="direct_chat",
-        provider_env=CHAT_PROVIDER_ENV,
         adapter_kind="openai_compatible",
-        capabilities=OPENAI_COMPATIBLE_CHAT_CAPABILITIES,
         api_key_env="OPENAI_API_KEY",
         base_url_env="OPENAI_CHAT_BASE_URL",
         model_env="OPENAI_CHAT_MODEL",
@@ -186,10 +82,7 @@ CHAT_PROVIDER_SPECS: dict[str, ProviderSpec] = {
     ),
     "qwen": ProviderSpec(
         name="qwen",
-        capability="direct_chat",
-        provider_env=CHAT_PROVIDER_ENV,
         adapter_kind="openai_compatible",
-        capabilities=OPENAI_COMPATIBLE_CHAT_CAPABILITIES,
         api_key_env="QWEN_API_KEY",
         base_url_env="QWEN_CHAT_BASE_URL",
         model_env="QWEN_CHAT_MODEL",
@@ -201,10 +94,7 @@ CHAT_PROVIDER_SPECS: dict[str, ProviderSpec] = {
     ),
     "ark": ProviderSpec(
         name="ark",
-        capability="direct_chat",
-        provider_env=CHAT_PROVIDER_ENV,
         adapter_kind="openai_compatible",
-        capabilities=OPENAI_COMPATIBLE_CHAT_CAPABILITIES,
         api_key_env="ARK_API_KEY",
         base_url_env="ARK_CHAT_BASE_URL",
         model_env="ARK_CHAT_MODEL",
@@ -216,10 +106,7 @@ CHAT_PROVIDER_SPECS: dict[str, ProviderSpec] = {
     ),
     "deepseek": ProviderSpec(
         name="deepseek",
-        capability="direct_chat",
-        provider_env=CHAT_PROVIDER_ENV,
         adapter_kind="openai_compatible",
-        capabilities=OPENAI_COMPATIBLE_CHAT_CAPABILITIES,
         api_key_env="DEEPSEEK_API_KEY",
         base_url_env="DEEPSEEK_CHAT_BASE_URL",
         model_env="DEEPSEEK_CHAT_MODEL",
@@ -231,10 +118,7 @@ CHAT_PROVIDER_SPECS: dict[str, ProviderSpec] = {
     ),
     "local": ProviderSpec(
         name="local",
-        capability="direct_chat",
-        provider_env=CHAT_PROVIDER_ENV,
         adapter_kind="local_http",
-        capabilities=LOCAL_CHAT_CAPABILITIES,
         base_url_env="LOCAL_CHAT_BASE_URL",
         model_env="LOCAL_CHAT_MODEL",
         default_model="local-chat",
@@ -247,20 +131,14 @@ CHAT_PROVIDER_SPECS: dict[str, ProviderSpec] = {
 VISION_PROVIDER_SPECS: dict[str, ProviderSpec] = {
     "mock": ProviderSpec(
         name="mock",
-        capability="image_understanding",
-        provider_env=VISION_PROVIDER_ENV,
         adapter_kind="mock",
-        capabilities=VISION_TEXT_IMAGE_CAPABILITIES,
         requires_api_key=False,
         requires_base_url=False,
         requires_model=False,
     ),
     "openai": ProviderSpec(
         name="openai",
-        capability="image_understanding",
-        provider_env=VISION_PROVIDER_ENV,
         adapter_kind="openai_compatible",
-        capabilities=VISION_TEXT_IMAGE_CAPABILITIES,
         api_key_env="OPENAI_API_KEY",
         base_url_env="OPENAI_VISION_BASE_URL",
         model_env="OPENAI_VISION_MODEL",
@@ -272,10 +150,7 @@ VISION_PROVIDER_SPECS: dict[str, ProviderSpec] = {
     ),
     "qwen": ProviderSpec(
         name="qwen",
-        capability="image_understanding",
-        provider_env=VISION_PROVIDER_ENV,
         adapter_kind="dashscope_multimodal",
-        capabilities=VISION_TEXT_IMAGE_CAPABILITIES,
         api_key_env="QWEN_API_KEY",
         base_url_env="QWEN_VISION_BASE_URL",
         model_env="QWEN_VISION_MODEL",
@@ -287,10 +162,7 @@ VISION_PROVIDER_SPECS: dict[str, ProviderSpec] = {
     ),
     "seed": ProviderSpec(
         name="seed",
-        capability="image_understanding",
-        provider_env=VISION_PROVIDER_ENV,
         adapter_kind="openai_compatible",
-        capabilities=VISION_TEXT_IMAGE_CAPABILITIES,
         api_key_env="SEED_API_KEY",
         base_url_env="SEED_VISION_BASE_URL",
         model_env="SEED_VISION_MODEL",
@@ -303,10 +175,7 @@ VISION_PROVIDER_SPECS: dict[str, ProviderSpec] = {
     ),
     "ark": ProviderSpec(
         name="ark",
-        capability="image_understanding",
-        provider_env=VISION_PROVIDER_ENV,
         adapter_kind="ark_responses",
-        capabilities=VISION_TEXT_IMAGE_CAPABILITIES,
         api_key_env="ARK_API_KEY",
         base_url_env="ARK_VISION_BASE_URL",
         model_env="ARK_VISION_MODEL",
@@ -318,10 +187,7 @@ VISION_PROVIDER_SPECS: dict[str, ProviderSpec] = {
     ),
     "fake_realtime": ProviderSpec(
         name="fake_realtime",
-        capability="vision_understanding",
-        provider_env=VISION_PROVIDER_ENV,
         adapter_kind="fake_realtime_vision",
-        capabilities=VISION_TEXT_IMAGE_VIDEO_CAPABILITIES,
         model_env="FAKE_REALTIME_VISION_MODEL",
         default_model="fake-realtime-vision",
         requires_api_key=False,
@@ -333,20 +199,14 @@ VISION_PROVIDER_SPECS: dict[str, ProviderSpec] = {
 IMAGE_GENERATION_PROVIDER_SPECS: dict[str, ProviderSpec] = {
     "mock": ProviderSpec(
         name="mock",
-        capability="image_generation",
-        provider_env=IMAGE_GENERATION_PROVIDER_ENV,
         adapter_kind="mock",
-        capabilities=IMAGE_GENERATION_CAPABILITIES,
         requires_api_key=False,
         requires_base_url=False,
         requires_model=False,
     ),
     "openai": ProviderSpec(
         name="openai",
-        capability="image_generation",
-        provider_env=IMAGE_GENERATION_PROVIDER_ENV,
         adapter_kind="openai_image",
-        capabilities=IMAGE_GENERATION_CAPABILITIES,
         api_key_env="OPENAI_API_KEY",
         model_env="OPENAI_IMAGE_MODEL",
         default_model="gpt-image-1",
@@ -356,10 +216,7 @@ IMAGE_GENERATION_PROVIDER_SPECS: dict[str, ProviderSpec] = {
     ),
     "qwen": ProviderSpec(
         name="qwen",
-        capability="image_generation",
-        provider_env=IMAGE_GENERATION_PROVIDER_ENV,
         adapter_kind="dashscope_image",
-        capabilities=IMAGE_GENERATION_CAPABILITIES,
         api_key_env="QWEN_API_KEY",
         base_url_env="QWEN_IMAGE_BASE_URL",
         model_env="QWEN_IMAGE_MODEL",
@@ -371,10 +228,7 @@ IMAGE_GENERATION_PROVIDER_SPECS: dict[str, ProviderSpec] = {
     ),
     "ark": ProviderSpec(
         name="ark",
-        capability="image_generation",
-        provider_env=IMAGE_GENERATION_PROVIDER_ENV,
         adapter_kind="ark_image",
-        capabilities=IMAGE_GENERATION_CAPABILITIES,
         api_key_env="ARK_API_KEY",
         base_url_env="ARK_IMAGE_BASE_URL",
         model_env="ARK_IMAGE_MODEL",
@@ -384,10 +238,7 @@ IMAGE_GENERATION_PROVIDER_SPECS: dict[str, ProviderSpec] = {
     ),
     "comfyui": ProviderSpec(
         name="comfyui",
-        capability="image_generation",
-        provider_env=IMAGE_GENERATION_PROVIDER_ENV,
         adapter_kind="comfyui",
-        capabilities=IMAGE_GENERATION_CAPABILITIES,
         base_url_env="COMFYUI_BASE_URL",
         requires_api_key=False,
         requires_base_url=True,
@@ -395,10 +246,7 @@ IMAGE_GENERATION_PROVIDER_SPECS: dict[str, ProviderSpec] = {
     ),
     "local": ProviderSpec(
         name="local",
-        capability="image_generation",
-        provider_env=IMAGE_GENERATION_PROVIDER_ENV,
         adapter_kind="local_http",
-        capabilities=IMAGE_GENERATION_CAPABILITIES,
         base_url_env="LOCAL_IMAGE_BASE_URL",
         model_env="LOCAL_IMAGE_MODEL",
         default_model="local-image",
