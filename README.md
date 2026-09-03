@@ -40,7 +40,6 @@ Provider profiles and external-provider configuration are documented in [docs/to
 | `agent_server/` | Agent Server graph factory、认证、公开 SDK client 与媒体 custom route |
 | `media/` | 音频边缘适配、视频摄取/观察、统一 image/text embedding 及视觉 adapter |
 | `automation/` | durable task、proactive wake 和通知 |
-| `observability/` | visual eval 使用的 TraceStore/query 最小兼容层与生产 tracing 边界 |
 | `evaluation/` | 直接消费原生 Graph 的 evaluation target；不包含旧 Release Review runner |
 | `providers/` | 跨入口共享的 Provider 配置、错误治理和 adapter |
 | `memory/` | Mem0 transport 与旧 Memory bundle 兼容；生产最小 backend 位于 `native_agent.memory` |
