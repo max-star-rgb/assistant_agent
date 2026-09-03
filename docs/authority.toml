@@ -202,6 +202,7 @@ read_when = [
 source_globs = [
   "src/assistant_agent/native_agent/assistant_prompt.py",
   "src/assistant_agent/native_agent/context.py",
+  "src/assistant_agent/native_agent/token_counter.py",
   "src/assistant_agent/native_agent/assistant_agent.py",
   "src/assistant_agent/native_agent/state.py",
   "src/assistant_agent/native_agent/user_context.py",

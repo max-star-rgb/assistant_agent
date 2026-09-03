@@ -36,7 +36,7 @@ Provider profiles and external-provider configuration are documented in [docs/to
 | --- | --- |
 | `native_agent/` | 生产父 StateGraph、统一 `AssistantAgent`、只读 worker 与 Provider/Tool/Memory 装配 |
 | `runtime/` | Tool、Provider、媒体、Context 与 durable task 仍复用的中立 DTO/外围治理模块；不拥有 Graph 生命周期 |
-| `context/` | 跨入口共享的 Context DTO、token budget/counter 与诊断报告 |
+| `context/` | 跨入口共享的 Context DTO、视觉 token budget 与诊断报告 |
 | `skills/` | Skill 加载、召回、校验、目录、执行与持久化 |
 | `tools/` | 具体 Tool/Plugin 实现；生产内建 Tool 自身实现标准 `BaseTool`，由 `native_agent.tools` 静态装配 |
 | `agent_server/` | Agent Server graph factory、认证、公开 SDK client 与媒体 custom route |

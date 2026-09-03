@@ -1,4 +1,4 @@
-"""Model-tokenizer-backed accounting for compiled provider requests."""
+"""Model-tokenizer-backed accounting for native Agent messages."""
 
 from __future__ import annotations
 
@@ -15,10 +15,8 @@ from langchain_core.messages import (
 from langchain_core.tools import BaseTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
-from assistant_agent.runtime.chat_adapter import ChatRequest
-
 if TYPE_CHECKING:
-    from assistant_agent.config import ChatConfig, VisionConfig
+    from assistant_agent.config import ChatConfig
     from assistant_agent.provider_mode import ProviderMode
 
 
@@ -29,9 +27,6 @@ class ContextTokenCounter(Protocol):
 
     def count_text(self, value: str) -> int:
         """Return the number of model tokens in one text value."""
-
-    def count_chat_request(self, request: ChatRequest) -> int:
-        """Return the preflight token count for one compiled request."""
 
     def count_messages(
         self,
@@ -70,21 +65,6 @@ class TokenizerJsonTokenCounter:
         if not value:
             return 0
         return len(self._tokenizer.encode(value, add_special_tokens=False).ids)
-
-    def count_chat_request(self, request: ChatRequest) -> int:
-        payload = {
-            "messages": request.messages,
-            "tools": request.tools,
-            "tool_choice": request.tool_choice,
-            "response_format": request.response_format,
-        }
-        serialized = json.dumps(
-            _without_none(payload),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-        return self.count_text(serialized)
 
     def count_messages(
         self,
@@ -143,42 +123,6 @@ def create_context_token_counter(
         config.context_tokenizer_path,
         tokenizer_id=str(config.chat_model or config.chat_provider),
     )
-
-
-def create_visual_context_token_counter(
-    config: ChatConfig,
-    vision_config: VisionConfig,
-    *,
-    provider_mode: ProviderMode,
-) -> TokenizerJsonTokenCounter | None:
-    """Create the independently configured offline visual-context tokenizer."""
-
-    if (
-        vision_config.visual_context_compactor_mode != "llm"
-        or provider_mode != "real"
-    ):
-        return None
-    if not vision_config.visual_context_tokenizer_path:
-        raise ValueError(
-            "LLM visual context compaction requires "
-            "REALTIME_VISUAL_CONTEXT_TOKENIZER_PATH"
-        )
-    return TokenizerJsonTokenCounter(
-        vision_config.visual_context_tokenizer_path,
-        tokenizer_id=str(config.chat_model or config.chat_provider),
-    )
-
-
-def _without_none(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {
-            key: _without_none(item)
-            for key, item in value.items()
-            if item is not None
-        }
-    if isinstance(value, list):
-        return [_without_none(item) for item in value]
-    return value
 
 
 def _project_user_content_blocks_to_text(

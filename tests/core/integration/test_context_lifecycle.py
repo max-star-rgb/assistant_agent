@@ -30,7 +30,7 @@ from langgraph_sdk.auth.types import StudioUser
 from pydantic import PrivateAttr
 
 from assistant_agent.agent_server.services import AgentServerExecutionOwner
-from assistant_agent.context.token_counter import TokenizerJsonTokenCounter
+from assistant_agent.native_agent.token_counter import TokenizerJsonTokenCounter
 from assistant_agent.native_agent import assistant_agent as assistant_agent_module
 from assistant_agent.native_agent.assistant_agent import (
     RecursionFinalSynthesisMiddleware,
