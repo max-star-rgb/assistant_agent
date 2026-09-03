@@ -36,11 +36,10 @@ import os
 import asyncio
 from uuid import UUID
 from langsmith import Client
-from assistant_agent.observability.langsmith_config import DEFAULT_LANGSMITH_PROJECT
 
 run_id = UUID("<run_id>")
 client = Client()
-project = os.environ.get("LANGSMITH_PROJECT", DEFAULT_LANGSMITH_PROJECT)
+project = os.environ["LANGSMITH_PROJECT"]
 run = client.read_run(run_id)
 print({
     "run_id": str(run.id),
@@ -101,11 +100,10 @@ root runs；结果中通常可同时看到：
 import os
 from uuid import UUID
 from langsmith import Client
-from assistant_agent.observability.langsmith_config import DEFAULT_LANGSMITH_PROJECT
 
 thread_id = str(UUID("<thread_id>"))
 client = Client()
-project = os.environ.get("LANGSMITH_PROJECT", DEFAULT_LANGSMITH_PROJECT)
+project = os.environ["LANGSMITH_PROJECT"]
 metadata_filter = f'has(metadata, \'{{"thread_id":"{thread_id}"}}\')'
 roots = sorted(
     client.list_runs(

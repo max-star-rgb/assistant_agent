@@ -266,11 +266,7 @@ read_when = [
 source_globs = [
   "src/assistant_agent/agent_server/services.py",
   "src/assistant_agent/native_agent/assistant_agent.py",
-  "src/assistant_agent/observability/langsmith_config.py",
-  "src/assistant_agent/observability/langsmith_native.py",
-  "src/assistant_agent/observability/recovery.py",
   "src/assistant_agent/observability/hook_dispatch.py",
-  "src/assistant_agent/observability/trace_content_policy.py",
   "src/assistant_agent/observability/trace_query.py",
   "src/assistant_agent/observability/trace_store.py",
   "src/assistant_agent/observability/turn_summary.py",
@@ -280,7 +276,7 @@ source_globs = [
 thin_references = ["scripts/README.md"]
 verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_observability_contract.py",
-  "python -m compileall -q src/assistant_agent/agent_server/services.py src/assistant_agent/native_agent/assistant_agent.py src/assistant_agent/observability/langsmith_config.py src/assistant_agent/observability/langsmith_native.py src/assistant_agent/observability/recovery.py src/assistant_agent/observability/trace_content_policy.py src/assistant_agent/media/vision/observability.py",
+  "python -m compileall -q src/assistant_agent/agent_server/services.py src/assistant_agent/native_agent/assistant_agent.py src/assistant_agent/observability src/assistant_agent/media/vision/observability.py",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
