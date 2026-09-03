@@ -13,5 +13,6 @@ def test_resolved_provider_contains_only_consumed_configuration_metadata() -> No
     assert resolved.adapter_kind == "openai_compatible"
     assert resolved.missing_required_env() == []
     assert not hasattr(resolved, "capabilities")
+    assert not hasattr(resolved.spec, "capabilities")
     assert not hasattr(resolved.spec, "capability")
     assert not hasattr(resolved.spec, "provider_env")
