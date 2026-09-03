@@ -221,6 +221,18 @@ observability trace store/query 需要继续逐项核实消费者，不能仅凭
 - observability 兼容层收窄为可选 multi-agent 实际消费的 run/trace summary，以及 visual eval 直接消费的
   `TraceStore`。
 
-新的停止边界位于视觉 authority 明确保留的独立兼容代码：`VisualContextService`、旧视觉 summary compactor、
-semantic store 中的 summary 状态和相关配置当前未进入生产 realtime observer，但仍被文档声明为专项兼容能力。
-删除它们将改变受支持能力和配置契约，已超出物理归位；后续只有在明确决定退役该兼容能力时才继续。
+该轮停止边界位于视觉 authority 明确保留的独立兼容代码：`VisualContextService`、旧视觉 summary compactor、
+semantic store 中的 summary 状态和相关配置当时未进入生产 realtime observer，但仍被文档声明为专项兼容能力，
+因此等待明确退役决策。
+
+## 12. 经批准的视觉兼容链退役（2026-09-03）
+
+用户批准退役后，逐符号审计确认该链没有生产、脚本或当前测试消费者，随后删除：
+
+- `visual_context.py`、`visual_context_compactor.py`、`visual_context_models.py`；
+- semantic store 的 revisioned summary、covered-record 状态和 CAS API；
+- `visual_context.*` 兼容观测事件；
+- 仅供旧 service 使用的 recent-record 与 instruction/image/output reserve 配置。
+
+仍保留 `visual_memory_search` 使用的 `VisualTimelineContextService`、timeline compactor、共享 token policy 和
+target/trigger/hard 配置；它们不持久化 summary，也不改变并行关键帧 VLM 或 exact-target barrier。
