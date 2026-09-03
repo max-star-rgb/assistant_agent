@@ -8,7 +8,7 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from assistant_agent.context.token_budget import ContextWindowPolicy
+from assistant_agent.media.video.token_budget import ContextWindowPolicy
 
 
 class VisualTimelineItem(BaseModel):

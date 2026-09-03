@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from time import perf_counter_ns
 from typing import Protocol
 
-from assistant_agent.context.token_budget import (
+from assistant_agent.media.video.token_budget import (
     ContextWindowDecision,
     ContextWindowPolicy,
 )
