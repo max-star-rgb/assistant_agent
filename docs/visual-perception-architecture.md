@@ -1,6 +1,6 @@
 # 实时视觉感知与语义关键帧架构
 
-Last updated: 2026-09-02
+Last updated: 2026-09-03
 
 ## Authority contract
 
@@ -198,9 +198,10 @@ exact k 结果；Tool 不读取或理解选帧内部状态，也不回退到更�
 `live_view_inspect` trace metadata 只关联本次 exact target record 的来源 trace/span，不能从并发 observation
 完成顺序反推；领域结果不生成平台 URL。
 
-仓库中的 `VisualContextService`、视觉压缩配置与对应观测事件仍可供独立兼容代码和专项测试使用，但
-当前 Agent-Service realtime observer 不构造、不调用它们，也不把旧 summary 或 record 文本
-送入 VLM。
+未接入生产链的旧 `VisualContextService`、revisioned summary model/compactor、semantic store summary 状态、
+专属 reserve 配置和 `visual_context.*` 观测事件已经删除。`visual_memory_search` 的
+`VisualTimelineContextService` 仍保留 Tool 尾部 target/trigger/hard gate；它只压缩本次模型可见投影，
+不把 summary 反写 Store，也不把旧 summary 或 record 文本送入后台 VLM。
 
 ## 视觉观测与 trace 契约
 

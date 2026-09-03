@@ -46,12 +46,6 @@ VISUAL_SEMANTIC_EVENT_NAMES = (
     "visual_memory.query",
     "visual_memory.compaction",
 )
-VISUAL_CONTEXT_EVENT_NAMES = (
-    "visual_context.preflight",
-    "visual_context.compacted",
-    "visual_context.compaction_failed",
-    "visual_context.hard_limit",
-)
 SEMANTIC_FRAME_REASONS = frozenset(
     {
         "admitted",
@@ -99,19 +93,11 @@ class VisualReminderTraceEvent(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
-class VisualContextTraceEvent(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    event_name: str = Field(pattern=r"^visual_context\.")
-    payload: dict[str, Any] = Field(default_factory=dict)
-
-
 TraceEvent = (
     EmbeddingTraceEvent
     | SemanticFrameTraceEvent
     | VisualReminderTraceEvent
     | VisualSemanticTraceEvent
-    | VisualContextTraceEvent
 )
 
 
@@ -418,85 +404,6 @@ def emit_visual_semantic_observation(
             VisualSemanticTraceEvent(
                 event_name=event_name,
                 payload=visual_semantic_trace_payload(**facts),
-            )
-        )
-    except Exception:
-        pass
-
-
-def visual_context_trace_payload(
-    *,
-    session_id: str,
-    sequence: int | None = None,
-    input_tokens: int | None = None,
-    effective_input_limit: int | None = None,
-    target_tokens: int | None = None,
-    usage_ratio: float | None = None,
-    covered_count: int | None = None,
-    recent_count: int | None = None,
-    revision: int | None = None,
-    latency_ms: int | None = None,
-    status: str | None = None,
-    compacted: bool | None = None,
-    **_content: Any,
-) -> dict[str, Any]:
-    """Project visual-context budget facts without retained visual content."""
-
-    payload: dict[str, Any] = {"session_id_digest": _digest(session_id)}
-    integer_facts = {
-        "sequence": sequence,
-        "input_tokens": input_tokens,
-        "effective_input_limit": effective_input_limit,
-        "target_tokens": target_tokens,
-        "covered_count": covered_count,
-        "recent_count": recent_count,
-        "revision": revision,
-        "latency_ms": latency_ms,
-    }
-    payload.update(
-        {
-            key: max(0, value)
-            for key, value in integer_facts.items()
-            if value is not None
-        }
-    )
-    if usage_ratio is not None and math.isfinite(usage_ratio):
-        payload["usage_ratio"] = max(0.0, usage_ratio)
-    if status is not None:
-        payload["status"] = (
-            status
-            if status
-            in {
-                "below_trigger",
-                "triggered",
-                "ready",
-                "succeeded",
-                "failed",
-                "revision_conflict",
-                "hard_limit",
-                "unavailable",
-            }
-            else "other"
-        )
-    if isinstance(compacted, bool):
-        payload["compacted"] = compacted
-    return payload
-
-
-def emit_visual_context_observation(
-    observer: EmbeddingObserver | None,
-    event_name: str,
-    **facts: Any,
-) -> None:
-    """Best-effort content-free visual-context budget observation."""
-
-    if observer is None or event_name not in VISUAL_CONTEXT_EVENT_NAMES:
-        return
-    try:
-        observer.record(
-            VisualContextTraceEvent(
-                event_name=event_name,
-                payload=visual_context_trace_payload(**facts),
             )
         )
     except Exception:
