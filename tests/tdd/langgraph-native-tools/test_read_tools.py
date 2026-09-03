@@ -33,22 +33,9 @@ from assistant_agent.tools.plugins.builtin.email_access.tools import (
     create_email_read_tool,
     create_email_search_tool,
 )
-from assistant_agent.tools.plugins.builtin.local_file_access.tool import (
-    create_local_file_read_tool,
-)
-from assistant_agent.tools.plugins.builtin.web_access.fetch_models import (
-    WebFetchProviderError,
-    WebFetchRequest,
-    WebFetchResult,
-)
-from assistant_agent.tools.plugins.builtin.web_access.fetch_tool import create_web_fetch_tool
-
-
 READ_TOOL_MODULES = (
     "assistant_agent.tools.plugins.builtin.calendar_weather_contacts.tools",
     "assistant_agent.tools.plugins.builtin.email_access.tools",
-    "assistant_agent.tools.plugins.builtin.web_access.fetch_tool",
-    "assistant_agent.tools.plugins.builtin.local_file_access.tool",
 )
 
 
@@ -84,29 +71,6 @@ class _FailedWithoutErrorsEmailBackend:
 
     def read(self, request):  # type: ignore[no-untyped-def]
         raise AssertionError("email_read is not used by this test")
-
-
-class _FailingWebAdapter:
-    def fetch(self, request: WebFetchRequest) -> WebFetchResult:
-        return WebFetchResult(
-            url=request.url,
-            provider="web-error",
-            errors=[WebFetchProviderError(code="web_unavailable", message="Web unavailable.")],
-        )
-
-
-class _SensitiveFailingWebAdapter:
-    def fetch(self, request: WebFetchRequest) -> WebFetchResult:
-        return WebFetchResult(
-            url=request.url,
-            provider="web-error",
-            errors=[
-                WebFetchProviderError(
-                    code="web_unavailable",
-                    message="api_key=secret-sentinel path=/home/private/result.json",
-                )
-            ],
-        )
 
 
 def test_calendar_and_contacts_tools_return_native_content_and_artifact() -> None:
@@ -184,33 +148,6 @@ def test_email_tools_return_native_content_and_artifact() -> None:
     assert read.status == "success"
 
 
-def test_web_fetch_returns_native_content_and_artifact() -> None:
-    message = _invoke(create_web_fetch_tool(), {"url": "https://example.test/page"})
-
-    assert json.loads(message.content[0]["text"])["outcome"] == "success"
-    assert message.artifact["url"] == "https://example.test/page"
-    assert message.status == "success"
-
-
-def test_local_file_read_returns_native_content_and_artifact(tmp_path: Path) -> None:
-    (tmp_path / "note.txt").write_text("native file contents", encoding="utf-8")
-
-    message = _invoke(create_local_file_read_tool(tmp_path), {"path": "note.txt"})
-
-    assert json.loads(message.content[0]["text"]) == {
-        "content": "native file contents",
-        "end_char": 20,
-        "next_cursor": None,
-        "path": "note.txt",
-        "start_char": 0,
-        "summary": "已读取 note.txt 的字符 0-20，全文共 20 字符。",
-        "total_chars": 20,
-        "truncated": False,
-    }
-    assert message.artifact["status"] == "succeeded"
-    assert message.status == "success"
-
-
 def test_failed_result_without_errors_becomes_toolnode_error() -> None:
     message = _invoke(
         create_email_search_tool(_FailedWithoutErrorsEmailBackend()),
@@ -218,17 +155,6 @@ def test_failed_result_without_errors_becomes_toolnode_error() -> None:
     )
 
     assert message.content == "provider_error: email_search failed"
-    assert message.artifact is None
-    assert message.status == "error"
-
-
-def test_sensitive_provider_error_is_sanitized_before_toolnode_observation() -> None:
-    message = _invoke(
-        create_web_fetch_tool(_SensitiveFailingWebAdapter()),
-        {"url": "https://example.test/page"},
-    )
-
-    assert message.content == "web_unavailable: [redacted] path=[redacted]"
     assert message.artifact is None
     assert message.status == "error"
 
@@ -245,16 +171,6 @@ def test_sensitive_provider_error_is_sanitized_before_toolnode_observation() -> 
             create_email_search_tool(_FailingEmailBackend()),
             {"query": "project"},
             "email_unavailable: Mailbox unavailable.",
-        ),
-        (
-            create_web_fetch_tool(_FailingWebAdapter()),
-            {"url": "https://example.test/page"},
-            "web_unavailable: Web unavailable.",
-        ),
-        (
-            create_local_file_read_tool(Path.cwd()),
-            {"path": "missing.txt"},
-            "file_not_found: 指定文件不存在。",
         ),
     ],
 )

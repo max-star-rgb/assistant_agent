@@ -22,8 +22,6 @@ EMBEDDING_EVENT_NAMES = (
     "embedding.started",
     "embedding.finished",
     "embedding.failed",
-    "embedding.dispatched",
-    "embedding.consumer_dropped",
     "embedding.session_cleanup",
 )
 
@@ -118,8 +116,6 @@ def embedding_trace_payload(
     outcome: EmbeddingEvent | EmbeddingFailureEvent | None = None,
     observation: ImageObservation | TextObservation | None = None,
     priority: str | None = None,
-    consumer_id: str | None = None,
-    consumer_count: int | None = None,
     cache_hit: bool | None = None,
 ) -> dict[str, Any]:
     """Project lifecycle facts without vectors, text, paths, or raw identities."""
@@ -181,10 +177,6 @@ def embedding_trace_payload(
             )
     if priority is not None:
         payload["priority"] = priority
-    if consumer_id is not None:
-        payload["consumer_id"] = consumer_id
-    if consumer_count is not None:
-        payload["consumer_count"] = max(0, consumer_count)
     if cache_hit is not None:
         payload["cache_hit"] = cache_hit
     return {key: value for key, value in payload.items() if value is not None}

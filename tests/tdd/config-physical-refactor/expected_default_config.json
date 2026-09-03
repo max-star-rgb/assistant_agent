@@ -66,7 +66,6 @@
   "langmem_model": null,
   "local_chat_base_url": null,
   "local_chat_model": "local-chat",
-  "local_file_access_root": ".data/files",
   "local_image_base_url": null,
   "local_image_model": "local-image",
   "lodging_provider": "mock",
@@ -128,8 +127,6 @@
   "remote_visual_memory_query_top_k": 8,
   "remote_visual_memory_segment_seconds": 30.0,
   "remote_visual_memory_spool_root": ".data/remote_visual_memory",
-  "search_api_base_url": null,
-  "search_provider": "mock",
   "seed_api_key": null,
   "seed_vision_base_url": "https://api.seed.example/v1/vision",
   "seed_vision_model": "seed-vision",
@@ -144,8 +141,6 @@
   "siglip2_cuda_device_id": 0,
   "siglip2_model_dir": null,
   "siglip2_vision_model_dir": null,
-  "tavily_api_key": null,
-  "tavily_base_url": "https://api.tavily.com",
   "td_gen_ip": null,
   "td_gen_port": null,
   "video_understanding_timeout_seconds": 60.0,
@@ -177,8 +172,5 @@
   "visual_memory_result_limit": 12,
   "visual_reminder_max_active": 16,
   "visual_reminder_similarity_threshold": 0.82,
-  "visual_reminder_terminal_history_limit": 64,
-  "web_search_api_key": null,
-  "web_search_base_url": null,
-  "web_search_timeout_seconds": 10.0
+  "visual_reminder_terminal_history_limit": 64
 }

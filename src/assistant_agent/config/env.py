@@ -586,8 +586,6 @@ def _load_tool_config(source: Mapping[str, str], mode: ProviderMode) -> ToolConf
     resolved = resolve_image_generation_provider(provider, source)
     shopping_provider = source.get("MULTIMODAL_AGENT_SHOPPING_PROVIDER")
     return ToolConfig(
-        local_file_access_root=source.get("MULTIMODAL_AGENT_FILE_ACCESS_ROOT")
-        or ".data/files",
         durable_tasks_enabled=_bool(
             source.get("MULTIMODAL_AGENT_DURABLE_TASKS_ENABLED"), False
         ),
@@ -612,18 +610,6 @@ def _load_tool_config(source: Mapping[str, str], mode: ProviderMode) -> ToolConf
             local_image_model=source.get("LOCAL_IMAGE_MODEL", "local-image"),
         ),
         search=SearchConfig(
-            search_api_base_url=source.get("SEARCH_API_BASE_URL"),
-            search_provider=source.get("MULTIMODAL_AGENT_SEARCH_PROVIDER")
-            if allow_real
-            and source.get("MULTIMODAL_AGENT_SEARCH_PROVIDER") in {"http", "tavily"}
-            else "mock",
-            web_search_base_url=source.get("WEB_SEARCH_BASE_URL"),
-            web_search_api_key=source.get("WEB_SEARCH_API_KEY"),
-            web_search_timeout_seconds=_float(
-                source.get("WEB_SEARCH_TIMEOUT_SECONDS"), 10.0
-            ),
-            tavily_api_key=source.get("TAVILY_API_KEY"),
-            tavily_base_url=source.get("TAVILY_BASE_URL", "https://api.tavily.com"),
             visual_image_search_provider="qwen"
             if allow_real
             and source.get("MULTIMODAL_AGENT_VISUAL_IMAGE_SEARCH_PROVIDER") == "qwen"

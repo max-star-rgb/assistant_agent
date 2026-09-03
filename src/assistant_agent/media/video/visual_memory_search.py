@@ -1,4 +1,4 @@
-"""Expose retained keyframe-window VLM text for main-model retrieval."""
+"""Search retained keyframe-window VLM text for main-model retrieval."""
 
 from __future__ import annotations
 
