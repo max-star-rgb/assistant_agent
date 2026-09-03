@@ -22,6 +22,9 @@ from assistant_agent.native_agent.token_counter import create_context_token_coun
 from assistant_agent.mcp.config import load_mcp_server_configs_from_env
 from assistant_agent.mcp.stateful_sessions import ThreadMcpSessionPool
 from assistant_agent.media.visual_perception import get_visual_perception_module
+from assistant_agent.media.video.visual_timeline_compactor import (
+    create_visual_timeline_context_service,
+)
 from assistant_agent.native_agent.assistant_agent import (
     build_assistant_agent,
     build_general_purpose_worker,
@@ -111,6 +114,12 @@ class AgentServerExecutionOwner:
         tool_resources = replace(
             tool_resources,
             thread_resource_manager=thread_resource_manager,
+            visual_timeline_context_service=create_visual_timeline_context_service(
+                config.vision,
+                model,
+                provider_mode=config.provider_mode,
+                token_counter=context_token_counter,
+            ),
         )
         mcp_server_configs = load_mcp_server_configs_from_env()
         mcp_session_pool = ThreadMcpSessionPool(

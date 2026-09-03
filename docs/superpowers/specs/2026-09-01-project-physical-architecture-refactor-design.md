@@ -236,3 +236,10 @@ semantic store 中的 summary 状态和相关配置当时未进入生产 realtim
 
 仍保留 `visual_memory_search` 使用的 `VisualTimelineContextService`、timeline compactor、共享 token policy 和
 target/trigger/hard 配置；它们不持久化 summary，也不改变并行关键帧 VLM 或 exact-target barrier。
+
+## 13. 视觉时间线原生接入（2026-09-03）
+
+经确认继续原生化后，生产 composition 使用主 `BaseChatModel` 和同一离线 context token counter 构造
+`VisualTimelineContextService`，通过静态 Tool resources 注入现有 `visual_memory_search`。timeline compactor
+不再依赖旧 `ChatAdapter/ChatRequest`，执行路径保持标准 `BaseTool -> ToolNode -> ToolRuntime -> ToolMessage`；
+没有新增 Graph node、middleware 或第二套 Runtime。独立视觉 tokenizer 配置随之删除。
