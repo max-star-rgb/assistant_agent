@@ -21,7 +21,7 @@ from assistant_agent.native_agent.tools import (
 )
 from assistant_agent.providers.provider_selection import create_vision_adapter
 from assistant_agent.provider_mode import ProviderMode
-from assistant_agent.tools.ids import VISUAL_IMAGE_SEARCH_TOOL_NAME, WEB_FETCH_TOOL_NAME
+from assistant_agent.tools.ids import VISUAL_IMAGE_SEARCH_TOOL_NAME
 from assistant_agent.tools.plugins.builtin.visual_image_search.tool import (
     create_visual_image_search_tool,
 )
@@ -37,13 +37,6 @@ from assistant_agent.tools.plugins.builtin.shopping.backend import (
     create_shopping_compare_adapter,
     create_shopping_search_adapter,
 )
-from assistant_agent.tools.plugins.builtin.web_access.fetch_backend import (
-    MockWebFetchAdapter,
-    create_web_fetch_adapter,
-)
-from assistant_agent.tools.plugins.builtin.web_access.fetch_tool import (
-    create_web_fetch_tool,
-)
 
 
 def _flatten(config: AppConfig) -> dict[str, object]:
@@ -52,7 +45,6 @@ def _flatten(config: AppConfig) -> dict[str, object]:
         values.update(asdict(getattr(config, section_name)))
     values.update(
         {
-            "local_file_access_root": config.tools.local_file_access_root,
             "durable_tasks_enabled": config.tools.durable_tasks_enabled,
         }
     )
@@ -316,10 +308,6 @@ def test_tool_inventory_uses_projected_config() -> None:
     assert len({tool.name for tool in tools}) == len(tools)
 
 
-def test_web_fetch_tool_default_constructor_uses_mock_adapter() -> None:
-    assert create_web_fetch_tool().name == WEB_FETCH_TOOL_NAME
-
-
 def test_visual_image_search_tool_default_constructor_uses_mock_adapter() -> None:
     assert create_visual_image_search_tool().name == VISUAL_IMAGE_SEARCH_TOOL_NAME
 
@@ -342,9 +330,6 @@ def test_mock_mode_factories_do_not_construct_real_tool_adapters() -> None:
     )
     search = replace(
         config.tools.search,
-        search_provider="http",
-        web_search_base_url="https://fetch.example/v1",
-        web_search_api_key="fetch-sentinel",
         visual_image_search_provider="qwen",
         qwen_image_search_api_key="visual-sentinel",
     )
@@ -365,10 +350,6 @@ def test_mock_mode_factories_do_not_construct_real_tool_adapters() -> None:
     assert isinstance(
         create_visual_image_search_adapter(search, provider_mode="mock"),
         MockVisualImageSearchAdapter,
-    )
-    assert isinstance(
-        create_web_fetch_adapter(search, provider_mode="mock"),
-        MockWebFetchAdapter,
     )
     with pytest.raises(ValueError, match="real provider mode"):
         create_shopping_search_adapter(shopping, provider_mode="mock")

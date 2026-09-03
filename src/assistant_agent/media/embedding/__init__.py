@@ -4,10 +4,7 @@ from assistant_agent.media.embedding.comparator import (
     EmbeddingComparator,
     EmbeddingComparisonError,
 )
-from assistant_agent.media.embedding.coordinator import (
-    EmbeddingConsumer,
-    SessionEmbeddingCoordinator,
-)
+from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
 from assistant_agent.media.embedding.coordinator_store import (
     SessionEmbeddingCoordinatorStore,
 )
@@ -33,7 +30,6 @@ __all__ = [
     "EmbeddingFailureEvent",
     "EmbeddingOutcome",
     "EmbeddingReadiness",
-    "EmbeddingConsumer",
     "ImageObservation",
     "MockMultimodalEmbeddingProvider",
     "DashScopeImageOnlyEmbeddingProvider",

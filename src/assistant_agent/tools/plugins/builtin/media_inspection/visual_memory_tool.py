@@ -10,7 +10,7 @@ from langchain_core.tools import BaseTool, ToolException, tool
 from langgraph.prebuilt import ToolRuntime
 from pydantic import BaseModel, Field, model_validator
 
-from assistant_agent.media.embedding.consumers.object_search import (
+from assistant_agent.media.video.visual_memory_search import (
     VisualMemorySearchRequest,
     VisualMemorySearchResult,
     VisualMemorySearchService,

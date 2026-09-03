@@ -35,9 +35,6 @@ from assistant_agent.tools.plugins.builtin.image_generation.tool import (
     create_image_generation_tool,
 )
 from assistant_agent.tools.plugins.builtin.image_to_3d.tool import create_image_to_3d_tool
-from assistant_agent.tools.plugins.builtin.local_file_access.tool import (
-    create_local_file_read_tool,
-)
 from assistant_agent.tools.plugins.builtin.lodging.tool import create_lodging_search_tool
 from assistant_agent.tools.plugins.builtin.lodging.watch_tool import (
     create_hotel_price_watch_create_tool,
@@ -58,7 +55,6 @@ from assistant_agent.tools.plugins.builtin.shopping.tool import create_shopping_
 from assistant_agent.tools.plugins.builtin.visual_image_search.tool import (
     create_visual_image_search_tool,
 )
-from assistant_agent.tools.plugins.builtin.web_access.fetch_tool import create_web_fetch_tool
 
 
 COMPATIBILITY_SYMBOLS = frozenset(
@@ -77,7 +73,6 @@ BUSINESS_TOOL_NAMES = (
     "contacts_search",
     "email_read",
     "email_search",
-    "file_read",
     "hotel_price_watch_create",
     "image_generation",
     "image_to_3d",
@@ -88,7 +83,6 @@ BUSINESS_TOOL_NAMES = (
     "visual_image_search",
     "visual_memory_search",
     "visual_reminder_manage",
-    "web_fetch",
 )
 
 
@@ -117,7 +111,7 @@ def test_all_builtin_factories_return_native_tools_with_hidden_runtime(tmp_path:
     finally:
         semantic_pool.close()
 
-    assert len(tools) == 17
+    assert len(tools) == 15
     assert {tool.name for tool in tools} == set(BUSINESS_TOOL_NAMES)
     for tool in tools:
         assert isinstance(tool, BaseTool)
@@ -165,8 +159,6 @@ def _builtin_factories(
         create_contacts_search_tool(),
         create_email_search_tool(email_backend),
         create_email_read_tool(email_backend),
-        create_local_file_read_tool(tmp_path),
-        create_web_fetch_tool(),
         create_shopping_search_tool(
             search_adapter=object(),  # type: ignore[arg-type]
             compare_adapter=object(),  # type: ignore[arg-type]

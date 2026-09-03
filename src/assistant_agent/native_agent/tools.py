@@ -31,14 +31,12 @@ GENERAL_PURPOSE_BUILTIN_TOOL_NAMES = frozenset(
         "contacts_search",
         "email_read",
         "email_search",
-        "file_read",
         "live_view_inspect",
         "lodging_search",
         "shopping_search",
         "uploaded_media_inspect",
         "visual_image_search",
         "visual_memory_search",
-        "web_fetch",
     }
 )
 INTERRUPT_BUILTIN_TOOL_NAMES = frozenset(
