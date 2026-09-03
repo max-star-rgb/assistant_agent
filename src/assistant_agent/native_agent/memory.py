@@ -406,7 +406,7 @@ async def recall_memory(
     """Recall exactly once for a parent-graph attempt and freeze the result."""
 
     if not runtime.context.enable_memory:
-        return {"memory_context": (), "memory_status": "empty"}
+        return {"memory_context": ()}
     memories = await backend.recall(
         identity=authenticated_user_identity(runtime),
         thread_id=_execution_value(runtime, "thread_id"),
@@ -415,10 +415,7 @@ async def recall_memory(
         store=runtime.store,
     )
     bounded = _bounded_texts(memories)
-    return {
-        "memory_context": bounded,
-        "memory_status": "ready" if bounded else "empty",
-    }
+    return {"memory_context": bounded}
 
 
 async def memory_extract_node(

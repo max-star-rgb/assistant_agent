@@ -257,11 +257,9 @@ def test_native_assistant_input_schema_exposes_only_messages(monkeypatch) -> Non
         assert "messages" in output_fields
         assert {
             "memory_context",
-            "memory_status",
             "async_tasks",
             "needs_verification",
             "verification_attempts",
-            "provider_search_profile",
         }.isdisjoint(output_fields)
     finally:
         asyncio.run(owner.aclose())

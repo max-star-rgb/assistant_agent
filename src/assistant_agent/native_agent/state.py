@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, NotRequired
+from typing import Annotated, NotRequired
 
 from deepagents import DeepAgentState
 from langchain.agents import AgentState
@@ -14,10 +14,6 @@ from langchain.agents.middleware.types import (
 from langchain_core.messages import AnyMessage
 from langgraph.graph import MessagesState
 from pydantic import BaseModel, ConfigDict, JsonValue
-
-from assistant_agent.native_agent.models import ProviderSearchProfile
-
-MemoryStatus = Literal["ready", "empty", "degraded"]
 
 
 def merge_async_tasks(
@@ -52,10 +48,6 @@ class AssistantAgentState(DeepAgentState):
     memory_context: NotRequired[
         Annotated[tuple[str, ...], OmitFromInput, OmitFromOutput]
     ]
-    memory_status: NotRequired[Annotated[MemoryStatus, PrivateStateAttr]]
-    provider_search_profile: NotRequired[
-        Annotated[ProviderSearchProfile, PrivateStateAttr]
-    ]
     async_tasks: NotRequired[AsyncTasks]
 
 
@@ -84,6 +76,5 @@ __all__ = [
     "AssistantWorkerState",
     "MemoryExtractionInput",
     "MemoryExtractionState",
-    "MemoryStatus",
     "merge_async_tasks",
 ]

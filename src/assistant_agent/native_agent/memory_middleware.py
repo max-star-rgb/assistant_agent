@@ -59,7 +59,7 @@ class MemoryLifecycleMiddleware(
         runtime: Runtime[AssistantRunContext],
     ) -> dict[str, Any]:
         if self._backend.backend_id == "disabled" or not runtime.context.enable_memory:
-            return {"memory_context": (), "memory_status": "empty"}
+            return {"memory_context": ()}
         return await self._recall.ainvoke((state, runtime))
 
     async def aafter_agent(

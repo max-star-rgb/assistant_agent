@@ -339,14 +339,10 @@ def test_dynamic_prompt_is_one_text_block_from_run_cwd(
     monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
     project = tmp_path / "project"
     project.mkdir()
-    (project / "AGENTS.md").write_text(
-        "project-instruction-sentinel", encoding="utf-8"
-    )
+    (project / "AGENTS.md").write_text("project-instruction-sentinel", encoding="utf-8")
     sibling = tmp_path / "sibling"
     sibling.mkdir()
-    (sibling / "AGENTS.md").write_text(
-        "sibling-instruction-sentinel", encoding="utf-8"
-    )
+    (sibling / "AGENTS.md").write_text("sibling-instruction-sentinel", encoding="utf-8")
     model = _CaptureMessagesModel()
     model.observed_messages = []
     graph = _agent(tmp_path, model)
@@ -448,7 +444,6 @@ def test_task_uses_isolated_general_purpose_worker_and_preserves_parent_handles(
                 AIMessage(content="worker-final-sentinel", id="worker-final"),
             ],
             "active_tool_profile_ids": ["worker-profile-sentinel"],
-            "provider_search_profile": "deep_research",
             "async_tasks": {"child-task-sentinel": {"status": "running"}},
             "future_private_state": "private-sentinel",
         }
@@ -457,7 +452,6 @@ def test_task_uses_isolated_general_purpose_worker_and_preserves_parent_handles(
     parent_state = {
         "messages": [HumanMessage(content="task-sentinel")],
         "memory_context": ("memory-sentinel",),
-        "provider_search_profile": "travel_general",
         "async_tasks": parent_tasks,
     }
     projected = isolated_general_purpose_worker(
@@ -472,7 +466,6 @@ def test_task_uses_isolated_general_purpose_worker_and_preserves_parent_handles(
     assert [message.id for message in projected["messages"]] == ["worker-final"]
     assert projected["structured_response"] == {"answer": "structured-sentinel"}
     assert parent_state["async_tasks"] == parent_tasks
-    assert parent_state["provider_search_profile"] == "travel_general"
     observed_worker_states.clear()
 
     graph = _agent(
@@ -490,7 +483,6 @@ def test_task_uses_isolated_general_purpose_worker_and_preserves_parent_handles(
     assert [message.content for message in worker_state["messages"]] == [
         "task-sentinel"
     ]
-    assert "provider_search_profile" not in worker_state
     assert "async_tasks" not in worker_state
     assert "active_tool_profile_ids" not in result
     assert not {
@@ -604,6 +596,7 @@ def test_deep_agent_owns_summary_retry_todo_hitl_and_tool_policy(
         description="probe",
     )
     captured: dict[str, Any] = {}
+
     def recording_create_deep_agent(*args: Any, **kwargs: Any):
         del args
         captured.update(kwargs)

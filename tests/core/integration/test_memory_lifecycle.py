@@ -11,7 +11,6 @@ from uuid import NAMESPACE_URL, uuid5
 
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
-from langchain_core.runnables import RunnableLambda
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
 import pytest
@@ -19,7 +18,6 @@ import pytest
 from assistant_agent.native_agent import memory_graph as memory_graph_module
 from assistant_agent.native_agent import memory as memory_module
 from assistant_agent.config import ChatConfig, MemoryConfig
-from assistant_agent.native_agent.assistant_agent import isolated_general_purpose_worker
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.providers import MockAssistantChatModel
 from assistant_agent.native_agent.state import AssistantAgentState
@@ -272,7 +270,6 @@ def test_disable_memory_skips_recall_and_extraction(monkeypatch) -> None:
 
     assert backend.events == []
     assert "memory_context" not in result
-    assert "memory_status" not in result
     assert client.threads.requests == []
     assert client.runs.cancellations == []
     assert client.runs.requests == []
@@ -326,29 +323,6 @@ def test_refresh_reports_error_after_native_retries(monkeypatch) -> None:
         )
 
     assert len(client.threads.requests) == 3
-
-
-@pytest.mark.core_invariant("MEMORY-001")
-def test_task_worker_cannot_see_parent_memory_status() -> None:
-    observed: list[dict[str, Any]] = []
-
-    def worker(state: dict[str, Any]) -> dict[str, Any]:
-        observed.append(state)
-        return {"messages": [AIMessage(content="worker-sentinel")]}
-
-    parent_state = {
-        "messages": [HumanMessage(content="task-sentinel")],
-        "memory_context": ("memory-sentinel",),
-        "memory_status": "ready",
-    }
-    result = isolated_general_purpose_worker(RunnableLambda(worker)).invoke(
-        parent_state
-    )
-
-    assert set(observed[0]) == {"messages", "memory_context"}
-    assert "memory_status" not in observed[0]
-    assert parent_state["memory_status"] == "ready"
-    assert set(result) == {"messages"}
 
 
 @pytest.mark.core_invariant("MEMORY-001")
