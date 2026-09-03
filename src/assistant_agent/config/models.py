@@ -155,10 +155,6 @@ class VisionConfig:
     visual_context_compaction_hard_ratio: float = 0.85
     visual_context_compaction_safety_margin_tokens: int = 2_048
     visual_context_summary_max_tokens: int = 2_048
-    visual_context_keep_recent_records: int = 4
-    visual_context_instruction_reserve_tokens: int = 1_024
-    visual_context_image_reserve_tokens: int = 2_048
-    visual_context_output_reserve_tokens: int = 2_048
 
     def __post_init__(self) -> None:
         if self.siglip2_cuda_device_id < 0:
