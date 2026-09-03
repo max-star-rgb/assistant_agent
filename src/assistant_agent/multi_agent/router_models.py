@@ -89,20 +89,6 @@ class AgentRouteRequest(UserRequest):
                     "text": "Coordinate this task and delegate if useful.",
                     "collaboration_mode": "controller_delegate",
                 },
-                {
-                    "user_id": "auth_bound_user",
-                    "session_id": "body_session",
-                    "text": "Run through the agent router with header-auth pilot enabled.",
-                    "target_agent_id": "agent.worker",
-                    "collaboration_mode": "single",
-                    "metadata": {
-                        "auth_contract": (
-                            "When MULTIMODAL_AGENT_AUTH_HEADER_ENABLED is set, "
-                            "X-Multimodal-Agent-User-Id must match this user_id; "
-                            "X-Multimodal-Agent-Session-Id becomes the bound session."
-                        )
-                    },
-                },
             ]
         }
     )
