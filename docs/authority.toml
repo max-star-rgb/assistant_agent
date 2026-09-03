@@ -197,7 +197,7 @@ id = "context-engineering"
 authority = "docs/context_engineering_status.md"
 read_when = [
   "context、prompt、conversation history、context budget 或 compaction",
-  "AssistantContextPack、ChatRequest 编译、Tool observation 或 context report",
+  "AssistantRunContext、ChatRequest 编译或 Tool observation",
 ]
 source_globs = [
   "src/assistant_agent/native_agent/assistant_prompt.py",
@@ -206,7 +206,6 @@ source_globs = [
   "src/assistant_agent/native_agent/assistant_agent.py",
   "src/assistant_agent/native_agent/state.py",
   "src/assistant_agent/native_agent/user_context.py",
-  "src/assistant_agent/context/**",
 ]
 thin_references = ["README.md", "docs/runtime-event-stream-architecture.md"]
 verification = [

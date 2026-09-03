@@ -8,8 +8,65 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from assistant_agent.context.models import RealtimeVideoContext, RealtimeVideoContextStatus
 from assistant_agent.media.vision.models import VideoUnderstandingResult
+
+
+RealtimeVideoContextStatus = Literal[
+    "ready",
+    "refreshing",
+    "pending",
+    "stale",
+    "failed",
+    "unavailable",
+]
+
+
+class RealtimeVideoContext(BaseModel):
+    """Bounded runtime and observability projection of one rolling video snapshot."""
+
+    model_config = ConfigDict(frozen=True)
+
+    status: RealtimeVideoContextStatus = "unavailable"
+    summary: str = ""
+    objects: list[str] = Field(default_factory=list)
+    people: list[str] = Field(default_factory=list)
+    actions: list[str] = Field(default_factory=list)
+    events: list[str] = Field(default_factory=list)
+    scene: str | None = None
+    snapshot_sequence: int | None = Field(default=None, ge=0)
+    target_sequence: int | None = Field(default=None, ge=0)
+    sequence_gap: int | None = Field(default=None, ge=0)
+    snapshot_age_ms: int | None = Field(default=None, ge=0)
+    frame_capture_age_ms: int | None = Field(default=None, ge=0)
+    snapshot_publish_age_ms: int | None = Field(default=None, ge=0)
+    observation_latency_ms: int | None = Field(default=None, ge=0)
+    h264_decode_latency_ms: int | None = Field(default=None, ge=0)
+    keyframe_selection_latency_ms: int | None = Field(default=None, ge=0)
+    queue_wait_latency_ms: int | None = Field(default=None, ge=0)
+    text_embedding_latency_ms: int | None = Field(default=None, ge=0)
+    visual_memory_index_latency_ms: int | None = Field(default=None, ge=0)
+    semantic_store_write_latency_ms: int | None = Field(default=None, ge=0)
+    semantic_publish_latency_ms: int | None = Field(default=None, ge=0)
+    provider: str | None = None
+    model: str | None = None
+    pending_count: int = Field(default=0, ge=0)
+    in_flight: bool = False
+    error_code: str | None = None
+    transport: str | None = Field(default=None, max_length=40)
+    session_generation: int | None = Field(default=None, ge=1)
+    connection_reused: bool | None = None
+    reconnect_count: int | None = Field(default=None, ge=0)
+    completed_sequence: int | None = Field(default=None, ge=0)
+    first_delta_latency_ms: int | None = Field(default=None, ge=0)
+    total_observation_latency_ms: int | None = Field(default=None, ge=0)
+    jpeg_prepare_latency_ms: int | None = Field(default=None, ge=0)
+    connection_setup_latency_ms: int | None = Field(default=None, ge=0)
+    instruction_update_latency_ms: int | None = Field(default=None, ge=0)
+    media_commit_latency_ms: int | None = Field(default=None, ge=0)
+    response_first_delta_latency_ms: int | None = Field(default=None, ge=0)
+    response_tail_latency_ms: int | None = Field(default=None, ge=0)
+    response_latency_ms: int | None = Field(default=None, ge=0)
+    result_parse_latency_ms: int | None = Field(default=None, ge=0)
 
 
 class SemanticKeyframeRecord(BaseModel):

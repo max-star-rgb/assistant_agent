@@ -6,12 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from assistant_agent.context.models import ContextReport
-from assistant_agent.context.report import (
-    context_report_from_trace_context_summary,
-    context_report_v2_from_v1,
-)
-from assistant_agent.observability.trace_store import TraceEvent, TraceStore, trace_debug_summary, trace_event_summary
+from assistant_agent.observability.trace_store import TraceEvent, TraceStore, trace_debug_summary
 from assistant_agent.observability.turn_summary import latest_turn_summary_from_events
 
 
@@ -49,21 +44,6 @@ class TraceSummary(BaseModel):
     turn_latency: dict[str, Any] | None = None
     turn_summary: dict[str, Any] | None = None
     events: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class ToolCallSummary(BaseModel):
-    """Public tool-call trace summary."""
-
-    run_id: str
-    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class ContextReportQueryResult(BaseModel):
-    """Public context report lookup result."""
-
-    run_id: str | None = None
-    trace_id: str | None = None
-    context_report_v2: ContextReport
 
 
 class TraceQueryService:
@@ -114,57 +94,6 @@ class TraceQueryService:
             events=summary["events"],
         )
 
-    def tool_calls_by_run(self, run_id: str) -> ToolCallSummary | None:
-        events = self.trace_store.list_by_run(run_id)
-        if not events:
-            return None
-        tool_events = [event for event in events if event.tool_name is not None]
-        return ToolCallSummary(
-            run_id=run_id,
-            tool_calls=[_tool_call_summary(event) for event in tool_events],
-        )
-
-    def context_by_run(self, run_id: str) -> ContextReportQueryResult | None:
-        events = self.trace_store.list_by_run(run_id)
-        if not events:
-            return None
-        return ContextReportQueryResult(
-            run_id=run_id,
-            trace_id=events[0].trace_id,
-            context_report_v2=_latest_context_report(events),
-        )
-
-    def context_by_trace(self, trace_id: str) -> ContextReportQueryResult | None:
-        events = self.trace_store.list_by_trace(trace_id)
-        if not events:
-            return None
-        return ContextReportQueryResult(
-            run_id=events[0].run_id,
-            trace_id=trace_id,
-            context_report_v2=_latest_context_report(events),
-        )
-
-
-def _tool_call_summary(event: TraceEvent) -> dict[str, Any]:
-    summary = trace_event_summary(event)
-    attributes = summary["attributes"]
-    return {
-        "trace_id": summary["trace_id"],
-        "tool_call_id": attributes.get("tool_call_id"),
-        "step_id": attributes.get("step_id"),
-        "node_name": summary["node_name"],
-        "event_type": summary["event_type"],
-        "capability": summary["capability"],
-        "tool_name": summary["tool_name"],
-        "provider": summary["provider"],
-        "model": summary["model"],
-        "status": summary["status"],
-        "latency_ms": summary["latency_ms"],
-        "error_code": summary["error_code"],
-        "input_summary": summary["input_summary"],
-        "output_summary": summary["output_summary"],
-    }
-
 
 def _latest_context_summary(events: list[TraceEvent]) -> dict[str, Any]:
     for event in reversed(events):
@@ -186,24 +115,3 @@ def _latest_turn_latency(events: list[TraceEvent]) -> dict[str, Any] | None:
         ):
             return dict(summary)
     return None
-
-
-def _latest_context_report(events: list[TraceEvent]) -> ContextReport:
-    for event in reversed(events):
-        if not isinstance(event.output_summary, dict):
-            continue
-        report = event.output_summary.get("context_report_v2")
-        if isinstance(report, dict):
-            return ContextReport.model_validate(report)
-        report = event.output_summary.get("context_report_v1")
-        if isinstance(report, dict):
-            return context_report_v2_from_v1(report)
-        context = event.output_summary.get("context")
-        if isinstance(context, dict):
-            nested_report = context.get("context_report_v2")
-            if isinstance(nested_report, dict):
-                return ContextReport.model_validate(nested_report)
-            nested_report = context.get("context_report_v1")
-            if isinstance(nested_report, dict):
-                return context_report_v2_from_v1(nested_report)
-    return context_report_from_trace_context_summary(_latest_context_summary(events))

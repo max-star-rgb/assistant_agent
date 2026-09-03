@@ -36,7 +36,6 @@ Provider profiles and external-provider configuration are documented in [docs/to
 | --- | --- |
 | `native_agent/` | 生产父 StateGraph、统一 `AssistantAgent`、只读 worker 与 Provider/Tool/Memory 装配 |
 | `runtime/` | Tool、Provider、媒体、Context 与 durable task 仍复用的中立 DTO/外围治理模块；不拥有 Graph 生命周期 |
-| `context/` | 跨入口共享的 Context DTO 与诊断报告 |
 | `skills/` | Skill 加载、召回、校验、目录、执行与持久化 |
 | `tools/` | 具体 Tool/Plugin 实现；生产内建 Tool 自身实现标准 `BaseTool`，由 `native_agent.tools` 静态装配 |
 | `agent_server/` | Agent Server graph factory、认证、公开 SDK client 与媒体 custom route |
@@ -51,7 +50,7 @@ Provider profiles and external-provider configuration are documented in [docs/to
 | `config/` | 进程配置装配 |
 
 领域模型和稳定协议由所属 package 就近维护，例如 `tools/models.py`、
-`context/models.py` 和 `multi_agent/a2a_protocol.py`。
+`media/video/realtime_video_memory.py` 和 `multi_agent/a2a_protocol.py`。
 
 旧外围入口仍可通过 `MULTIMODAL_AGENT_TOOL_PLUGIN_MODULES` 使用动态 Python Plugin；该机制会执行所配置
 module 的进程内代码，不是不可信代码沙箱。生产 `assistant-native-v4` 只使用受信静态 Tool 清单和官方 MCP
