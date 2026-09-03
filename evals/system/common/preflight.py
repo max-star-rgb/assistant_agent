@@ -19,7 +19,7 @@ def validate_real_chat_config(
         raise SystemEvalConfigurationError(
             "System eval requires MULTIMODAL_AGENT_PROVIDER_MODE=real."
         )
-    if config.chat_provider == "mock" or config.chat_adapter_kind == "mock":
+    if config.resolved_provider().adapter_kind == "mock":
         raise SystemEvalConfigurationError(
             "System eval requires an explicit real chat Provider."
         )

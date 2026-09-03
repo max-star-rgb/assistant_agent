@@ -263,7 +263,6 @@ def _load_chat_config(source: Mapping[str, str], mode: ProviderMode) -> ChatConf
         chat_api_key=resolved.api_key,
         chat_base_url=resolved.base_url,
         chat_model=resolved.model,
-        chat_adapter_kind=resolved.adapter_kind,
         chat_stream=stream,
         native_provider_streaming=_bool(
             source.get("MULTIMODAL_AGENT_NATIVE_PROVIDER_STREAMING"),

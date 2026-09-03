@@ -81,7 +81,7 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
 - `scripts/migrate_mem0_memories_to_chinese.py`：检查或迁移一个 runtime 用户已有的
   Mem0 记忆为简体中文。默认命令只读；更新要求 real Provider mode、已配置的 Qwen 和
   Mem0，并同时传入 `--apply` 与 `--allow-real-provider`。输出只包含数量、memory ID、
-  状态和稳定错误码，不持久化记忆正文或 Provider 响应。
+  状态和稳定错误码，不持久化记忆正文或 Provider 响应；翻译复用生产 `create_chat_model`，并强制关闭联网搜索和流式。
 - `scripts/agent_cli.py`：通过公开 `langgraph_sdk` 调用 Agent Server。交互模式支持 `/history` 查看脱敏
   checkpoint 元数据、`/replay <checkpoint_id>` 从历史 checkpoint 创建原生 replay 分支，以及
   `/rollback <run_id>` 用 `action="rollback"` 丢弃可取消 run；两个变更状态的命令都要求精确确认。CLI 不读取

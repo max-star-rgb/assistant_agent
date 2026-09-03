@@ -45,7 +45,6 @@ class ChatConfig:
     chat_api_key: str | None = None
     chat_base_url: str | None = None
     chat_model: str | None = None
-    chat_adapter_kind: str = "mock"
     chat_stream: bool = False
     native_provider_streaming: bool = False
     chat_timeout_seconds: float = 75.0

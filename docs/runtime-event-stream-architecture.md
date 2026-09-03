@@ -82,11 +82,13 @@ Memory middleware、Provider composition、Tool/Profile middleware 和模型循�
 `runtime/` 只保留以下跨领域契约：
 
 - `local_backend.py`、`thread_resources.py`：生产 composition、filesystem 和 thread 资源使用的执行基础设施；
-- `chat_adapter.py`、`output_models.py`、`citations.py`、`requests.py`：被 Provider、Context、媒体兼容路径和
-  durable task 共同消费的
-  provider-neutral 请求与输出契约；
+- `citations.py`、`requests.py`：由 durable task 与可选 multi-agent 消费的兼容请求契约；
 共享 `identity.py` 持有跨 Memory、durable task 与可选 multi-agent 使用的最小 `RequestIdentity` 和默认 agent ID，
 生产包不再为该默认值反向依赖可选 multi-agent 协议。
+
+主模型与维护脚本统一使用 `BaseChatModel`、标准 LangChain messages 和 `create_chat_model`。旧
+`ChatAdapter`、`ChatRequest/ChatResult`、`LLMEvent` accumulator 与平行 assistant output models 已随最后消费者删除；
+DashScope HTTP/SSE transport 和 URL 归原生 `DashScopeNativeChatModel` 直接拥有。
 
 旧 `runtime/state.py`、`cancellation.py`、`capability_grants.py`、state-to-response adapter 与
 state-to-observability adapter 已随最后消费者一起删除；

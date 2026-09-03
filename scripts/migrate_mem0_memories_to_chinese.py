@@ -12,6 +12,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Literal
 
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import HumanMessage, SystemMessage
+
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(ROOT) not in sys.path:
@@ -29,11 +32,7 @@ from assistant_agent.memory.mem0.transport import (
     urllib_mem0_transport,
 )
 from assistant_agent.config_env import load_env_file
-from assistant_agent.runtime.chat_adapter import (
-    ChatAdapter,
-    ChatRequest,
-    OpenAICompatibleChatAdapter,
-)
+from assistant_agent.native_agent.providers import create_chat_model
 
 
 def migration_apply_gate_error(
@@ -57,60 +56,49 @@ def migration_apply_gate_error(
 
 
 def translate_memory_to_chinese(
-    adapter: ChatAdapter,
+    model: BaseChatModel,
     text: str,
 ) -> str:
-    """Translate one memory through the configured governed chat adapter."""
+    """Translate one memory through the configured native chat model."""
 
-    result = adapter.chat(
-        ChatRequest(
-            user_id="memory-language-migration",
-            session_id="memory-language-migration",
-            user_query=text,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "你只负责把一条长期记忆翻译成自然、准确的简体中文。"
-                        "逐句直译，只输出译文，不解释、不概括、不添加或删除事实。"
-                        "必须保留原文出现的每个日期、金额、数字、百分比、URL、"
-                        "型号和必要的专有名词或缩写；即使某个事实能由其他信息推导，"
-                        "也不得省略。"
-                    ),
-                },
-                {"role": "user", "content": text},
-            ],
-            tools=[],
-            tool_choice="none",
-            temperature=0.0,
-            max_tokens=1024,
-        )
+    result = model.invoke(
+        [
+            SystemMessage(
+                content=(
+                    "你只负责把一条长期记忆翻译成自然、准确的简体中文。"
+                    "逐句直译，只输出译文，不解释、不概括、不添加或删除事实。"
+                    "必须保留原文出现的每个日期、金额、数字、百分比、URL、"
+                    "型号和必要的专有名词或缩写；即使某个事实能由其他信息推导，"
+                    "也不得省略。"
+                )
+            ),
+            HumanMessage(content=text),
+        ],
+        temperature=0.0,
+        max_tokens=1024,
     )
-    if result.errors or not result.response_text.strip():
+    translated = result.text.strip()
+    if not translated:
         raise RuntimeError("qwen memory translation failed")
-    return result.response_text.strip()
+    return translated
 
 
-def create_memory_translation_adapter(
+def create_memory_translation_model(
     config: ChatConfig,
-) -> OpenAICompatibleChatAdapter:
-    """Create the configured Qwen adapter without native web search."""
+) -> BaseChatModel:
+    """Create the configured Qwen model without search or streaming."""
 
     settings = config.resolved_provider()
-    if (
-        settings.provider != "qwen"
-        or settings.adapter_kind != "openai_compatible"
-    ):
+    if settings.provider != "qwen":
         raise ValueError("memory translation requires Qwen")
-    return OpenAICompatibleChatAdapter(
-        provider=settings.provider,
-        api_key=settings.api_key or "",
-        base_url=settings.base_url or "",
-        model=settings.model or "",
-        timeout_seconds=config.chat_timeout_seconds,
-        stream=config.chat_stream,
-        enable_thinking=config.qwen_chat_enable_thinking,
-        native_web_search=False,
+    return create_chat_model(
+        replace(
+            config,
+            qwen_chat_enable_search=False,
+            chat_stream=False,
+            native_provider_streaming=False,
+        ),
+        provider_mode="real",
     )
 
 
@@ -152,9 +140,9 @@ def main(argv: list[str] | None = None) -> int:
                 "qwen_provider_not_configured",
                 details={"missing": sorted(missing)},
             )
-        adapter: ChatAdapter | None = create_memory_translation_adapter(chat_config)
+        model: BaseChatModel | None = create_memory_translation_model(chat_config)
     else:
-        adapter = None
+        model = None
 
     base_transport = urllib_mem0_transport(memory_config.mem0_base_url)
     headers = (
@@ -178,8 +166,8 @@ def main(argv: list[str] | None = None) -> int:
             identity_namespace=memory_config.mem0_identity_namespace,
             transport=transport,
             translate=(
-                (lambda text: translate_memory_to_chinese(adapter, text))
-                if adapter is not None
+                (lambda text: translate_memory_to_chinese(model, text))
+                if model is not None
                 else _translation_must_not_run
             ),
             apply=args.apply,

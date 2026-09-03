@@ -90,10 +90,8 @@ source_globs = [
   "src/assistant_agent/providers/dashscope_langchain.py",
   "src/assistant_agent/identity.py",
   "src/assistant_agent/runtime/__init__.py",
-  "src/assistant_agent/runtime/chat_adapter.py",
   "src/assistant_agent/runtime/citations.py",
   "src/assistant_agent/runtime/local_backend.py",
-  "src/assistant_agent/runtime/output_models.py",
   "src/assistant_agent/runtime/requests.py",
   "src/assistant_agent/runtime/thread_resources.py",
 ]
@@ -199,7 +197,7 @@ id = "context-engineering"
 authority = "docs/context_engineering_status.md"
 read_when = [
   "context、prompt、conversation history、context budget 或 compaction",
-  "AssistantRunContext、ChatRequest 编译或 Tool observation",
+  "AssistantRunContext、请求上下文编译或 Tool observation",
 ]
 source_globs = [
   "src/assistant_agent/native_agent/assistant_prompt.py",
