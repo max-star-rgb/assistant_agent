@@ -467,6 +467,21 @@ def _load_vision_config(source: Mapping[str, str], mode: ProviderMode) -> Vision
         visual_context_summary_max_tokens=max(
             1, _int(source.get("REALTIME_VISUAL_CONTEXT_SUMMARY_MAX_TOKENS"), 2048)
         ),
+        visual_context_keep_recent_records=max(
+            0, _int(source.get("REALTIME_VISUAL_CONTEXT_KEEP_RECENT_RECORDS"), 4)
+        ),
+        visual_context_instruction_reserve_tokens=max(
+            0,
+            _int(
+                source.get("REALTIME_VISUAL_CONTEXT_INSTRUCTION_RESERVE_TOKENS"), 1024
+            ),
+        ),
+        visual_context_image_reserve_tokens=max(
+            0, _int(source.get("REALTIME_VISUAL_CONTEXT_IMAGE_RESERVE_TOKENS"), 2048)
+        ),
+        visual_context_output_reserve_tokens=max(
+            0, _int(source.get("REALTIME_VISUAL_CONTEXT_OUTPUT_RESERVE_TOKENS"), 2048)
+        ),
     )
 
 
