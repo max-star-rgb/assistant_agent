@@ -7,13 +7,13 @@ from typing import Any, Mapping
 
 from assistant_agent.config import VisionConfig
 from assistant_agent.provider_mode import ProviderMode
-from assistant_agent.context.token_budget import normalize_provider_token_usage
 from assistant_agent.media.video.visual_timeline_context import (
     VisualTimelineCompaction,
     VisualTimelineCompactionError,
     VisualTimelineItem,
     VisualTimelineTokenCounter,
 )
+from assistant_agent.media.video.token_budget import normalize_provider_token_usage
 from assistant_agent.runtime.chat_adapter import ChatAdapter, ChatRequest
 
 

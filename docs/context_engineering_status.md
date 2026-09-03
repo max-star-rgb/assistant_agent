@@ -94,7 +94,7 @@ tokenizer 时启动直接失败，不回退近似计数或发起网络调用。
 
 旧 `ContextService`、prompt-json compiler、独立 runtime system prompt policy、动态 catalog/exposure、renderer、
 平行 compactor 与旧 source/policy 已删除。
-`src/assistant_agent/context/` 只保留离线报告、视觉预算和中立 model DTO；生产 Agent Server/native graph
+`src/assistant_agent/context/` 只保留离线报告和中立 model DTO；视觉预算由视觉感知域就近维护。生产 Agent Server/native graph
 不导入平行 context runtime。
 
 ## 验证
