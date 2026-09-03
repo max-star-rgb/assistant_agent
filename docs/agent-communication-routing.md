@@ -23,6 +23,8 @@
 `AgentRouter` 只选择调用方显式注入的本地 invoker，并要求其返回 `AgentRunResponse`。仓库不再提供自动构造本地
 controller/worker Runtime 的 convenience factory。`LocalAgentTransport` 同样只接受显式注入的 invoker；远端
 `A2AJsonRpcTransport` 保持默认关闭、显式 allowlist、HTTPS/local opt-in、超时、响应大小和 circuit breaker 边界。
+旧 pilot readiness、FastAPI identity 和 Web Console trial allowlist 已删除；未来若注册正式 A2A HTTP route，
+必须直接复用 Agent Server identity 与 resource authorization，不恢复平行认证链。
 
 ```text
 显式本地实验                    远端 A2A pilot
@@ -41,7 +43,7 @@ AgentRouter                     AgentCommunicationService
   Provider payload、secret、inline media body 或完整父会话。
 - A2A Agent Card 只验证显式配置的远端，不自动注册或启用 agent。
 - 远端失败必须返回结构化 `AgentTaskResult(status="failed")`，不能静默回退本地/mock 成功。
-- control-plane store 只保存脱敏 route/audit/readiness 事实；JSONL durability 需要调用方显式提供路径。
+- control-plane store 只保存脱敏 run/route/audit 事实；JSONL durability 需要调用方显式提供路径。
 - 当前无 Agent Server multi-agent custom route；重新暴露 HTTP/A2A 前必须证明它不会绕过主 Graph。
 
 ## 模块职责
@@ -56,7 +58,7 @@ AgentRouter                     AgentCommunicationService
 | `agent_transports.py` | injected local invoker 与显式远端 A2A transport |
 | `agent_communication.py` | policy 后的 task transport service |
 | `agent_router.py` | 显式本地 invoker 选择与 `AgentRunResponse` metadata 投影 |
-| `agent_control_plane.py` | 脱敏 run/audit/readiness store |
+| `agent_control_plane.py` | 脱敏 run/route/audit store |
 | `a2a_protocol.py` / `a2a_adapter.py` | A2A schema 与薄映射；当前未注册生产 route |
 
 ## 验证
