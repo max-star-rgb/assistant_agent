@@ -8,7 +8,6 @@ import math
 from collections.abc import Callable
 from datetime import datetime, timedelta
 
-from assistant_agent.runtime.state import AgentState
 from assistant_agent.automation.durable_tasks.models import (
     DurableTaskSnapshot,
     TaskCheckpoint,
@@ -108,7 +107,6 @@ class HotelPriceWatchRuntime:
             request.metadata["durable_task_snapshot"]
         )
         goal = HotelPriceWatchGoal.model_validate(snapshot.workflow_payload)
-        state = AgentState.from_request(request)
         now = self.now_fn()
         if now >= goal.ends_at:
             fingerprint = _digest({
@@ -137,7 +135,6 @@ class HotelPriceWatchRuntime:
                         "ended_at": now.isoformat(),
                     },
                 ),
-                state=state,
                 binding=binding,
             )
 
@@ -159,7 +156,6 @@ class HotelPriceWatchRuntime:
                         "scheduled_first_check_at": goal.starts_at.isoformat(),
                     },
                 ),
-                state=state,
                 binding=binding,
             )
         tool_input = goal.search.model_dump(mode="json")
@@ -209,7 +205,6 @@ class HotelPriceWatchRuntime:
                         "last_checked_at": now.isoformat(),
                     },
                 ),
-                state=state,
                 binding=active_binding,
             )
 
@@ -231,7 +226,6 @@ class HotelPriceWatchRuntime:
                     wait=wait,
                     workflow_state_patch=state_patch,
                 ),
-                state=state,
                 binding=active_binding,
             )
 
@@ -261,7 +255,6 @@ class HotelPriceWatchRuntime:
                     "matched_offer_id": best.offer_id,
                 },
             ),
-            state=state,
             binding=active_binding,
         )
 

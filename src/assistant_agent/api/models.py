@@ -5,7 +5,6 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from assistant_agent.runtime.citations import UrlCitationAnnotation
-from assistant_agent.runtime.state import AgentError, AgentState
 from assistant_agent.providers.provider_errors import sanitize_error_detail, sanitize_error_message
 
 
@@ -214,20 +213,6 @@ class WorkflowResultResponse(BaseModel):
     content: str
 
 
-
-def api_error_from_agent_error(error: AgentError) -> ApiError:
-    """Convert internal AgentError to stable external ApiError."""
-
-    internal_code = str(error.details.get("code", "unknown_error"))
-    code = normalize_error_code(internal_code)
-    return ApiError(
-        code=code,
-        message=sanitize_error_message(error.message),
-        detail=_public_detail(error),
-        recoverable=bool(error.details.get("retryable", False)) or code in RECOVERABLE_CODES,
-    )
-
-
 def api_error(
     code: str,
     message: str,
@@ -245,116 +230,9 @@ def api_error(
     )
 
 
-def agent_run_response_from_state(
-    state: AgentState,
-    *,
-    runtime_info: dict[str, Any] | None = None,
-    current_stage: str | None = None,
-    blocked_reason: str | None = None,
-) -> AgentRunResponse:
-    """Convert AgentState into the stable HTTP response shape."""
-
-    return AgentRunResponse(
-        protocol_version=PROTOCOL_VERSION,
-        run_id=state.run_id,
-        trace_id=state.trace_id,
-        status=state.status,
-        response_text=state.response.message if state.response else "",
-        annotations=list(state.response.annotations) if state.response else [],
-        data=state.response.data if state.response and state.response.data else {},
-        tool_calls=[],
-        tool_results=[],
-        react_steps=_public_react_steps(state.request.metadata.get("assistant_loop_steps")),
-        decision_trace=_public_decision_trace(state.request.metadata.get("decision_trace")),
-        runtime_info=runtime_info or {},
-        current_stage=current_stage,
-        blocked_reason=blocked_reason,
-        errors=[api_error_from_agent_error(error) for error in state.errors],
-    )
-
-
 def normalize_error_code(code: str) -> str:
     """Normalize internal lower-case error codes to external API codes."""
 
     if code.isupper():
         return code
     return ERROR_CODE_MAP.get(code, "TASK_FAILED")
-
-
-def _public_detail(error: AgentError) -> dict[str, Any]:
-    allowed_keys = {
-        "source",
-        "step_id",
-        "recovery_action",
-        "optional_step",
-        "retryable",
-        "call_id",
-        "cancel_phase",
-        "cancel_reason",
-        "cancel_source",
-        "deadline_ms",
-        "node_name",
-        "tool_name",
-    }
-    detail = sanitize_error_detail({key: value for key, value in error.details.items() if key in allowed_keys})
-    if error.source is not None:
-        detail.setdefault("source", error.source)
-    return detail
-
-
-def _public_react_steps(value: Any) -> list[dict[str, Any]]:
-    if not isinstance(value, list):
-        return []
-    allowed_keys = {
-        "iteration",
-        "decision_type",
-        "output_type",
-        "tool_name",
-        "tool_input",
-        "message",
-        "reason",
-        "confidence",
-        "status",
-        "observation_tool",
-        "success",
-        "output_ref",
-        "error",
-        "summary",
-        "step_id",
-        "plan_step_count",
-    }
-    steps: list[dict[str, Any]] = []
-    for item in value:
-        if not isinstance(item, dict):
-            continue
-        public = {key: item[key] for key in allowed_keys if key in item}
-        steps.append(sanitize_error_detail(public))
-    return steps
-
-
-def _public_decision_trace(value: Any) -> list[dict[str, Any]]:
-    if not isinstance(value, list):
-        return []
-    allowed_keys = {
-        "iteration",
-        "event",
-        "decision_type",
-        "output_type",
-        "decision_summary",
-        "action",
-        "action_input",
-        "success",
-        "output_ref",
-        "output_preview",
-        "error",
-        "answer",
-        "step_id",
-        "plan_step_count",
-    }
-    trace: list[dict[str, Any]] = []
-    for item in value:
-        if not isinstance(item, dict):
-            continue
-        public = {key: item[key] for key in allowed_keys if key in item}
-        trace.append(sanitize_error_detail(public))
-    return trace

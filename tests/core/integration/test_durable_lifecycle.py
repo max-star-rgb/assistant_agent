@@ -25,7 +25,6 @@ from assistant_agent.automation.durable_tasks.worker import (
     TaskQuantumResult,
 )
 from assistant_agent.identity import RequestIdentity
-from assistant_agent.runtime.state import AgentState
 from tests.core.support import create_probe_tool
 
 
@@ -100,7 +99,6 @@ class ScheduleRuntime:
                     expires_at=self.expires_at,
                 ),
             ),
-            state=AgentState.from_request(request),
             binding=binding,
         )
 
@@ -116,7 +114,6 @@ class CompletionRuntime:
                 kind="completed",
                 summary="summary-sentinel",
             ),
-            state=AgentState.from_request(request),
             binding=binding,
         )
 

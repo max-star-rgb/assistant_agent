@@ -6,7 +6,7 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
-from assistant_agent.runtime.state import new_run_id
+from assistant_agent.identifiers import new_run_id
 from assistant_agent.multi_agent.models import (
     DEFAULT_AGENT_ID,
     AgentCommunicationError,
