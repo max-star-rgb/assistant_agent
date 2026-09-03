@@ -122,7 +122,6 @@ source_globs = [
   "src/assistant_agent/runtime/thread_resources.py",
   "src/assistant_agent/skills/**",
   "src/assistant_agent/tools/**",
-  "src/assistant_agent/improvement/evaluator.py",
   "src/assistant_agent/mcp/**",
   "skills/**",
 ]
@@ -275,7 +274,6 @@ source_globs = [
   "src/assistant_agent/observability/trace_content_policy.py",
   "src/assistant_agent/observability/trace_query.py",
   "src/assistant_agent/observability/trace_store.py",
-  "src/assistant_agent/observability/trajectory_debug.py",
   "src/assistant_agent/observability/turn_summary.py",
   "src/assistant_agent/media/vision/observability.py",
   "tests/core/contract/test_observability_contract.py",

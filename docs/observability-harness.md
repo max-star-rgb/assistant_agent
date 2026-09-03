@@ -9,7 +9,7 @@
 | 定位 | 生产 Graph 原生 tracing 与脱敏边界的当前权威 |
 | Owns | LangSmith native tracing、callback/parent 传播、thread 关联、脱敏边界与保留兼容 trace 查询的限制 |
 | Does not own | Graph 路由、Agent Server/media wire、Provider 语义、评测 Dataset 与发布决策 |
-| 源码与 schema 入口 | `native_agent/assistant_agent.py`、`agent_server/services.py`、`media/vision/observability.py`、`observability/langsmith_*.py`、`observability/trace_content_policy.py`、`observability/recovery.py`、`observability/hook_dispatch.py`、`observability/trace_store.py`、`observability/trace_query.py`、`observability/trajectory_debug.py`、`observability/turn_summary.py` |
+| 源码与 schema 入口 | `native_agent/assistant_agent.py`、`agent_server/services.py`、`media/vision/observability.py`、`observability/langsmith_*.py`、`observability/trace_content_policy.py`、`observability/recovery.py`、`observability/hook_dispatch.py`、`observability/trace_store.py`、`observability/trace_query.py`、`observability/turn_summary.py` |
 | 验证入口 | `docs/authority.toml` 中 `runtime-observability.verification`；核心不变量 `OBS-001` |
 | 相邻 authority | [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md)、[`visual-perception-architecture.md`](visual-perception-architecture.md)、[`observability-diagnosis-runbook.md`](observability-diagnosis-runbook.md)、[`../evals/README.md`](../evals/README.md) |
 
@@ -59,7 +59,7 @@ child usage 相加。
 ## 旧本地观测边界
 
 历史 delivery/latency/conversation/metrics/persistence/ledger/visual-content 投影已经删除。保留的兼容
-`TraceStore`、trace query 与 trajectory debug 只服务可选 multi-agent 协议、离线 improvement 和现有 visual eval，
+`TraceStore` 与 trace query 只服务可选 multi-agent 协议和现有 visual eval，
 不是当前主图或视觉链路的执行依赖，也不得反向决定 graph route、resume、cancel 或 terminal。新视觉观测不再写
 自研 `TraceStore`/日志投影事件、解析日志或启动本地报告 UI。
 历史 trace 诊断按
