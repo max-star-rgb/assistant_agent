@@ -445,6 +445,10 @@ def _load_vision_config(source: Mapping[str, str], mode: ProviderMode) -> Vision
         visual_context_compactor_mode="llm"
         if source.get("REALTIME_VISUAL_CONTEXT_COMPACTOR") == "llm"
         else "off",
+        visual_context_tokenizer_path=source.get(
+            "REALTIME_VISUAL_CONTEXT_TOKENIZER_PATH"
+        )
+        or None,
         visual_context_input_token_limit=max(
             1, _int(source.get("REALTIME_VISUAL_CONTEXT_INPUT_TOKEN_LIMIT"), 32768)
         ),

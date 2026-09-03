@@ -168,6 +168,7 @@
   "visual_context_compactor_mode": "off",
   "visual_context_input_token_limit": 32768,
   "visual_context_summary_max_tokens": 2048,
+  "visual_context_tokenizer_path": null,
   "visual_image_search_provider": "mock",
   "visual_memory_candidate_similarity": 0.2,
   "visual_memory_confirmed_similarity": 0.3,

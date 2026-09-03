@@ -148,6 +148,7 @@ class VisionConfig:
     seed_vision_base_url: str = "https://api.seed.example/v1/vision"
     seed_vision_model: str = "seed-vision"
     visual_context_compactor_mode: ContextCompactorMode = "off"
+    visual_context_tokenizer_path: str | None = None
     visual_context_input_token_limit: int = 32_768
     visual_context_compaction_target_ratio: float = 0.40
     visual_context_compaction_trigger_ratio: float = 0.70
