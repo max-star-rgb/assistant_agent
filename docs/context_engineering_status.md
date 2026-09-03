@@ -9,7 +9,7 @@
 | 定位 | 统一生产 Agent 的标准 messages、dynamic prompt、state 投影、预算与 summarization 权威 |
 | Owns | dynamic system prompt、Memory 数据边界、标准 message history、task state allowlist 与官方 summarization middleware |
 | Does not own | Tool schema、Memory backend、Provider wire、媒体 frame、旧 ContextService |
-| 源码与 schema 入口 | `src/assistant_agent/native_agent/assistant_prompt.py`、`native_agent/assistant_agent.py`、`native_agent/user_context.py`、`native_agent/context.py`、`native_agent/state.py` |
+| 源码与 schema 入口 | `src/assistant_agent/native_agent/assistant_prompt.py`、`native_agent/assistant_agent.py`、`native_agent/user_context.py`、`native_agent/context.py`、`native_agent/state.py`、`native_agent/token_counter.py` |
 | 验证入口 | `docs/authority.toml` 中 `context-engineering.verification`；核心不变量 `CTX-001` |
 | 相邻 authority | Runtime 见 [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md)；Memory 见 [`memory-service-architecture.md`](memory-service-architecture.md) |
 
@@ -94,7 +94,7 @@ tokenizer 时启动直接失败，不回退近似计数或发起网络调用。
 
 旧 `ContextService`、prompt-json compiler、独立 runtime system prompt policy、动态 catalog/exposure、renderer、
 平行 compactor 与旧 source/policy 已删除。
-`src/assistant_agent/context/` 只保留离线报告、视觉预算、token 计数和中立 model DTO；生产 Agent Server/native graph
+`src/assistant_agent/context/` 只保留离线报告、视觉预算和中立 model DTO；生产 Agent Server/native graph
 不导入平行 context runtime。
 
 ## 验证

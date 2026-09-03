@@ -18,7 +18,7 @@ from assistant_agent.agent_server.async_delegation import (
     build_async_subagent_middleware,
 )
 from assistant_agent.config import AppConfig, load_app_config
-from assistant_agent.context.token_counter import create_context_token_counter
+from assistant_agent.native_agent.token_counter import create_context_token_counter
 from assistant_agent.mcp.config import load_mcp_server_configs_from_env
 from assistant_agent.mcp.stateful_sessions import ThreadMcpSessionPool
 from assistant_agent.media.visual_perception import get_visual_perception_module
