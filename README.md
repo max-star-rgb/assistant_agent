@@ -45,7 +45,6 @@ Provider profiles and external-provider configuration are documented in [docs/to
 | `automation/` | durable task、proactive wake 和通知 |
 | `multi_agent/` | Agent routing、delegation、transport 和 A2A |
 | `observability/` | LangSmith native tracing 与可选协议、离线评测仍需的最小兼容查询 |
-| `improvement/` | 离线改进证据、提案、评估和报告 |
 | `providers/` | 跨入口共享的 Provider 配置、错误治理和 adapter |
 | `memory/` | Mem0 transport 与旧 Memory bundle 兼容；生产最小 backend 位于 `native_agent.memory` |
 | `mcp/` | MCP 配置、client、registration 和 server adapter |
