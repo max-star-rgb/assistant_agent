@@ -36,15 +36,15 @@ Provider profiles and external-provider configuration are documented in [docs/to
 | --- | --- |
 | `native_agent/` | 生产父 StateGraph、统一 `AssistantAgent`、只读 worker 与 Provider/Tool/Memory 装配 |
 | `runtime/` | Tool、Provider、媒体、Context 与 durable task 仍复用的中立 DTO/外围治理模块；不拥有 Graph 生命周期 |
-| `context/` | 尚未迁移入口使用的旧 Context compiler 与专项能力 |
+| `context/` | 跨入口共享的 Context DTO、token budget/counter 与诊断报告 |
 | `skills/` | Skill 加载、召回、校验、目录、执行与持久化 |
 | `tools/` | 具体 Tool/Plugin 实现；生产内建 Tool 自身实现标准 `BaseTool`，由 `native_agent.tools` 静态装配 |
 | `agent_server/` | Agent Server graph factory、认证、公开 SDK client 与媒体 custom route |
-| `gateway/` | 外围兼容入口仍复用的旧 wire/事件/取消小类型；不拥有生产 Agent Server 或 Graph 生命周期 |
 | `media/` | 音频边缘适配、视频摄取/观察、统一 image/text embedding 及视觉 adapter |
 | `automation/` | durable task、proactive wake 和通知 |
 | `multi_agent/` | Agent routing、delegation、transport 和 A2A |
-| `observability/` | LangSmith native tracing 与可选协议、离线评测仍需的最小兼容查询 |
+| `observability/` | 可选 multi-agent 协议与 visual eval 复用的 TraceStore/query 最小兼容层 |
+| `evaluation/` | 直接消费原生 Graph 的 evaluation target；不包含旧 Release Review runner |
 | `providers/` | 跨入口共享的 Provider 配置、错误治理和 adapter |
 | `memory/` | Mem0 transport 与旧 Memory bundle 兼容；生产最小 backend 位于 `native_agent.memory` |
 | `mcp/` | MCP 配置、client、registration 和 server adapter |
