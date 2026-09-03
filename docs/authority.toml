@@ -86,6 +86,7 @@ source_globs = [
   "src/assistant_agent/native_agent/memory_middleware.py",
   "src/assistant_agent/native_agent/state.py",
   "src/assistant_agent/native_agent/models.py",
+  "src/assistant_agent/identity.py",
   "src/assistant_agent/runtime/__init__.py",
   "src/assistant_agent/runtime/chat_adapter.py",
   "src/assistant_agent/runtime/citations.py",

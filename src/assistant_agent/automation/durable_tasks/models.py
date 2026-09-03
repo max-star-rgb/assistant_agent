@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
-from assistant_agent.multi_agent.models import DEFAULT_AGENT_ID
+from assistant_agent.identity import DEFAULT_AGENT_ID
 from assistant_agent.planning_contracts import PlanDisplayTitle
 
 

@@ -6,7 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
-from assistant_agent.multi_agent.models import DEFAULT_AGENT_ID
+
+DEFAULT_AGENT_ID = "agent.default"
 
 
 class RequestIdentity(BaseModel):
