@@ -7,7 +7,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from langchain.agents import AgentState
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
@@ -35,9 +35,12 @@ from assistant_agent.tools.plugins.builtin.image_generation.tool import (
 )
 from assistant_agent.tools.ids import IMAGE_GENERATION_TOOL_NAME
 from assistant_agent.tools.plugins.builtin.image_to_3d.tool import (
+    MockImageTo3DAdapter,
+    _execute_image_to_3d,
     _latest_generated_image_ref,
     create_image_to_3d_tool,
 )
+from assistant_agent.tools.plugins.builtin.image_to_3d.models import ImageTo3DRequest
 from assistant_agent.tools.plugins.builtin.lodging.watch_tool import (
     create_hotel_price_watch_create_tool,
 )
@@ -136,7 +139,7 @@ def test_effect_tools_hide_runtime_parameters_and_keep_native_handoffs(tmp_path:
     assert task["progress_url"] == f"/tasks/{task['task_id']}/events"
 
 
-def test_image_to_3d_reuses_the_generation_artifact_ref() -> None:
+def test_image_to_3d_reuses_the_generation_artifact_ref_across_turns() -> None:
     output_ref = "artifact://v1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/generated/cake.png"
     message = ToolMessage(
         content="generated",
@@ -145,7 +148,29 @@ def test_image_to_3d_reuses_the_generation_artifact_ref() -> None:
         artifact={"images": [{"image_id": "cake", "output_ref": output_ref}]},
     )
 
-    assert _latest_generated_image_ref({"messages": [message]}) == output_ref
+    state = {
+        "messages": [
+            message,
+            HumanMessage(content="把上一张图片转成 3D"),
+        ]
+    }
+
+    assert _latest_generated_image_ref(state) == output_ref
+
+
+def test_image_to_3d_keeps_an_explicit_artifact_selection() -> None:
+    explicit_ref = "artifact://v1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/generated/first.png"
+    latest_ref = "artifact://v1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/generated/latest.png"
+
+    submission = _execute_image_to_3d(
+        MockImageTo3DAdapter(),
+        ImageTo3DRequest(src_image=explicit_ref),
+        user_id="user",
+        session_id="thread",
+        latest_image_ref=latest_ref,
+    )
+
+    assert submission.source_image_id == explicit_ref
 
 
 def test_calendar_create_keeps_runtime_idempotency_without_compatibility_wrapper() -> None:

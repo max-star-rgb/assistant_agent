@@ -53,6 +53,8 @@ filesystem 与 `execute`；`browser-operator` 只接收 Playwright Tool。角色
 `artifact://v1/{thread_ref}/generated/{filename}` 短引用写入文本 observation 和 artifact，不在
 `ToolMessage` 中写入 Base64 或 `image` content block；主模型默认不读取生成物。需要图片实体的媒体投影、
 `image_to_3d` 等消费者在自身边界按需通过统一 resolver 读取同一引用，并复核线程归属、大小、路径和媒体类型。
+`image_to_3d` 未收到显式引用时，可从 checkpoint 的历史成功 `image_generation` ToolMessage 中选择最近引用，
+因此支持跨对话轮次联动；显式引用始终优先，实体过期仍由 thread TTL 和 resolver 拒绝。
 高德路线 MCP interceptor 在保留模型可见导航 Markdown 的同时，把同一受校验 URL 写入 namespaced
 `structuredContent`；终端入口只从转换后的标准 ToolMessage artifact 确定性交付，不解析模型正文。
 

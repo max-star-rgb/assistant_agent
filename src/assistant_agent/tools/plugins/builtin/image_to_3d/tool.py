@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Annotated, Any, Protocol
 
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, ToolException, tool
 from langgraph.prebuilt import ToolRuntime
 from pydantic import Field
@@ -140,7 +140,7 @@ def _execute_image_to_3d(
 ) -> ImageTo3DSubmission:
     if not session_id:
         raise ValueError("image_to_3d requires runtime session identity")
-    src_image = latest_image_ref or input.src_image
+    src_image = input.src_image or latest_image_ref
     if not isinstance(src_image, str) or not src_image.strip():
         raise ValueError("image_to_3d requires a generated image")
     return adapter.start(
@@ -153,8 +153,6 @@ def _execute_image_to_3d(
 
 def _latest_generated_image_ref(state: Mapping[str, Any]) -> str | None:
     for message in reversed(state.get("messages", ())):
-        if isinstance(message, HumanMessage):
-            break
         if (
             not isinstance(message, ToolMessage)
             or message.name != IMAGE_GENERATION_TOOL_NAME
@@ -170,11 +168,4 @@ def _latest_generated_image_ref(state: Mapping[str, Any]) -> str | None:
                 output_ref = image.get("output_ref")
                 if isinstance(output_ref, str) and output_ref.strip():
                     return output_ref.strip()
-        image_ids = message.artifact.get("image_id")
-        if isinstance(image_ids, str) and image_ids.strip():
-            return image_ids.strip()
-        if isinstance(image_ids, (list, tuple)):
-            for image_id in reversed(image_ids):
-                if isinstance(image_id, str) and image_id.strip():
-                    return image_id.strip()
     return None
