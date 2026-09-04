@@ -66,9 +66,3 @@ class NotificationEnvelope(BaseModel):
         if self.origin_ref is None:
             self.origin_ref = self.rule_id
         return self
-
-
-class DeliveryResult(BaseModel):
-    accepted: bool
-    provider_message_id: str | None = None
-    error_code: str | None = None

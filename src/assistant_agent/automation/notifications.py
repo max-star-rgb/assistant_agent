@@ -1,4 +1,4 @@
-"""Shared notification outbox and delivery-observer boundaries."""
+"""Shared notification outbox boundary."""
 
 from __future__ import annotations
 
@@ -14,12 +14,3 @@ class NotificationOutbox(Protocol):
         self,
         notification: NotificationEnvelope,
     ) -> NotificationEnvelope: ...
-
-
-class NotificationDeliveryObserver(Protocol):
-    """Observe a persisted delivery transition without owning delivery."""
-
-    def record_notification_delivery(
-        self,
-        notification: NotificationEnvelope,
-    ) -> None: ...
