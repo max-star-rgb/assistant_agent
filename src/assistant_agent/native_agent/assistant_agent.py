@@ -71,7 +71,7 @@ from assistant_agent.native_agent.tool_profiles import (
     ToolProfileMiddleware,
 )
 from assistant_agent.providers.dashscope_langchain import DashScopeProviderError
-from assistant_agent.runtime.local_backend import GIT_TOOL_NAME, GitToolMiddleware
+from assistant_agent.tools.git import GIT_TOOL_NAME, GitToolMiddleware
 from assistant_agent.skills.native import (
     PROJECT_FILESYSTEM_READ_TOOL_NAMES,
     create_project_filesystem_middleware,
