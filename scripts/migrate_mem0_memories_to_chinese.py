@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from argparse import ArgumentParser
 from dataclasses import replace
@@ -31,7 +32,6 @@ from assistant_agent.memory.mem0.transport import (
     Mem0HttpRequest,
     urllib_mem0_transport,
 )
-from assistant_agent.config_env import load_env_file
 from assistant_agent.native_agent.providers import create_chat_model
 
 
@@ -100,6 +100,34 @@ def create_memory_translation_model(
         ),
         provider_mode="real",
     )
+
+
+def load_env_file(path: Path | str, *, override: bool = False) -> dict[str, str]:
+    """Load simple KEY=VALUE lines for this operator script."""
+
+    env_path = Path(path)
+    loaded: dict[str, str] = {}
+    if not env_path.exists():
+        return loaded
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.removeprefix("export ").strip()
+        if not key:
+            continue
+        normalized = value.strip()
+        if (
+            len(normalized) >= 2
+            and normalized[0] == normalized[-1]
+            and normalized[0] in {"'", '"'}
+        ):
+            normalized = normalized[1:-1]
+        loaded[key] = normalized
+        if override or key not in os.environ:
+            os.environ[key] = normalized
+    return loaded
 
 
 def main(argv: list[str] | None = None) -> int:
