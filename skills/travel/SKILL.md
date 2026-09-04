@@ -25,6 +25,7 @@ description: 提供旅行规划功能，包括导航规划、酒店预定、景�
 - 使用 `mcp_amap_maps_maps_geo` 或 `mcp_amap_maps_maps_text_search` 确定地点
 - 确定入住和退房日期，向用户询问“品牌、价格、距离”
 - 使用`lodging_search`查询地点附近的酒店
+- 不要使用`mcp_amap_maps_maps_around_search`搜索酒店
 - 在回答中使用`lodging_search`返回的酒店链接
 
 ## 景点攻略

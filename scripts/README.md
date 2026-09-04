@@ -177,10 +177,13 @@ Runtime 使用 `onnx` 解析图中真实 external-data 引用并核对 manifest�
 ### Playwright MCP setup
 
 浏览器能力由 `deploy/mcp_servers.example.json` 中固定版本的官方 Playwright MCP 提供，不再安装 Python
-Playwright 或注册项目内建 Website guidance plugin。运行环境需要 Node.js 20+；把示例 server 合并到未跟踪的
-`.local/mcp_servers.json`，并设置 `MULTIMODAL_AGENT_MCP_ENABLED=1`。启动时 MCP discovery 成功后，`browser`
-Profile 才会出现；交互类 Tool 统一进入 HITL。示例中的 `{cwd}` 在每个 thread 首次调用时替换为
-`AssistantRunContext.cwd`，Playwright 的截图和下载直接落在该目录，不使用 thread scratch/artifact 目录。
+Playwright 或注册项目内建 Website guidance plugin。运行环境需要 Node.js 20+，Chrome 需安装官方
+Playwright Extension；把示例 server 合并到未跟踪的 `.local/mcp_servers.json`，并设置
+`MULTIMODAL_AGENT_MCP_ENABLED=1`。启动时 MCP discovery 成功后，`browser` Profile 才会出现；`--extension`
+直接连接用户现有 Chrome 标签页并复用登录状态。`AssistantRunContext.require_tool_approval` 本机开发默认关闭；
+需要审批时显式设为 true。若不想逐次批准扩展连接，把扩展状态页显示的 `PLAYWRIGHT_MCP_EXTENSION_TOKEN`
+只写入未跟踪的 `.env`。示例中的 `{cwd}` 在每个 thread 首次调用时替换为 `AssistantRunContext.cwd`，
+Playwright 产物写入 `<cwd>/.agent/browser`，不使用 thread scratch/artifact 目录。
 
 新增脚本必须对应当前权威文档中的稳定入口或无法由现有 pytest/eval 表达的 operator 流程；
 临时诊断优先使用不提交的一次性命令。

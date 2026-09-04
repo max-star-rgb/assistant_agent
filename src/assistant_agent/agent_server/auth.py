@@ -24,9 +24,12 @@ auth = Auth()
 
 _INTERNAL_WORKER_HEADER = "X-Assistant-Internal-Worker"
 _INTERNAL_WORKER_PERMISSION = "assistant:internal-worker"
+_INTERNAL_MEDIA_HEADER = "X-Assistant-Internal-Media"
+_INTERNAL_MEDIA_PERMISSION = "assistant:internal-media"
 # ponytail: process-local capability fits the current single-process server; use a
 # shared secret or service identity before enabling multi-process workers.
 _INTERNAL_WORKER_CAPABILITY = secrets.token_urlsafe(32)
+_INTERNAL_MEDIA_CAPABILITY = secrets.token_urlsafe(32)
 
 
 @auth.on
@@ -52,6 +55,15 @@ async def authenticate(
         _INTERNAL_WORKER_CAPABILITY.encode(),
     ):
         permissions.append(_INTERNAL_WORKER_PERMISSION)
+    media_capability = _header_text(
+        headers,
+        _INTERNAL_MEDIA_HEADER.lower().encode(),
+    )
+    if media_capability is not None and hmac.compare_digest(
+        media_capability.encode(),
+        _INTERNAL_MEDIA_CAPABILITY.encode(),
+    ):
+        permissions.append(_INTERNAL_MEDIA_PERMISSION)
     return {
         "identity": identity or "local-developer",
         "permissions": permissions,
@@ -63,6 +75,13 @@ def _internal_worker_headers(identity: str) -> dict[str, str]:
     return {
         "X-Assistant-User": identity,
         _INTERNAL_WORKER_HEADER: _INTERNAL_WORKER_CAPABILITY,
+    }
+
+
+def _internal_media_headers(identity: str) -> dict[str, str]:
+    return {
+        "X-Assistant-User": identity,
+        _INTERNAL_MEDIA_HEADER: _INTERNAL_MEDIA_CAPABILITY,
     }
 
 
@@ -163,7 +182,10 @@ async def authorize_thread_create(
     if graph_id == WORKER_GRAPH_ID:
         if not _is_internal_worker(ctx) or not _authorized_worker_metadata(metadata):
             return False
-    elif _is_internal_worker(ctx) or not _authorized_non_worker_metadata(metadata):
+    elif _is_internal_worker(ctx) or not _authorized_non_worker_metadata(
+        metadata,
+        internal_media=_is_internal_media(ctx),
+    ):
         return False
     metadata["owner"] = str(ctx.user.identity)
     metadata["graph_id"] = graph_id
@@ -229,7 +251,10 @@ async def authorize_run_create(
     if graph_id is None:
         return False
     if graph_id == MEMORY_GRAPH_ID:
-        if _is_internal_worker(ctx) or not _authorized_non_worker_metadata(metadata):
+        if _is_internal_worker(ctx) or not _authorized_non_worker_metadata(
+            metadata,
+            internal_media=_is_internal_media(ctx),
+        ):
             return False
         metadata["owner"] = str(ctx.user.identity)
         return {
@@ -247,7 +272,10 @@ async def authorize_run_create(
     context = value.setdefault("context", {})
     if not isinstance(context, dict):
         return False
-    if _is_internal_worker(ctx) or not _authorized_non_worker_metadata(metadata):
+    if _is_internal_worker(ctx) or not _authorized_non_worker_metadata(
+        metadata,
+        internal_media=_is_internal_media(ctx),
+    ):
         return False
     metadata["owner"] = str(ctx.user.identity)
     return {
@@ -290,7 +318,11 @@ def _authorized_worker_metadata(metadata: Mapping[str, object]) -> bool:
     return facts.entry_profile == "async_worker"
 
 
-def _authorized_non_worker_metadata(metadata: Mapping[str, object]) -> bool:
+def _authorized_non_worker_metadata(
+    metadata: Mapping[str, object],
+    *,
+    internal_media: bool = False,
+) -> bool:
     if ASSISTANT_RUNTIME_METADATA_KEY not in metadata:
         return True
     payload = metadata.get(ASSISTANT_RUNTIME_METADATA_KEY)
@@ -300,12 +332,19 @@ def _authorized_non_worker_metadata(metadata: Mapping[str, object]) -> bool:
         facts = AssistantRuntimeFacts.model_validate(dict(payload))
     except ValueError:
         return False
+    if facts.entry_profile == "agent_service":
+        return internal_media
     return facts.entry_profile != "async_worker"
 
 
 def _is_internal_worker(ctx: Auth.types.AuthContext) -> bool:
     permissions = getattr(ctx.user, "permissions", ()) or ()
     return _INTERNAL_WORKER_PERMISSION in permissions
+
+
+def _is_internal_media(ctx: Auth.types.AuthContext) -> bool:
+    permissions = getattr(ctx.user, "permissions", ()) or ()
+    return _INTERNAL_MEDIA_PERMISSION in permissions
 
 
 @auth.on.store

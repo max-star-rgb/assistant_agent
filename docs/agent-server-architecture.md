@@ -83,14 +83,14 @@ Skill。worker 不装配同步或异步 delegation middleware，也不运行主 
 两者的官方 summarization 从同一 composition 投影的 `ChatConfig` 取得 context window、trigger/target ratio 与模型 token counter；
 real DeepSeek/native compactor 缺 tokenizer 时在模型 composition 前启动失败。
 
-生成媒体的 thread 临时资源位于 `/home/lenovo1/assistant_agent/threads/<thread_ref>/artifacts/generated/`；该目录是
-媒体交付运行数据，不是 Agent filesystem mount、源码、安装副本或默认 cwd。`thread_ref` 由认证 identity 与 Agent Server
+生成媒体的 thread 临时资源位于 `/home/lenovo1/assistant_agent/threads/<thread_ref>/artifacts/generated/`，供协议交付与 TTL 回收；
+同一图片同时复制到用户 `<cwd>/outputs/` 供本地持续使用。thread 目录不是 Agent filesystem mount、源码、安装副本或默认 cwd。`thread_ref` 由认证 identity 与 Agent Server
 thread ID 的摘要确定，目录按 24 小时 TTL 回收；不存在
 `workspace_id`、`workspace.json`、project registry、仓库副本、Git worktree 或 patch 回灌层。Agent 直接操作
 Agent Server OS identity 有权访问的真实路径；`git` Tool 按调用提供的目标路径识别仓库根，不预注册或启动时
 全盘扫描仓库；通用 `execute` 不执行直接 Git CLI。
-Playwright 的 thread session 只复用浏览器进程状态，不使用上述 thread 目录；其进程 cwd 和输出目录直接取当前
-`AssistantRunContext.cwd`，空闲 session 独立按 TTL 回收。
+Playwright 的 thread session 只复用浏览器进程状态，不使用上述 thread 目录；其进程 cwd 取当前
+`AssistantRunContext.cwd`，输出固定写入 `<cwd>/.agent/browser`，空闲 session 独立按 TTL 回收。
 
 `start_async_task` 只把父子 thread/run correlation 写入 task handle、child thread metadata 和 worker run metadata。
 只有进程内 async adapter 会在 start/update 的 loopback SDK
@@ -98,8 +98,9 @@ Playwright 的 thread session 只复用浏览器进程状态，不使用上述 t
 `X-Assistant-User` caller 即使提交形状完整的 async metadata 也不能创建 worker thread/run。main v4 与 Memory 的
 thread/run 明确拒绝 `entry_profile=async_worker` 和 worker-only permission；worker metadata 必须是
 `entry_profile=async_worker`。
-internal capability 是当前本地单进程部署的进程内随机 secret，不进入 state、thread/run metadata、日志、`.env` 或
-仓库；多进程部署前必须升级为共享 secret 或正式 service identity。
+worker 与媒体 loopback 各自使用当前本地单进程部署的进程内随机 internal capability，不进入 state、thread/run metadata、
+日志、`.env` 或仓库；auth 只允许持有媒体 capability 的调用提交 `entry_profile=agent_service`。多进程部署前必须升级为
+共享 secret 或正式 service identity。
 
 统一 Agent 的全部副作用 Tool 由官方 HITL 在 handler 前 interrupt。HITL 是审批治理，不是进程隔离；批准
 `execute` 等价于授权以 `lenovo1` 运行的 Agent Server 在 run cwd 下执行完整 command，可访问该 OS 用户有权
@@ -121,10 +122,11 @@ Studio/普通 Agent Server 客户端上传图片或视频时沿用 LangChain 标
 文本和 Tool observation，Memory 后台抽取请求也只复制该文本投影，避免把历史 Base64 重复发送给 Provider。
 
 公开 `AssistantRunContext` 包含 `cwd`、`enable_memory`、`require_tool_approval`，以及可选的
-`context_compaction_trigger_tokens` / `context_compaction_keep_tokens`；`cwd` 默认为 OS 用户 Home，且只接受
-Home 内已存在目录。两个压缩值必须同时设置且 `0 < keep < trigger`；都不设置时继续使用 Provider context window 的
-75% 触发、压缩后保留 15%。`require_tool_approval` 默认为 true，保存为 false 的
-Assistant 会让原本受 HITL 管理的 Tool 自动执行。身份、入口和视觉 capability 只在
+`context_compaction_trigger_tokens` / `context_compaction_keep_tokens`；Studio 的 `cwd` 默认是
+`~/assistant_cqy/studio`，且只接受 Home 内已存在目录。媒体入口不接受客户端 cwd，而是按握手用户稳定映射到
+`~/assistant_cqy/media/usr_<opaque-id>`。两个压缩值必须同时设置且 `0 < keep < trigger`；都不设置时继续使用 Provider context window 的
+75% 触发、压缩后保留 15%。`require_tool_approval` 在受信本机开发环境默认 false，保存为 true 的
+Assistant 才让已配置 Tool 进入 HITL。身份、入口和视觉 capability 只在
 服务端签发的 namespaced run metadata 中。认证用户唯一来自 `Runtime.server_info.user.identity`；当前 tokenless
 developer hook 从 `X-Assistant-User` 取得 identity，省略时为 `local-developer`，因此端口不得暴露给不受信网络。
 

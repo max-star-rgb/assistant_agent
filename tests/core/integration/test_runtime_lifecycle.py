@@ -213,14 +213,18 @@ def test_public_input_and_context_expose_no_private_run_facts() -> None:
         "context_compaction_trigger_tokens",
         "context_compaction_keep_tokens",
     }
-    assert context.cwd == Path.home().resolve()
+    assert context.cwd == (Path.home() / "assistant_cqy" / "studio").resolve()
+    assert (context.cwd / "ASSISTANT.md").is_file()
+    assert (context.cwd / ".agent" / "browser").is_dir()
+    assert (context.cwd / ".agent" / "downloads").is_dir()
+    assert (context.cwd / "outputs").is_dir()
     assert context.enable_memory is False
     assert context.require_tool_approval is False
     assert context.context_compaction_trigger_tokens is None
     assert context.context_compaction_keep_tokens is None
     assert AssistantRunContext.model_json_schema()["properties"]["cwd"][
         "default"
-    ] == str(Path.home().resolve())
+    ] == str((Path.home() / "assistant_cqy" / "studio").resolve())
     assert (
         AssistantRunContext.model_json_schema()["properties"]["enable_memory"][
             "default"
@@ -231,7 +235,7 @@ def test_public_input_and_context_expose_no_private_run_facts() -> None:
         AssistantRunContext.model_json_schema()["properties"]["require_tool_approval"][
             "default"
         ]
-        is True
+        is False
     )
     with pytest.raises(ValidationError):
         AssistantRunContext.model_validate({"execution_mode": "fast"})
@@ -323,18 +327,18 @@ def test_async_task_tracks_parent_correlation_without_workspace_state(
     assert "workspace_id" not in task
     assert [call.kwargs["context"] for call in client.runs.create.await_args_list] == [
         {
-            "cwd": str(Path.home().resolve()),
-            "enable_memory": True,
-            "require_tool_approval": True,
-            "context_compaction_trigger_tokens": None,
-            "context_compaction_keep_tokens": None,
+                "cwd": str(Path.home().resolve()),
+                "enable_memory": True,
+                "require_tool_approval": False,
+                "context_compaction_trigger_tokens": None,
+                "context_compaction_keep_tokens": None,
         },
         {
-            "cwd": str(Path.home().resolve()),
-            "enable_memory": True,
-            "require_tool_approval": True,
-            "context_compaction_trigger_tokens": None,
-            "context_compaction_keep_tokens": None,
+                "cwd": str(Path.home().resolve()),
+                "enable_memory": True,
+                "require_tool_approval": False,
+                "context_compaction_trigger_tokens": None,
+                "context_compaction_keep_tokens": None,
         },
     ]
     for call in (

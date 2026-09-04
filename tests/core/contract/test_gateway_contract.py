@@ -30,8 +30,9 @@ from assistant_agent.agent_server.config import (
     MEMORY_GRAPH_ID,
     WORKER_GRAPH_ID,
 )
-from assistant_agent.agent_server.media_app import _native_graph_warmup_url
+from assistant_agent.agent_server.media_app import _native_graph_warmup_url, _run_chat
 from assistant_agent.agent_server.media_protocol import (
+    MediaChat,
     MediaProtocolError,
     parse_chat,
     parse_envelope,
@@ -73,6 +74,25 @@ def _authenticated_context(*, internal_worker: bool = False) -> SimpleNamespace:
         authenticate(
             None,
             {key.lower().encode(): value.encode() for key, value in headers.items()},
+        )
+    )
+    return SimpleNamespace(user=SimpleNamespace(**user))
+
+
+def _authenticated_media_context(monkeypatch) -> SimpleNamespace:
+    monkeypatch.setattr(
+        auth_module,
+        "_INTERNAL_MEDIA_CAPABILITY",
+        "media-capability-sentinel",
+        raising=False,
+    )
+    user = asyncio.run(
+        authenticate(
+            None,
+            {
+                b"x-assistant-user": b"studio-user",
+                b"x-assistant-internal-media": b"media-capability-sentinel",
+            },
         )
     )
     return SimpleNamespace(user=SimpleNamespace(**user))
@@ -281,6 +301,27 @@ def test_agent_server_auth_accepts_only_current_graph_identities(monkeypatch) ->
         "graph_id": ASSISTANT_GRAPH_ID,
     }
     assert run["context"] == {}
+    media_metadata = assistant_runtime_metadata(
+        AssistantRuntimeFacts(entry_profile="agent_service")
+    )
+    untrusted_media_run = {
+        "assistant_id": SYSTEM_ASSISTANT_IDS[ASSISTANT_GRAPH_ID],
+        "metadata": dict(media_metadata),
+    }
+    assert asyncio.run(authorize_run_create(ctx, untrusted_media_run)) is False
+    trusted_media_run = {
+        "assistant_id": SYSTEM_ASSISTANT_IDS[ASSISTANT_GRAPH_ID],
+        "metadata": dict(media_metadata),
+    }
+    assert asyncio.run(
+        authorize_run_create(
+            _authenticated_media_context(monkeypatch),
+            trusted_media_run,
+        )
+    ) == {
+        "owner": "studio-user",
+        "graph_id": ASSISTANT_GRAPH_ID,
+    }
     memory_run = {
         "assistant_id": SYSTEM_ASSISTANT_IDS[MEMORY_GRAPH_ID],
         "metadata": {},
@@ -397,6 +438,68 @@ def test_media_connection_only_correlates_native_thread_run_and_delivery_ids() -
     assert session.active_run_targets() == (("thread-1", "run-1"),)
     session.acknowledge(delivery_id="delivery-1", chat_index="chat-1")
     assert session.deliveries == {}
+
+
+@pytest.mark.core_invariant("IDENT-001")
+def test_media_run_uses_a_stable_user_working_directory(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+
+    class Client:
+        context: dict[str, object] | None = None
+
+        async def stream_run(self, **kwargs):
+            self.context = kwargs["context"]
+            if False:
+                yield {}
+
+    class WebSocket:
+        async def send_json(self, _value: object) -> None:
+            return None
+
+    client = Client()
+    session = MediaConnectionSession(connection_id="connection-1")
+    session.bind_control(
+        protocol_session_id="vendor-session",
+        user_id="user-1",
+        thread_id="thread-1",
+    )
+
+    asyncio.run(
+        _run_chat(
+            WebSocket(),
+            session=session,
+            client=client,
+            chat=MediaChat(
+                chat_index="chat-1",
+                user_id="user-1",
+                text="hello",
+                stream=False,
+            ),
+            response_session_id="vendor-session",
+            delivery_id="delivery-1",
+            send_lock=asyncio.Lock(),
+            interrupted_chats=set(),
+        )
+    )
+
+    expected = (
+        tmp_path
+        / "assistant_cqy"
+        / "media"
+        / "usr_c6c289e49e9c05b214586038"
+    )
+    assert client.context == {
+        "cwd": str(expected),
+        "enable_memory": True,
+    }
+    assert expected.is_dir()
+    assert (expected / "ASSISTANT.md").is_file()
+    assert (expected / ".agent" / "browser").is_dir()
+    assert (expected / ".agent" / "downloads").is_dir()
+    assert (expected / "outputs").is_dir()
 
 
 def _chat_body(**extra: object) -> dict[str, object]:

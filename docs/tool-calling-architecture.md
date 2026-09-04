@@ -53,6 +53,7 @@ filesystem 与 `execute`；`browser-operator` 只接收 Playwright Tool。角色
 `artifact://v1/{thread_ref}/generated/{filename}` 短引用写入文本 observation 和 artifact，不在
 `ToolMessage` 中写入 Base64 或 `image` content block；主模型默认不读取生成物。需要图片实体的媒体投影、
 `image_to_3d` 等消费者在自身边界按需通过统一 resolver 读取同一引用，并复核线程归属、大小、路径和媒体类型。
+生成成功后还将同名图片复制到当前用户 `<cwd>/outputs/`；该用户副本不参与协议解析或 thread TTL 回收。
 `image_to_3d` 未收到显式引用时，可从 checkpoint 的历史成功 `image_generation` ToolMessage 中选择最近引用，
 因此支持跨对话轮次联动；显式引用始终优先，实体过期仍由 thread TTL 和 resolver 拒绝。
 高德路线 MCP interceptor 在保留模型可见导航 Markdown 的同时，把同一受校验 URL 写入 namespaced
@@ -65,6 +66,8 @@ filesystem 与 `execute`；`browser-operator` 只接收 Playwright Tool。角色
 message/state 协议。传输层只通用读取该 key 和标准 `type=file` block，不依赖模型复述，也不按 Tool 名解析业务 artifact。
 只读 Tool 使用官方 `ToolRetryMiddleware` 有界重试；`live_view_inspect` 为避免重复
 当前画面推理不进入自动 retry 清单。
+`lodging_search` 仅让超时、Provider 不可用等瞬时失败进入该重试链；FlyAI
+`CITY_CODE_CHECK_PARAM_ERROR` 会直接返回针对 `destination` / `nearby_poi` 的可操作错误，其他明确拒绝和响应错误也不重复提交。
 
 `ToolContext`、`invoke_native_tool` 和以 `ToolResult` 为中心的生产兼容执行链均已删除，
 `runtime/state.py` 的平行 Tool catalog/call/result ledger 也已删除。公开兼容 response 的同名字段属于
@@ -107,8 +110,8 @@ Studio/LangChain 标准 `image|video` block 可直接携带 `base64 + mime_type`
 - composition 显式列入 `interrupt_tool_names` 的业务与 MCP Tool；
 - `start_async_task`、`update_async_task` 与 `cancel_async_task`。
 
-`AssistantRunContext.require_tool_approval` 默认为 true；在 Studio 保存为 false 的 Assistant 通过原生 `when`
-谓词跳过上述全部 interrupt，Tool 直接进入执行链，不需要自动提交 approve/resume。
+`AssistantRunContext.require_tool_approval` 在受信本机开发环境默认 false，通过原生 `when` 谓词跳过上述全部
+interrupt，Tool 直接进入执行链，不需要自动提交 approve/resume；需要审批的 Assistant 可显式保存为 true。
 未列入 `interrupt_on` 的 Tool 按 Deep Agents 原生默认直接执行。审批、interrupt、checkpoint 与 resume 使用 LangGraph/Agent Server 原生协议；外部副作用幂等
 仍属于具体 Tool 或业务 API。HITL 只是治理，不提供进程隔离。批准 `execute` 等价于允许 Agent Server 的 OS identity
 在当前 run cwd 下执行完整 command；该命令可能访问宿主路径、网络和 Git。filesystem Tool 与 shell 共享
@@ -123,11 +126,12 @@ Agent Server OS identity 的权限边界。当前 backend 仅适合受信本地�
 名单，两者互不推导；未列入
 `interrupt_tools` 的 MCP Tool 默认执行。
 生产不建立 MCP proxy、ToolSpec 镜像、plugin-private runner 或旧远端 Tool 映射。
-浏览器能力只由固定版本的官方 Playwright MCP 提供；项目不再维护内建 Playwright backend。MCP discovery 成功后
+浏览器能力只由固定版本的官方 Playwright MCP `--extension` 提供，直接连接用户已安装扩展的 Chrome 并复用现有
+标签页与登录状态；项目不再维护内建 Playwright backend。MCP discovery 成功后
 `mcp_playwright_browser_*` 才进入 `browser` Profile 和 `browser-operator`；是否审批由配置中的具体 Tool 名决定，
 不从通用读写分类推断。配置为 `session_scope=thread` 的 server 按
-`identity + thread_id + server_name` 复用官方 `ClientSession`；Playwright 进程 cwd 与输出目录都直接使用首次调用的
-`AssistantRunContext.cwd`，不创建 browser workspace、scratch 或 artifact 映射。`browser-operator` 只持有原生
+`identity + thread_id + server_name` 复用官方 `ClientSession`；Playwright 进程 cwd 使用首次调用的
+`AssistantRunContext.cwd`，输出目录固定为 `<cwd>/.agent/browser`。`browser-operator` 只持有原生
 Playwright Tool，不装配 filesystem middleware。截图预览沿用 Playwright MCP 原生图片结果与 LangChain 标准
 `image` content block；需要预览时不传 `filename`，固定文件名只用于用户明确要求的落盘场景。配置为 `call` 的 server 保持官方逐调用生命周期；空闲 thread session
 按 TTL 关闭，进程关闭时统一释放剩余 session。

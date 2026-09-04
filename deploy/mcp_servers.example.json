@@ -9,13 +9,13 @@
         "/home/lenovo1/.nvm/versions/node/v24.16.0/bin/npx",
         "-y",
         "@playwright/mcp@0.0.78",
-        "--headless",
-        "--isolated",
+        "--extension",
         "--output-dir",
-        "{cwd}"
+        "{cwd}/.agent/browser"
       ],
       "env": {
-        "PATH": "/home/lenovo1/.nvm/versions/node/v24.16.0/bin:/usr/bin:/bin"
+        "PATH": "/home/lenovo1/.nvm/versions/node/v24.16.0/bin:/usr/bin:/bin",
+        "PLAYWRIGHT_MCP_EXTENSION_TOKEN": "${PLAYWRIGHT_MCP_EXTENSION_TOKEN}"
       },
       "allowed_tools": [
         "browser_close",

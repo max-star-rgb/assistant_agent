@@ -6,7 +6,7 @@ from datetime import date
 from math import isfinite
 from typing import Annotated, Any, Literal
 
-from langchain_core.tools import BaseTool, tool
+from langchain_core.tools import BaseTool, ToolException, tool
 from langgraph.prebuilt import ToolRuntime
 from pydantic import Field
 
@@ -25,6 +25,10 @@ from assistant_agent.tools.plugins.builtin.lodging.backend import (
     MockLodgingSearchAdapter,
 )
 from assistant_agent.tools.delivery import safe_http_url, with_tool_delivery
+
+
+class _RetryableLodgingError(RuntimeError):
+    pass
 
 
 def create_lodging_search_tool(adapter: LodgingSearchAdapter | None = None) -> BaseTool:
@@ -114,7 +118,13 @@ def create_lodging_search_tool(adapter: LodgingSearchAdapter | None = None) -> B
                 ),
             )
             if not result.success:
-                raise RuntimeError(result.error_message or "Lodging search failed.")
+                message = result.error_message or "Lodging search failed."
+                if result.error_code not in {
+                    "provider_timeout",
+                    "provider_unavailable",
+                }:
+                    raise ToolException(message)
+                raise _RetryableLodgingError(message)
             data = result.model_dump(mode="json")
             if delivery := _lodging_delivery(result):
                 data = with_tool_delivery(data, text=delivery)
@@ -127,10 +137,12 @@ def create_lodging_search_tool(adapter: LodgingSearchAdapter | None = None) -> B
                 },
                 data,
             )
+        except _RetryableLodgingError:
+            raise
         except Exception as exc:
             raise native_tool_exception(exc) from exc
 
-    return configure_builtin_tool(lodging_search)
+    return configure_builtin_tool(lodging_search, bounded_expected_errors=True)
 
 
 def _lodging_delivery(result: LodgingSearchResult, *, max_items: int = 3) -> str:

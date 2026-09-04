@@ -22,6 +22,7 @@ from fastapi.responses import FileResponse
 from httpx import AsyncClient
 from langchain_core.messages import AIMessage
 
+from assistant_agent.agent_server.auth import _internal_media_headers
 from assistant_agent.agent_server.client import SdkAgentServerClient
 from assistant_agent.agent_server.graph import (
     close_native_assistant_graph,
@@ -70,6 +71,7 @@ from assistant_agent.media.visual_perception import get_visual_perception_module
 from assistant_agent.native_agent.context import (
     AssistantRuntimeFacts,
     assistant_runtime_metadata,
+    media_user_working_directory,
 )
 from assistant_agent.media.artifact_delivery import get_media_artifact_delivery_hub
 from assistant_agent.proactive_delivery import (
@@ -1010,7 +1012,10 @@ async def _run_chat(
             thread_id=session.thread_id,
             assistant_id=ASSISTANT_GRAPH_ID,
             input=media_graph_input(chat),
-            context={"enable_memory": True},
+            context={
+                "cwd": str(media_user_working_directory(str(session.user_id or ""))),
+                "enable_memory": True,
+            },
             metadata=run_metadata,
             multitask_strategy="interrupt",
             on_run_created=bind_run,
@@ -1599,7 +1604,7 @@ def _default_agent_server_client(websocket: WebSocket) -> SdkAgentServerClient:
 
     configured_url = os.environ.get("ASSISTANT_AGENT_SERVER_URL")
     url = configured_url or str(websocket.base_url).rstrip("/")
-    headers = {"x-assistant-user": _agent_server_identity(websocket)}
+    headers = _internal_media_headers(_agent_server_identity(websocket))
     return SdkAgentServerClient(url=url, headers=headers)
 
 

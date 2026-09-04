@@ -278,7 +278,11 @@ class ToolProfileMiddleware(AgentMiddleware[ToolProfileState, Any]):
                 raise ToolException("tool_profile_not_found")
             observation = {
                 "status": "succeeded",
-                "summary": "Tool Profile 已激活。",
+                "summary": (
+                    "Tool Profile 已激活。建议配合 travel skill 使用。"
+                    if profile.profile_id == "travel"
+                    else "Tool Profile 已激活。"
+                ),
                 "profile_id": profile.profile_id,
                 "activated_tool_names": list(profile.tool_names),
             }

@@ -24,13 +24,19 @@ AssistantAgent
   -> MemoryLifecycleMiddleware.after_agent (delayed extraction refresh)
 ```
 
-公开 Graph input 只有标准 `messages`。公开 `AssistantRunContext` 包含默认指向 OS 用户 Home 的 `cwd`、默认 true 的
-`enable_memory` 与 `require_tool_approval`，以及 Studio 可选的成对绝对 token 压缩阈值；不设置压缩值时沿用服务端
+公开 Graph input 只有标准 `messages`。公开 `AssistantRunContext` 包含默认指向 `~/assistant_cqy/studio` 的 `cwd`、默认 true 的
+`enable_memory`、本机开发默认 false 的 `require_tool_approval`，以及 Studio 可选的成对绝对 token 压缩阈值；不设置压缩值时沿用服务端
 75% 触发、15% 保留。`enable_memory` 同时控制本轮 recall 与 delayed extraction，`require_tool_approval` 允许 Assistant 配置关闭其全部原生 Tool
 审批。身份、入口和视觉 capability 只存在于 Agent Server
 签发的 namespaced metadata，不是 Assistant 配置。主图不绑定 saver；thread、run、checkpoint、interrupt、resume、
 cancel 和 Store 均由 Agent Server 注入。应用配置不再声明 checkpointer backend、checkpoint path 或外层 text-turn timeout；
 这些已失效环境变量会在启动时明确拒绝，避免形成看似生效的第二套 Runtime 配置。
+
+同一主图的顶层主 Agent 通过原生 dynamic prompt middleware 读取该受信入口事实：Studio 与普通 Agent Server 使用
+`native_agent/prompts/studio.py`，媒体 `agent_service` 使用 `native_agent/prompts/media.py`。媒体模型调用额外设置
+`max_tokens=256`；内部角色继续使用 Studio 核心提示词和默认输出上限，不复制 Graph、不增加公开模式字段，也不让媒体 route
+自行拼接提示词。第三方 OpenAI-compatible Provider adapter 在最终 wire 中保留这些 Provider 支持的 `max_tokens` 字段；
+OpenAI 官方 Provider 仍沿用 SDK 的 `max_completion_tokens`。
 
 `AssistantAgent` 由 Deep Agents `create_deep_agent` 编译，直接拥有官方 Todo、filesystem、同步 `task`、
 summarization、HITL 与 `ToolNode`。简单请求可直接回答；复杂请求可由模型自主使用 `write_todos`。主 Agent 的

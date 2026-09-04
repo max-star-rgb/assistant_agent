@@ -20,6 +20,7 @@ from langchain_core.outputs import (
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
+from langchain_openai import ChatOpenAI
 
 from assistant_agent.config import ChatConfig
 from assistant_agent.provider_mode import ProviderMode
@@ -28,6 +29,22 @@ from assistant_agent.providers.provider_http import without_unsupported_socks_pr
 
 class ProviderConfigurationError(RuntimeError):
     """The selected native chat provider is incomplete or unsupported."""
+
+
+class OpenAICompatibleChatModel(ChatOpenAI):
+    """Keep the legacy token-limit field required by compatible providers."""
+
+    def _get_request_payload(
+        self,
+        input_: Any,
+        *,
+        stop: list[str] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        if "max_completion_tokens" in payload:
+            payload["max_tokens"] = payload.pop("max_completion_tokens")
+        return payload
 
 
 class MockAssistantChatModel(BaseChatModel):
@@ -175,12 +192,15 @@ def create_chat_model(
             f"unsupported native chat adapter: {settings.adapter_kind}"
         )
 
-    from langchain_openai import ChatOpenAI
-
     extra_body = _provider_extra_body(config, settings.provider)
     streaming = config.native_provider_streaming or config.chat_stream
+    model_type = (
+        ChatOpenAI
+        if settings.provider == "openai"
+        else OpenAICompatibleChatModel
+    )
     with without_unsupported_socks_proxy_env():
-        return ChatOpenAI(
+        return model_type(
             api_key=settings.api_key or "not-required",
             base_url=settings.base_url,
             model=settings.model or "",

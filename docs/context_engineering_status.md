@@ -16,10 +16,13 @@
 ## 当前主链
 
 生产上下文以 LangChain 标准 `messages` channel 为事实源。统一 `AssistantAgent` 使用一个分层 Prompt Builder：
-provider-neutral 的稳定核心策略在前，Deep Agents Skills L0 目录随后注入，dynamic prompt 最后追加当前工作目录、
-项目指令、北京时间自然日、可信用户地区与本轮媒体事实。当前工作目录来自公开 `AssistantRunContext.cwd`，默认是
-当前 OS 用户 Home，必须解析为 Home 内已存在目录。项目指令只沿 Home 到 cwd 的祖先链读取；同层
-`AGENTS.override.md` 优先于 `AGENTS.md`，单次最多注入 32 KiB，不扫描 Home 的其他目录。
+顶层主 Agent 的原生 dynamic prompt 根据服务端签发的 `entry_profile` 从 `native_agent/prompts/studio.py` 与
+`native_agent/prompts/media.py` 选择稳定核心策略，Deep Agents Skills L0 目录随后注入，dynamic prompt 最后追加当前工作目录、
+项目指令、北京时间自然日、可信用户地区与本轮媒体事实。当前工作目录来自公开 `AssistantRunContext.cwd`；Studio
+默认使用 `~/assistant_cqy/studio`，媒体入口按握手用户稳定映射到
+`~/assistant_cqy/media/usr_<opaque-id>`。工作区首次使用时创建目录和空的用户级 `ASSISTANT.md`，已有文件不覆盖。
+同时创建 `.agent/browser`、`.agent/downloads` 与 `outputs` 三个产物目录。
+项目指令只沿 Home 到 cwd 的祖先链读取 `ASSISTANT.md`，单次最多注入 32 KiB，不扫描 Home 的其他目录。
 预算不足时优先保留最接近 cwd 的指令，再以祖先到子目录的顺序呈现；自动加载拒绝解析到 Home 外的
 指令文件 symlink，避免把 cwd 选择扩大为隐式文件读取授权。最终 runtime dynamic prompt 将上游 middleware
 生成的普通纯文本 section 合并为单个 text content block；带额外元数据或非文本 block 保持原结构。
@@ -31,8 +34,9 @@ provider-neutral 的稳定核心策略在前，Deep Agents Skills L0 目录随�
 `context_compaction_trigger_tokens` / `context_compaction_keep_tokens`。压缩值都不设置时使用 Provider context window 的
 75%/15%，设置时必须满足 `0 < keep < trigger`，并由 main/worker 的 Deep Agents
 `SummarizationMiddleware.awrap_model_call` 在当前 run 中读取而不修改进程共享 middleware。
-后两个布尔值默认均为 true，`enable_memory` 控制本轮 recall 与 delayed extraction，`require_tool_approval` 允许单次 run
-关闭已配置 Tool 的 HITL interrupt，两者都不进入 prompt。`entry_profile` 与视觉 capability token 属于服务端签发的
+媒体 `agent_service` 顶层模型调用同时在原生 model-call middleware 设置 `max_tokens=256`，约束用户可见的工具前导与最终回复；
+其他入口和内部角色不覆盖模型输出上限。`enable_memory` 默认 true，控制本轮 recall 与 delayed extraction；
+`require_tool_approval` 在本机开发默认 false，可由单次 run 显式开启已配置 Tool 的 HITL interrupt；两者都不进入 prompt。`entry_profile` 与视觉 capability token 属于服务端签发的
 `AssistantRuntimeFacts`，只放在 namespaced run metadata。用户身份只来自 Agent Server
 `Runtime.server_info.user.identity`。公开 context 不包含模式、任意 prompt、身份、仓库注册或 Tool 授权；`cwd` 是用户可见的
 运行位置，不是隐藏身份或授权事实。

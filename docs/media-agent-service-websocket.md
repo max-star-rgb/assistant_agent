@@ -1,6 +1,6 @@
 # Media-Agent WebSocket 接口权威文档
 
-Last updated: 2026-09-03
+Last updated: 2026-09-04
 
 ## Authority contract
 
@@ -96,6 +96,7 @@ capability token 放入 namespaced run metadata；token 按认证身份与 threa
 
 - `chatIndex`、`userNumber` 和非空 `contents` 必填；现代 `assistantControl` 链路中 `userNumber`
   必须与握手一致，legacy `assistantControlStart` 保持独立号码口径兼容。
+- 每个媒体 run 的 cwd 由握手用户稳定映射到 `~/assistant_cqy/media/usr_<opaque-id>`；客户端不能提交 cwd。
 - 每项必须有 `speakerNumber`、`time`；当前 Graph 输入取最后一条非空 `speechContent`。
 - `chatIndex` 关联 run，`deliveryId` 只关联本次媒体投递 ACK。
 - 媒体入口以 `multitask_strategy=interrupt` 创建 native run。若同一 thread 的旧 chat run 仍处于
@@ -146,6 +147,10 @@ Graph 完成后发送成功终包：
 Agent Server 的 `messages/partial` 是同一 message 的累计快照，适配器按 message ID
 计算 append-only delta；模型生成的 Tool 前导文本与工具后的下一条 assistant message 之间若均无换行，适配器在新消息首包
 补一个换行。中间包按 `sequence` 递增且 `final=false`，不携带 `deliveryId`；`stream=false` 不发送中间包。
+
+统一 Agent 顶层主循环的原生 dynamic prompt middleware 根据上述受信入口事实选择独立媒体提示词，要求工具前导最多一句、
+最终回复通常一到三句且保持口语化；同一 model-call 边界设置 `max_tokens=256`。内部角色不产生媒体正文，继续使用 Studio
+核心提示词与默认输出上限。Studio 顶层入口也继续使用原提示词与默认模型输出上限；媒体 custom route 不持有或拼接任何提示词。
 
 最终正文仍来自 terminal values 中的最新标准 `AIMessage`，适配器不把 delta 拼接成业务终态。成功终包发送该
 最新消息中尚未流出的后缀，使用最后一个 `sequence`、`final=true`，并独占 `deliveryId`；若最终文本与已流出的

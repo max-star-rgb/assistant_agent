@@ -96,11 +96,21 @@ class FlyAILodgingSearchAdapter:
                 message="FlyAI hotel search response must be a JSON object.",
             )
         if payload.get("status") != 0:
+            message = _safe_text(payload.get("message"))
+            if message and "[CITY_CODE_CHECK_PARAM_ERROR]" in message:
+                return _failed_flyai_result(
+                    observed_at,
+                    code="invalid_destination",
+                    message=(
+                        "`destination` 无法解析为城市或行政区。请填写国家、省、市或区，"
+                        "例如“上海市青浦区”；将具体地点填写到 `nearby_poi`，"
+                        "例如“华为练秋湖研发中心”。"
+                    ),
+                )
             return _failed_flyai_result(
                 observed_at,
-                code="provider_unavailable",
-                message=_safe_text(payload.get("message"))
-                or "FlyAI hotel search was rejected.",
+                code="provider_rejected",
+                message=message or "FlyAI hotel search was rejected.",
             )
 
         data = payload.get("data")

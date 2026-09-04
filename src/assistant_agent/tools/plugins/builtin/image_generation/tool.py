@@ -144,6 +144,7 @@ def _execute_image_generation_from_runtime(
         adapter,
         request,
         artifact_dir=resources.artifact_root / "generated",
+        output_dir=Path(runtime.context.cwd) / "outputs",
         public_prefix=public_prefix,
         use_fixture=use_fixture,
     )
@@ -154,6 +155,7 @@ def _execute_image_generation(
     input: ImageGenerationRequest,
     *,
     artifact_dir: Path,
+    output_dir: Path,
     public_prefix: str,
     use_fixture: bool = False,
 ) -> ImageGenerationResult:
@@ -184,7 +186,7 @@ def _execute_image_generation(
         result = adapter.generate(input)
     if result.status != "succeeded":
         return result
-    return _publish_image_ids(
+    result = _publish_image_ids(
         _materialize_image_generation_result(
             result,
             artifact_dir=artifact_dir,
@@ -193,6 +195,13 @@ def _execute_image_generation(
         artifact_dir=artifact_dir,
         public_prefix=public_prefix,
     )
+    images = _generated_image_artifacts(result, public_prefix=public_prefix)
+    if images:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for image in images:
+            filename = PurePosixPath(image.output_ref).name
+            shutil.copy2(artifact_dir / filename, output_dir / filename)
+    return result
 
 
 def _image_generation_output_contract(

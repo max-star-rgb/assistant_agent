@@ -3,11 +3,42 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import hashlib
 from pathlib import Path
 from typing import Any, Self
 
 from langgraph.runtime import Runtime
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+def studio_working_directory() -> Path:
+    """Return the shared local Studio workspace."""
+
+    return _ensure_working_directory(Path.home() / "assistant_cqy" / "studio")
+
+
+def media_user_working_directory(user_id: str) -> Path:
+    """Return a stable workspace without exposing the media user identifier."""
+
+    identity = user_id.strip()
+    if not identity:
+        raise ValueError("media user identity is required")
+    opaque_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
+    return _ensure_working_directory(
+        Path.home() / "assistant_cqy" / "media" / f"usr_{opaque_id}"
+    )
+
+
+def _ensure_working_directory(path: Path) -> Path:
+    host_root = Path.home().resolve()
+    path.mkdir(parents=True, exist_ok=True)
+    resolved = path.resolve(strict=True)
+    if not resolved.is_relative_to(host_root):
+        raise ValueError(f"cwd must be a directory under {host_root}")
+    (resolved / "ASSISTANT.md").touch(exist_ok=True)
+    for subdirectory in (".agent/browser", ".agent/downloads", "outputs"):
+        (resolved / subdirectory).mkdir(parents=True, exist_ok=True)
+    return resolved
 
 
 class AuthenticatedUserRequired(PermissionError):
@@ -20,8 +51,11 @@ class AssistantRunContext(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     cwd: Path = Field(
-        default=Path.home().resolve(),
+        default_factory=studio_working_directory,
         description="本轮 Assistant 使用的默认工作目录。",
+        json_schema_extra={
+            "default": str((Path.home() / "assistant_cqy" / "studio").resolve())
+        },
     )
     enable_memory: bool = Field(
         default=True,
@@ -33,8 +67,8 @@ class AssistantRunContext(BaseModel):
         },
     )
     require_tool_approval: bool = Field(
-        default=True,
-        description="工具执行前是否要求人工审批。",
+        default=False,
+        description="工具执行前是否要求人工审批；本机开发默认关闭，可显式启用。",
     )
     context_compaction_trigger_tokens: int | None = Field(
         default=None,
@@ -138,4 +172,6 @@ __all__ = [
     "assistant_runtime_facts",
     "assistant_runtime_metadata",
     "authenticated_user_identity",
+    "media_user_working_directory",
+    "studio_working_directory",
 ]

@@ -339,10 +339,20 @@ def test_dynamic_prompt_is_one_text_block_from_run_cwd(
     monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
     project = tmp_path / "project"
     project.mkdir()
-    (project / "AGENTS.md").write_text("project-instruction-sentinel", encoding="utf-8")
+    (tmp_path / "ASSISTANT.md").write_text(
+        "shared-instruction-sentinel",
+        encoding="utf-8",
+    )
+    (project / "ASSISTANT.md").write_text(
+        "project-instruction-sentinel",
+        encoding="utf-8",
+    )
     sibling = tmp_path / "sibling"
     sibling.mkdir()
-    (sibling / "AGENTS.md").write_text("sibling-instruction-sentinel", encoding="utf-8")
+    (sibling / "ASSISTANT.md").write_text(
+        "sibling-instruction-sentinel",
+        encoding="utf-8",
+    )
     model = _CaptureMessagesModel()
     model.observed_messages = []
     graph = _agent(tmp_path, model)
@@ -361,6 +371,7 @@ def test_dynamic_prompt_is_one_text_block_from_run_cwd(
     assert len(system_message.content) == 1
     assert system_message.content[0].get("type") == "text"
     system_prompt = system_message.content[0].get("text", "")
+    assert "shared-instruction-sentinel" in system_prompt
     assert "project-instruction-sentinel" in system_prompt
     assert "sibling-instruction-sentinel" not in system_prompt
 
@@ -840,7 +851,7 @@ def test_unified_write_interrupt_resume_executes_at_most_once(
     config = {"configurable": {"thread_id": f"write-{decision}-sentinel"}}
     interrupted = graph.invoke(
         {"messages": [HumanMessage(content="write-request-sentinel")]},
-        context=AssistantRunContext(),
+        context=AssistantRunContext(require_tool_approval=True),
         config=config,
     )
 
@@ -855,7 +866,7 @@ def test_unified_write_interrupt_resume_executes_at_most_once(
         decision_payload["message"] = "rejected-sentinel"
     resumed = graph.invoke(
         Command(resume={"decisions": [decision_payload]}),
-        context=AssistantRunContext(),
+        context=AssistantRunContext(require_tool_approval=True),
         config=config,
     )
     assert len(executed) == expected_executions
@@ -924,7 +935,7 @@ def test_read_file_is_visible_before_filesystem_profile_activation(tmp_path: Pat
         tool_profiles=project_tool_profiles(),
     ).invoke(
         {"messages": [HumanMessage(content="write-file-request")]},
-        context=AssistantRunContext(),
+        context=AssistantRunContext(require_tool_approval=True),
     )
 
     assert "read_file" in model.visible_tools[0]
@@ -981,7 +992,7 @@ def test_browser_profile_hides_tool_then_interrupts_side_effect(tmp_path: Path) 
         interrupt_tool_names={"mcp_playwright_browser_navigate"},
     ).invoke(
         {"messages": [HumanMessage(content="browser-request")]},
-        context=AssistantRunContext(),
+        context=AssistantRunContext(require_tool_approval=True),
     )
 
     assert "mcp_playwright_browser_navigate" not in model.visible_tools[0]
