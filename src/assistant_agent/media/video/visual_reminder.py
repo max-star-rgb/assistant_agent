@@ -27,11 +27,11 @@ from assistant_agent.media.embedding.observability import (
 )
 from assistant_agent.media.proactive_messages import (
     ProactiveDeliveryAttempt,
-    ProactiveMessage,
     ProactiveMessageSink,
     ProactiveSessionEvent,
     ProactiveSessionEventStore,
 )
+from assistant_agent.proactive_delivery import ProactiveMessage
 
 
 VisualReminderStatus = Literal["pending", "reserved", "triggered", "cancelled"]

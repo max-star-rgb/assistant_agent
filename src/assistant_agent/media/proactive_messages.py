@@ -9,13 +9,9 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from assistant_agent.proactive_delivery import (
-    ProactiveDeliveryMode as ProactiveDeliveryMode,
-    ProactiveMessage,
-)
+from assistant_agent.proactive_delivery import ProactiveMessage
 
 
-ProactiveMessageKind = str
 ProactiveDeliveryStatus = Literal["queued", "sent", "failed"]
 ProactiveDeliveryScope = Literal["server_transport", "client_acknowledged"]
 
@@ -46,7 +42,7 @@ class ProactiveSessionEvent(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     message_id: str
-    kind: ProactiveMessageKind
+    kind: str
     content: str
     sent_at_ms: int = Field(ge=0)
     delivery_scope: ProactiveDeliveryScope = "server_transport"
