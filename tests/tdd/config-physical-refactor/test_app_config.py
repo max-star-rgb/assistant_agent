@@ -77,6 +77,21 @@ def test_qwen_dashscope_alias_and_workspace_url() -> None:
     )
 
 
+def test_empty_qwen_chat_base_url_uses_default() -> None:
+    config = load_app_config(
+        {
+            "MULTIMODAL_AGENT_PROVIDER_MODE": "real",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "qwen",
+            "QWEN_API_KEY": "qwen-sentinel",
+            "QWEN_CHAT_BASE_URL": "",
+        }
+    )
+
+    assert config.chat.chat_base_url == (
+        "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    )
+
+
 def test_selected_provider_secret_is_projected_once() -> None:
     config = load_app_config(
         {
