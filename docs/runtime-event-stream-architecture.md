@@ -83,6 +83,7 @@ Memory middleware、Provider composition、Tool/Profile middleware 和模型循�
 
 - `local_backend.py`、`thread_resources.py`：生产 composition、filesystem 和 thread 资源使用的执行基础设施。
 共享 `identity.py` 持有跨 Memory 与 durable task 使用的最小 `RequestIdentity` 和默认 agent ID。
+Git Tool 与 execute guard 由 Tool 领域的 `tools/git.py` 所有，不再与 filesystem backend 混放。
 
 主模型与维护脚本统一使用 `BaseChatModel`、标准 LangChain messages 和 `create_chat_model`。旧
 `ChatAdapter`、`ChatRequest/ChatResult`、`LLMEvent` accumulator 与平行 assistant output models 已随最后消费者删除；
