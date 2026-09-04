@@ -364,6 +364,8 @@ def _chat_provider_env_with_aliases(provider: str, env: Mapping[str, str]) -> Ma
                 normalized["QWEN_CHAT_BASE_URL"] = (
                     f"https://{workspace_id}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
                 )
+            else:
+                normalized.pop("QWEN_CHAT_BASE_URL", None)
     elif provider == "ark":
         normalized = _ark_env_with_api_key_aliases(normalized, "ARK_CHAT_API_KEY")
     elif provider == "deepseek":
