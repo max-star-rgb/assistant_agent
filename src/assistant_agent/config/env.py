@@ -27,6 +27,7 @@ from .models import (
     ShoppingConfig,
     ToolConfig,
     VisionConfig,
+    chat_model_runtime_profile,
 )
 
 
@@ -656,14 +657,8 @@ def _platforms(value: str | None) -> tuple[str, ...]:
 
 
 def _default_context_limit(model: str | None) -> int:
-    return (
-        1_000_000
-        if (model or "")
-        .strip()
-        .lower()
-        .startswith(("qwen3.6-flash", "deepseek-v4-flash"))
-        else 128_000
-    )
+    profile = chat_model_runtime_profile(model)
+    return profile.context_window_tokens if profile else 128_000
 
 
 def _ratio(value: str | None, default: float) -> float:

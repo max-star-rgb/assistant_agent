@@ -42,7 +42,8 @@ summarization、HITL 与 `ToolNode`。简单请求可直接回答；复杂请求
 `task(subagent_type="reviewer")`；普通只读 Tool 和仅列入 HITL `interrupt_tool_names` 的业务 Tool（包括图片生成）不置位。
 模型仍可在执行过程中自主调用同一个 `reviewer`；需要验证的 Tool 成功返回后，主 middleware 在下一次主模型调用前注入
 reviewer Tool call 并直接跳转到原生 `ToolNode`，确保候选答复不会先于强制审查进入标准 message stream。副作用调用前若剩余 graph step 不足以完成 Tool、reviewer 与最终综合，主 loop
-不执行该副作用并直接返回未验证状态；reviewer 模型调用会本地重试一次，连续两次 task 仍失败时 fail closed，避免无限循环。
+不执行该副作用并直接返回未验证状态。reviewer 与其他模型调用共享瞬时故障持续重试；非瞬时失败仍转为本地
+失败哨兵，由既有验证门禁 fail closed。
 
 主 Agent 的同步 `task` 只选择受信 composition 预装的 `general-purpose`、`reviewer`、`coder` 和 `browser-operator`，不能在
 task 参数中创建 Tool、backend 或权限。`description` 只帮助模型选择角色，不参与授权。`general-purpose` 使用编译好的
@@ -135,8 +136,12 @@ graph；主模型 token 不再依赖 subgraph stream，媒体入口仍可启用 
 `started|completed|failed`，不发送参数、结果或异常正文。模型循环不设置 model 或单 Tool 的 run 累计次数上限；
 同一 model superstep 内同名 Tool 最多并行 12 次，并在 `recursion_limit` 只剩 8 步时关闭 Tool 完成一次自然综合。
 main 与 worker 的单一 Deep Agents `SummarizationMiddleware.awrap_model_call` 从同一 composition 投影的 `ChatConfig` 取得窗口、
-trigger/target ratio 和可选离线 token counter，并由 Studio 的成对绝对值只覆盖当前 run；
+trigger/target ratio 和模型 token counter，并由 Studio 的成对绝对值只覆盖当前 run；
 real DeepSeek/native compactor 缺 tokenizer 时 composition 启动失败。
+main、general-purpose worker、reviewer、coder 与 browser-operator 统一通过原生 `AgentMiddleware` 模型调用边界处理
+429、408、连接/超时和 HTTP 5xx：指数退避并带 jitter，间隔上限 30 秒，持续到成功或 Agent Server 取消 run；
+鉴权、参数、上下文超限等非瞬时错误不重试。每次重试只向原生 custom stream 写入
+`model_retry`、attempt、下一次等待秒数和固定安全提示，不写异常或 Provider 响应。
 
 实时摄像头的进程级并行流水线与 namespaced capability facts 仍会运行和冻结；SigLIP2
 latest-wins、关键帧窗口和并行 VLM 始终由视觉 authority 负责，不进入主图 state 或 task。但当前 media custom route

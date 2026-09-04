@@ -9,8 +9,7 @@ from assistant_agent.tools.plugins.builtin.shopping.tool import (
 
 
 FIXED_INPUT = {
-    "needs": [{"keyword": "无线鼠标", "quantity": 1}],
-    "platforms": ["taobao"],
+    "queries": ["无线鼠标"],
 }
 
 

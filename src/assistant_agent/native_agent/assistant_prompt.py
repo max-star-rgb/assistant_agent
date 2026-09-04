@@ -132,8 +132,7 @@ def render_assistant_core_prompt(*, native_search_enabled: bool = False) -> str:
     """Render stable, provider-neutral operating rules."""
 
     search_instruction = (
-        "- 本次调用已启用模型原生联网搜索；需要公开网络信息时直接检索并回答，"
-        "不要委派浏览器打开搜索引擎。\n"
+        "- 本次调用已启用原生联网搜索,不要委派浏览器打开搜索引擎。\n"
         if native_search_enabled
         else ""
     )

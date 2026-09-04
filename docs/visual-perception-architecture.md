@@ -207,10 +207,10 @@ exact k 结果；Tool 不读取或理解选帧内部状态，也不回退到更�
 `VisualTimelineContextService` 仍保留 Tool 尾部 target/trigger/hard gate；它只压缩本次模型可见投影，
 不把 summary 反写 Store，也不把旧 summary 或 record 文本送入后台 VLM。
 生产 composition 在 `real + REALTIME_VISUAL_CONTEXT_COMPACTOR=llm` 时使用主 Agent 的原生
-`BaseChatModel` 和同一个离线 context token counter 构造该 service，再经静态 Tool resources 注入
+`BaseChatModel` 和同一个模型 context token counter 构造该 service，再经静态 Tool resources 注入
 `visual_memory_search`；执行仍是 `BaseTool -> ToolNode -> ToolRuntime -> ToolMessage`，不增加 Graph node、
-middleware 或平行 Runtime。未配置 compactor 时不构造 service；启用时缺少
-`MULTIMODAL_AGENT_CONTEXT_TOKENIZER_PATH` 必须启动失败，不再维护独立视觉 tokenizer 配置。
+middleware 或平行 Runtime。未配置 compactor 时不构造 service；启用时若主模型 ID 无法自动解析 tokenizer，且没有
+`MULTIMODAL_AGENT_CONTEXT_TOKENIZER_PATH` 覆盖，必须启动失败；不再维护独立视觉 tokenizer 配置。
 内部压缩调用固定关闭 Provider-native search，只能根据本次传入的可信边界内视觉文本生成摘要。
 
 ## 视觉观测与 trace 契约

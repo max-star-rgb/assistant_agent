@@ -116,7 +116,7 @@ def test_shopping_toolnode_keeps_candidates_and_selection_in_artifact() -> None:
             search_adapter=_ShoppingSearchAdapter(),
             compare_adapter=_ShoppingCompareAdapter(),
         ),
-        {"needs": [{"keyword": "water bottle", "quantity": 2}]},
+        {"queries": ["water bottle"]},
     )
 
     content = json.loads(message.content[0]["text"])
@@ -125,7 +125,7 @@ def test_shopping_toolnode_keeps_candidates_and_selection_in_artifact() -> None:
     assert "selections" not in content
     assert content["results"][0]["selected"]["product_id"] == "bottle-001"
     assert message.artifact["needs"][0]["candidates"][0]["product_id"] == "bottle-001"
-    assert message.artifact["selections"][0]["subtotal"] == 70.0
+    assert message.artifact["selections"][0]["subtotal"] == 35.0
     assert message.artifact["assistant_agent_delivery_v1"]["text"].startswith(
         "<detail>"
     )

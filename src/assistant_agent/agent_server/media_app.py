@@ -36,6 +36,7 @@ from assistant_agent.agent_server.media_protocol import (
     parse_chat,
     parse_envelope,
     progress_response,
+    model_retry_progress_response,
     proactive_chat_response,
     streaming_chat_response,
     success_chat_response,
@@ -1018,6 +1019,25 @@ async def _run_chat(
             if isinstance(event_id, str):
                 session.last_event_id = event_id
             data = part.get("data")
+            if (
+                part.get("event") == "custom"
+                and isinstance(data, Mapping)
+                and data.get("type") == "model_retry"
+                and isinstance(data.get("attempt"), int)
+                and isinstance(data.get("next_retry_seconds"), (int, float))
+                and isinstance(data.get("message"), str)
+            ):
+                await _send_json(
+                    websocket,
+                    send_lock,
+                    model_retry_progress_response(
+                        session_id=response_session_id,
+                        chat_index=chat.chat_index,
+                        attempt=data["attempt"],
+                        next_retry_seconds=float(data["next_retry_seconds"]),
+                        message=data["message"],
+                    ),
+                )
             if chat.stream:
                 for sequence, delta in text_stream.consume(part):
                     await _send_json(

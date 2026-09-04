@@ -193,8 +193,6 @@ class ShoppingSearchRequest(BaseModel):
         normalized = [" ".join(need.keyword.split()).casefold() for need in self.needs]
         if len(normalized) != len(set(normalized)):
             raise ValueError("needs must use distinct product keywords")
-        if len(self.needs) > 1 and self.total_budget is None:
-            raise ValueError("total_budget is required when needs contains multiple items")
         return self
 
 

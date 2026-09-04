@@ -1,6 +1,6 @@
 # LangChain-native Context Engineering
 
-最后更新：2026-09-02
+最后更新：2026-09-04
 
 ## Authority contract
 
@@ -88,9 +88,11 @@ main/worker 在同一 model superstep 内每 Tool 最多并行 12 次，并在
 
 summarization 的绝对 token trigger/keep 分别由同一 composition 投影的
 `ChatConfig.context_input_token_limit * context_compaction_trigger_ratio/target_ratio` 计算，不写死模型窗口。
-composition 启动时先创建配置的离线 token counter，并把同一个 `count_messages`、`context_window_tokens`、
+composition 启动时按主模型 ID 解析 context window 与 tokenizer，并把同一个 `count_messages`、`context_window_tokens`、
 `compaction_trigger_ratio` 和 `compaction_target_ratio` 投影同时传给 main 与 worker。real DeepSeek V4 或 native LLM compactor 缺少本地
-tokenizer 时启动直接失败，不回退近似计数或发起网络调用。启用视觉时间线 LLM compactor 时同样复用该 counter 的
+tokenizer 时启动直接失败，不回退近似计数。已登记的托管模型 tokenizer 使用固定 revision 并由 `tokenizers` 缓存在本机；首次使用
+允许从官方模型仓库获取，后续启动复用缓存。显式 `MULTIMODAL_AGENT_CONTEXT_TOKENIZER_PATH` 仍可覆盖自动选择。
+启用视觉时间线 LLM compactor 时同样复用该 counter 的
 `count_text`，不再加载第二份视觉 tokenizer。
 
 旧 `ContextService`、prompt-json compiler、独立 runtime system prompt policy、动态 catalog/exposure、renderer、

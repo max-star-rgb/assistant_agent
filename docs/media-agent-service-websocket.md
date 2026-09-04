@@ -113,7 +113,8 @@ capability token 放入 namespaced run metadata；token 按认证身份与 threa
 ```
 
 `stream=true` 时，Graph 原生 `messages/partial` 中新增的 assistant 文本会沿用媒体既有的
-`chatResponse` 增量结构发送：
+`chatResponse` 增量结构发送。模型发生可重试瞬时故障时，Graph 原生 `custom` 流中的 `model_retry` 事件另行投影为
+`chatProgress(status=RETRYING)`，携带 attempt、下一次等待秒数和固定提示；它不进入 assistant 正文或 checkpoint：
 
 ```json
 {

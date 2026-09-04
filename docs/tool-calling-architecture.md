@@ -74,6 +74,7 @@ message/state 协议。传输层只通用读取该 key 和标准 `type=file` blo
 实际注册的 Tool；没有可用 Profile 时不暴露 `activate_tool_profile`。模型调用
 `activate_tool_profile` 后，middleware 从私有 `active_tool_profile_ids` 缩小后续 `ModelRequest.tools`，并在执行
 边界复核历史消息中的 ToolCall；激活结果的 `activated_tool_names` 返回该运行角色实际注册并开放的 Tool 名称。
+`read_file` 常驻暴露，以便模型直接读取已发现的 Skill 正文；其余 filesystem Tool 仍需先激活 `filesystem` Profile。
 至少一个 Profile 激活后，模型可自主调用 `deactivate_tool_profile` 精确隐藏指定 Profile 的实际 Tool 集；重复取消
 幂等成功，其他 Profile 和常驻 Tool 不受影响，取消后的历史 ToolCall 仍在执行边界被拒绝。没有激活 Profile 时不向模型
 暴露取消 Tool；取消只影响后续可见性，不中止已开始的 Tool，也不撤销既有副作用。
@@ -143,8 +144,8 @@ Qwen 的原生联网参数属于 `BaseChatModel` 请求能力，不伪装成本�
 只有 real Qwen、DashScope 协议和原生搜索开关同时启用时，统一 dynamic prompt 才向模型说明本次调用具备原生联网搜索；
 未启用时不注入搜索提示，也不提供本地搜索替代。real 模式选择 DashScope 协议时使用
 `DashScopeNativeChatModel`；显式选择 OpenAI-compatible 时才使用 `ChatOpenAI`，不得静默回退。统一主 Agent 可按
-结构化配置启用 Provider search；worker 复用主 Agent 的同一模型配置。主 Agent 使用官方 `ModelRetryMiddleware`
-对 DashScope 模型失败重试一次，耗尽后由本地固定 `AIMessage` 结束本轮，不再依赖模型生成故障说明。
+结构化配置启用 Provider search；worker 复用主 Agent 的同一模型配置。统一模型瞬时故障恢复与 custom stream
+进度事件由 runtime authority 定义，Tool 层不实现第二套模型重试。
 
 Provider 返回的 message content 是唯一正文，来源只保存在同一 `AIMessage.response_metadata`。adapter 不把来源
 改写为 ToolMessage 或追加来源列表；媒体和自定义 UI 可按正文角标与结构化来源自行投影。

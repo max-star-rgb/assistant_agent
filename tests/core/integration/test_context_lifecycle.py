@@ -66,11 +66,11 @@ def _tool_names(raw_tools: object) -> set[str]:
 def test_tool_profiles_only_keep_tools_registered_in_the_graph() -> None:
     middleware = ToolProfileMiddleware(
         project_tool_profiles(),
-        available_tool_names={"read_file"},
+        available_tool_names={"ls"},
     )
 
     assert [profile.profile_id for profile in middleware.profiles] == ["filesystem"]
-    assert middleware.profiles[0].tool_names == ("read_file",)
+    assert middleware.profiles[0].tool_names == ("ls",)
 
 
 @pytest.mark.core_invariant("CTX-001")
@@ -261,7 +261,7 @@ class _FilesystemWriteModel(MockAssistantChatModel):
                     {
                         "name": "read_file",
                         "args": {"file_path": "/source.txt"},
-                        "id": "hidden-read-file-sentinel",
+                        "id": "read-file-sentinel",
                         "type": "tool_call",
                     }
                 ],
@@ -682,7 +682,6 @@ def test_deep_agent_owns_summary_retry_todo_hitl_and_tool_policy(
     )
     assert filesystem_profile.tool_names == (
         "ls",
-        "read_file",
         "write_file",
         "edit_file",
         "delete",
@@ -916,7 +915,7 @@ def test_assistant_context_can_auto_approve_governed_tool(tmp_path: Path) -> Non
 
 
 @pytest.mark.core_invariant("CTX-001")
-def test_filesystem_profile_hides_tools_then_interrupts_write(tmp_path: Path) -> None:
+def test_read_file_is_visible_before_filesystem_profile_activation(tmp_path: Path) -> None:
     (tmp_path / "source.txt").write_text("source-sentinel", encoding="utf-8")
     model = _FilesystemWriteModel()
     result = _agent(
@@ -928,9 +927,9 @@ def test_filesystem_profile_hides_tools_then_interrupts_write(tmp_path: Path) ->
         context=AssistantRunContext(),
     )
 
-    assert "read_file" not in model.visible_tools[0]
+    assert "read_file" in model.visible_tools[0]
     assert "write_file" not in model.visible_tools[0]
-    assert "read_file" not in model.visible_tools[1]
+    assert "read_file" in model.visible_tools[1]
     assert "write_file" in model.visible_tools[2]
     assert "execute" in model.visible_tools[2]
     activated = next(
@@ -941,7 +940,6 @@ def test_filesystem_profile_hides_tools_then_interrupts_write(tmp_path: Path) ->
     )
     assert json.loads(str(activated.content))["activated_tool_names"] == [
         "ls",
-        "read_file",
         "write_file",
         "edit_file",
         "delete",
@@ -949,13 +947,14 @@ def test_filesystem_profile_hides_tools_then_interrupts_write(tmp_path: Path) ->
         "grep",
         "execute",
     ]
-    blocked = next(
+    read_result = next(
         item
         for item in result["messages"]
         if isinstance(item, ToolMessage)
-        and item.tool_call_id == "hidden-read-file-sentinel"
+        and item.tool_call_id == "read-file-sentinel"
     )
-    assert blocked.status == "error"
+    assert read_result.status == "success"
+    assert "source-sentinel" in read_result.text
     assert result["__interrupt__"][0].value["action_requests"][0]["name"] == (
         "write_file"
     )

@@ -106,6 +106,27 @@ def progress_response(*, session_id: str | None, chat: MediaChat, delivery_id: s
     )
 
 
+def model_retry_progress_response(
+    *,
+    session_id: str | None,
+    chat_index: str,
+    attempt: int,
+    next_retry_seconds: float,
+    message: str,
+) -> dict[str, Any]:
+    return envelope(
+        message="chatProgress",
+        session_id=session_id,
+        body={
+            "chatIndex": chat_index,
+            "status": "RETRYING",
+            "attempt": attempt,
+            "nextRetrySeconds": next_retry_seconds,
+            "message": message,
+        },
+    )
+
+
 def streaming_chat_response(
     *,
     session_id: str | None,
@@ -333,6 +354,7 @@ __all__ = [
     "connection_greeting_response",
     "envelope",
     "failure_response",
+    "model_retry_progress_response",
     "parse_chat",
     "parse_envelope",
     "progress_response",

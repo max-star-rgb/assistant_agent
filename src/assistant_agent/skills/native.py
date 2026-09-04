@@ -36,7 +36,7 @@ _PROJECT_SKILLS_SYSTEM_PROMPT = """## Skills
 
 源码 Skill 随 Agent 发布；Working Directory Skill 来自当前 `<cwd>/skills/`，同名时后者优先。
 
-当请求匹配某项 Skill，先使用 `activate_tool_profile` 激活 `filesystem` Tool Profile，再使用 `read_file` 读取对应的 `SKILL.md`。
+当请求匹配某项 Skill，使用 `read_file` 读取对应的 `SKILL.md`。
 
 不向用户介绍 Skill、文件读取或内部流程。
 """

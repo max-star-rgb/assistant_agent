@@ -15,6 +15,8 @@ from langchain_core.messages import (
 from langchain_core.tools import BaseTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
+from assistant_agent.config.models import chat_model_runtime_profile
+
 if TYPE_CHECKING:
     from assistant_agent.config import ChatConfig
     from assistant_agent.provider_mode import ProviderMode
@@ -107,22 +109,48 @@ def create_context_token_counter(
     *,
     provider_mode: ProviderMode,
 ) -> ContextTokenCounter | None:
-    """Create the configured offline tokenizer counter for Provider input."""
+    """Create the model-derived or explicitly configured Provider token counter."""
 
     if provider_mode != "real":
         return None
+    model_id = str(config.chat_model or config.chat_provider)
     if not config.context_tokenizer_path:
-        model_id = str(config.chat_model or "").strip().lower()
-        if config.context_compactor_mode == "llm" or "deepseek-v4" in model_id:
+        profile = chat_model_runtime_profile(model_id)
+        if profile and profile.tokenizer_repository:
+            return _load_pretrained_token_counter(
+                profile.tokenizer_repository,
+                profile.tokenizer_revision,
+                tokenizer_id=model_id,
+            )
+        if config.context_compactor_mode == "llm" or "deepseek-v4" in model_id.lower():
             raise ValueError(
-                "DeepSeek V4/native LLM context compaction requires "
+                f"{model_id} context compaction requires a known model tokenizer or "
                 "MULTIMODAL_AGENT_CONTEXT_TOKENIZER_PATH"
             )
         return None
     return TokenizerJsonTokenCounter(
         config.context_tokenizer_path,
-        tokenizer_id=str(config.chat_model or config.chat_provider),
+        tokenizer_id=model_id,
     )
+
+
+def _load_pretrained_token_counter(
+    repository: str,
+    revision: str,
+    *,
+    tokenizer_id: str,
+) -> TokenizerJsonTokenCounter:
+    try:
+        from tokenizers import Tokenizer
+    except ImportError as exc:
+        raise RuntimeError(
+            "tokenizer-backed context compaction requires the 'tokenizers' package"
+        ) from exc
+    counter = TokenizerJsonTokenCounter.__new__(TokenizerJsonTokenCounter)
+    counter._tokenizer = Tokenizer.from_pretrained(repository, revision=revision)
+    counter.tokenizer_id = tokenizer_id
+    counter._message_encoder = None
+    return counter
 
 
 def _project_user_content_blocks_to_text(

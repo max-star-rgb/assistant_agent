@@ -26,6 +26,36 @@ QwenChatApiProtocol = Literal["dashscope", "openai_compatible"]
 
 
 @dataclass(frozen=True)
+class ChatModelRuntimeProfile:
+    context_window_tokens: int
+    tokenizer_repository: str | None = None
+    tokenizer_revision: str = "main"
+
+
+_CHAT_MODEL_RUNTIME_PROFILES = {
+    "qwen3.8-flash": ChatModelRuntimeProfile(
+        context_window_tokens=1_000_000,
+        tokenizer_repository="Qwen/Qwen3.8-Flash-Next",
+        tokenizer_revision="de4b8e4d43b917e7706784d8bb445c9af86a3540",
+    ),
+    "qwen3.6-flash": ChatModelRuntimeProfile(context_window_tokens=1_000_000),
+    "deepseek-v4-flash": ChatModelRuntimeProfile(context_window_tokens=1_000_000),
+}
+
+
+def chat_model_runtime_profile(model: str | None) -> ChatModelRuntimeProfile | None:
+    model_id = (model or "").strip().lower()
+    return next(
+        (
+            profile
+            for prefix, profile in _CHAT_MODEL_RUNTIME_PROFILES.items()
+            if model_id.startswith(prefix)
+        ),
+        None,
+    )
+
+
+@dataclass(frozen=True)
 class RuntimeConfig:
     current_location: str | None = "上海市青浦区华为练秋湖研发中心"
 

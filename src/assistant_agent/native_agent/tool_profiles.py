@@ -392,7 +392,6 @@ def project_tool_profiles() -> tuple[ToolProfile, ...]:
             description="读取、搜索、创建、编辑或删除当前仓库中的文件和目录。",
             tool_names=(
                 "ls",
-                "read_file",
                 "write_file",
                 "edit_file",
                 "delete",

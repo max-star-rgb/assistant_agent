@@ -80,7 +80,7 @@ main Agent 使用按当前 run 的 `AssistantRunContext.cwd` 创建的 `LocalShe
 working-directory backend、基础模型、完整业务 Tool inventory、Prompt Builder、Skills、
 Tool Profile、filesystem、`execute` 与 HITL 配置。Skills discovery 仍使用独立 `FilesystemBackend`，只读取产品内建
 Skill。worker 不装配同步或异步 delegation middleware，也不运行主 Agent 的 Memory 提取生命周期。
-两者的官方 summarization 从同一 composition 投影的 `ChatConfig` 取得 context window、trigger/target ratio 与可选离线 token counter；
+两者的官方 summarization 从同一 composition 投影的 `ChatConfig` 取得 context window、trigger/target ratio 与模型 token counter；
 real DeepSeek/native compactor 缺 tokenizer 时在模型 composition 前启动失败。
 
 生成媒体的 thread 临时资源位于 `/home/lenovo1/assistant_agent/threads/<thread_ref>/artifacts/generated/`；该目录是

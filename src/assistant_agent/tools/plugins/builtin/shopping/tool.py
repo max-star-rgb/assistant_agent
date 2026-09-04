@@ -23,7 +23,6 @@ from assistant_agent.tools.plugins.builtin.shopping.models import (
     ProductResult,
     ProductSearchRequest,
     ProductSearchResult,
-    ShoppingEvidence,
     ShoppingListNeed,
     ShoppingListNeedResult,
     ShoppingListSelection,
@@ -56,40 +55,19 @@ def create_shopping_search_tool(
 
     @tool(SHOPPING_SEARCH_TOOL_NAME, response_format="content_and_artifact")
     def shopping_search(
-        needs: Annotated[
-            list[ShoppingListNeed],
+        queries: Annotated[
+            list[str],
             Field(
                 min_length=1,
                 max_length=8,
-                description="需要分别搜索的商品清单项，最多八项。",
+                description="需要分别搜索的商品查询，最多八项。",
             ),
         ],
         runtime: ToolRuntime[AssistantRunContext],
-        scenario: Annotated[
-            str | None,
-            Field(default=None, min_length=1, description="清单服务的具体场景。"),
-        ] = None,
-        decision_reason: Annotated[
-            str | None,
-            Field(default=None, min_length=1, description="选择这些商品品类的原因。"),
-        ] = None,
-        evidence: Annotated[
-            list[ShoppingEvidence],
-            Field(description="支持场景判断的结构化前序工具证据。"),
-        ] = [],
-        total_budget: Annotated[
-            float | None,
-            Field(default=None, gt=0, description="整份清单的总预算。"),
-        ] = None,
-        platforms: Annotated[
-            list[str],
-            Field(description="用户明确指定的购物平台列表。"),
-        ] = [],
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """针对一个或多个明确商品需求检索候选、比较价格与购买链接。
+        """针对一个或多个商品查询检索淘宝候选、比较价格与购买链接。
 
-        按数量、单件上限和总预算选择组合，并返回各需求的候选、选择、未覆盖项和
-        预算结果。只读，不加入购物车、下单或付款。
+        每个查询独立检索并返回候选和选择。只读，不加入购物车、下单或付款。
 
         优先采用本次检索得到的商品信息，其他渠道例如网络搜索仅可作为补充。
         """
@@ -99,12 +77,7 @@ def create_shopping_search_tool(
                 search_adapter,
                 compare_adapter,
                 ShoppingSearchRequest(
-                    scenario=scenario,
-                    decision_reason=decision_reason,
-                    evidence=evidence,
-                    total_budget=total_budget,
-                    needs=needs,
-                    platforms=platforms,
+                    needs=[ShoppingListNeed(keyword=query) for query in queries],
                 ),
             )
             if not result.success:

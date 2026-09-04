@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+import random
+import time
 from typing import Annotated, Any, NotRequired
+from urllib.error import URLError
 from uuid import uuid4
 
 from deepagents import create_deep_agent
@@ -15,7 +19,6 @@ from deepagents.middleware.summarization import (
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
     HumanInTheLoopMiddleware,
-    ModelRetryMiddleware,
     TodoListMiddleware,
     ToolRetryMiddleware,
 )
@@ -38,6 +41,7 @@ from langchain_core.messages import (
 )
 from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda
 from langchain_core.tools import BaseTool
+from httpx import TransportError
 from langgraph.errors import GraphBubbleUp
 from langgraph.managed.is_last_step import RemainingStepsManager
 from langgraph.types import Command
@@ -70,7 +74,6 @@ from assistant_agent.native_agent.tool_profiles import (
     ToolProfile,
     ToolProfileMiddleware,
 )
-from assistant_agent.providers.dashscope_langchain import DashScopeProviderError
 from assistant_agent.tools.git import GIT_TOOL_NAME, GitToolMiddleware
 from assistant_agent.skills.native import (
     PROJECT_FILESYSTEM_READ_TOOL_NAMES,
@@ -81,7 +84,6 @@ from assistant_agent.skills.native import (
 _FINAL_SYNTHESIS_INSTRUCTION = """工具调用阶段已经结束。请基于当前对话中已有的信息和工具结果，
 直接完成对用户的最终答复。不要请求或假设新的工具调用；如果信息仍不完整，请明确说明限制，并交付当前能够确定的内容。"""
 _DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000
-_MODEL_UNAVAILABLE_MESSAGE_ZH = "模型服务暂时不可用，请稍后重试。"
 _MAX_VERIFICATION_ATTEMPTS = 2
 _VERIFICATION_FAILURE_MESSAGE_ZH = (
     "验证 Agent 连续失败，当前结果未能通过强制验证，请稍后重试。"
@@ -89,12 +91,96 @@ _VERIFICATION_FAILURE_MESSAGE_ZH = (
 _REVIEWER_MODEL_FAILURE_MESSAGE_ZH = "reviewer_unavailable"
 _MIN_REMAINING_STEPS_FOR_REVIEW = 10
 _MIN_REMAINING_STEPS_FOR_MUTATION = 16
+_MAX_MODEL_RETRY_DELAY_SECONDS = 30.0
+_MODEL_RETRY_MESSAGE_ZH = "模型服务繁忙，正在重试"
 
 
-def _model_failure_message(exc: Exception) -> str:
-    if isinstance(exc, DashScopeProviderError):
-        return _MODEL_UNAVAILABLE_MESSAGE_ZH
-    raise exc
+class ContinuousModelRetryMiddleware(AgentMiddleware):
+    """Retry transient model failures until success or run cancellation."""
+
+    def __init__(
+        self,
+        *,
+        on_non_transient_failure: Callable[[Exception], str] | None = None,
+    ) -> None:
+        super().__init__()
+        self._on_non_transient_failure = on_non_transient_failure
+
+    def _handle_non_transient(self, exc: Exception) -> ModelResponse:
+        if self._on_non_transient_failure is None:
+            raise exc
+        return ModelResponse(
+            result=[AIMessage(content=self._on_non_transient_failure(exc))]
+        )
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
+        attempt = 0
+        while True:
+            try:
+                return handler(request)
+            except GraphBubbleUp:
+                raise
+            except Exception as exc:
+                if not _is_transient_model_error(exc):
+                    return self._handle_non_transient(exc)
+                attempt += 1
+                delay = _model_retry_delay(attempt)
+                request.runtime.stream_writer(_model_retry_event(attempt, delay))
+                time.sleep(delay)
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        attempt = 0
+        while True:
+            try:
+                return await handler(request)
+            except GraphBubbleUp:
+                raise
+            except Exception as exc:
+                if not _is_transient_model_error(exc):
+                    return self._handle_non_transient(exc)
+                attempt += 1
+                delay = _model_retry_delay(attempt)
+                request.runtime.stream_writer(_model_retry_event(attempt, delay))
+                await asyncio.sleep(delay)
+
+
+def _is_transient_model_error(exc: Exception) -> bool:
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        status_code = getattr(current, "status_code", getattr(current, "code", None))
+        if isinstance(status_code, int):
+            return status_code in {408, 409, 429} or 500 <= status_code < 600
+        if isinstance(
+            current, (TimeoutError, ConnectionError, TransportError, URLError)
+        ):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _model_retry_delay(attempt: int) -> float:
+    base = min(2 ** (attempt - 1), _MAX_MODEL_RETRY_DELAY_SECONDS)
+    return random.uniform(base * 0.75, min(base * 1.25, _MAX_MODEL_RETRY_DELAY_SECONDS))
+
+
+def _model_retry_event(attempt: int, delay: float) -> dict[str, object]:
+    return {
+        "type": "model_retry",
+        "status": "retrying",
+        "attempt": attempt,
+        "next_retry_seconds": round(delay, 1),
+        "message": _MODEL_RETRY_MESSAGE_ZH,
+    }
 
 
 def _requires_tool_approval(request: ToolCallRequest) -> bool:
@@ -631,12 +717,8 @@ def build_assistant_agent(
         tools=[],
         system_prompt=_REVIEWER_SYSTEM_PROMPT_ZH,
         middleware=[
-            ModelRetryMiddleware(
-                max_retries=1,
-                on_failure=_reviewer_model_failure_message,
-                initial_delay=0,
-                backoff_factor=0,
-                jitter=False,
+            ContinuousModelRetryMiddleware(
+                on_non_transient_failure=_reviewer_model_failure_message
             )
         ],
         name="AssistantReviewer",
@@ -672,6 +754,7 @@ def build_assistant_agent(
                         ),
                         available_tool_names={GIT_TOOL_NAME},
                     ),
+                    ContinuousModelRetryMiddleware(),
                 ],
                 "interrupt_on": {name: _APPROVAL for name in _LOCAL_SIDE_EFFECTS},
             },
@@ -681,6 +764,7 @@ def build_assistant_agent(
                 "system_prompt": _BROWSER_OPERATOR_SYSTEM_PROMPT_ZH,
                 "model": model,
                 "tools": list(browser_tools),
+                "middleware": [ContinuousModelRetryMiddleware()],
                 "interrupt_on": browser_interrupt_on,
             },
         ],
@@ -734,11 +818,7 @@ def build_assistant_agent(
                 backoff_factor=0,
                 jitter=False,
             ),
-            ModelRetryMiddleware(
-                max_retries=1,
-                retry_on=(DashScopeProviderError,),
-                on_failure=_model_failure_message,
-            ),
+            ContinuousModelRetryMiddleware(),
         ],
         interrupt_on=_interrupt_on(governed_tool_names),
         checkpointer=checkpointer,
@@ -890,6 +970,7 @@ def build_general_purpose_worker(
             HumanInTheLoopMiddleware(
                 interrupt_on=_interrupt_on(set(interrupt_tool_names))
             ),
+            ContinuousModelRetryMiddleware(),
         ]
     )
     return create_agent(
