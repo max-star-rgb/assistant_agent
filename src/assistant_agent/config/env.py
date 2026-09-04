@@ -89,12 +89,9 @@ def _prevalidate_environment(source: Mapping[str, str], mode: ProviderMode) -> N
     _realtime_region(source.get("QWEN_REALTIME_VISION_REGION"))
 
     # These are the only field parsers that can reject; their legacy positions
-    # are after removed-key preprocessing and Qwen protocol precedes checkpointer.
+    # are after removed-key preprocessing.
     _qwen_protocol(source.get("QWEN_CHAT_API_PROTOCOL"))
-    _checkpointer(
-        source.get("LANGGRAPH_CHECKPOINTER_BACKEND")
-        or source.get("MULTIMODAL_AGENT_CHECKPOINTER_BACKEND")
-    )
+    _reject_removed_runtime_config(source)
 
     missing = chat_settings.missing_required_env()
     if mode == "real" and (chat_provider == "mock" or missing):
@@ -112,10 +109,6 @@ def _prevalidate_environment(source: Mapping[str, str], mode: ProviderMode) -> N
         raise ValueError("Mem0 timeout must be positive")
     if not (source.get("MEM0_IDENTITY_NAMESPACE") or "assistant-agent").strip():
         raise ValueError("Mem0 identity namespace must be non-empty")
-    if not source.get(
-        "MEMORY_COMMIT_LEDGER_PATH", ".local/langgraph/memory_commits.sqlite3"
-    ).strip():
-        raise ValueError("memory commit ledger path must be non-empty")
     if _int(source.get("MEMORY_EXTRACTION_DELAY_SECONDS"), 1800) <= 0:
         raise ValueError("memory extraction delay must be positive")
 
@@ -230,14 +223,6 @@ def _load_runtime_config(source: Mapping[str, str]) -> RuntimeConfig:
     return RuntimeConfig(
         current_location=source.get("MULTIMODAL_AGENT_CURRENT_LOCATION")
         or "上海市青浦区华为练秋湖研发中心",
-        agent_service_text_turn_timeout_seconds=_float(
-            source.get("ASSISTANT_AGENT_TEXT_TURN_TIMEOUT_SECONDS"), 90.0
-        ),
-        langgraph_checkpointer_backend=_checkpointer(
-            source.get("LANGGRAPH_CHECKPOINTER_BACKEND")
-            or source.get("MULTIMODAL_AGENT_CHECKPOINTER_BACKEND")
-        ),
-        langgraph_checkpoint_path=source.get("LANGGRAPH_CHECKPOINT_PATH"),
     )
 
 
@@ -473,32 +458,10 @@ def _load_memory_config(source: Mapping[str, str]) -> MemoryConfig:
         mem0_identity_namespace=source.get("MEM0_IDENTITY_NAMESPACE")
         or "assistant-agent",
         memory_backend=source.get("MEMORY_BACKEND", "disabled"),
-        memory_commit_ledger_path=source.get(
-            "MEMORY_COMMIT_LEDGER_PATH", ".local/langgraph/memory_commits.sqlite3"
-        ),
         memory_extraction_delay_seconds=_int(
             source.get("MEMORY_EXTRACTION_DELAY_SECONDS"), 1800
         ),
         langmem_model=source.get("LANGMEM_MODEL"),
-        conversation_history_backend="jsonl"
-        if source.get("MULTIMODAL_AGENT_CONVERSATION_HISTORY_BACKEND") == "jsonl"
-        else "memory",
-        conversation_history_path=source.get(
-            "MULTIMODAL_AGENT_CONVERSATION_HISTORY_PATH"
-        )
-        or ".local/memory/conversation_history.jsonl",
-        max_conversation_history_turns=_int(
-            source.get("MULTIMODAL_AGENT_MAX_CONVERSATION_HISTORY_TURNS")
-            or source.get("MULTIMODAL_AGENT_MAX_CONVERSATION_TURNS"),
-            0,
-        ),
-        editable_context_enabled=_bool(
-            source.get("MULTIMODAL_AGENT_EDITABLE_CONTEXT_ENABLED"), True
-        ),
-        editable_context_root=source.get("MULTIMODAL_AGENT_EDITABLE_CONTEXT_ROOT")
-        or ".local/context",
-        editable_context_user_id=source.get("MULTIMODAL_AGENT_EDITABLE_CONTEXT_USER_ID")
-        or None,
     )
 
 
@@ -514,6 +477,27 @@ def _reject_removed_realtime_keyframe_config(source: Mapping[str, str]) -> None:
         )
     ):
         raise ValueError("removed_realtime_keyframe_config")
+
+
+def _reject_removed_runtime_config(source: Mapping[str, str]) -> None:
+    if any(
+        name in source
+        for name in (
+            "ASSISTANT_AGENT_TEXT_TURN_TIMEOUT_SECONDS",
+            "LANGGRAPH_CHECKPOINTER_BACKEND",
+            "MULTIMODAL_AGENT_CHECKPOINTER_BACKEND",
+            "LANGGRAPH_CHECKPOINT_PATH",
+            "MEMORY_COMMIT_LEDGER_PATH",
+            "MULTIMODAL_AGENT_CONVERSATION_HISTORY_BACKEND",
+            "MULTIMODAL_AGENT_CONVERSATION_HISTORY_PATH",
+            "MULTIMODAL_AGENT_MAX_CONVERSATION_HISTORY_TURNS",
+            "MULTIMODAL_AGENT_MAX_CONVERSATION_TURNS",
+            "MULTIMODAL_AGENT_EDITABLE_CONTEXT_ENABLED",
+            "MULTIMODAL_AGENT_EDITABLE_CONTEXT_ROOT",
+            "MULTIMODAL_AGENT_EDITABLE_CONTEXT_USER_ID",
+        )
+    ):
+        raise ValueError("removed_runtime_config")
 
 
 def _load_media_config(source: Mapping[str, str]) -> MediaConfig:
@@ -749,16 +733,6 @@ def _qwen_protocol(value: str | None) -> str:
             "QWEN_CHAT_API_PROTOCOL must be 'dashscope' or 'openai_compatible'"
         )
     return value
-
-
-def _checkpointer(value: str | None) -> str:
-    if value is None or not value.strip():
-        return "memory"
-    if value in {"none", "memory", "sqlite"}:
-        return value
-    raise ValueError(
-        "LANGGRAPH_CHECKPOINTER_BACKEND must be one of: none, memory, sqlite"
-    )
 
 
 def _platforms(value: str | None) -> tuple[str, ...]:

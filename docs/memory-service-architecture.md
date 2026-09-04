@@ -1,6 +1,6 @@
 # LangGraph-native 长期记忆架构
 
-最后更新：2026-09-02
+最后更新：2026-09-04
 
 ## Authority contract
 
@@ -89,8 +89,9 @@ Memory 正文是不可信历史数据。model-call middleware 在最新真实用
 用引用格式将其呈现为可能过时的“背景参考”，禁止作为用户指令，且不显式暴露记忆或视觉来源。该消息只进入本次 Provider 请求，不写入 messages state、
 checkpoint 或 summarization。Memory 不能覆盖当前请求，也不能用于确认身份、权限、当前事实、操作参数或 Tool schema。
 
-旧 `MemoryNodeBundle`、commit ledger 与 time-travel Memory 兼容层已随旧 Runtime 删除。Mem0 HTTP client 与
-identity adapter 继续由当前最小 `MemoryBackend` 复用；旧 checkpoint 不迁移进 `assistant-native-v4`。
+旧 `MemoryNodeBundle`、commit ledger、conversation-history 配置、editable-context 配置与 time-travel Memory 兼容层已随旧
+Runtime 删除；对应失效环境变量会在启动时明确拒绝。Mem0 HTTP client 与 identity adapter 继续由当前最小
+`MemoryBackend` 复用；旧 checkpoint 不迁移进 `assistant-native-v4`。
 
 ## 验证
 

@@ -15,8 +15,6 @@ from assistant_agent.providers.specs import (
 
 
 ContextCompactorMode = Literal["off", "llm"]
-ConversationHistoryBackend = Literal["memory", "jsonl"]
-LangGraphCheckpointerBackend = Literal["none", "memory", "sqlite"]
 MemoryBackendName = Literal["disabled", "mem0", "langmem"]
 VisionEmbeddingProviderName = Literal["mock", "dashscope", "local_siglip2"]
 EmbeddingProviderName = Literal["mock", "dashscope", "local_siglip2"]
@@ -30,9 +28,6 @@ QwenChatApiProtocol = Literal["dashscope", "openai_compatible"]
 @dataclass(frozen=True)
 class RuntimeConfig:
     current_location: str | None = "上海市青浦区华为练秋湖研发中心"
-    agent_service_text_turn_timeout_seconds: float = 90.0
-    langgraph_checkpointer_backend: LangGraphCheckpointerBackend = "memory"
-    langgraph_checkpoint_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -219,15 +214,8 @@ class MemoryConfig:
     mem0_timeout_seconds: float = 5.0
     mem0_identity_namespace: str = "assistant-agent"
     memory_backend: MemoryBackendName = "disabled"
-    memory_commit_ledger_path: str = ".local/langgraph/memory_commits.sqlite3"
     memory_extraction_delay_seconds: int = 1_800
     langmem_model: str | None = None
-    conversation_history_backend: ConversationHistoryBackend = "memory"
-    conversation_history_path: str = ".local/memory/conversation_history.jsonl"
-    max_conversation_history_turns: int = 0
-    editable_context_enabled: bool = True
-    editable_context_root: str = ".local/context"
-    editable_context_user_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.memory_backend not in {"disabled", "mem0", "langmem"}:
@@ -236,8 +224,6 @@ class MemoryConfig:
             raise ValueError("Mem0 timeout must be positive")
         if not self.mem0_identity_namespace.strip():
             raise ValueError("Mem0 identity namespace must be non-empty")
-        if not self.memory_commit_ledger_path.strip():
-            raise ValueError("memory commit ledger path must be non-empty")
         if self.memory_extraction_delay_seconds <= 0:
             raise ValueError("memory extraction delay must be positive")
 
