@@ -1,6 +1,6 @@
 """Domain service for uploaded and governed live-video understanding."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from time import time
 from typing import Any
@@ -10,9 +10,6 @@ from assistant_agent.config import MediaConfig, VisionConfig
 from assistant_agent.media.vision.models import (
     VideoInspectionOutcome,
     VideoUnderstandingRequest,
-)
-from assistant_agent.media.agent_service_entry import (
-    is_trusted_agent_service_request,
 )
 from assistant_agent.media.video.video_adapter import (
     VideoUnderstandingAdapter,
@@ -856,7 +853,16 @@ def _is_agent_service_realtime_video_tool_call(
     request_metadata = request.metadata.get("request_metadata")
     if not isinstance(request_metadata, dict):
         return False
-    return is_trusted_agent_service_request(request_metadata)
+    if request_metadata.get("transport") != "agent_service_websocket":
+        return False
+    gateway = request_metadata.get("gateway")
+    session_config = (
+        gateway.get("session_config") if isinstance(gateway, Mapping) else None
+    )
+    return bool(
+        isinstance(session_config, Mapping)
+        and session_config.get("entry_profile") == "agent_service"
+    )
 
 
 def _project_visual_semantic_snapshot(
