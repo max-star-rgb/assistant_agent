@@ -3,13 +3,35 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AfterValidator, BaseModel, Field, model_validator
 
 from assistant_agent.identity import DEFAULT_AGENT_ID
-from assistant_agent.planning_contracts import PlanDisplayTitle
+
+
+def _normalize_display_title(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = " ".join(value.split())
+    if not normalized:
+        raise ValueError("display_title must contain visible text")
+    return normalized
+
+
+PlanDisplayTitle = Annotated[
+    str | None,
+    Field(
+        min_length=1,
+        max_length=160,
+        description=(
+            "面向用户展示的简短当前进度，使用自然语言描述正在完成的具体工作；"
+            "不得包含内部 ID、prompt 或敏感参数。"
+        ),
+    ),
+    AfterValidator(_normalize_display_title),
+]
 
 
 class TaskStep(BaseModel):
