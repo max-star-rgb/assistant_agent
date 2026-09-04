@@ -10,7 +10,9 @@ from typing import Any
 
 from assistant_agent.tools.plugins.builtin.image_generation.models import ImageGenerationRequest, ImageGenerationResult
 from assistant_agent.providers.provider_errors import ProviderAdapterError, sanitize_error_message
-from assistant_agent.providers.prompting import build_image_prompt
+from assistant_agent.tools.plugins.builtin.image_generation.prompting import (
+    build_image_prompt,
+)
 
 
 DEFAULT_QWEN_IMAGE_BASE_URL = "https://dashscope.aliyuncs.com/api/v1"

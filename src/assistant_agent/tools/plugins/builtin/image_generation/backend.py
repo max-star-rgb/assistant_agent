@@ -5,7 +5,9 @@ from typing import Protocol
 from assistant_agent.config import ImageGenerationConfig
 from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.providers.provider_errors import build_provider_error
-from assistant_agent.providers.prompting import build_image_prompt
+from assistant_agent.tools.plugins.builtin.image_generation.prompting import (
+    build_image_prompt,
+)
 from assistant_agent.tools.plugins.builtin.image_generation.models import (
     ImageGenerationRequest,
     ImageGenerationResult,
@@ -89,7 +91,7 @@ def create_image_generation_adapter(
     if missing:
         return UnconfiguredImageGenerationAdapter(provider.provider, ", ".join(missing))
     if provider.adapter_kind == "dashscope_image":
-        from assistant_agent.providers.qwen_image_generation import (
+        from assistant_agent.tools.plugins.builtin.image_generation.qwen_adapter import (
             QwenImageGenerationAdapter,
             QwenImageGenerationConfig,
         )
@@ -103,7 +105,7 @@ def create_image_generation_adapter(
             )
         )
     if provider.adapter_kind == "ark_image":
-        from assistant_agent.providers.ark_image_generation import (
+        from assistant_agent.tools.plugins.builtin.image_generation.ark_adapter import (
             ArkImageGenerationAdapter,
             ArkImageGenerationConfig,
         )

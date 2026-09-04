@@ -1,1 +1,1 @@
-"""Optional real provider adapters."""
+"""Provider-neutral selection, errors, and shared model transports."""

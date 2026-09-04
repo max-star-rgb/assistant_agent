@@ -24,7 +24,10 @@ def create_vision_adapter(
         return MockVisionUnderstandingAdapter()
     provider = config.resolved_provider()
     if provider.adapter_kind == "ark_responses":
-        from assistant_agent.providers.ark_vision import ArkVisionProviderAdapter, ArkVisionProviderConfig
+        from assistant_agent.media.vision.ark_adapter import (
+            ArkVisionProviderAdapter,
+            ArkVisionProviderConfig,
+        )
 
         return ArkVisionProviderAdapter(
             ArkVisionProviderConfig(

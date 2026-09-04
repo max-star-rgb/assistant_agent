@@ -224,7 +224,7 @@ source_globs = [
   "src/assistant_agent/media/embedding/**",
   "src/assistant_agent/media/proactive_messages.py",
   "src/assistant_agent/media/runtime_media.py",
-  "src/assistant_agent/media/vision/models.py",
+  "src/assistant_agent/media/vision/**",
   "src/assistant_agent/media/visual_perception/**",
   "src/assistant_agent/media/video/**",
   "scripts/run_system_multimodal_embedding_eval.py",
