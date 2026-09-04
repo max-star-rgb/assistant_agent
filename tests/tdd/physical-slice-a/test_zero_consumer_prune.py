@@ -5,7 +5,7 @@ from assistant_agent.media.embedding.observability import InMemoryEmbeddingObser
 from assistant_agent.media.embedding.provider import MockMultimodalEmbeddingProvider
 
 
-def test_retired_web_settings_do_not_enable_a_real_provider() -> None:
+def test_retired_web_settings_do_not_select_a_real_provider() -> None:
     config = load_app_config(
         {
             "MULTIMODAL_AGENT_SEARCH_PROVIDER": "tavily",
@@ -14,7 +14,9 @@ def test_retired_web_settings_do_not_enable_a_real_provider() -> None:
         }
     )
 
-    assert config.has_any_real_provider() is False
+    assert config.chat.chat_provider == "mock"
+    assert config.vision.vision_provider == "mock"
+    assert config.tools.image_generation.image_generation_provider == "mock"
 
 
 def test_embedding_without_consumers_emits_only_inference_lifecycle() -> None:

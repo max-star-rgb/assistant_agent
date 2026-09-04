@@ -38,7 +38,6 @@ _QWEN_IMAGE_SEARCH_MODEL = "qwen3.7-plus"
 
 def load_app_config(env: Mapping[str, str] | None = None) -> AppConfig:
     source = _clean_env_source(os.environ if env is None else env)
-    _apply_provider_aliases(source)
     mode = get_provider_mode(source)
     _prevalidate_environment(source, mode)
     return AppConfig(
@@ -50,12 +49,6 @@ def load_app_config(env: Mapping[str, str] | None = None) -> AppConfig:
         media=_load_media_config(source),
         tools=_load_tool_config(source, mode),
     )
-
-
-def _apply_provider_aliases(source: dict[str, str]) -> None:
-    if not source.get("QWEN_API_KEY") and source.get("DASHSCOPE_API_KEY"):
-        source["QWEN_API_KEY"] = source["DASHSCOPE_API_KEY"]
-    source["QWEN_CHAT_BASE_URL"] = _qwen_chat_base_url(source)
 
 
 def _prevalidate_environment(source: Mapping[str, str], mode: ProviderMode) -> None:
@@ -233,17 +226,6 @@ def _load_chat_config(source: Mapping[str, str], mode: ProviderMode) -> ChatConf
     resolved = resolve_chat_provider(provider, source)
     stream = _chat_stream(source, provider)
     return ChatConfig(
-        openai_api_key=source.get("OPENAI_API_KEY"),
-        qwen_api_key=_qwen_key(
-            source,
-            "QWEN_VISION_API_KEY",
-            "QWEN_IMAGE_API_KEY",
-            "QWEN_IMAGE_SEARCH_API_KEY",
-        ),
-        dashscope_api_key=source.get("DASHSCOPE_API_KEY"),
-        ark_api_key=_ark_key(
-            source, "ARK_CHAT_API_KEY", "ARK_VISION_API_KEY", "ARK_IMAGE_API_KEY"
-        ),
         chat_provider=provider,
         chat_api_key=resolved.api_key,
         chat_base_url=resolved.base_url,
@@ -289,25 +271,6 @@ def _load_chat_config(source: Mapping[str, str], mode: ProviderMode) -> ChatConf
         qwen_chat_enable_thinking=_bool(source.get("QWEN_CHAT_ENABLE_THINKING"), False),
         qwen_chat_enable_search=_bool(source.get("QWEN_CHAT_ENABLE_SEARCH"), False),
         qwen_chat_api_protocol=_qwen_protocol(source.get("QWEN_CHAT_API_PROTOCOL")),
-        openai_chat_base_url=source.get(
-            "OPENAI_CHAT_BASE_URL", "https://api.openai.com/v1"
-        ),
-        openai_chat_model=source.get("OPENAI_CHAT_MODEL", "gpt-4o-mini"),
-        qwen_chat_base_url=source["QWEN_CHAT_BASE_URL"],
-        qwen_chat_workspace_id=_workspace(source, "QWEN_CHAT_WORKSPACE_ID"),
-        qwen_chat_model=source.get("QWEN_CHAT_MODEL", "qwen-plus"),
-        deepseek_api_key=_deepseek_key(source),
-        deepseek_chat_base_url=source.get(
-            "DEEPSEEK_CHAT_BASE_URL", "https://api.deepseek.com/v1"
-        ),
-        deepseek_chat_model=source.get("DEEPSEEK_CHAT_MODEL", "deepseek-chat"),
-        ark_chat_api_key=_ark_key(source, "ARK_CHAT_API_KEY"),
-        ark_chat_base_url=source.get(
-            "ARK_CHAT_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"
-        ),
-        ark_chat_model=source.get("ARK_CHAT_MODEL"),
-        local_chat_base_url=source.get("LOCAL_CHAT_BASE_URL"),
-        local_chat_model=source.get("LOCAL_CHAT_MODEL", "local-chat"),
     )
 
 
@@ -338,10 +301,7 @@ def _load_vision_config(source: Mapping[str, str], mode: ProviderMode) -> Vision
     region = _realtime_region(source.get("QWEN_REALTIME_VISION_REGION"))
     device = _int(source.get("SIGLIP2_CUDA_DEVICE_ID"), 0)
     return VisionConfig(
-        qwen_vision_api_key=_qwen_key(source, "QWEN_VISION_API_KEY"),
-        qwen_realtime_vision_api_key=_qwen_key(source, "QWEN_VISION_API_KEY"),
-        ark_vision_api_key=_ark_key(source, "ARK_VISION_API_KEY"),
-        seed_api_key=source.get("SEED_API_KEY"),
+        qwen_realtime_vision_api_key=resolved.api_key if provider == "qwen" else None,
         vision_provider=provider,
         vision_api_key=resolved.api_key,
         vision_base_url=resolved.base_url,
@@ -404,28 +364,10 @@ def _load_vision_config(source: Mapping[str, str], mode: ProviderMode) -> Vision
         visual_reminder_terminal_history_limit=_int(
             source.get("REALTIME_VISUAL_REMINDER_TERMINAL_HISTORY_LIMIT"), 64
         ),
-        openai_vision_base_url=source.get(
-            "OPENAI_VISION_BASE_URL", "https://api.openai.com/v1"
-        ),
-        openai_vision_model=source.get("OPENAI_VISION_MODEL", "gpt-4o-mini"),
-        qwen_vision_base_url=source.get(
-            "QWEN_VISION_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        ),
-        qwen_vision_model=source.get("QWEN_VISION_MODEL", "qwen-vl-plus"),
         qwen_realtime_vision_base_url=_realtime_url(source, workspace, region),
         qwen_realtime_vision_model=source.get(
             "QWEN_REALTIME_VISION_MODEL", "qwen3.5-omni-flash-realtime"
         ),
-        qwen_realtime_vision_workspace_id=workspace,
-        qwen_realtime_vision_region=region,
-        ark_vision_base_url=source.get(
-            "ARK_VISION_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"
-        ),
-        ark_vision_model=source.get("ARK_VISION_MODEL", "doubao-seed-2-0-lite-260215"),
-        seed_vision_base_url=source.get(
-            "SEED_VISION_BASE_URL", "https://api.seed.example/v1/vision"
-        ),
-        seed_vision_model=source.get("SEED_VISION_MODEL", "seed-vision"),
         visual_context_compactor_mode="llm"
         if source.get("REALTIME_VISUAL_CONTEXT_COMPACTOR") == "llm"
         else "off",
@@ -573,31 +515,22 @@ def _load_tool_config(source: Mapping[str, str], mode: ProviderMode) -> ToolConf
             source.get("MULTIMODAL_AGENT_DURABLE_TASKS_ENABLED"), False
         ),
         image_generation=ImageGenerationConfig(
-            qwen_image_api_key=_qwen_key(source, "QWEN_IMAGE_API_KEY"),
-            ark_image_api_key=_ark_key(source, "ARK_IMAGE_API_KEY"),
-            comfyui_base_url=source.get("COMFYUI_BASE_URL"),
             image_generation_provider=provider,
             image_generation_api_key=resolved.api_key,
             image_generation_base_url=resolved.base_url,
             image_generation_model=resolved.model,
             image_generation_adapter_kind=resolved.adapter_kind,
-            openai_image_model=source.get("OPENAI_IMAGE_MODEL", "gpt-image-1"),
-            qwen_image_base_url=source.get(
-                "QWEN_IMAGE_BASE_URL", "https://dashscope.aliyuncs.com/api/v1"
-            ),
-            qwen_image_model=source.get("QWEN_IMAGE_MODEL", "qwen-image-2.0-pro"),
             qwen_image_default_size=source.get("QWEN_IMAGE_DEFAULT_SIZE", "1024*1024"),
-            ark_image_base_url=source.get("ARK_IMAGE_BASE_URL"),
-            ark_image_model=source.get("ARK_IMAGE_MODEL"),
-            local_image_base_url=source.get("LOCAL_IMAGE_BASE_URL"),
-            local_image_model=source.get("LOCAL_IMAGE_MODEL", "local-image"),
         ),
         search=SearchConfig(
             visual_image_search_provider="qwen"
             if allow_real
             and source.get("MULTIMODAL_AGENT_VISUAL_IMAGE_SEARCH_PROVIDER") == "qwen"
             else "mock",
-            qwen_image_search_api_key=_qwen_key(source, "QWEN_IMAGE_SEARCH_API_KEY"),
+            qwen_image_search_api_key=_qwen_key(source, "QWEN_IMAGE_SEARCH_API_KEY")
+            if allow_real
+            and source.get("MULTIMODAL_AGENT_VISUAL_IMAGE_SEARCH_PROVIDER") == "qwen"
+            else None,
             qwen_image_search_base_url=source.get(
                 "QWEN_IMAGE_SEARCH_BASE_URL", _QWEN_IMAGE_SEARCH_URL
             ),
@@ -675,30 +608,8 @@ def _workspace(source: Mapping[str, str], name: str) -> str | None:
     return (source.get(name) or "").strip() or None
 
 
-def _qwen_chat_base_url(source: Mapping[str, str]) -> str:
-    if value := source.get("QWEN_CHAT_BASE_URL"):
-        return value
-    if workspace := _workspace(source, "QWEN_CHAT_WORKSPACE_ID"):
-        return f"https://{workspace}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
-    return "https://dashscope.aliyuncs.com/compatible-mode/v1"
-
-
 def _qwen_key(source: Mapping[str, str], *legacy: str) -> str | None:
     for name in ("QWEN_API_KEY", "DASHSCOPE_API_KEY", *legacy):
-        if value := source.get(name):
-            return value
-    return None
-
-
-def _ark_key(source: Mapping[str, str], *legacy: str) -> str | None:
-    for name in ("ARK_API_KEY", *legacy):
-        if value := source.get(name):
-            return value
-    return None
-
-
-def _deepseek_key(source: Mapping[str, str]) -> str | None:
-    for name in ("DEEPSEEK_API_KEY", "DEEPSEEK_CHAT_API_KEY"):
         if value := source.get(name):
             return value
     return None
