@@ -30,6 +30,7 @@ class ChatModelRuntimeProfile:
     context_window_tokens: int
     tokenizer_repository: str | None = None
     tokenizer_revision: str = "main"
+    qwen_api_protocol: QwenChatApiProtocol | None = None
 
 
 _CHAT_MODEL_RUNTIME_PROFILES = {
@@ -37,6 +38,7 @@ _CHAT_MODEL_RUNTIME_PROFILES = {
         context_window_tokens=1_000_000,
         tokenizer_repository="Qwen/Qwen3.8-Flash-Next",
         tokenizer_revision="de4b8e4d43b917e7706784d8bb445c9af86a3540",
+        qwen_api_protocol="openai_compatible",
     ),
     "qwen3.6-flash": ChatModelRuntimeProfile(context_window_tokens=1_000_000),
     "deepseek-v4-flash": ChatModelRuntimeProfile(context_window_tokens=1_000_000),

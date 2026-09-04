@@ -143,7 +143,7 @@ capability；只有 auth 转换出的 worker permission 配合严格 metadata �
 Qwen 的原生联网参数属于 `BaseChatModel` 请求能力，不伪装成本地 Tool；生产不注册本地 `web_search` Tool。
 只有 real Qwen、DashScope 协议和原生搜索开关同时启用时，统一 dynamic prompt 才向模型说明本次调用具备原生联网搜索；
 未启用时不注入搜索提示，也不提供本地搜索替代。real 模式选择 DashScope 协议时使用
-`DashScopeNativeChatModel`；显式选择 OpenAI-compatible 时才使用 `ChatOpenAI`，不得静默回退。统一主 Agent 可按
+`DashScopeNativeChatModel`；模型 profile 自动选择或显式覆盖为 OpenAI-compatible 时使用 `ChatOpenAI`，不得静默回退。统一主 Agent 可按
 结构化配置启用 Provider search；worker 复用主 Agent 的同一模型配置。统一模型瞬时故障恢复与 custom stream
 进度事件由 runtime authority 定义，Tool 层不实现第二套模型重试。
 

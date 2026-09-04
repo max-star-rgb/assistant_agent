@@ -89,7 +89,8 @@ Git Tool 与 execute guard 由 Tool 领域的 `tools/git.py` 所有，不再与 
 
 主模型与维护脚本统一使用 `BaseChatModel`、标准 LangChain messages 和 `create_chat_model`。旧
 `ChatAdapter`、`ChatRequest/ChatResult`、`LLMEvent` accumulator 与平行 assistant output models 已随最后消费者删除；
-DashScope HTTP/SSE transport 和 URL 归原生 `DashScopeNativeChatModel` 直接拥有。
+DashScope HTTP/SSE transport 和 URL 归原生 `DashScopeNativeChatModel` 直接拥有。已登记模型从同一模型 profile
+派生 API protocol；`qwen3.8-flash` 使用其工作空间 `compatible-mode/v1` 地址，不再改写到旧 Generation URL。
 
 旧 `runtime/state.py`、`cancellation.py`、`capability_grants.py`、state-to-response adapter 与
 state-to-observability adapter 已随最后消费者一起删除；

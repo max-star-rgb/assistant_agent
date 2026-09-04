@@ -225,6 +225,7 @@ def _load_chat_config(source: Mapping[str, str], mode: ProviderMode) -> ChatConf
         source.get("MULTIMODAL_AGENT_CHAT_PROVIDER"), allow_real=mode == "real"
     )
     resolved = resolve_chat_provider(provider, source)
+    model_profile = chat_model_runtime_profile(resolved.model)
     stream = _chat_stream(source, provider)
     return ChatConfig(
         chat_provider=provider,
@@ -271,7 +272,10 @@ def _load_chat_config(source: Mapping[str, str], mode: ProviderMode) -> ChatConf
         ),
         qwen_chat_enable_thinking=_bool(source.get("QWEN_CHAT_ENABLE_THINKING"), False),
         qwen_chat_enable_search=_bool(source.get("QWEN_CHAT_ENABLE_SEARCH"), False),
-        qwen_chat_api_protocol=_qwen_protocol(source.get("QWEN_CHAT_API_PROTOCOL")),
+        qwen_chat_api_protocol=_qwen_protocol(
+            source.get("QWEN_CHAT_API_PROTOCOL")
+            or (model_profile.qwen_api_protocol if model_profile else None)
+        ),
     )
 
 
