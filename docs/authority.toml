@@ -86,7 +86,7 @@ source_globs = [
   "src/assistant_agent/native_agent/assistant_agent.py",
   "src/assistant_agent/native_agent/memory_middleware.py",
   "src/assistant_agent/native_agent/state.py",
-  "src/assistant_agent/native_agent/models.py",
+  "src/assistant_agent/native_agent/search_profiles.py",
   "src/assistant_agent/providers/dashscope_langchain.py",
   "src/assistant_agent/identity.py",
   "src/assistant_agent/runtime/__init__.py",

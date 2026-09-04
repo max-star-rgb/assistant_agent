@@ -5,7 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from assistant_agent.native_agent.models import ProviderSearchProfile
+
+ProviderSearchProfile = Literal[
+    "none",
+    "rail_official",
+    "flight_official",
+    "guide_official",
+    "guide_xiaohongshu",
+    "travel_general",
+]
 
 
 class SearchProfileCapabilityError(ValueError):
