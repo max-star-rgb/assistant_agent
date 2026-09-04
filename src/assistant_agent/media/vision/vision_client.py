@@ -15,7 +15,7 @@ from assistant_agent.media.vision.models import (
     VisionUnderstandingResult,
     VisualUnderstandingResult,
 )
-from assistant_agent.providers.provider_selection import create_vision_adapter
+from assistant_agent.media.vision.provider_selection import create_vision_adapter
 from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.media.video.video_adapter import (
     MockVideoUnderstandingAdapter,

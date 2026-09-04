@@ -138,7 +138,7 @@ def _create_qwen_realtime_adapter(
     media_config: MediaConfig | None,
     close_connection_on_return: bool = True,
 ) -> VideoUnderstandingAdapter:
-    from assistant_agent.providers.qwen_realtime_vision import (
+    from assistant_agent.media.video.qwen_realtime_adapter import (
         QwenRealtimeVisionAdapter,
         QwenRealtimeVisionConfig,
     )

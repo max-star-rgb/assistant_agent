@@ -41,7 +41,7 @@ Provider profiles and external-provider configuration are documented in [docs/to
 | `media/` | 音频边缘适配、视频摄取/观察、统一 image/text embedding 及视觉 adapter |
 | `automation/` | durable task、proactive wake 和通知 |
 | `evaluation/` | 直接消费原生 Graph 的 evaluation target；不包含旧 Release Review runner |
-| `providers/` | 跨入口共享的 Provider 配置、错误治理和 adapter |
+| `providers/` | 跨领域共享的 Provider spec、错误治理、HTTP policy 与模型 transport |
 | `memory/` | Mem0 transport 与旧 Memory bundle 兼容；生产最小 backend 位于 `native_agent.memory` |
 | `mcp/` | MCP 配置、client、registration 和 server adapter |
 | `config/` | 进程配置装配 |

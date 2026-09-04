@@ -1,15 +1,15 @@
 # 实时视觉感知与语义关键帧架构
 
-Last updated: 2026-09-03
+Last updated: 2026-09-04
 
 ## Authority contract
 
 | 字段 | 内容 |
 | --- | --- |
 | 定位 | 与 Agent 运行框架解耦的视觉感知、低延迟关键帧文本化和语义关键帧算法权威 |
-| Owns | SigLIP2 latest-wins、独立并行关键帧 VLM、逻辑关键帧窗口、目标帧实时屏障、视觉时间线、Qdrant 检索、历史找物、连接级视觉提醒与视觉 trace 语义 |
-| Does not own | LangGraph/Agent Server 生命周期、Media-Agent wire、通用 Tool 执行链、长期记忆、VLM Provider 私有协议 |
-| 源码与 schema 入口 | `src/assistant_agent/media/visual_perception/`、`media/embedding/`、`media/video/understanding_service.py`、`media/video/`、`media/proactive_messages.py`；媒体 Tool adapter 见 `tools/plugins/builtin/media_inspection/` |
+| Owns | SigLIP2 latest-wins、独立并行关键帧 VLM、逻辑关键帧窗口、目标帧实时屏障、视觉时间线、Qdrant 检索、历史找物、连接级视觉提醒、本地 VLM adapter 与视觉 trace 语义 |
+| Does not own | LangGraph/Agent Server 生命周期、Media-Agent wire、通用 Tool 执行链、长期记忆、上游 VLM Provider 协议定义 |
+| 源码与 schema 入口 | `src/assistant_agent/media/visual_perception/`、`media/embedding/`、`media/vision/`、`media/video/`、`media/proactive_messages.py`；媒体 Tool adapter 见 `tools/plugins/builtin/media_inspection/` |
 | 验证入口 | `docs/authority.toml` 中 `visual-perception.verification` |
 | 相邻 authority | 媒体 wire 见 [`media-agent-service-websocket.md`](media-agent-service-websocket.md)；Tool 集成见 [`tool-calling-architecture.md`](tool-calling-architecture.md)；部署资源见 [`agent-server-architecture.md`](agent-server-architecture.md) |
 

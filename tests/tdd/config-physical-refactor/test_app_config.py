@@ -19,7 +19,7 @@ from assistant_agent.native_agent.tools import (
     NativeToolResources,
     create_native_tool_inventory,
 )
-from assistant_agent.providers.provider_selection import create_vision_adapter
+from assistant_agent.media.vision.provider_selection import create_vision_adapter
 from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.tools.ids import VISUAL_IMAGE_SEARCH_TOOL_NAME
 from assistant_agent.tools.plugins.builtin.visual_image_search.tool import (

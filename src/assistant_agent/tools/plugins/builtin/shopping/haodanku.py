@@ -4,10 +4,10 @@ Haodanku's v3 ``supersearch`` endpoint returns coupon-aware Taobao items
 (券后价 / 优惠券 / 佣金 / 销量 / 主图 / 店铺 / 商品链接), which makes it a
 natural real provider for the assistant's "search + price compare" flow.
 
-The HTTP transport intentionally uses ``urllib.request`` to match the existing
-provider adapters (see ``providers/ark_image_generation.py``) and avoid new
-dependencies. Pure helpers (``build_haodanku_search_url`` / ``map_haodanku_items``)
-are split out so they can be unit tested without network IO.
+The HTTP transport intentionally uses ``urllib.request`` to match the image
+generation adapters in ``tools/plugins/builtin/image_generation`` and avoid
+new dependencies. Pure helpers (``build_haodanku_search_url`` /
+``map_haodanku_items``) are split out so they can be unit tested without network IO.
 """
 
 from __future__ import annotations
