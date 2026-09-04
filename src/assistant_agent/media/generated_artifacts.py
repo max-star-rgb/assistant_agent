@@ -43,41 +43,6 @@ def generated_artifact_prefix(thread_ref: str) -> str:
     return f"artifact://{GENERATED_ARTIFACT_URI_AUTHORITY}/{thread_ref}/generated"
 
 
-def generated_artifact_location(
-    output_ref: str,
-    manager: ThreadResourceManager,
-) -> GeneratedArtifactFile | None:
-    parsed = _thread_generated_artifact_ref(output_ref)
-    if parsed is None:
-        return None
-    thread_ref, filename = parsed
-    try:
-        root = manager.resolve_artifact_root(thread_ref) / "generated"
-    except ThreadResourceError:
-        return None
-    return generated_artifact_file(filename, artifact_dir=root)
-
-
-def generated_artifact_payload_for_ref(
-    output_ref: str,
-    manager: ThreadResourceManager,
-) -> GeneratedArtifactPayload | None:
-    parsed = _thread_generated_artifact_ref(output_ref)
-    if parsed is None:
-        return None
-    thread_ref, filename = parsed
-    try:
-        root = manager.resolve_artifact_root(thread_ref) / "generated"
-    except ThreadResourceError:
-        return None
-    public_prefix = output_ref[: -(len(filename) + 1)]
-    return generated_artifact_payload(
-        output_ref,
-        artifact_dir=root,
-        public_prefix=public_prefix,
-    )
-
-
 def generated_artifact_payload_for_thread(
     output_ref: str,
     manager: ThreadResourceManager,
