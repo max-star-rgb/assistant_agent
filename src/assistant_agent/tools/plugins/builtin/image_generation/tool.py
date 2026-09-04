@@ -26,12 +26,12 @@ from assistant_agent.providers.provider_errors import ProviderAdapterError
 from assistant_agent.tools.plugins.builtin.image_generation.backend import (
     ImageGenerationAdapter,
     MockImageGenerationAdapter,
+    materialize_image_generation_result as _materialize_image_generation_result,
 )
 from assistant_agent.media.generated_artifacts import (
     MAX_DELIVERED_IMAGE_COUNT,
     generated_artifact_prefix,
     generated_artifact_payload,
-    materialize_image_generation_result,
 )
 from assistant_agent.tools.ids import (
     IMAGE_GENERATION_CAPABILITY,
@@ -185,7 +185,7 @@ def _execute_image_generation(
     if result.status != "succeeded":
         return result
     return _publish_image_ids(
-        materialize_image_generation_result(
+        _materialize_image_generation_result(
             result,
             artifact_dir=artifact_dir,
             public_prefix=public_prefix,
