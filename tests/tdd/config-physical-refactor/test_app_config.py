@@ -112,6 +112,28 @@ def test_removed_realtime_keyframe_config_is_rejected() -> None:
         load_app_config({"REALTIME_KEYFRAME_MIN_INTERVAL_SECONDS": "1"})
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "ASSISTANT_AGENT_TEXT_TURN_TIMEOUT_SECONDS",
+        "LANGGRAPH_CHECKPOINTER_BACKEND",
+        "MULTIMODAL_AGENT_CHECKPOINTER_BACKEND",
+        "LANGGRAPH_CHECKPOINT_PATH",
+        "MEMORY_COMMIT_LEDGER_PATH",
+        "MULTIMODAL_AGENT_CONVERSATION_HISTORY_BACKEND",
+        "MULTIMODAL_AGENT_CONVERSATION_HISTORY_PATH",
+        "MULTIMODAL_AGENT_MAX_CONVERSATION_HISTORY_TURNS",
+        "MULTIMODAL_AGENT_MAX_CONVERSATION_TURNS",
+        "MULTIMODAL_AGENT_EDITABLE_CONTEXT_ENABLED",
+        "MULTIMODAL_AGENT_EDITABLE_CONTEXT_ROOT",
+        "MULTIMODAL_AGENT_EDITABLE_CONTEXT_USER_ID",
+    ],
+)
+def test_removed_runtime_config_is_rejected(name: str) -> None:
+    with pytest.raises(ValueError, match="removed_runtime_config"):
+        load_app_config({name: "sentinel"})
+
+
 @pytest.mark.parametrize("value", ["99", "0"])
 def test_visual_memory_result_limit_is_not_an_environment_setting(value: str) -> None:
     assert (

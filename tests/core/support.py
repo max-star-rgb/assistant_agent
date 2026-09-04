@@ -3,7 +3,7 @@ from __future__ import annotations
 from langchain_core.tools import BaseTool, tool
 from langgraph.prebuilt import ToolRuntime
 
-from assistant_agent.config import AppConfig, RuntimeConfig
+from assistant_agent.config import AppConfig
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.tools.native_boundary import (
     builtin_tool_metadata,
@@ -32,4 +32,4 @@ class CancelledToken:
 
 
 def offline_config() -> AppConfig:
-    return AppConfig(runtime=RuntimeConfig(langgraph_checkpointer_backend="none"))
+    return AppConfig()

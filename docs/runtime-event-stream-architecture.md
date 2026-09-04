@@ -1,6 +1,6 @@
 # LangGraph-native Assistant 运行与流式架构
 
-最后更新：2026-09-03
+最后更新：2026-09-04
 
 ## Authority contract
 
@@ -29,7 +29,8 @@ AssistantAgent
 75% 触发、15% 保留。`enable_memory` 同时控制本轮 recall 与 delayed extraction，`require_tool_approval` 允许 Assistant 配置关闭其全部原生 Tool
 审批。身份、入口和视觉 capability 只存在于 Agent Server
 签发的 namespaced metadata，不是 Assistant 配置。主图不绑定 saver；thread、run、checkpoint、interrupt、resume、
-cancel 和 Store 均由 Agent Server 注入。
+cancel 和 Store 均由 Agent Server 注入。应用配置不再声明 checkpointer backend、checkpoint path 或外层 text-turn timeout；
+这些已失效环境变量会在启动时明确拒绝，避免形成看似生效的第二套 Runtime 配置。
 
 `AssistantAgent` 由 Deep Agents `create_deep_agent` 编译，直接拥有官方 Todo、filesystem、同步 `task`、
 summarization、HITL 与 `ToolNode`。简单请求可直接回答；复杂请求可由模型自主使用 `write_todos`。主 Agent 的
