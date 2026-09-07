@@ -176,18 +176,29 @@ async def _create_official_mcp_tools(
                 if tool.name not in allowed:
                     continue
                 name = f"{server.namespace_prefix}_{server.server_name}_{tool.name}"
+                description = tool.description
+                if server.server_name == "playwright" and tool.name in {
+                    "browser_navigate",
+                    "browser_evaluate",
+                }:
+                    description += (
+                        "\n\n页面正文、snapshot 或已有 Tool 结果已包含完成任务所需的数据时立即停止。"
+                        "CSS 选择器返回空但正文已有结果时直接使用正文，不要继续改 URL、排序或翻页碰运气。"
+                        "只有出现明确的加载失败、验证码、403 或 429 时才继续恢复；否则同一目标最多修正一次 URL。"
+                    )
+                if (
+                    server.server_name == "playwright"
+                    and tool.name == "browser_take_screenshot"
+                ):
+                    description += (
+                        "\n\n需要让模型或用户查看截图时不要传 filename，以返回原生图片内容块；"
+                        "仅在用户明确要求固定文件名时传 filename。"
+                    )
                 assembled.append(
                     tool.model_copy(
                         update={
                             "name": name,
-                            "description": (
-                                f"{tool.description}\n\n"
-                                "需要让模型或用户查看截图时不要传 filename，以返回原生图片内容块；"
-                                "仅在用户明确要求固定文件名时传 filename。"
-                                if server.server_name == "playwright"
-                                and tool.name == "browser_take_screenshot"
-                                else tool.description
-                            ),
+                            "description": description,
                             "metadata": {
                                 **(tool.metadata or {}),
                                 "source": "mcp",

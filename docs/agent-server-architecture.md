@@ -121,10 +121,10 @@ Studio/普通 Agent Server 客户端上传图片或视频时沿用 LangChain 标
 上传实体保留在 Graph state 供 `uploaded_media_inspect` 读取，但在每次主模型调用的投影中移除，主模型只接收
 文本和 Tool observation，Memory 后台抽取请求也只复制该文本投影，避免把历史 Base64 重复发送给 Provider。
 
-公开 `AssistantRunContext` 包含 `cwd`、`enable_memory`、`require_tool_approval`，以及可选的
+公开 `AssistantRunContext` 包含 `persona`、`cwd`、`enable_memory`、`require_tool_approval`，以及可选的
 `context_compaction_trigger_tokens` / `context_compaction_keep_tokens`；Studio 的 `cwd` 默认是
-`~/assistant_cqy/studio`，且只接受 Home 内已存在目录。媒体入口不接受客户端 cwd，而是按握手用户稳定映射到
-`~/assistant_cqy/media/usr_<opaque-id>`。两个压缩值必须同时设置且 `0 < keep < trigger`；都不设置时继续使用 Provider context window 的
+`~/assistant_cqy/studio`，且只接受 Home 内绝对路径。context coercion 不访问文件系统；工作区目录由异步入口准备。媒体握手的 `context` 复用同一 schema，cwd 默认按握手用户稳定映射到
+`~/assistant_cqy/media/usr_<opaque-id>`。`persona` 允许 `general` / `call_assistant`，Studio 默认前者，媒体默认后者；只改变顶层回复策略，不授予身份或能力。两个压缩值必须同时设置且 `0 < keep < trigger`；都不设置时继续使用 Provider context window 的
 75% 触发、压缩后保留 15%。`require_tool_approval` 在受信本机开发环境默认 false，保存为 true 的
 Assistant 才让已配置 Tool 进入 HITL。身份、入口和视觉 capability 只在
 服务端签发的 namespaced run metadata 中。认证用户唯一来自 `Runtime.server_info.user.identity`；当前 tokenless
@@ -140,7 +140,8 @@ stream/cancel/join、终态 `AIMessage` 与通用 Tool delivery artifact 投影�
 checkpoint replay 使用 enqueue。主动投递使用独立 Store，不进入 `AssistantAgent` run。
 
 media custom-app lifespan 单次加载 `AppConfig` 后，只保留 provider mode、`VisionConfig` 和 `MediaConfig`；进程级
-`VisualPerceptionModule` 由该 lifespan 持有，Graph Tool 只消费其窄接口。媒体接入不得合并、
+`VisualPerceptionModule` 由该 lifespan 持有，通过 `asyncio.to_thread` 完成同步装配（含 FastEmbed/Hugging Face
+依赖导入和本地模型加载），避免事件循环阻塞检查中断导入并留下不完整模块状态。Graph Tool 只消费其窄接口。媒体接入不得合并、
 串行化或删除视觉 authority 定义的 SigLIP2 latest-wins 和并行关键帧 VLM 流水线。
 
 ## 本地部署

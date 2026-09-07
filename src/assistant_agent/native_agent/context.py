@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import hashlib
+import os
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Literal, Self
 
 from langgraph.runtime import Runtime
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -14,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 def studio_working_directory() -> Path:
     """Return the shared local Studio workspace."""
 
-    return _ensure_working_directory(Path.home() / "assistant_cqy" / "studio")
+    return Path.home() / "assistant_cqy" / "studio"
 
 
 def media_user_working_directory(user_id: str) -> Path:
@@ -24,12 +25,10 @@ def media_user_working_directory(user_id: str) -> Path:
     if not identity:
         raise ValueError("media user identity is required")
     opaque_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
-    return _ensure_working_directory(
-        Path.home() / "assistant_cqy" / "media" / f"usr_{opaque_id}"
-    )
+    return Path.home() / "assistant_cqy" / "media" / f"usr_{opaque_id}"
 
 
-def _ensure_working_directory(path: Path) -> Path:
+def ensure_working_directory(path: Path) -> Path:
     host_root = Path.home().resolve()
     path.mkdir(parents=True, exist_ok=True)
     resolved = path.resolve(strict=True)
@@ -50,11 +49,17 @@ class AssistantRunContext(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    persona: Literal["general", "call_assistant"] = Field(
+        default="general",
+        title="助理角色",
+        description="general：通用助理；call_assistant：简洁口语化的通话助理。",
+        json_schema_extra={"langgraph_nodes": ["model"]},
+    )
     cwd: Path = Field(
         default_factory=studio_working_directory,
         description="本轮 Assistant 使用的默认工作目录。",
         json_schema_extra={
-            "default": str((Path.home() / "assistant_cqy" / "studio").resolve())
+            "default": str(Path.home() / "assistant_cqy" / "studio")
         },
     )
     enable_memory: bool = Field(
@@ -89,11 +94,11 @@ class AssistantRunContext(BaseModel):
     @classmethod
     def validate_cwd(cls, value: object) -> Path:
         try:
-            cwd = Path(value).expanduser().resolve(strict=True)  # type: ignore[arg-type]
-        except (OSError, TypeError, ValueError) as exc:
-            raise ValueError("cwd must be an existing directory") from exc
-        host_root = Path.home().resolve()
-        if not cwd.is_dir() or not cwd.is_relative_to(host_root):
+            cwd = Path(os.path.normpath(Path(value).expanduser()))  # type: ignore[arg-type]
+        except (TypeError, ValueError) as exc:
+            raise ValueError("cwd must be an absolute path") from exc
+        host_root = Path.home()
+        if not cwd.is_absolute() or not cwd.is_relative_to(host_root):
             raise ValueError(f"cwd must be a directory under {host_root}")
         return cwd
 
@@ -172,6 +177,7 @@ __all__ = [
     "assistant_runtime_facts",
     "assistant_runtime_metadata",
     "authenticated_user_identity",
+    "ensure_working_directory",
     "media_user_working_directory",
     "studio_working_directory",
 ]

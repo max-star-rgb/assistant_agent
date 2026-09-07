@@ -9,7 +9,6 @@ from pathlib import Path
 from langchain.agents.middleware import ModelRequest, dynamic_prompt
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import SystemMessage
-from langgraph.config import get_config
 
 from assistant_agent.media.runtime_media import (
     RuntimeMediaSnapshot,
@@ -17,7 +16,6 @@ from assistant_agent.media.runtime_media import (
 )
 from assistant_agent.native_agent.context import (
     AssistantRunContext,
-    assistant_runtime_facts,
 )
 from assistant_agent.native_agent.prompts.media import (
     MEDIA_OUTPUT_TOKEN_LIMIT,
@@ -36,7 +34,7 @@ _PROJECT_INSTRUCTIONS_MAX_BYTES = 32_768
 def create_assistant_base_prompt(
     *,
     native_search_enabled: bool = False,
-    fixed_entry_profile: str | None = None,
+    fixed_persona: str | None = None,
 ) -> AgentMiddleware:
     """Build the stable core instructions."""
 
@@ -44,15 +42,13 @@ def create_assistant_base_prompt(
     def assistant_base_prompt(
         request: ModelRequest[AssistantRunContext],
     ) -> SystemMessage:
-        entry_profile = fixed_entry_profile or assistant_runtime_facts(
-            get_config()
-        ).entry_profile
+        persona = fixed_persona or request.runtime.context.persona
         return _prepend_sections(
             request.system_message,
             [
                 render_assistant_core_prompt(
                     native_search_enabled=native_search_enabled,
-                    entry_profile=entry_profile,
+                    persona=persona,
                 )
             ],
         )
@@ -60,8 +56,8 @@ def create_assistant_base_prompt(
     return assistant_base_prompt
 
 
-class EntryProfileModelSettingsMiddleware(AgentMiddleware):
-    """Apply model settings owned by a trusted entry profile."""
+class PersonaModelSettingsMiddleware(AgentMiddleware):
+    """Apply the selected user-facing persona's output settings."""
 
     def wrap_model_call(self, request, handler):
         return handler(self._prepare_request(request))
@@ -71,7 +67,7 @@ class EntryProfileModelSettingsMiddleware(AgentMiddleware):
 
     @staticmethod
     def _prepare_request(request: ModelRequest) -> ModelRequest:
-        if assistant_runtime_facts(get_config()).entry_profile != "agent_service":
+        if request.runtime.context.persona != "call_assistant":
             return request
         return request.override(
             model_settings={
@@ -170,12 +166,12 @@ def render_working_directory_section(cwd: Path) -> str:
 def render_assistant_core_prompt(
     *,
     native_search_enabled: bool = False,
-    entry_profile: str = "agent_server",
+    persona: str = "general",
 ) -> str:
     """Render stable, provider-neutral operating rules."""
     renderer = (
         render_media_prompt
-        if entry_profile == "agent_service"
+        if persona == "call_assistant"
         else render_studio_prompt
     )
     return renderer(native_search_enabled=native_search_enabled)
@@ -273,7 +269,7 @@ def _merge_content(
 __all__ = [
     "create_assistant_base_prompt",
     "create_assistant_runtime_prompt",
-    "EntryProfileModelSettingsMiddleware",
+    "PersonaModelSettingsMiddleware",
     "load_project_instructions",
     "render_assistant_core_prompt",
     "render_current_media_section",

@@ -35,6 +35,7 @@ from assistant_agent.agent_server.media_protocol import (
     envelope,
     failure_response,
     parse_chat,
+    parse_media_context,
     parse_envelope,
     progress_response,
     model_retry_progress_response,
@@ -71,7 +72,8 @@ from assistant_agent.media.visual_perception import get_visual_perception_module
 from assistant_agent.native_agent.context import (
     AssistantRuntimeFacts,
     assistant_runtime_metadata,
-    media_user_working_directory,
+    ensure_working_directory,
+    studio_working_directory,
 )
 from assistant_agent.media.artifact_delivery import get_media_artifact_delivery_hub
 from assistant_agent.proactive_delivery import (
@@ -97,19 +99,22 @@ logger = logging.getLogger(__name__)
 async def agent_server_lifespan(application: FastAPI):
     """Own the process-wide visual module for this Agent Server process."""
 
+    await asyncio.to_thread(ensure_working_directory, studio_working_directory())
     loaded_config = load_app_config()
     provider_mode = loaded_config.provider_mode
     vision_config = loaded_config.vision
     media_config = loaded_config.media
     del loaded_config
-    visual_module = get_visual_perception_module(
+    visual_module = await asyncio.to_thread(
+        get_visual_perception_module,
         provider_mode=provider_mode,
         vision_config=vision_config,
         media_config=media_config,
     )
     application.state.visual_perception_module = visual_module
     application.state.media_config = media_config
-    video_archive = _create_remote_video_archive_service(
+    video_archive = await asyncio.to_thread(
+        _create_remote_video_archive_service,
         media_config,
         provider_mode=provider_mode,
     )
@@ -629,6 +634,7 @@ async def _handle_frame(
         call_type = str(frame.body.get("callType") or "AUDIO").upper()
         if call_type not in {"AUDIO", "VIDEO"}:
             raise MediaProtocolError("callType must be AUDIO or VIDEO")
+        context = parse_media_context(frame.body, user_id=user_id)
         thread_id = await client.create_thread(
             metadata={"protocol": "agent-service-v1"},
             thread_id=_native_thread_id(
@@ -652,6 +658,7 @@ async def _handle_frame(
             if call_type == "VIDEO"
             else ("audio",),
         )
+        session.context = context
         if call_type == "VIDEO":
             visual_perception.session = visual_module.open_session(
                 user_id=authenticated_identity,
@@ -1002,6 +1009,13 @@ async def _run_chat(
         final_state: dict[str, Any] | None = None
         text_stream = _NativeAssistantTextStream()
         first_delta_sent = False
+        context = session.context or parse_media_context(
+            {}, user_id=str(session.user_id or "")
+        )
+        working_directory = await asyncio.to_thread(
+            ensure_working_directory,
+            context.cwd,
+        )
         run_metadata = assistant_runtime_metadata(
             AssistantRuntimeFacts(
                 entry_profile="agent_service",
@@ -1013,8 +1027,8 @@ async def _run_chat(
             assistant_id=ASSISTANT_GRAPH_ID,
             input=media_graph_input(chat),
             context={
-                "cwd": str(media_user_working_directory(str(session.user_id or ""))),
-                "enable_memory": True,
+                **context.model_dump(mode="json"),
+                "cwd": str(working_directory),
             },
             metadata=run_metadata,
             multitask_strategy="interrupt",

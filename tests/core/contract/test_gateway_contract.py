@@ -8,6 +8,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from blockbuster import blockbuster_ctx
 from pydantic import ValidationError
 
 from assistant_agent.agent_server import auth as auth_module
@@ -467,23 +468,25 @@ def test_media_run_uses_a_stable_user_working_directory(
         thread_id="thread-1",
     )
 
-    asyncio.run(
-        _run_chat(
-            WebSocket(),
-            session=session,
-            client=client,
-            chat=MediaChat(
-                chat_index="chat-1",
-                user_id="user-1",
-                text="hello",
-                stream=False,
-            ),
-            response_session_id="vendor-session",
-            delivery_id="delivery-1",
-            send_lock=asyncio.Lock(),
-            interrupted_chats=set(),
-        )
-    )
+    async def run_chat() -> None:
+        with blockbuster_ctx():
+            await _run_chat(
+                WebSocket(),
+                session=session,
+                client=client,
+                chat=MediaChat(
+                    chat_index="chat-1",
+                    user_id="user-1",
+                    text="hello",
+                    stream=False,
+                ),
+                response_session_id="vendor-session",
+                delivery_id="delivery-1",
+                send_lock=asyncio.Lock(),
+                interrupted_chats=set(),
+            )
+
+    asyncio.run(run_chat())
 
     expected = (
         tmp_path
@@ -492,8 +495,12 @@ def test_media_run_uses_a_stable_user_working_directory(
         / "usr_c6c289e49e9c05b214586038"
     )
     assert client.context == {
+        "persona": "call_assistant",
         "cwd": str(expected),
         "enable_memory": True,
+        "require_tool_approval": False,
+        "context_compaction_trigger_tokens": None,
+        "context_compaction_keep_tokens": None,
     }
     assert expected.is_dir()
     assert (expected / "ASSISTANT.md").is_file()
@@ -541,14 +548,20 @@ def test_media_wire_parser_rejects_removed_assistant_mode() -> None:
 def test_assistant_context_is_public_configuration_not_private_run_facts(
     tmp_path: Path,
 ) -> None:
-    context = AssistantRunContext.model_validate(
-        {
-            "cwd": str(Path.home()),
-            "enable_memory": False,
-            "require_tool_approval": False,
-        }
-    )
+    async def build_context() -> AssistantRunContext:
+        with blockbuster_ctx():
+            AssistantRunContext()
+            return AssistantRunContext.model_validate(
+                {
+                    "cwd": str(Path.home()),
+                    "enable_memory": False,
+                    "require_tool_approval": False,
+                }
+            )
+
+    context = asyncio.run(build_context())
     assert set(type(context).model_fields) == {
+        "persona",
         "cwd",
         "enable_memory",
         "require_tool_approval",

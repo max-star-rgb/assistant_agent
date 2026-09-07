@@ -46,6 +46,17 @@ Last updated: 2026-09-04
 {"code":0,"message":"success","phoneNumber":"user-1"}
 ```
 
+两种 control 握手均可在 body 中传入 `context` 对象，与 Studio 使用同一 `AssistantRunContext` schema。例如：
+
+```json
+{"number":"user-1","callType":"AUDIO","context":{"persona":"general","enable_memory":false}}
+```
+
+`persona` 只允许 `general`（通用助理）或 `call_assistant`（通话助理）；媒体省略时默认后者，Studio 默认前者。
+其余公开配置（cwd、Memory、审批、压缩阈值）使用相同字段与校验；媒体 cwd 默认按握手用户派生。
+非法 context 在创建 thread 前返回协议错误。握手配置保存在当前连接，后续每个 chat run 复用；重连需重新传入，
+省略时重新采用默认值。无握手的 legacy lazy bind 路径采用媒体默认配置。角色不改变认证或媒体能力。
+
 服务端发送成功 control ACK 后，立即在同一连接发送一次非 durable 问候：
 
 ```json
@@ -140,7 +151,7 @@ Graph 完成后发送成功终包：
 
 当前 wire 不发送或接受 `assistantMode`；请求 body 出现该字段时直接返回协议错误。媒体适配器只把 chat 文本机械转换为
 标准 `HumanMessage` content，并把入口、视觉 capability 等受信运行事实放入服务端签发的 namespaced metadata；
-公开 run context 只提交 `enable_memory`。`stream=true` 只投影
+公开 run context 提交经过同一 schema 校验的会话配置。`stream=true` 只投影
 `AIMessageChunk` 的 string content 或 `text|output_text` block；当 `messages/metadata` 存在时，明确标记为
 非 `model` 节点的 chunk 会被排除；metadata 缺失时按标准 assistant chunk 降级投影，避免原生流存在但媒体侧
 只能收到终包。同步/异步 worker 等已标记的内部子图文本、tool-call name/arguments、ToolMessage 和 updates 不进入媒体正文。
@@ -148,9 +159,9 @@ Agent Server 的 `messages/partial` 是同一 message 的累计快照，适配�
 计算 append-only delta；模型生成的 Tool 前导文本与工具后的下一条 assistant message 之间若均无换行，适配器在新消息首包
 补一个换行。中间包按 `sequence` 递增且 `final=false`，不携带 `deliveryId`；`stream=false` 不发送中间包。
 
-统一 Agent 顶层主循环的原生 dynamic prompt middleware 根据上述受信入口事实选择独立媒体提示词，要求工具前导最多一句、
-最终回复通常一到三句且保持口语化；同一 model-call 边界设置 `max_tokens=256`。内部角色不产生媒体正文，继续使用 Studio
-核心提示词与默认输出上限。Studio 顶层入口也继续使用原提示词与默认模型输出上限；媒体 custom route 不持有或拼接任何提示词。
+统一 Agent 顶层主循环的原生 dynamic prompt middleware 根据 `context.persona` 选择策略。通话助理要求工具前导最多一句、
+最终回复通常一到三句且保持口语化；同一 model-call 边界设置 `max_tokens=128`。通用助理使用通用提示词与默认输出上限，
+两个入口均可选择任一角色。内部角色不产生媒体正文，固定使用通用策略；媒体 custom route 不持有或拼接任何提示词。
 
 最终正文仍来自 terminal values 中的最新标准 `AIMessage`，适配器不把 delta 拼接成业务终态。成功终包发送该
 最新消息中尚未流出的后缀，使用最后一个 `sequence`、`final=true`，并独占 `deliveryId`；若最终文本与已流出的

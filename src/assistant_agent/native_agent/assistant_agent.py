@@ -51,7 +51,7 @@ from assistant_agent.media.visual_perception.history_probe import (
 )
 from assistant_agent.media.runtime_media import without_uploaded_media_messages
 from assistant_agent.native_agent.assistant_prompt import (
-    EntryProfileModelSettingsMiddleware,
+    PersonaModelSettingsMiddleware,
     create_assistant_base_prompt,
     create_assistant_runtime_prompt,
 )
@@ -773,7 +773,7 @@ def build_assistant_agent(
         context_schema=AssistantRunContext,
         middleware=[
             create_assistant_base_prompt(native_search_enabled=native_search_enabled),
-            EntryProfileModelSettingsMiddleware(),
+            PersonaModelSettingsMiddleware(),
             create_project_skills_middleware(skills_backend),
             git_middleware,
             ToolProfileMiddleware(
@@ -920,7 +920,7 @@ def build_general_purpose_worker(
     middleware: list[AgentMiddleware] = [
         create_assistant_base_prompt(
             native_search_enabled=native_search_enabled,
-            fixed_entry_profile="agent_server",
+            fixed_persona="general",
         ),
         skills_middleware,
         filesystem_middleware,

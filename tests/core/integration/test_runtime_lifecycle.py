@@ -207,6 +207,7 @@ def test_public_input_and_context_expose_no_private_run_facts() -> None:
         {"enable_memory": False, "require_tool_approval": False}
     )
     assert set(type(context).model_fields) == {
+        "persona",
         "cwd",
         "enable_memory",
         "require_tool_approval",
@@ -327,6 +328,7 @@ def test_async_task_tracks_parent_correlation_without_workspace_state(
     assert "workspace_id" not in task
     assert [call.kwargs["context"] for call in client.runs.create.await_args_list] == [
         {
+                "persona": "general",
                 "cwd": str(Path.home().resolve()),
                 "enable_memory": True,
                 "require_tool_approval": False,
@@ -334,6 +336,7 @@ def test_async_task_tracks_parent_correlation_without_workspace_state(
                 "context_compaction_keep_tokens": None,
         },
         {
+                "persona": "general",
                 "cwd": str(Path.home().resolve()),
                 "enable_memory": True,
                 "require_tool_approval": False,

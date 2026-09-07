@@ -14,10 +14,31 @@ from assistant_agent.media.generated_artifacts import (
 )
 from assistant_agent.media.artifact_delivery import ArtifactCompleted
 from assistant_agent.proactive_delivery import ProactiveMessage
+from assistant_agent.native_agent.context import (
+    AssistantRunContext,
+    media_user_working_directory,
+)
 
 
 class MediaProtocolError(ValueError):
     """Recoverable invalid vendor frame."""
+
+
+def parse_media_context(body: Mapping[str, Any], *, user_id: str) -> AssistantRunContext:
+    """Validate the same public context as Studio, with media defaults."""
+    payload = body.get("context", {})
+    if not isinstance(payload, dict):
+        raise MediaProtocolError("context must be a JSON object")
+    try:
+        return AssistantRunContext.model_validate(
+            {
+                "persona": "call_assistant",
+                "cwd": media_user_working_directory(user_id),
+                **payload,
+            }
+        )
+    except ValueError as exc:
+        raise MediaProtocolError(str(exc)) from exc
 
 
 @dataclass(frozen=True)

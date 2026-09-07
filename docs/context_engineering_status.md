@@ -16,8 +16,9 @@
 ## 当前主链
 
 生产上下文以 LangChain 标准 `messages` channel 为事实源。统一 `AssistantAgent` 使用一个分层 Prompt Builder：
-顶层主 Agent 的原生 dynamic prompt 根据服务端签发的 `entry_profile` 从 `native_agent/prompts/studio.py` 与
-`native_agent/prompts/media.py` 选择稳定核心策略，Deep Agents Skills L0 目录随后注入，dynamic prompt 最后追加当前工作目录、
+顶层主 Agent 的原生 dynamic prompt 根据公开 `context.persona` 选择稳定核心策略：`general` 使用
+`native_agent/prompts/studio.py`，`call_assistant` 使用 `native_agent/prompts/media.py`。Studio 默认 `general`，
+媒体握手默认 `call_assistant`，均可显式覆盖；入口事实不再决定提示词。Deep Agents Skills L0 目录随后注入，dynamic prompt 最后追加当前工作目录、
 项目指令、北京时间自然日、可信用户地区与本轮媒体事实。当前工作目录来自公开 `AssistantRunContext.cwd`；Studio
 默认使用 `~/assistant_cqy/studio`，媒体入口按握手用户稳定映射到
 `~/assistant_cqy/media/usr_<opaque-id>`。工作区首次使用时创建目录和空的用户级 `ASSISTANT.md`，已有文件不覆盖。
@@ -30,15 +31,15 @@
 稳定策略要求直接推进结果，只在缺少阻塞信息或关键选择会改变结果时询问，并区分
 已核验事实、失败和模型判断。Git 仓库识别与命令执行由 `git` Tool 的代码边界负责，不写入 system prompt。
 
-公开 `AssistantRunContext` 包含 `cwd`、`enable_memory`、`require_tool_approval`，以及 Studio 可配置的成对绝对值
+公开 `AssistantRunContext` 包含 `persona`、`cwd`、`enable_memory`、`require_tool_approval`，以及 Studio 可配置的成对绝对值
 `context_compaction_trigger_tokens` / `context_compaction_keep_tokens`。压缩值都不设置时使用 Provider context window 的
 75%/15%，设置时必须满足 `0 < keep < trigger`，并由 main/worker 的 Deep Agents
 `SummarizationMiddleware.awrap_model_call` 在当前 run 中读取而不修改进程共享 middleware。
-媒体 `agent_service` 顶层模型调用同时在原生 model-call middleware 设置 `max_tokens=256`，约束用户可见的工具前导与最终回复；
-其他入口和内部角色不覆盖模型输出上限。`enable_memory` 默认 true，控制本轮 recall 与 delayed extraction；
+`call_assistant` 顶层模型调用在原生 model-call middleware 设置 `max_tokens=128`，约束用户可见的工具前导与最终回复；
+`general` 不覆盖模型输出上限，内部 worker 固定使用通用策略与默认上限。`enable_memory` 默认 true，控制本轮 recall 与 delayed extraction；
 `require_tool_approval` 在本机开发默认 false，可由单次 run 显式开启已配置 Tool 的 HITL interrupt；两者都不进入 prompt。`entry_profile` 与视觉 capability token 属于服务端签发的
 `AssistantRuntimeFacts`，只放在 namespaced run metadata。用户身份只来自 Agent Server
-`Runtime.server_info.user.identity`。公开 context 不包含模式、任意 prompt、身份、仓库注册或 Tool 授权；`cwd` 是用户可见的
+`Runtime.server_info.user.identity`。公开 context 的 `persona` 仅选择回复策略，不是认证身份或执行模式，不接受任意 prompt；`cwd` 是用户可见的
 运行位置，不是隐藏身份或授权事实。
 
 实时 VIDEO 的当前画面是瞬时事实；若受信入口暴露 `live_view_inspect`，每个新的指示性视觉问题都必须重新调用，不能把历史视觉

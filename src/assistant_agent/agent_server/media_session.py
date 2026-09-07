@@ -5,10 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+from assistant_agent.native_agent.context import AssistantRunContext
+
 
 @dataclass
 class MediaConnectionSession:
     connection_id: str
+    context: AssistantRunContext | None = None
     control_message: Literal["assistantControl", "assistantControlStart"] | None = None
     protocol_session_id: str | None = None
     user_id: str | None = None
