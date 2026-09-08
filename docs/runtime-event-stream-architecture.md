@@ -43,15 +43,11 @@ summarization、HITL 与 `ToolNode`。简单请求可直接回答；复杂请求
 业务 Tool、本机文件 Tool 与 `execute` 在同一个模型循环和 Tool surface 中，不再切换另一张 coding 子图，
 也不保留项目自研 planner、coding StateGraph、proposal/review/repair ledger 或 execution router。
 
-主 Agent 以私有 `needs_verification` state 记录待验证状态。成功完成本机写入/执行/Git Tool、显式列入
-`verification_tool_names` 的 Tool，或完成 `coder` task 后，主 loop 必须在最终答复前成功调用一次
-`task(subagent_type="reviewer")`；普通只读 Tool 和仅列入 HITL `interrupt_tool_names` 的业务 Tool（包括图片生成）不置位。
-模型仍可在执行过程中自主调用同一个 `reviewer`；需要验证的 Tool 成功返回后，主 middleware 在下一次主模型调用前注入
-reviewer Tool call 并直接跳转到原生 `ToolNode`，确保候选答复不会先于强制审查进入标准 message stream。副作用调用前若剩余 graph step 不足以完成 Tool、reviewer 与最终综合，主 loop
-不执行该副作用并直接返回未验证状态。reviewer 与其他模型调用共享瞬时故障持续重试；非瞬时失败仍转为本地
-失败哨兵，由既有验证门禁 fail closed。
+`reviewer` 仅保留独立的 `build_reviewer_agent()` 构建定义与审查提示词，作为尚未接入的只读 Agent。
+生产主图不创建或调用 reviewer，不向 `task` 注册该角色，也不在工具执行后或最终答复前触发审查。
+原强制验证门禁、专用状态与失败哨兵已删除；工具执行、HITL、递归收尾和回答后的 Memory 提取沿用原生链路。
 
-主 Agent 的同步 `task` 只选择受信 composition 预装的 `general-purpose`、`reviewer`、`coder` 和 `browser-operator`，不能在
+主 Agent 的同步 `task` 只选择受信 composition 预装的 `general-purpose`、`coder` 和 `browser-operator`，不能在
 task 参数中创建 Tool、backend 或权限。`description` 只帮助模型选择角色，不参与授权。`general-purpose` 使用编译好的
 worker，task 输入做显式 allowlist 投影，只传一条任务 `HumanMessage` 和冻结的 `memory_context`；输出只返回最终非空
 `AIMessage` 以及存在时的 `structured_response`。父级 Todo、Tool Profile、async task、Provider search profile 和未知未来
@@ -59,10 +55,10 @@ state 不进入 worker，worker 的内部 transcript 与私有 state 也不回�
 
 `general-purpose` 接收与主 Agent 相同的业务 Tool inventory、filesystem、`execute`、Skills、Tool Profile 与 HITL
 配置；同步和异步形态复用同一 worker graph，异步形态固定为
-`general-purpose-background`。`reviewer` 是复用主模型的预编译只读 Agent，只接收 task 描述并返回执行结果与验证证据的审查结论；它不装配
-Tool、filesystem、Skills 或再委派能力。`coder` 由 Deep Agents 原生 declarative SubAgent 装配，只继承主 backend 的 filesystem
+`general-purpose-background`。预留 reviewer 使用调用方提供的模型，不装配 Tool、filesystem、Skills 或再委派能力。
+`coder` 由 Deep Agents 原生 declarative SubAgent 装配，只继承主 backend 的 filesystem
 与 `execute`，不接收业务或浏览器 Tool。`browser-operator` 只接收已发现的原生 Playwright Tool，不装配 filesystem
-或 shell；Playwright 进程及其截图、下载直接使用当前 run cwd。`reviewer`、`coder` 与 `browser-operator` 当前只支持同步 task；所有子 Agent
+或 shell；Playwright 进程及其截图、下载直接使用当前 run cwd。`coder` 与 `browser-operator` 当前只支持同步 task；所有子 Agent
 都不装配 async delegation Tool，避免递归委派。
 
 ## 本机 filesystem、thread 资源与后台 worker
@@ -145,7 +141,7 @@ graph；主模型 token 不再依赖 subgraph stream，媒体入口仍可启用 
 main 与 worker 的单一 Deep Agents `SummarizationMiddleware.awrap_model_call` 从同一 composition 投影的 `ChatConfig` 取得窗口、
 trigger/target ratio 和模型 token counter，并由 Studio 的成对绝对值只覆盖当前 run；
 real DeepSeek/native compactor 缺 tokenizer 时 composition 启动失败。
-main、general-purpose worker、reviewer、coder 与 browser-operator 统一通过原生 `AgentMiddleware` 模型调用边界处理
+main、general-purpose worker、coder 与 browser-operator（以及单独构建的预留 reviewer）统一通过原生 `AgentMiddleware` 模型调用边界处理
 429、408、连接/超时和 HTTP 5xx：指数退避并带 jitter，间隔上限 30 秒，持续到成功或 Agent Server 取消 run；
 鉴权、参数、上下文超限等非瞬时错误不重试。每次重试只向原生 custom stream 写入
 `model_retry`、attempt、下一次等待秒数和固定安全提示，不写异常或 Provider 响应。

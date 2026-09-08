@@ -19,22 +19,12 @@ from typing import TextIO
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LANGGRAPH = Path(sys.executable).with_name("langgraph")
-LANGGRAPH_DEV = REPO_ROOT / "scripts" / "run_langgraph_dev.py"
-POSTGRES_COMPOSE_FILE = REPO_ROOT / "deploy" / "agent_server" / "compose.yaml"
-POSTGRES_IMAGE = "assistant-agent/langgraph-api:local"
-DOCKER_PROXY_VARIABLES = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
 DEV_SERVER_LOCK = REPO_ROOT / ".data" / "run" / "agent_server-dev.lock"
 LANGGRAPH_CONFIG = REPO_ROOT / "langgraph.json"
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Start the native Agent Server.")
-    parser.add_argument(
-        "--backend",
-        choices=("dev", "postgres"),
-        default="dev",
-        help="Use local dev persistence or the dedicated PostgreSQL deployment.",
-    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8089)
     parser.add_argument(
@@ -57,33 +47,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--no-env-file", action="store_true")
     parser.add_argument(
-        "--rebuild",
-        action="store_true",
-        help="Rebuild the local Agent Server image before starting postgres backend.",
-    )
-    parser.add_argument(
         "--log-file",
         default=None,
         help=(
             "Append combined stdout/stderr to this path while preserving console "
-            "output. Dev defaults outside the watched repository; postgres "
-            "defaults to .data/logs/agent_server-<port>.log."
+            "output. Defaults outside the watched repository."
         ),
     )
     return parser
 
 
-def resolve_log_path(log_file: str | None, *, port: int, backend: str) -> Path:
+def resolve_log_path(log_file: str | None, *, port: int) -> Path:
     """Resolve a log path without feeding dev output back into its file watcher."""
 
-    if log_file is None and backend == "dev":
+    if log_file is None:
         return (
             Path(tempfile.gettempdir())
             / "assistant_agent"
             / "logs"
             / f"agent_server-{port}.log"
         )
-    path = Path(log_file or f".data/logs/agent_server-{port}.log")
+    path = Path(log_file)
     return path if path.is_absolute() else REPO_ROOT / path
 
 
@@ -109,7 +93,7 @@ def require_available_port(host: str, port: int) -> None:
 
 @contextmanager
 def hold_dev_server_lock(lock_path: Path = DEV_SERVER_LOCK) -> Iterator[None]:
-    """Allow only one dev server to own the working tree's local persistence."""
+    """Allow only one Agent Server launcher per working tree."""
 
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_file = lock_path.open("a+", encoding="utf-8")
@@ -118,7 +102,8 @@ def hold_dev_server_lock(lock_path: Path = DEV_SERVER_LOCK) -> Iterator[None]:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise SystemExit(
-                "another dev server is already running for this working tree"
+                "another Agent Server launcher is already running for this working tree; "
+                "stop the existing run_server.py process before starting from PyCharm"
             ) from exc
         yield
     finally:
@@ -212,74 +197,6 @@ def materialize_dev_config(
         yield config_path
 
 
-def _postgres_image_exists() -> bool:
-    result = subprocess.run(
-        ["docker", "image", "inspect", POSTGRES_IMAGE],
-        cwd=REPO_ROOT,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
-    return result.returncode == 0
-
-
-def _run_postgres_backend(
-    args: argparse.Namespace,
-    *,
-    env: dict[str, str],
-    log_path: Path,
-) -> int:
-    if args.host not in {"127.0.0.1", "localhost"}:
-        raise SystemExit(
-            "postgres backend only binds to loopback; use --host 127.0.0.1"
-        )
-
-    env["ASSISTANT_AGENT_SERVER_PORT"] = str(args.port)
-    env["ASSISTANT_AGENT_ENV_FILE"] = (
-        "/dev/null"
-        if args.no_env_file
-        else str((REPO_ROOT / args.env_file).resolve())
-    )
-
-    image_exists = _postgres_image_exists()
-    if args.rebuild or not image_exists:
-        build_command = [
-            str(LANGGRAPH),
-            "build",
-            "-t",
-            POSTGRES_IMAGE,
-            "--network",
-            "host",
-        ]
-        if image_exists:
-            build_command.append("--no-pull")
-        for variable in DOCKER_PROXY_VARIABLES:
-            if env.get(variable):
-                build_command.extend(("--build-arg", variable))
-        build_result = run_command_with_log(
-            build_command,
-            cwd=REPO_ROOT,
-            env=env,
-            log_path=log_path,
-        )
-        if build_result != 0:
-            return build_result
-
-    return run_command_with_log(
-        [
-            "docker",
-            "compose",
-            "-f",
-            str(POSTGRES_COMPOSE_FILE),
-            "up",
-            "--remove-orphans",
-        ],
-        cwd=REPO_ROOT,
-        env=env,
-        log_path=log_path,
-    )
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     source_config = (
@@ -292,15 +209,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     log_path = resolve_log_path(
         args.log_file,
         port=args.port,
-        backend=args.backend,
     )
-    if args.backend == "postgres":
-        if source_config.resolve() != LANGGRAPH_CONFIG.resolve():
-            raise SystemExit("--config is supported only by the dev backend")
-        with hold_dev_server_lock():
-            require_available_port(args.host, args.port)
-            return _run_postgres_backend(args, env=env, log_path=log_path)
-
     require_dev_log_outside_repo(log_path)
     with materialize_dev_config(
         source_config=source_config,
@@ -308,8 +217,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         use_env_file=not args.no_env_file,
     ) as config_path:
         command = [
-            str(sys.executable),
-            str(LANGGRAPH_DEV),
+            str(LANGGRAPH),
+            "dev",
             "--config",
             str(config_path),
             "--host",

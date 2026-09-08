@@ -46,7 +46,7 @@
 - Provider 运行只分 `mock` 和 `real`。mock 模式下主 LLM 与 Provider-backed tools 强制使用 mock；real 模式下主 LLM 必须完整配置，Provider-backed tools 只注册已完整配置的真实实现，禁止静默回退到 mock。
 - Tool exposure 和入口路由不得用关键词、正则、高信号话术或手写请求规则推断用户意图；候选 Tool 由受信静态装配、MCP allowlist、entry/media/env 等结构化事实决定，具体调用与参数由 LLM 判断。
 - 长期 Memory recall 发生在 `before_agent` middleware 并冻结为 `memory_context`；回答后
-  `after_agent` middleware 通过官方 Agent Server SDK rollback 旧 pending Memory run 并 enqueue 独立
+  `after_agent` middleware 通过官方 `RemoteReflectionExecutor.submit()` 以 rollback 策略提交独立
   `assistant-memory-v1`，extract 只在该后台图执行。后端只实现最小 `MemoryBackend` 协议，可接 LangMem、Mem0
   或第三方服务。
 - MCP、API、CLI、demo、eval 等交互入口应复用 Agent Server/native graph；不属于对话 run 的 durable task 与后台感知只使用窄业务 service/adapter，不得重建第二套 Agent Runtime。
@@ -71,10 +71,9 @@
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python
 ```
 
-PyCharm 的正式本机服务使用 PostgreSQL backend，固定回环端口 `8089`。源码变更后重建镜像并重启同一个
-服务，不另起并行 Server；该容器部署不提供 dev hot reload。Codex 默认作为客户端连接现有 `8089`。
-`langgraph dev` 仅作为显式离线开发/回退入口，其历史状态仍位于 `.langgraph_api/`，不与 PostgreSQL 自动迁移。
-两种 backend 启动统一使用 `scripts/run_server.py` 的单实例锁、严格端口检查和按端口隔离日志。
+PyCharm 的本机服务通过 `scripts/run_server.py` 调用官方 `langgraph dev`，固定回环端口 `8089`，默认自动重载。
+使用官方 in-memory Runtime，状态保存在 `.langgraph_api/`；不装配 Docker/PostgreSQL 或自定义 Runtime 补丁。
+启动脚本只维护单实例锁、严格端口检查、env 来源和仓库外日志。Codex 默认作为客户端连接现有 `8089`，不另起并行 Server。
 
 测试与 eval 的职责边界见第 8 节；具体命令和运行约束以 `tests/README.md`、
 `evals/README.md`、`scripts/README.md` 或对应 `docs/*.md` 为准。历史 runbook

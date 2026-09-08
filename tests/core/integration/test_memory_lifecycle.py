@@ -83,7 +83,7 @@ class _Runs:
     async def cancel(self, thread_id: str, run_id: str, **kwargs: Any) -> None:
         self.cancellations.append({"thread_id": thread_id, "run_id": run_id, **kwargs})
 
-    async def create(self, **kwargs: Any) -> None:
+    def create(self, **kwargs: Any) -> None:
         self.requests.append(kwargs)
 
 
@@ -114,36 +114,10 @@ class _FailingRefreshClient(_Client):
         self.threads = _FailingThreads()
 
 
-class _PagedRuns(_Runs):
-    def __init__(self) -> None:
-        super().__init__()
-        self.pending = [
-            {
-                "run_id": f"memory-{index}",
-                "metadata": {"assistant_agent_run_kind": "memory_extraction"},
-            }
-            for index in range(101)
-        ]
-
-    async def list(
-        self,
-        _thread_id: str,
-        *,
-        limit: int,
-        offset: int,
-        **_kwargs: Any,
-    ) -> list[dict[str, Any]]:
-        return self.pending[offset : offset + limit]
-
-    async def cancel(self, thread_id: str, run_id: str, **kwargs: Any) -> None:
-        await super().cancel(thread_id, run_id, **kwargs)
-        self.pending = [run for run in self.pending if run["run_id"] != run_id]
-
-
-class _PagedClient(_Client):
-    def __init__(self) -> None:
-        super().__init__()
-        self.runs = _PagedRuns()
+class _FailingRuns(_Runs):
+    def create(self, **kwargs: Any) -> None:
+        self.requests.append(kwargs)
+        raise ConnectionError("submit-failure-sentinel")
 
 
 def _assistant_graph(backend: _Memory, *, checkpointer=None):
@@ -162,7 +136,7 @@ def _assistant_graph(backend: _Memory, *, checkpointer=None):
 
 
 @pytest.mark.core_invariant("MEMORY-001")
-def test_unified_chat_recall_once_then_rolls_back_and_enqueues_extraction(
+def test_unified_chat_recall_once_then_submits_remote_reflection(
     monkeypatch,
 ) -> None:
     client = _Client()
@@ -171,6 +145,7 @@ def test_unified_chat_recall_once_then_rolls_back_and_enqueues_extraction(
         "assistant_agent.native_agent.memory_middleware"
     )
     monkeypatch.setattr(middleware_module, "get_client", lambda: client)
+    monkeypatch.setattr(middleware_module, "get_sync_client", lambda: nullcontext(client), raising=False)
     graph = _assistant_graph(backend, checkpointer=InMemorySaver())
 
     config = {
@@ -220,50 +195,45 @@ def test_unified_chat_recall_once_then_rolls_back_and_enqueues_extraction(
             "if_exists": "do_nothing",
         }
     ]
-    assert client.runs.cancellations == [
-        {
-            "thread_id": memory_thread_id,
-            "run_id": f"memory-{memory_thread_id}",
-            "wait": True,
-            "action": "rollback",
-        }
-    ]
+    assert client.runs.cancellations == []
     request = client.runs.requests[0]
     assert request["thread_id"] == memory_thread_id
     assert request["assistant_id"] == "assistant-memory-v1"
-    assert request["metadata"] == {"assistant_agent_run_kind": "memory_extraction"}
-    assert request["after_seconds"] == 30
-    assert request["multitask_strategy"] == "enqueue"
+    assert request["config"]["configurable"]["namespace"] == memory_module._langmem_namespace("user-sentinel")
+    assert request["after_seconds"] == 1800
+    assert request["multitask_strategy"] == "rollback"
+    assert request["if_not_exists"] == "create"
     assert request["input"]["messages"][0].content == [
         {"type": "text", "text": "request-sentinel"}
     ]
 
 
 @pytest.mark.core_invariant("MEMORY-001")
-def test_memory_refresh_rolls_back_every_pending_page_before_enqueue(
+def test_remote_reflection_submit_failure_is_awaited_and_retried(
     monkeypatch,
 ) -> None:
-    client = _PagedClient()
+    client = _Client()
+    client.runs = _FailingRuns()
     middleware_module = importlib.import_module(
         "assistant_agent.native_agent.memory_middleware"
     )
     monkeypatch.setattr(middleware_module, "get_client", lambda: client)
+    monkeypatch.setattr(middleware_module, "get_sync_client", lambda: nullcontext(client))
 
-    asyncio.run(
-        _assistant_graph(_Memory()).ainvoke(
-            {"messages": [HumanMessage(content="request-sentinel")]},
-            context=AssistantRunContext(),
-            config={
-                "configurable": {
-                    "thread_id": "thread-paged-sentinel",
+    with pytest.raises(ConnectionError, match="submit-failure-sentinel"):
+        asyncio.run(
+            _assistant_graph(_Memory()).ainvoke(
+                {"messages": [HumanMessage(content="request-sentinel")]},
+                context=AssistantRunContext(),
+                config={"configurable": {
+                    "thread_id": "thread-submit-sentinel",
                     "langgraph_auth_user": _User(),
-                }
-            },
+                }},
+            )
         )
-    )
 
-    assert len(client.runs.cancellations) == 101
-    assert len(client.runs.requests) == 1
+    assert client.runs.cancellations == []
+    assert len(client.runs.requests) == 3
 
 
 @pytest.mark.core_invariant("MEMORY-001")
@@ -446,7 +416,7 @@ def test_dev_server_keeps_capacity_for_chat_while_memory_extracts(
 
     monkeypatch.setattr(run_server, "run_command_with_log", capture_command)
 
-    assert run_server.main(["--backend", "dev", "--no-env-file"]) == 0
+    assert run_server.main(["--no-env-file"]) == 0
     option_index = captured["command"].index("--n-jobs-per-worker")
     assert int(captured["command"][option_index + 1]) >= 2
     assert captured["config"]["env"] == {}

@@ -23,49 +23,24 @@ eval、Agent Server 主链路覆盖的 probe 不应继续沉积到本目录。
 
 ## Realtime runtime
 
-- `scripts/run_server.py`：启动 `langgraph.json` 所声明的 Agent Server、原生 Graph 与 media custom route，
-  dev backend 默认允许 10 个并发 job，避免延迟 Memory 提取占满唯一 worker 后阻塞实时聊天；可用
-  `--n-jobs-per-worker` 显式调整。dev backend 可用 `--config` 显式选择独立配置；例如 Studio 演进展示使用
-  `langgraph.showcase.json`，仍复用同一个单实例锁与严格端口检查。PostgreSQL backend 只接受默认配置。
-  不构造项目自有 Runtime。`--backend dev`（默认）调用 `langgraph dev`，状态落在仓库共享的
-  `.langgraph_api/`，只适合单个本地开发实例。wrapper 使用工作目录级单实例锁，并在启动前检查请求端口；
-  端口被占用时直接失败，不允许 `langgraph dev` 自动改用随机端口。PyCharm 共享配置 **Agent Server (Real)**
-  已切换为 PostgreSQL backend、固定使用回环 `8089`，代码变更后重建镜像。dev bootstrap 在 WatchFiles 扫描阶段排除 `.langgraph_api/`，避免
-  runtime pickle 定时落盘产生虚假的 `changes detected` 日志，同时保留 Python 源码 reload。Codex 默认作为客户端连接该实例。只有 PyCharm Server 已停止时，
-  dev backend 才能临时在 `8090` 启动隔离诊断服务，并在诊断完成后停止。
-  wrapper 会生成一次性 LangGraph config，使 `--env-file` 真正替换 `langgraph.json` 的 env 来源；
-  `--no-env-file` 使用空 env 配置并只继承当前进程环境，可安全启动显式 mock 服务。
-  `--backend postgres` 使用 `deploy/agent_server/compose.yaml` 启动专用 PostgreSQL、Redis 和本地构建的
-  Agent Server 镜像，API 只绑定回环地址，PostgreSQL named volume 跨容器重启保留 Store/checkpoint。
-  首次启动或代码变化后运行：
+- `scripts/run_server.py`：日常开发的统一入口，直接调用官方 `langgraph dev`，默认自动重载，
+  状态保存在 `.langgraph_api/`，不需要 Docker 或 PostgreSQL。PyCharm **Agent Server (Real)** 使用同一入口，
+  固定回环端口 `8089`；Real 只表示使用已有真实 Provider 配置，不是生产部署模式。
 
   ```bash
   /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_server.py \
-    --backend postgres --host 127.0.0.1 --port 8089 --env-file .env --rebuild
+    --host 127.0.0.1 --port 8089 --env-file .env
   ```
 
-  无源码变化时后续启动可省略 `--rebuild`。PostgreSQL/Redis 分别只发布回环 `6433`/`6388`；API 使用
-  Linux host network 和同路径 Home mount 以复用本机服务与路径。此部署限受信单机，不提供容器沙箱保证。
-  dev 与 postgres wrapper 共享单实例锁；切换前停止旧 8089。旧 dev checkpoints 不迁移、不删除。
-  控制台 stdout/stderr 默认同时追加到按请求端口隔离的日志：dev 位于
-  系统临时目录的 `assistant_agent/logs/agent_server-<port>.log`，且拒绝仓库内路径，以免 hot reload
-  watcher 消费自己的日志输出并形成反馈循环；postgres 仍位于
-  `.data/logs/agent_server-<port>.log`。可用 `--log-file` 指定其他部署自有路径；旧
-  `.data/logs/agent_server.log` 只保留历史记录。Studio 使用框架内建身份；其他本地客户端直接声明
-  `X-Assistant-User`，当前 tokenless 部署没有网络身份认证，因此不得把 API 暴露到不受信网络。
-- `scripts/install_patched_inmem_runtime.py`：从经过 SHA-256 固定的官方
-  `langgraph-runtime-inmem==0.33.0` wheel 构建并安装 `0.33.0+assistant1` 本地 fork，将 dev queue 的固定
-  500 ms 扫描改为 run 创建与 worker 完成事件唤醒（完成事件同时覆盖 retry），同时保留 delayed run deadline 与低频安全
-  heartbeat，并在进程重启时恢复 retry counter，避免同一 run 复用 attempt 1。首次安装或重建 `hello_agent` 环境时，先安装 `.[agent-server-dev]`，再运行该脚本并完整重启
-  唯一的 8089 dev server：
-
-  ```bash
-  /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pip install -e ".[agent-server-dev]"
-  /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/install_patched_inmem_runtime.py
-  /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/install_patched_inmem_runtime.py --check
-  ```
-
-  安装器不修改项目业务模块；上游 wheel digest 变化时直接失败，必须人工复核并 rebase 补丁。
+  `--no-reload` 关闭官方自动重载；`--n-jobs-per-worker` 默认 10，允许后台 Memory 与聊天并发运行。
+  `--config` 选择其他 LangGraph 配置，`--env-file` 覆盖其 env 来源；`--no-env-file` 使用空 env 配置，
+  可配合显式 mock 环境变量离线启动。新增依赖安装到本机 `hello_agent` 后重启，不再使用 `--backend`、`--watch` 或 `--rebuild`。
+  wrapper 只保留单实例锁、严格端口检查、env/config 来源和日志转发，不修改官方 watcher 或 Runtime。
+  官方 Runtime 由 `.[agent-server-dev]` 安装；不再安装本地 fork。日志默认位于系统临时目录
+  `assistant_agent/logs/agent_server-<port>.log`；`--log-file` 也必须位于仓库外，避免反馈重载。
+  锁冲突时先停止现有 launcher，不删除锁文件；端口占用时不会自动换端口。Codex 默认连接现有 8089。
+  重载会重建进程，Studio、媒体和设备连接需要重连。旧 PostgreSQL 数据卷保留，但 dev 不读取或迁移其中的对话。
+  部署策略见 `docs/agent-server-architecture.md`，官方流程见 [本地开发指南](https://docs.langchain.com/langsmith/local-dev-testing)。
 - `scripts/run_qdrant.py`：PyCharm-friendly 本地 Qdrant supervisor。它只启动
   `docker/mem0/compose.yaml` 的 `visual-memory` profile 和 `qdrant` service，等待
   `http://127.0.0.1:6333/healthz` 就绪，并作为一个 Run process 持续运行。仓库已提供共享配置

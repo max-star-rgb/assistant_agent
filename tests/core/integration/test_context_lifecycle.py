@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -395,15 +396,17 @@ def test_frozen_memory_is_transient_context_before_the_current_request(
             return {"thread_id": kwargs["thread_id"]}
 
     class Runs:
-        async def list(self, *_args: Any, **_kwargs: Any) -> list[Any]:
-            return []
-
-        async def create(self, **_kwargs: Any) -> None:
+        def create(self, **_kwargs: Any) -> None:
             return None
 
+    client = SimpleNamespace(threads=Threads(), runs=Runs())
     monkeypatch.setattr(
         "assistant_agent.native_agent.memory_middleware.get_client",
-        lambda: SimpleNamespace(threads=Threads(), runs=Runs()),
+        lambda: client,
+    )
+    monkeypatch.setattr(
+        "assistant_agent.native_agent.memory_middleware.get_sync_client",
+        lambda: nullcontext(client),
     )
     model = _CaptureMessagesModel()
     model.observed_messages = []
@@ -671,12 +674,9 @@ def test_deep_agent_owns_summary_retry_todo_hitl_and_tool_policy(
     subagents = {item["name"]: item for item in captured["subagents"]}
     assert set(subagents) == {
         "general-purpose",
-        "reviewer",
         "coder",
         "browser-operator",
     }
-    assert "runnable" in subagents["reviewer"]
-    assert "tools" not in subagents["reviewer"]
     assert subagents["coder"]["tools"] == []
     assert {tool.name for tool in subagents["browser-operator"]["tools"]} == {
         "mcp_playwright_browser_snapshot",

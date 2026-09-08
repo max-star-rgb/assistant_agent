@@ -103,7 +103,7 @@ def _prevalidate_environment(source: Mapping[str, str], mode: ProviderMode) -> N
         raise ValueError("Mem0 timeout must be positive")
     if not (source.get("MEM0_IDENTITY_NAMESPACE") or "assistant-agent").strip():
         raise ValueError("Mem0 identity namespace must be non-empty")
-    if _int(source.get("MEMORY_EXTRACTION_DELAY_SECONDS"), 30) <= 0:
+    if _int(source.get("MEMORY_EXTRACTION_DELAY_SECONDS"), 1800) <= 0:
         raise ValueError("memory extraction delay must be positive")
 
     remote_enabled = _bool(source.get("REMOTE_VISUAL_MEMORY_ENABLED"), False)
@@ -406,7 +406,7 @@ def _load_memory_config(source: Mapping[str, str]) -> MemoryConfig:
         or "assistant-agent",
         memory_backend=source.get("MEMORY_BACKEND", "disabled"),
         memory_extraction_delay_seconds=_int(
-            source.get("MEMORY_EXTRACTION_DELAY_SECONDS"), 30
+            source.get("MEMORY_EXTRACTION_DELAY_SECONDS"), 1800
         ),
         langmem_model=source.get("LANGMEM_MODEL"),
         embedding_api_key=source.get("QWEN_EMBEDDING_API_KEY") or source.get("QWEN_API_KEY"),

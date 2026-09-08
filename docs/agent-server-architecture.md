@@ -1,6 +1,6 @@
 # LangGraph Agent Server 部署架构
 
-最后更新：2026-09-03
+最后更新：2026-09-08
 
 ## Authority contract
 
@@ -135,8 +135,8 @@ stream/cancel/join、终态 `AIMessage` 与通用 Tool delivery artifact 投影�
 不按 Tool 名解析业务 artifact，不执行 Tool/Memory，
 不选择 Assistant 模式，也不构造第二套 Runtime。旧 coding behavior attestation route 已删除。
 
-回答后 `MemoryLifecycleMiddleware.after_agent` 在确定性 companion thread 上 rollback 自己标记的旧 pending Memory run，再 enqueue 新的
-`assistant-memory-v1` delayed run。普通 chat 使用 Agent Server 原生 `multitask_strategy="interrupt"`；显式
+回答后 `MemoryLifecycleMiddleware.after_agent` 直接通过官方 `RemoteReflectionExecutor.submit()` 在确定性 companion
+thread 上提交 `assistant-memory-v1` delayed run，使用官方 rollback 替换冲突的 Memory run。普通 chat 使用 Agent Server 原生 `multitask_strategy="interrupt"`；显式
 checkpoint replay 使用 enqueue。主动投递使用独立 Store，不进入 `AssistantAgent` run。
 
 media custom-app lifespan 单次加载 `AppConfig` 后，只保留 provider mode、`VisionConfig` 和 `MediaConfig`；进程级
@@ -169,23 +169,16 @@ media custom-app lifespan 单次加载 `AppConfig` 后，只保留 provider mode
 客户端默认逐次 HITL；Shell 还需 `--allow-shell`，使用客户端 PATH（优先安装环境）和最小环境白名单，
 拥有当前 OS 用户权限而非沙箱。完整启动与安装命令见 `scripts/README.md`。
 
-`scripts/run_server.py --backend dev` 使用 `langgraph dev`，checkpoint/Store 位于共享 `.langgraph_api/`，保留为
-离线开发/回退入口。dev 与 PostgreSQL wrapper 共用工作目录锁及严格端口检查，不同时启动两套服务。
-dev queue 使用固定校验的 `langgraph-runtime-inmem==0.33.0+assistant1` 最小 fork；补丁
-只影响本地 in-memory runtime。
-
-PyCharm 的 **Agent Server (Real)** 使用 `--backend postgres --port 8089 --rebuild`，连接仍为唯一回环 `8089`。
-该部署使用本地 Agent Server 镜像、PostgreSQL 16/pgvector 与 Redis 6；PostgreSQL 的宿主端口为回环 `6433`，
-Redis 为回环 `6388`，避免与其他项目冲突。API 使用 Linux host network 和同路径 Home bind mount，保留宿主
-服务地址与文件路径；容器内工具/系统依赖仍属于容器，不能视为宿主 OS 执行环境的完整复制。设备绑定的执行继续由客户端完成。
-工作目录中的 `.data` 与 `.local` 另外挂载到容器项目目录，保留模型缓存、MCP 私有配置与外围服务数据；
-容器标准 PATH 后追加宿主 PATH，以便同路径挂载中的 Node/MCP 可执行文件继续解析其解释器。
-镜像包含既有视觉流水线所需的 FastEmbed GPU/ONNX/Pillow，Compose 启用 NVIDIA GPU，并复用本机
-`hello_agent` 环境中的 CUDA/cuDNN 共享库；当前部署依赖这台 Linux 主机的 NVIDIA Container Toolkit。
-容器部署不提供 dev hot reload，源码变化后需重建镜像并重启同一服务。
-PostgreSQL 持久化 assistant/thread/run/checkpoint/Store，Redis 只协调 stream/queue；`.langgraph_api/` 不迁移。
-Store 语义索引由 `langgraph.json` 配置，embedding 入口为 `agent_server/embeddings.py`；具体规则见 Memory authority。
-真实 `.env` 只作为未跟踪 env file 注入，不能提交或写入镜像。
+日常开发遵循 [官方本地开发指南](https://docs.langchain.com/langsmith/local-dev-testing)，使用 `langgraph dev`。
+PyCharm 的 **Agent Server (Real)** 通过 `scripts/run_server.py --port 8089 --env-file .env` 调用官方 CLI，
+直接使用本机 `hello_agent` 环境和源码，默认自动重载；`--no-reload` 可关闭。Real 指 Provider 配置，不表示生产部署。
+wrapper 仅负责 env/config 来源、工作目录级单实例锁、严格端口检查和仓库外日志，不修改官方 watcher 或 Runtime。
+使用官方 `langgraph-runtime-inmem==0.33.0`；删除原本地 fork，队列调度和恢复行为跟随上游实现。
+checkpoint/Store 保存在 `.langgraph_api/`，重载会重建服务进程并短暂断开连接，不代表运行中任务无中断更新。
+`langgraph.json` 保留项目依赖入口、Graph、auth、HTTP 和 Store 配置；依赖安装在本机环境，变更后重新安装并重启，
+不需要构建镜像。Store embedding 入口为 `agent_server/embeddings.py`，具体规则见 Memory authority。
+不再提供项目自定义 PostgreSQL/Docker/watch 部署入口；旧 PostgreSQL 数据卷保留但不由 dev 使用，也不自动迁移。
+真实 `.env` 保持未跟踪。未来需要部署验证时再按官方 `langgraph up` 流程独立配置，不混入日常开发入口。
 
 ## 验证
 

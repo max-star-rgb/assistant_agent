@@ -34,15 +34,16 @@ LangChain 原生 `Runnable.with_retry(stop_after_attempt=3)`；三次耗尽后�
 重新读取最新记忆，不建立跨 replay 的额外冻结层。日期与用户地区由 Context authority 管理，不由 Memory 采集或保存。
 
 最终回答产生后，`MemoryLifecycleMiddleware.after_agent` 从 chat thread ID 确定性派生并按需创建 graph identity 为 `assistant-memory-v1` 的
-companion Memory thread，在该后台 thread 上使用官方 `langgraph_sdk` 调用
-`runs.list(thread_id, status="pending")`，只筛选带 `assistant_agent_run_kind=memory_extraction` metadata 的旧
-Memory run，再逐个调用 `runs.cancel(thread_id, run_id, wait=True, action="rollback")`，随后调用 `runs.create` 创建新的
-`assistant-memory-v1` delayed run，默认 `after_seconds=30`、`multitask_strategy="enqueue"`，并写入上述
-metadata 标记。companion thread 以 `assistant_agent_source_thread_id` 记录来源；chat thread 不保留后台 pending
-run，因此 Studio 在回答完成后恢复 idle。这段回答后的 refresh 不取消 pending chat run，也不改变普通用户 chat 入口既有的 `interrupt`
-并发语义；
-模型生成前不发生调度 SDK 往返。项目不实现 timer、进程队列或 session manager；延时与队列由
-Agent Server 管理。SDK 调用只等待 Server 接受请求，不等待提取模型；refresh 同样使用 LangChain 原生 Runnable 三次重试，耗尽后 chat run
+companion Memory thread，然后直接使用 LangMem 官方 `RemoteReflectionExecutor.submit()`，显式传入该
+Memory thread ID、完整 messages 快照及 `after_seconds=1800`（30 分钟）。官方 executor 使用
+`multitask_strategy="rollback"` 提交 `assistant-memory-v1`；旧 pending 或正在执行的冲突 Memory run 由
+Agent Server 处理，项目不再分页查询、筛选、逐个取消，也不使用 enqueue。已经完成的 run 不受影响；
+run/checkpoint rollback 不会撤销已写入长期 Store 的记忆。
+companion thread 以 `assistant_agent_source_thread_id` 记录来源；chat thread 不保留后台 pending run，因此
+Studio 在回答完成后恢复 idle，普通 chat 的 `interrupt` 并发语义不变。
+官方 executor 的同步提交与资源关闭放在 `asyncio.to_thread` 中，只等待提交 Future 完成，即 Server 接受请求，
+不等待延迟提取；线程只负责 SDK 请求，30 分钟调度仍由 Agent Server 持久化管理。
+refresh 同样使用 LangChain 原生 Runnable 三次重试，耗尽后 chat run
 明确终结为 error。
 
 静默窗口到期后，独立 Memory Graph 调用 backend 写入；其异常只结束后台 run，第三方原始错误不进入
@@ -79,16 +80,17 @@ Assistant state。节点使用 LangGraph 原生 `RetryPolicy(max_attempts=3)`；
 mock mode 只能使用 disabled；远端 backend 要求 real mode 和完整显式配置，不能探测 key 后启用，也不能静默
 回退。
 
-## PostgreSQL 与语义索引
+## Store 与语义索引
 
-PostgreSQL 部署由 Agent Server 注入默认 Store 与 checkpointer；LangMem 不另建数据库连接或 Store。
+Agent Server 注入默认 Store 与 checkpointer；LangMem 不另建数据库连接或 Store。当前日常开发使用官方
+`langgraph dev` 的本地持久化，状态位于 `.langgraph_api/`，不依赖 PostgreSQL。
 `langgraph.json` 的官方 `store.index` 对 `content.content` 建立 1024 维索引，使用百炼 `text-embedding-v4`。
 `agent_server.embeddings` 是 Server embedding 配置入口，复用官方 `OpenAIEmbeddings`；一次最多 10 条，显式
 float 编码，不使用 OpenAI tokenizer 自动切片。凭据优先 `QWEN_EMBEDDING_API_KEY`，其次 `QWEN_API_KEY`；
 地址优先 `QWEN_EMBEDDING_BASE_URL`，其次 `QWEN_CHAT_BASE_URL`，最后为百炼标准兼容地址。
 mock 下不调用 embedding API；real 下未配置凭据明确失败。模型与维度变更需要重新建索引，不能混用旧向量。
 
-切换 PostgreSQL 时不迁移 `.langgraph_api` 的旧记忆。删除旧长期记忆只针对 `assistant_agent` 的
+原 PostgreSQL 数据与当前 `.langgraph_api/` 独立，不自动迁移。删除旧长期记忆只针对 `assistant_agent` 的
 `memory_subject_*` 命名空间及其向量，不删除 thread、run 或 checkpoint；操作文件前必须停止 dev Server。
 
 ## 冻结快照与安全

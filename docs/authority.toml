@@ -34,8 +34,6 @@ source_globs = [
   "src/assistant_agent/client.py",
   "src/assistant_agent/runtime/thread_resources.py",
   "src/assistant_agent/proactive_delivery.py",
-  "patches/langgraph-runtime-inmem/**",
-  "scripts/install_patched_inmem_runtime.py",
   "scripts/run_server.py",
   "scripts/agent_cli.py",
   "tests/core/contract/test_gateway_contract.py",

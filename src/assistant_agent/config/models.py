@@ -216,7 +216,7 @@ class MemoryConfig:
     mem0_timeout_seconds: float = 5.0
     mem0_identity_namespace: str = "assistant-agent"
     memory_backend: MemoryBackendName = "disabled"
-    memory_extraction_delay_seconds: int = 30
+    memory_extraction_delay_seconds: int = 1800
     langmem_model: str | None = None
     embedding_api_key: str | None = None
     embedding_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"

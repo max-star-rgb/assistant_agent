@@ -9,19 +9,17 @@ from uuid import NAMESPACE_URL, uuid5
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.runnables import RunnableLambda
 from langgraph.runtime import Runtime
-from langgraph_sdk import get_client
+from langgraph_sdk import get_client, get_sync_client
 
 from assistant_agent.media.runtime_media import without_uploaded_media_messages
-from assistant_agent.native_agent.context import AssistantRunContext
-from assistant_agent.native_agent.memory import MemoryBackend, recall_memory
+from assistant_agent.native_agent.context import AssistantRunContext, authenticated_user_identity
+from assistant_agent.native_agent.memory import MemoryBackend, _langmem_namespace, recall_memory
 from assistant_agent.native_agent.state import AssistantAgentState
 
 
 MEMORY_ASSISTANT_ID = "assistant-memory-v1"
-DEFAULT_EXTRACTION_DELAY_SECONDS = 30
-MEMORY_EXTRACTION_RUN_KIND = "memory_extraction"
+DEFAULT_EXTRACTION_DELAY_SECONDS = 1800
 MEMORY_SOURCE_THREAD_KEY = "assistant_agent_source_thread_id"
-PENDING_RUN_PAGE_SIZE = 100
 
 
 class MemoryLifecycleMiddleware(
@@ -105,43 +103,25 @@ class MemoryLifecycleMiddleware(
             if_exists="do_nothing",
         )
         memory_thread_id = str(memory_thread["thread_id"])
-        pending_runs: list[dict[str, Any]] = []
-        offset = 0
-        while True:
-            page = await client.runs.list(
-                memory_thread_id,
-                status="pending",
-                limit=PENDING_RUN_PAGE_SIZE,
-                offset=offset,
-            )
-            pending_runs.extend(page)
-            if len(page) < PENDING_RUN_PAGE_SIZE:
-                break
-            offset += len(page)
-        for run in pending_runs:
-            metadata = run.get("metadata")
-            if not isinstance(metadata, dict):
-                continue
-            if metadata.get("assistant_agent_run_kind") != MEMORY_EXTRACTION_RUN_KIND:
-                continue
-            await client.runs.cancel(
-                memory_thread_id,
-                str(run["run_id"]),
-                wait=True,
-                action="rollback",
-            )
-        await client.runs.create(
-            thread_id=memory_thread_id,
-            assistant_id=MEMORY_ASSISTANT_ID,
-            input={
-                "messages": without_uploaded_media_messages(
-                    list(state.get("messages", ()))
-                )
-            },
-            metadata={"assistant_agent_run_kind": MEMORY_EXTRACTION_RUN_KIND},
-            after_seconds=self._delay_seconds,
-            multitask_strategy="enqueue",
-        )
+        from langmem.reflection import RemoteReflectionExecutor
+
+        def submit_reflection() -> None:
+            with get_sync_client() as sync_client, RemoteReflectionExecutor(
+                namespace=_langmem_namespace(authenticated_user_identity(runtime)),
+                reflector=MEMORY_ASSISTANT_ID,
+                client=client,
+                sync_client=sync_client,
+            ) as reflection:
+                # Wait for Server acceptance, not the delayed extraction itself.
+                reflection.submit(
+                    {"messages": without_uploaded_media_messages(list(state.get("messages", ())))},
+                    config={"configurable": {"thread_id": memory_thread_id}},
+                    thread_id=memory_thread_id,
+                    after_seconds=self._delay_seconds,
+                ).result()
+
+        # The official executor and sync client must also close outside the event loop.
+        await asyncio.to_thread(submit_reflection)
         return {}
 
 
@@ -153,6 +133,5 @@ def _execution_value(runtime: Runtime[Any], field: str) -> str | None:
 __all__ = [
     "DEFAULT_EXTRACTION_DELAY_SECONDS",
     "MEMORY_ASSISTANT_ID",
-    "MEMORY_EXTRACTION_RUN_KIND",
     "MemoryLifecycleMiddleware",
 ]

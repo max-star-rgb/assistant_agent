@@ -1,13 +1,6 @@
 {
   "dependencies": [
-    ".",
-    "fastapi==0.136.3",
-    "langmem==0.0.30",
-    "httpx[socks]==0.28.1",
-    "fastembed-gpu==0.8.0",
-    "onnxruntime-gpu==1.26.0",
-    "onnx==1.22.0",
-    "Pillow==11.3.0"
+    "."
   ],
   "env": ".env",
   "store": {

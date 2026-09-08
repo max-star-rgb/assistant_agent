@@ -67,8 +67,7 @@ working-directory backend 一起交给同一套 filesystem Tool，因此 Prompt 
 
 Todo、`async_tasks`、Tool Profile、Skill metadata、文件读取 transcript 和未知未来字段都不会
 跨越该边界。worker 内部 transcript 也不回灌父级。middleware 自有 channel 使用 `PrivateStateAttr`，包括
-`ToolProfileMiddleware.active_tool_profile_ids`、递归收尾的 `remaining_steps`，以及主 loop 的
-`needs_verification` / `verification_attempts`；它们不是 task 或公开 context 合同。
+`ToolProfileMiddleware.active_tool_profile_ids` 和递归收尾的 `remaining_steps`；它们不是 task 或公开 context 合同。
 `async_tasks` 同样使用 `PrivateStateAttr`，仅供当前 state/checkpoint 流程消费。`memory_context` 需经上述
 allowlist 传给 `general-purpose` worker，因此使用
 `OmitFromInput + OmitFromOutput`。两种原生 metadata 都保证这些字段不进入生产 Graph 公开 input/output。

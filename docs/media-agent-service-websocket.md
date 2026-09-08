@@ -184,8 +184,8 @@ Tool 负责从已校验的领域结果构造卡片、导航链接或 `output_ref
 下载链接。所有文本、URL 和 refs 均有界、去重；Graph 拓扑、ToolNode 和 checkpoint 生命周期不变。
 
 Memory debounce 是所有入口共享的
-主图规则：生成回答后通过官方 Agent Server SDK，在由 chat thread 确定性派生的 companion Memory thread 上
-rollback 旧 pending Memory run，并立即 enqueue 一个新的 30 分钟 delayed Memory run；chat thread 不保留后台
+主图规则：生成回答后通过官方 `RemoteReflectionExecutor.submit()`，在由 chat thread 确定性派生的 companion
+Memory thread 上以 rollback 策略提交新的 30 分钟 delayed Memory run；chat thread 不保留后台
 pending run。该 orchestration 不扩展媒体 wire，
 WebSocket 挂断也不承担 Memory 语义。
 
