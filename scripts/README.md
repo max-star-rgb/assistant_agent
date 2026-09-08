@@ -1,5 +1,20 @@
 # Scripts 入口索引
 
+## 本机安装客户端
+
+`assistant-agent --cwd /home/lenovo1/assistant_cqy --identity lenovo1 --allow-shell` 连接唯一 8089。
+安装发行入口来自 `assistant_agent.client`；支持逐次工具审批、会话 ID 续接、Ctrl-C 原生取消，`--check` 只验证连接而不调用模型。
+本机已安装副本位于 `/home/lenovo1/assistant_cqy/.agent/client-venv/`，可直接运行其中 `bin/assistant-agent`。
+该体验环境复用 `hello_agent` 的已有依赖，但包本身来自 wheel；不代表已完成干净电脑依赖安装验证。
+在 `/home/lenovo1/assistant_cqy` 目录也可运行 `./start-assistant.sh`；裸文件名不会自动从当前目录查找。
+终端输入使用 Linux UTF-8 退格支持；无效编码整行拒绝并重输，不替换损坏字节后执行。
+Shell 默认关闭；上述 `--allow-shell` 显式开启当前系统用户权限，仍需每次审批，不提供沙箱。
+
+当前仅支持同机原生客户端、受信开发身份和文本文件/Shell RPC；Git/浏览器/媒体仍在同一服务机器运行。
+尚未提供桌面图形安装器、正式帐号登录或跨电脑执行，不能直接把服务暴露公网。
+
+## 开发与验证入口
+
 这里只保留当前 Agent Server、观测、评测和专项验收仍在使用的入口。一次性排障或已由 pytest、
 eval、Agent Server 主链路覆盖的 probe 不应继续沉积到本目录。
 
@@ -15,7 +30,7 @@ eval、Agent Server 主链路覆盖的 probe 不应继续沉积到本目录。
   不构造项目自有 Runtime。`--backend dev`（默认）调用 `langgraph dev`，状态落在仓库共享的
   `.langgraph_api/`，只适合单个本地开发实例。wrapper 使用工作目录级单实例锁，并在启动前检查请求端口；
   端口被占用时直接失败，不允许 `langgraph dev` 自动改用随机端口。PyCharm 共享配置 **Agent Server (Real)**
-  固定使用 `8089` 并启用原生 hot reload；dev bootstrap 在 WatchFiles 扫描阶段排除 `.langgraph_api/`，避免
+  已切换为 PostgreSQL backend、固定使用回环 `8089`，代码变更后重建镜像。dev bootstrap 在 WatchFiles 扫描阶段排除 `.langgraph_api/`，避免
   runtime pickle 定时落盘产生虚假的 `changes detected` 日志，同时保留 Python 源码 reload。Codex 默认作为客户端连接该实例。只有 PyCharm Server 已停止时，
   dev backend 才能临时在 `8090` 启动隔离诊断服务，并在诊断完成后停止。
   wrapper 会生成一次性 LangGraph config，使 `--env-file` 真正替换 `langgraph.json` 的 env 来源；
@@ -26,10 +41,13 @@ eval、Agent Server 主链路覆盖的 probe 不应继续沉积到本目录。
 
   ```bash
   /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_server.py \
-    --backend postgres --host 127.0.0.1 --port 8088 --env-file .env --rebuild
+    --backend postgres --host 127.0.0.1 --port 8089 --env-file .env --rebuild
   ```
 
-  后续启动可省略 `--rebuild`。控制台 stdout/stderr 默认同时追加到按请求端口隔离的日志：dev 位于
+  无源码变化时后续启动可省略 `--rebuild`。PostgreSQL/Redis 分别只发布回环 `6433`/`6388`；API 使用
+  Linux host network 和同路径 Home mount 以复用本机服务与路径。此部署限受信单机，不提供容器沙箱保证。
+  dev 与 postgres wrapper 共享单实例锁；切换前停止旧 8089。旧 dev checkpoints 不迁移、不删除。
+  控制台 stdout/stderr 默认同时追加到按请求端口隔离的日志：dev 位于
   系统临时目录的 `assistant_agent/logs/agent_server-<port>.log`，且拒绝仓库内路径，以免 hot reload
   watcher 消费自己的日志输出并形成反馈循环；postgres 仍位于
   `.data/logs/agent_server-<port>.log`。可用 `--log-file` 指定其他部署自有路径；旧
@@ -187,3 +205,10 @@ Playwright 产物写入 `<cwd>/.agent/browser`，不使用 thread scratch/artifa
 
 新增脚本必须对应当前权威文档中的稳定入口或无法由现有 pytest/eval 表达的 operator 流程；
 临时诊断优先使用不提交的一次性命令。
+
+### 客户端独立浏览器
+
+安装时在用户 cwd 执行 `assistant-agent --install-browser --cwd /path/to/workspace`，要求 PATH 中有 Node.js 20+ 和 npm。
+固定版本 Playwright MCP 与匹配 Chromium 安装到该 cwd 的 `.agent/browser-runtime`。之后普通启动即可使用，
+无桌面显示环境可加 `--browser-headless`。不要求安装 Chrome 扩展；浏览器 profile 与输出在 `.agent/browser/<thread-hash>`。
+该命令不启动 Agent Server、不调用模型；当前 wheel 尚未捆绑 Node 或 Linux 系统浏览器依赖，不能视为跨平台一键安装包。

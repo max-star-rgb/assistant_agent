@@ -71,6 +71,10 @@ class AssistantRunContext(BaseModel):
             ]
         },
     )
+    device_id: str | None = Field(
+        default=None, min_length=1, max_length=80, pattern=r"^[A-Za-z0-9_-]+$",
+        description="已在本机注册的执行设备；绑定后离线不回退服务端。",
+    )
     require_tool_approval: bool = Field(
         default=False,
         description="工具执行前是否要求人工审批；本机开发默认关闭，可显式启用。",
@@ -97,13 +101,14 @@ class AssistantRunContext(BaseModel):
             cwd = Path(os.path.normpath(Path(value).expanduser()))  # type: ignore[arg-type]
         except (TypeError, ValueError) as exc:
             raise ValueError("cwd must be an absolute path") from exc
-        host_root = Path.home()
-        if not cwd.is_absolute() or not cwd.is_relative_to(host_root):
-            raise ValueError(f"cwd must be a directory under {host_root}")
+        if not cwd.is_absolute():
+            raise ValueError("cwd must be an absolute path")
         return cwd
 
     @model_validator(mode="after")
     def validate_context_compaction_limits(self) -> Self:
+        if self.device_id is None and not self.cwd.is_relative_to(Path.home()):
+            raise ValueError(f"cwd must be a directory under {Path.home()}")
         trigger = self.context_compaction_trigger_tokens
         keep = self.context_compaction_keep_tokens
         if (trigger is None) != (keep is None):

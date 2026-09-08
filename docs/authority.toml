@@ -31,6 +31,7 @@ read_when = [
 source_globs = [
   "langgraph.json",
   "src/assistant_agent/agent_server/**",
+  "src/assistant_agent/client.py",
   "src/assistant_agent/runtime/thread_resources.py",
   "src/assistant_agent/proactive_delivery.py",
   "patches/langgraph-runtime-inmem/**",
@@ -118,6 +119,9 @@ source_globs = [
   "src/assistant_agent/runtime/local_backend.py",
   "src/assistant_agent/runtime/thread_resources.py",
   "src/assistant_agent/skills/**",
+  "src/assistant_agent/runtime/device_backend.py",
+  "src/assistant_agent/runtime/device_client.py",
+  "src/assistant_agent/runtime/device_files.py",
   "src/assistant_agent/tools/**",
   "src/assistant_agent/mcp/**",
   "skills/**",
@@ -158,6 +162,7 @@ read_when = [
 ]
 source_globs = [
   "src/assistant_agent/native_agent/memory.py",
+  "src/assistant_agent/agent_server/embeddings.py",
   "src/assistant_agent/native_agent/memory_graph.py",
   "src/assistant_agent/native_agent/memory_middleware.py",
   "src/assistant_agent/native_agent/state.py",

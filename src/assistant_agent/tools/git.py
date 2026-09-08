@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import shlex
 import subprocess
 from collections.abc import Awaitable, Callable
@@ -217,7 +218,7 @@ class GitToolMiddleware(AgentMiddleware):
     @staticmethod
     def _create_git_tool() -> BaseTool:
         @tool(GIT_TOOL_NAME, response_format="content_and_artifact")
-        def git_command(
+        async def git_command(
             target_path: Annotated[
                 str,
                 Field(
@@ -240,10 +241,18 @@ class GitToolMiddleware(AgentMiddleware):
 
             if Path(arguments[0]).name == GIT_TOOL_NAME:
                 raise ToolException("arguments 不应包含开头的 git。")
+            if runtime.context.device_id:
+                from assistant_agent.runtime.device_backend import device_backend_for_runtime
+                result = await device_backend_for_runtime(runtime).call(
+                    "git", {"target_path": target_path, "arguments": arguments},
+                )
+                if result["exit_code"]:
+                    raise ToolException(json.dumps(result, ensure_ascii=False))
+                return ([{"type": "text", "text": result["output"]}], {"status": "succeeded", **result})
             target = Path(target_path).expanduser()
             if not target.is_absolute():
                 target = runtime.context.cwd / target
-            result = run_git_command(target, tuple(arguments))
+            result = await asyncio.to_thread(run_git_command, target, tuple(arguments))
             observation = {
                 "status": "succeeded" if result.exit_code == 0 else "failed",
                 "exit_code": result.exit_code,

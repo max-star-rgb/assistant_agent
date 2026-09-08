@@ -3,6 +3,8 @@ name: assistant-agent-langgraph
 services:
   langgraph-redis:
     image: redis:6
+    ports:
+      - "127.0.0.1:6388:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -17,6 +19,8 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     command: ["postgres", "-c", "shared_preload_libraries=vector"]
+    ports:
+      - "127.0.0.1:6433:5432"
     volumes:
       - assistant-agent-langgraph-postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -32,10 +36,21 @@ services:
     env_file:
       - ${ASSISTANT_AGENT_ENV_FILE:-../../.env}
     environment:
-      POSTGRES_URI: postgres://postgres:postgres@langgraph-postgres:5432/postgres?sslmode=disable
-      REDIS_URI: redis://langgraph-redis:6379
-    ports:
-      - "127.0.0.1:${ASSISTANT_AGENT_SERVER_PORT:-8088}:8000"
+      POSTGRES_URI: postgres://postgres:postgres@127.0.0.1:6433/postgres?sslmode=disable
+      REDIS_URI: redis://127.0.0.1:6388
+      LANGGRAPH_SERVER_HOST: 127.0.0.1
+      LANGGRAPH_SERVER_PORT: ${ASSISTANT_AGENT_SERVER_PORT:-8089}
+      PORT: ${ASSISTANT_AGENT_SERVER_PORT:-8089}
+      HOME: ${HOME}
+      PATH: /usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin:${HOME}/.nvm/versions/node/v24.16.0/bin:${PATH}
+      LD_LIBRARY_PATH: ${HOME}/miniconda3/envs/hello_agent/lib/python3.12/site-packages/nvidia/cublas/lib:${HOME}/miniconda3/envs/hello_agent/lib/python3.12/site-packages/nvidia/cudnn/lib:${HOME}/miniconda3/envs/hello_agent/lib/python3.12/site-packages/nvidia/cuda_runtime/lib:${HOME}/miniconda3/envs/hello_agent/lib/python3.12/site-packages/nvidia/curand/lib:${HOME}/miniconda3/envs/hello_agent/lib/python3.12/site-packages/nvidia/cufft/lib:/usr/local/nvidia/lib64
+    # Trusted single-host deployment: retain host service URLs and execution paths.
+    network_mode: host
+    gpus: all
+    volumes:
+      - ${HOME}:${HOME}
+      - ../../.data:/deps/assistant_agent/.data
+      - ../../.local:/deps/assistant_agent/.local
     depends_on:
       langgraph-postgres:
         condition: service_healthy

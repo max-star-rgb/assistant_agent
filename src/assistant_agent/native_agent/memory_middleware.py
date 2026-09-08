@@ -18,7 +18,7 @@ from assistant_agent.native_agent.state import AssistantAgentState
 
 
 MEMORY_ASSISTANT_ID = "assistant-memory-v1"
-DEFAULT_EXTRACTION_DELAY_SECONDS = 1800
+DEFAULT_EXTRACTION_DELAY_SECONDS = 30
 MEMORY_EXTRACTION_RUN_KIND = "memory_extraction"
 MEMORY_SOURCE_THREAD_KEY = "assistant_agent_source_thread_id"
 PENDING_RUN_PAGE_SIZE = 100

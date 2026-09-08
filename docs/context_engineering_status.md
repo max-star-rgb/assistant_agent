@@ -15,6 +15,11 @@
 
 ## 当前主链
 
+本机安装客户端新增可选公开字段 `device_id`。它只选择已由服务注册并绑定当前 identity/cwd 的执行连接，
+不代表用户身份或授权凭据；省略时保持既有 Studio/媒体行为。安装客户端显式开启 `require_tool_approval`。
+此阶段只开放同机注册，但项目指令和 cwd Skills 已由绑定客户端读取，服务端不再依赖同名路径。
+源码 Skills 仍随服务发布。Deep Agents 生成的压缩历史保存在执行目录 `.agent/history`；原有 Home 历史不自动迁移。
+
 生产上下文以 LangChain 标准 `messages` channel 为事实源。统一 `AssistantAgent` 使用一个分层 Prompt Builder：
 顶层主 Agent 的原生 dynamic prompt 根据公开 `context.persona` 选择稳定核心策略：`general` 使用
 `native_agent/prompts/studio.py`，`call_assistant` 使用 `native_agent/prompts/media.py`。Studio 默认 `general`，
@@ -86,7 +91,7 @@ Tool observation 使用标准 `ToolMessage(content, artifact)`；runtime-owned �
 
 统一 Agent 与通用 worker 都只装配一套 Deep Agents summarization；该 model-call middleware 统计当前可见的 system message、
 有效历史与 Tool schema，并通过 `_summarization_event` 保留原始 message log。被压缩的完整历史沿用 Deep Agents
-`/conversation_history/session_<uuid>.md` 约定，实际写入动态 `Path.home()`，不依赖本轮 `cwd` 或 thread artifact。
+`/conversation_history/session_<uuid>.md` 约定，实际写入本轮执行目录 `<cwd>/.agent/history`，有设备绑定时由客户端完成，不使用 thread artifact。
 main/worker 在同一 model superstep 内每 Tool 最多并行 12 次，并在
 `recursion_limit` 只剩 8 个 superstep 时关闭 Tool 生成自然综合。所有显式配置 Tool 的审批由 Runtime/Tool authority
 统一定义，不通过上下文模式切换。

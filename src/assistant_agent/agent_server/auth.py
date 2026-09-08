@@ -272,6 +272,13 @@ async def authorize_run_create(
     context = value.setdefault("context", {})
     if not isinstance(context, dict):
         return False
+    if context.get("device_id") is not None:
+        from assistant_agent.agent_server.devices import local_devices
+        from assistant_agent.native_agent.context import AssistantRunContext
+        try:
+            local_devices.require_binding(str(ctx.user.identity), AssistantRunContext(**context), connected=True)
+        except ValueError:
+            return False
     if _is_internal_worker(ctx) or not _authorized_non_worker_metadata(
         metadata,
         internal_media=_is_internal_media(ctx),

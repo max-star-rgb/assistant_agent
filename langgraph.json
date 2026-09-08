@@ -3,9 +3,20 @@
     ".",
     "fastapi==0.136.3",
     "langmem==0.0.30",
-    "httpx[socks]==0.28.1"
+    "httpx[socks]==0.28.1",
+    "fastembed-gpu==0.8.0",
+    "onnxruntime-gpu==1.26.0",
+    "onnx==1.22.0",
+    "Pillow==11.3.0"
   ],
   "env": ".env",
+  "store": {
+    "index": {
+      "embed": "./src/assistant_agent/agent_server/embeddings.py:embed_memory_texts",
+      "dims": 1024,
+      "fields": ["content.content"]
+    }
+  },
   "graphs": {
     "assistant-native-v4": "assistant_agent.agent_server.graph:native_assistant_graph",
     "assistant-worker-v2": "assistant_agent.agent_server.graph:native_worker_graph",

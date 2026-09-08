@@ -6,17 +6,14 @@
       "session_scope": "thread",
       "cwd": "{cwd}",
       "command": [
-        "/home/lenovo1/.nvm/versions/node/v24.16.0/bin/npx",
+        "npx",
         "-y",
         "@playwright/mcp@0.0.78",
-        "--extension",
+        "--browser",
+        "chromium",
         "--output-dir",
         "{cwd}/.agent/browser"
       ],
-      "env": {
-        "PATH": "/home/lenovo1/.nvm/versions/node/v24.16.0/bin:/usr/bin:/bin",
-        "PLAYWRIGHT_MCP_EXTENSION_TOKEN": "${PLAYWRIGHT_MCP_EXTENSION_TOKEN}"
-      },
       "allowed_tools": [
         "browser_close",
         "browser_resize",

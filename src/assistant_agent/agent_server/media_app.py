@@ -24,6 +24,7 @@ from langchain_core.messages import AIMessage
 
 from assistant_agent.agent_server.auth import _internal_media_headers
 from assistant_agent.agent_server.client import SdkAgentServerClient
+from assistant_agent.agent_server.devices import router as local_device_router
 from assistant_agent.agent_server.graph import (
     close_native_assistant_graph,
     current_native_execution_owner,
@@ -209,6 +210,7 @@ app = FastAPI(
     lifespan=agent_server_lifespan,
 )
 app.include_router(rendering_3d_callback_router)
+app.include_router(local_device_router)
 
 
 @app.get("/internal/memory-media/{token}", include_in_schema=False)
@@ -1012,7 +1014,7 @@ async def _run_chat(
         context = session.context or parse_media_context(
             {}, user_id=str(session.user_id or "")
         )
-        working_directory = await asyncio.to_thread(
+        working_directory = context.cwd if context.device_id else await asyncio.to_thread(
             ensure_working_directory,
             context.cwd,
         )

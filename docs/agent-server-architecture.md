@@ -146,13 +146,45 @@ media custom-app lifespan 单次加载 `AppConfig` 后，只保留 provider mode
 
 ## 本地部署
 
-`scripts/run_server.py --backend dev` 使用 `langgraph dev`，checkpoint/Store 位于共享 `.langgraph_api/`。同一
-worktree 只允许一个 dev server；PyCharm 管理的唯一实例固定为 `8089` 并保留原生 hot reload，Codex 只作为客户端
-连接，不启动第二套服务。dev queue 使用固定校验的 `langgraph-runtime-inmem==0.33.0+assistant1` 最小 fork；补丁
+### 安装客户端的同机体验
+
+发行入口 `assistant-agent`（`assistant_agent.client`）已连接现有生产 v4 图。它通过原生 SDK 管理对话、审批和取消，
+同时启动本地执行连接，不创建 Agent loop 或第二个 Agent Server。`--cwd` 选择用户目录，客户端在该目录的 `.agent/`
+保存按服务地址和身份区分的会话 ID；下次启动读取服务端同一 thread，checkpoint/Memory 仍由既有服务保存。
+
+现有 custom app 提供 `/local-devices` 注册、`/local-devices/connect` 反向 WebSocket 和注销入口。
+当前只允许回环连接且拒绝带 Origin 的请求，沿用受信本机开发身份，不能当作公网帐号系统。
+注册把 identity、随机 device_id 与 cwd 绑定在当前进程，配对 token 只在客户端内存及连接 header 中使用。
+重载后客户端需重新启动并注册。公开 context 的可选 `device_id` 选择该绑定；run auth 校验 owner/cwd/在线状态。
+
+默认 composition 的 `WorkingDirectoryBackend` 已支持设备分发：有 device_id 时文件、Shell、Git 和 Playwright 经客户端执行，
+无 device_id 的 Studio/媒体调用保留既有本机路径。主 Agent、worker、coder 和 browser-operator 在 Tool handler 前
+检查绑定设备在线；断连不会改选服务端文件 backend，已开始的操作仍可能有结果未知或不可回滚的副作用。
+
+执行边界已补齐：cwd Skills、项目指令和压缩历史来自绑定客户端；图片生成 Provider 仍在服务端运行，
+生成物分块传到客户端 outputs，上传的本地媒体先从客户端取回临时处理。浏览器使用客户端独立 Chromium。
+注册仍是**同机生产接线**；正式帐号认证、TLS、设备持久注册和跨平台安装包未完成，不能宣称“另一台电脑下载安装即用”。
+无设备 context 只接受服务端 Home 内路径；设备 cwd 使用注册绑定的绝对路径，不按服务端 Home 校验。
+安装客户端在本机校验自己的 Home 边界，保持真实绝对路径语义，不使用实验的虚拟根模式。
+客户端默认逐次 HITL；Shell 还需 `--allow-shell`，使用客户端 PATH（优先安装环境）和最小环境白名单，
+拥有当前 OS 用户权限而非沙箱。完整启动与安装命令见 `scripts/README.md`。
+
+`scripts/run_server.py --backend dev` 使用 `langgraph dev`，checkpoint/Store 位于共享 `.langgraph_api/`，保留为
+离线开发/回退入口。dev 与 PostgreSQL wrapper 共用工作目录锁及严格端口检查，不同时启动两套服务。
+dev queue 使用固定校验的 `langgraph-runtime-inmem==0.33.0+assistant1` 最小 fork；补丁
 只影响本地 in-memory runtime。
 
-`--backend postgres` 使用本地 Agent Server 镜像、PostgreSQL 16/pgvector 与 Redis 6，默认绑定回环 `8088`。
+PyCharm 的 **Agent Server (Real)** 使用 `--backend postgres --port 8089 --rebuild`，连接仍为唯一回环 `8089`。
+该部署使用本地 Agent Server 镜像、PostgreSQL 16/pgvector 与 Redis 6；PostgreSQL 的宿主端口为回环 `6433`，
+Redis 为回环 `6388`，避免与其他项目冲突。API 使用 Linux host network 和同路径 Home bind mount，保留宿主
+服务地址与文件路径；容器内工具/系统依赖仍属于容器，不能视为宿主 OS 执行环境的完整复制。设备绑定的执行继续由客户端完成。
+工作目录中的 `.data` 与 `.local` 另外挂载到容器项目目录，保留模型缓存、MCP 私有配置与外围服务数据；
+容器标准 PATH 后追加宿主 PATH，以便同路径挂载中的 Node/MCP 可执行文件继续解析其解释器。
+镜像包含既有视觉流水线所需的 FastEmbed GPU/ONNX/Pillow，Compose 启用 NVIDIA GPU，并复用本机
+`hello_agent` 环境中的 CUDA/cuDNN 共享库；当前部署依赖这台 Linux 主机的 NVIDIA Container Toolkit。
+容器部署不提供 dev hot reload，源码变化后需重建镜像并重启同一服务。
 PostgreSQL 持久化 assistant/thread/run/checkpoint/Store，Redis 只协调 stream/queue；`.langgraph_api/` 不迁移。
+Store 语义索引由 `langgraph.json` 配置，embedding 入口为 `agent_server/embeddings.py`；具体规则见 Memory authority。
 真实 `.env` 只作为未跟踪 env file 注入，不能提交或写入镜像。
 
 ## 验证

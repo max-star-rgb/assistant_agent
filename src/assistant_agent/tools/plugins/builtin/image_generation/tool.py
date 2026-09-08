@@ -1,5 +1,6 @@
 """Image generation Tool backed by a Plugin-private adapter."""
 
+import asyncio
 import shutil
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
@@ -62,7 +63,7 @@ def create_image_generation_tool(
     image_adapter = adapter or MockImageGenerationAdapter()
 
     @tool(IMAGE_GENERATION_TOOL_NAME, response_format="content_and_artifact")
-    def image_generation(
+    async def image_generation(
         prompt: Annotated[
             str,
             Field(
@@ -83,8 +84,8 @@ def create_image_generation_tool(
                 authenticated_user_identity(runtime),
                 str(runtime.execution_info.thread_id or ""),
             )
-            result = _execute_image_generation_from_runtime(
-                image_adapter,
+            result = await asyncio.to_thread(
+                _execute_image_generation_from_runtime, image_adapter,
                 prompt,
                 runtime,
                 thread_resource_manager=thread_resource_manager,
@@ -96,6 +97,16 @@ def create_image_generation_tool(
                 result,
                 public_prefix=generated_artifact_prefix(resources.thread_ref),
             )
+            if runtime.context.device_id is not None:
+                from assistant_agent.runtime.device_backend import device_backend_for_runtime
+                backend = device_backend_for_runtime(runtime)
+                for image in artifact.get("images", []):
+                    filename = PurePosixPath(image["output_ref"]).name
+                    payload = await asyncio.to_thread((resources.artifact_root / "generated" / filename).read_bytes)
+                    delivered = await backend.upload(str(runtime.context.cwd / "outputs" / filename), payload)
+                    if delivered.error:
+                        raise RuntimeError(f"device_media_delivery_failed: {delivered.error}")
+                    image["local_path"] = delivered.path
             output_refs = [
                 image["output_ref"]
                 for image in artifact.get("images", [])
@@ -144,7 +155,7 @@ def _execute_image_generation_from_runtime(
         adapter,
         request,
         artifact_dir=resources.artifact_root / "generated",
-        output_dir=Path(runtime.context.cwd) / "outputs",
+        output_dir=None if runtime.context.device_id is not None else Path(runtime.context.cwd) / "outputs",
         public_prefix=public_prefix,
         use_fixture=use_fixture,
     )
@@ -155,7 +166,7 @@ def _execute_image_generation(
     input: ImageGenerationRequest,
     *,
     artifact_dir: Path,
-    output_dir: Path,
+    output_dir: Path | None,
     public_prefix: str,
     use_fixture: bool = False,
 ) -> ImageGenerationResult:
@@ -196,7 +207,7 @@ def _execute_image_generation(
         public_prefix=public_prefix,
     )
     images = _generated_image_artifacts(result, public_prefix=public_prefix)
-    if images:
+    if images and output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
         for image in images:
             filename = PurePosixPath(image.output_ref).name
@@ -297,7 +308,8 @@ def _image_mime_type(suffix: str) -> str:
 def _image_generation_model_observation(data: dict[str, Any]) -> dict[str, Any]:
     observation: dict[str, Any] = {
         "images": [
-            {"image_id": image.get("image_id"), "url": image.get("url")}
+            {"image_id": image.get("image_id"), "url": image.get("url"),
+             **({"local_path": image["local_path"]} if image.get("local_path") else {})}
             for image in data.get("images", [])
             if isinstance(image, Mapping) and image.get("image_id") and image.get("url")
         ],

@@ -125,7 +125,7 @@ def test_local_shell_backend_resolves_runtime_cwd_and_os_absolute_paths(
     monkeypatch.setattr(
         local_backend_module,
         "get_runtime",
-        lambda _schema: SimpleNamespace(context=SimpleNamespace(cwd=working_directory)),
+        lambda _schema: SimpleNamespace(context=SimpleNamespace(cwd=working_directory, device_id=None)),
     )
 
     async def create_backend() -> LocalShellBackend:
@@ -207,6 +207,7 @@ def test_public_input_and_context_expose_no_private_run_facts() -> None:
         {"enable_memory": False, "require_tool_approval": False}
     )
     assert set(type(context).model_fields) == {
+        "device_id",
         "persona",
         "cwd",
         "enable_memory",
@@ -330,6 +331,7 @@ def test_async_task_tracks_parent_correlation_without_workspace_state(
         {
                 "persona": "general",
                 "cwd": str(Path.home().resolve()),
+                "device_id": None,
                 "enable_memory": True,
                 "require_tool_approval": False,
                 "context_compaction_trigger_tokens": None,
@@ -338,6 +340,7 @@ def test_async_task_tracks_parent_correlation_without_workspace_state(
         {
                 "persona": "general",
                 "cwd": str(Path.home().resolve()),
+                "device_id": None,
                 "enable_memory": True,
                 "require_tool_approval": False,
                 "context_compaction_trigger_tokens": None,

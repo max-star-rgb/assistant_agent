@@ -118,6 +118,43 @@ interrupt，Tool 直接进入执行链，不需要自动提交 approve/resume；
 Agent Server OS identity 的权限边界。当前 backend 仅适合受信本地个人 Agent，多租户或不可信
 生产必须替换为 container 或 remote sandbox backend。
 
+## 客户端执行实验与同机生产接线
+
+`runtime/device_backend.py` 的 `DeviceBackend` 实现 Deep Agents 原生 `SandboxBackendProtocol` 的
+异步文件操作与 `aexecute`；接口名不意味着本地执行具备沙箱。实验把它注入既有 `build_assistant_agent`，
+不创建第二套 Agent loop、run manager 或 Graph identity，原生 ToolNode、Profile、HITL 与 checkpoint 保持原样。
+生产 `AgentServerExecutionOwner.compose()` 装配的 working-directory backend 现已支持可选 `context.device_id`：
+有绑定时异步文件/Shell 经 DeviceBackend 调用客户端，没有绑定时保持既有本机路径。具体同机注册限制见 Agent Server authority。
+
+`DeviceBroker` 只负责反向 WebSocket RPC，可信装配提供 `(owner, device) -> token`，客户端主动连接。
+`DeviceBackend` 从原生 `Runtime.server_info.user.identity` 获取 owner；设备名称由装配指定，不接受模型授权。
+连接不允许重复接管，未授权、离线、断连均不回退服务端本机执行。token 不写入 context、checkpoint 或提示词。
+实验 grant 是进程内能力凭据，不等于正式帐号系统或设备注册服务；同名设备可分属不同 owner。
+
+本地组件入口为 `python -m assistant_agent.runtime.device_client --url ... --token-file ... --cwd ...`。
+cwd 必须由本地用户指定且已存在；文件工具复用官方 `LocalShellBackend(virtual_mode=True)`，`/file.txt`
+对应客户端 `<cwd>/file.txt`，Shell 相对路径以该 cwd 为起点。`--allow-shell` 默认关闭；显式开启代表接受
+当前 OS 用户完整权限，不能声称被限制在 cwd。实验 Shell 只支持 POSIX，通过独立进程组处理取消、超时和输出上限。
+Shell 不继承服务端/客户端应用凭据环境，使用最小环境。路径检查不是能对抗本机并发恶意修改的 OS 沙箱。
+
+连接采用最大 1 MiB 帧，单设备最多 8 个未完成请求，客户端串行执行。单连接保留最多 10,000 个 request ID，
+重复 ID 拒绝且不重新执行，达到上限关闭连接。RPC 不自动重试；断连或超时可能返回执行结果未知。
+取消不回滚已完成文件副作用；已开始的同步文件操作完成后才释放客户端锁。POSIX 进程组清理不约束自行脱离进程组的程序。
+文件 read/write/edit 拒绝已有特殊文件和超过 1 MiB 的文件；edit 在调用原生实现前检查替换后大小，避免内容膨胀。
+这不是全部文件扫描操作的资源配额，也不能消除本机并发修改路径的竞态。
+这些限制不是跨重连、checkpoint replay 或进程重启的持久幂等保证。
+
+设备 backend 提供异步原生文件 API 与二进制 upload/download：256 KiB 分块、单文件上限 50 MiB，
+上传在最终分块后原子替换，失败/断连清理临时文件。Git 共用客户端可取消 POSIX 执行；cwd Skills 和项目指令由客户端读取，
+压缩历史写入执行目录 `.agent/history`。图片生成 Provider 留在服务端，生成物传客户端 `outputs`；
+上传的本地媒体先从客户端下载到服务端临时目录供既有识别链处理，不改动实时视觉流水线。
+安装客户端使用 `host_paths=True` 真实路径语义，Shell/Git 需显式开启；不能套用实验虚拟根规则。
+同步设备 API、正式帐号认证、持久设备注册和跨平台安装包尚未提供；回环注册限制继续保留。
+
+可重复离线实验及通过条件见 `tests/tdd/device-execution/README.md`：真实回环 socket、真实临时文件、独立客户端进程，
+以及实验 backend 和生产 working-directory backend 的双身份 HITL 批准/读写。
+`tests/tdd/device-production/` 验证同机注册、绑定和离线工具拦截；模型使用 scripted mock，不证明真实模型任务质量。
+
 ## MCP、Plugin 与异步任务
 
 本地和 MCP Tool 进入同一 native inventory。外部 MCP 只通过官方 `MultiServerMCPClient`，配置必须提供显式
@@ -126,9 +163,13 @@ Agent Server OS identity 的权限边界。当前 backend 仅适合受信本地�
 名单，两者互不推导；未列入
 `interrupt_tools` 的 MCP Tool 默认执行。
 生产不建立 MCP proxy、ToolSpec 镜像、plugin-private runner 或旧远端 Tool 映射。
-浏览器能力只由固定版本的官方 Playwright MCP `--extension` 提供，直接连接用户已安装扩展的 Chrome 并复用现有
-标签页与登录状态；项目不再维护内建 Playwright backend。MCP discovery 成功后
-`mcp_playwright_browser_*` 才进入 `browser` Profile 和 `browser-operator`；是否审批由配置中的具体 Tool 名决定，
+浏览器能力由固定版本官方 Playwright MCP 提供。有 device_id 时 thread-scoped Playwright 调用经设备 RPC 执行，
+客户端使用 `assistant-agent --install-browser --cwd <cwd>` 安装的 Chromium（需要 Node.js 20+ 和 npm）。
+运行时放在 `<cwd>/.agent/browser-runtime`，每个 thread 的持久 profile 和输出放在 `.agent/browser/<thread-hash>`，
+不需要已有 Chrome 或扩展，不继承用户 Chrome 登录态；每连接最多八个浏览器会话，断连关闭，失败不自动重放。
+无 device_id 的 Studio 使用服务端 MCP 配置，官方 `--extension` 接管已有 Chrome 是显式可选方式。
+其 thread session 按 `identity + thread_id + server_name` 复用，cwd 来自首次调用；call-scoped 外部 API MCP 仍在服务端执行。
+`browser-operator`；是否审批由配置中的具体 Tool 名决定，
 不从通用读写分类推断。配置为 `session_scope=thread` 的 server 按
 `identity + thread_id + server_name` 复用官方 `ClientSession`；Playwright 进程 cwd 使用首次调用的
 `AssistantRunContext.cwd`，输出目录固定为 `<cwd>/.agent/browser`。`browser-operator` 只持有原生

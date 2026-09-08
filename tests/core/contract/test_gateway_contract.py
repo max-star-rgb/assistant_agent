@@ -497,6 +497,7 @@ def test_media_run_uses_a_stable_user_working_directory(
     assert client.context == {
         "persona": "call_assistant",
         "cwd": str(expected),
+        "device_id": None,
         "enable_memory": True,
         "require_tool_approval": False,
         "context_compaction_trigger_tokens": None,
@@ -561,6 +562,7 @@ def test_assistant_context_is_public_configuration_not_private_run_facts(
 
     context = asyncio.run(build_context())
     assert set(type(context).model_fields) == {
+        "device_id",
         "persona",
         "cwd",
         "enable_memory",

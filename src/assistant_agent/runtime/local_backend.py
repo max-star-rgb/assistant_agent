@@ -7,8 +7,37 @@ from pathlib import Path
 
 from deepagents.backends import FilesystemBackend, LocalShellBackend
 from langgraph.runtime import get_runtime
+from langchain.agents.middleware import AgentMiddleware
+from langchain_core.messages import ToolMessage
 
 from assistant_agent.native_agent.context import AssistantRunContext
+
+
+class DeviceConnectionMiddleware(AgentMiddleware):
+    """A bound device must remain connected even for same-host business tools."""
+
+    @staticmethod
+    def _blocked(request):
+        if request.runtime.context.device_id is None:
+            return None
+        from assistant_agent.agent_server.devices import local_devices
+        from assistant_agent.native_agent.context import authenticated_user_identity
+        try:
+            local_devices.require_binding(
+                authenticated_user_identity(request.runtime), request.runtime.context, connected=True,
+            )
+        except ValueError as exc:
+            return ToolMessage(content=str(exc), name=request.tool_call["name"],
+                               tool_call_id=request.tool_call["id"], status="error")
+        return None
+
+    def wrap_tool_call(self, request, handler):
+        blocked = self._blocked(request)
+        return blocked if blocked is not None else handler(request)
+
+    async def awrap_tool_call(self, request, handler):
+        blocked = self._blocked(request)
+        return blocked if blocked is not None else await handler(request)
 
 
 class WorkingDirectoryBackend(LocalShellBackend):
@@ -34,6 +63,8 @@ class WorkingDirectoryBackend(LocalShellBackend):
 
     def _backend(self) -> LocalShellBackend:
         runtime = get_runtime(AssistantRunContext)
+        if runtime.context.device_id is not None:
+            raise RuntimeError("device execution requires the asynchronous backend API")
         root_dir = Path(runtime.context.cwd)
         if self._subdirectory:
             root_dir /= self._subdirectory
@@ -45,6 +76,41 @@ class WorkingDirectoryBackend(LocalShellBackend):
             env=_shell_env(),
             inherit_env=False,
         )
+
+    def _async_backend(self):
+        runtime = get_runtime(AssistantRunContext)
+        if runtime.context.device_id is not None:
+            from assistant_agent.agent_server.devices import local_devices
+            from assistant_agent.native_agent.context import authenticated_user_identity
+            from assistant_agent.runtime.device_backend import DeviceBackend
+            owner = authenticated_user_identity(runtime)
+            local_devices.require_binding(owner, runtime.context)
+            return DeviceBackend(local_devices.broker, runtime.context.device_id, owner=owner, subdirectory=self._subdirectory)
+        return self._backend()
+
+    async def als(self, path):
+        return await self._async_backend().als(path)
+
+    async def aread(self, file_path, offset=0, limit=2000):
+        return await self._async_backend().aread(file_path, offset, limit)
+
+    async def awrite(self, file_path, content):
+        return await self._async_backend().awrite(file_path, content)
+
+    async def aedit(self, file_path, old_string, new_string, replace_all=False):
+        return await self._async_backend().aedit(file_path, old_string, new_string, replace_all)
+
+    async def adelete(self, file_path):
+        return await self._async_backend().adelete(file_path)
+
+    async def aglob(self, pattern, path=None):
+        return await self._async_backend().aglob(pattern, path)
+
+    async def agrep(self, pattern, path=None, glob=None, *, max_count=None):
+        return await self._async_backend().agrep(pattern, path, glob, max_count=max_count)
+
+    async def aexecute(self, command, *, timeout=None):
+        return await self._async_backend().aexecute(command, timeout=timeout)
 
     def ls(self, path: str):
         return self._backend().ls(path)
@@ -94,13 +160,13 @@ class WorkingDirectoryBackend(LocalShellBackend):
         return self._backend().upload_files(files)
 
     async def aupload_files(self, files: list[tuple[str, bytes]]):
-        return await self._backend().aupload_files(files)
+        return await self._async_backend().aupload_files(files)
 
     def download_files(self, paths: list[str]):
         return self._backend().download_files(paths)
 
     async def adownload_files(self, paths: list[str]):
-        return await self._backend().adownload_files(paths)
+        return await self._async_backend().adownload_files(paths)
 
     def execute(self, command: str, *, timeout: int | None = None):
         return self._backend().execute(command, timeout=timeout)
@@ -119,10 +185,10 @@ def create_local_backend() -> WorkingDirectoryBackend:
     return WorkingDirectoryBackend()
 
 
-def create_conversation_history_backend() -> UserHomeBackend:
-    """Store Deep Agents history under the current OS user's home."""
+def create_conversation_history_backend() -> WorkingDirectoryBackend:
+    """Store generated compaction history in the selected execution workspace."""
 
-    return UserHomeBackend()
+    return WorkingDirectoryBackend(".agent/history", virtual_mode=True)
 
 
 def _shell_env() -> dict[str, str]:

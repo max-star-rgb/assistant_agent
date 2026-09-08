@@ -232,7 +232,7 @@ def test_unified_chat_recall_once_then_rolls_back_and_enqueues_extraction(
     assert request["thread_id"] == memory_thread_id
     assert request["assistant_id"] == "assistant-memory-v1"
     assert request["metadata"] == {"assistant_agent_run_kind": "memory_extraction"}
-    assert request["after_seconds"] == 1800
+    assert request["after_seconds"] == 30
     assert request["multitask_strategy"] == "enqueue"
     assert request["input"]["messages"][0].content == [
         {"type": "text", "text": "request-sentinel"}

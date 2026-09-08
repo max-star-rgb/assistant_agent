@@ -76,6 +76,7 @@ from assistant_agent.native_agent.tool_profiles import (
     ToolProfileMiddleware,
 )
 from assistant_agent.tools.git import GIT_TOOL_NAME, GitToolMiddleware
+from assistant_agent.runtime.local_backend import DeviceConnectionMiddleware
 from assistant_agent.skills.native import (
     PROJECT_FILESYSTEM_READ_TOOL_NAMES,
     create_project_filesystem_middleware,
@@ -746,6 +747,7 @@ def build_assistant_agent(
                 "model": model,
                 "tools": [],
                 "middleware": [
+                    DeviceConnectionMiddleware(),
                     GitToolMiddleware(),
                     ToolProfileMiddleware(
                         tuple(
@@ -765,13 +767,14 @@ def build_assistant_agent(
                 "system_prompt": _BROWSER_OPERATOR_SYSTEM_PROMPT_ZH,
                 "model": model,
                 "tools": list(browser_tools),
-                "middleware": [ContinuousModelRetryMiddleware()],
+                "middleware": [DeviceConnectionMiddleware(), ContinuousModelRetryMiddleware()],
                 "interrupt_on": browser_interrupt_on,
             },
         ],
         state_schema=AssistantAgentState,
         context_schema=AssistantRunContext,
         middleware=[
+            DeviceConnectionMiddleware(),
             create_assistant_base_prompt(native_search_enabled=native_search_enabled),
             PersonaModelSettingsMiddleware(),
             create_project_skills_middleware(skills_backend),
@@ -918,6 +921,7 @@ def build_general_purpose_worker(
         )
     )
     middleware: list[AgentMiddleware] = [
+        DeviceConnectionMiddleware(),
         create_assistant_base_prompt(
             native_search_enabled=native_search_enabled,
             fixed_persona="general",

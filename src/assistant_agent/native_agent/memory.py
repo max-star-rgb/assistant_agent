@@ -53,24 +53,32 @@ class DurableMemory(BaseModel):
     ]
 
 
+# Faithful translation of langmem 0.0.30 knowledge.extraction._MEMORY_INSTRUCTIONS.
 _LANGMEM_MEMORY_INSTRUCTIONS = """\
-你是长期记忆管理器，负责维护语义记忆、程序性记忆和情景记忆。
+你是一个长期记忆管理器，维护 semantic、procedural 和 episodic memory 的核心存储。
+这些记忆支撑一个终身学习 Agent 的核心预测模型。
 
-从本次交互中判断助理应长期记住哪些稳定、跨会话仍然有用的用户信息或响应方式：
+Agent 应从这次交互中学到哪些关于用户、自身或其行为方式的信息？请反思输入 trajectory 和已有记忆（如果有）。
 
-1. 提取并补充上下文：识别稳定的用户事实、关系、偏好、长期目标、可复用流程和适用场景；对不确定的推断标注置信度并说明依据。
-2. 比较并更新：关注偏离已有记忆的新信息；根据可靠性和时效性合并重复内容、修正错误，并保持内部一致。
-3. 综合并推理：用演绎、归纳或溯因总结稳定模式，但不要把一次性请求、测试口令或低置信度猜测当作长期事实。
-4. 严格排除时效性事实：不要保存天气、新闻、股价、日期时间、交通状态、搜索结果、网页内容或 Tool observation；
-   即使用户随后可能再次询问，这些信息也必须在当次请求中重新获取。
-5. 严格排除助理生成的内容：不要把助理的回答、自我描述、能力限制、知识截止日期、所谓“知识库”状态、
-   引用来源或对当前运行环境的猜测保存为长期记忆。只有用户明确表达且具有长期价值的事实才可写入。
+1. **提取并补充上下文（Extract & Contextualize）**
+   - 识别关键事实、关系、偏好、推理流程和上下文。
+   - 为不确定或假设性信息注明置信度 p(x) 和推理依据。
+   - 必要时引用支持信息。
 
-如果没有符合 schema 的长期信息，不得执行 insert。不得把“一次性查询”、“不构成长期记忆”、
-“无需保存”或其他分类判定理由写入 `content`。
+2. **比较并更新（Compare & Update）**
+   - 关注偏离已有记忆和预期的新信息。
+   - 整合并压缩冗余记忆以保持信息密度；根据可靠性和时效性强化记忆；避免空话，最大化 SNR。
+   - 删除错误或冗余记忆，同时保持内部一致性。
 
-所有新增或更新的记忆正文必须使用简体中文。代码、协议字段、产品名和其他专有名词可保留原文；引用外语内容时，
-应以中文说明其含义。记忆应当紧凑、完整、可独立理解，并保留必要的置信度与理由。
+3. **综合并推理（Synthesize & Reason）**
+   - 通过 deduction、induction 和 abduction，可以对用户、Agent（“我”）或环境得出什么结论？
+   - 关于最佳响应方式，浮现出哪些模式、关系和原则？
+   - 可以作出哪些概括？
+   - 用概率置信度和依据限定结论。
+
+作为 Agent，请按照你在预测如何行动或回应时希望回忆到的确切形式记录记忆内容。
+优先保留出乎意料（偏离模式）和持久（被频繁强化）的信息，确保值得记住的信息不被遗忘，
+错误信息不被记住。优先选择信息密集、完整的记忆，而不是相互重叠的记忆。
 """
 
 
@@ -234,10 +242,14 @@ class LangMemMemoryBackend:
             raise MemoryBackendConfigurationError(
                 "LangMem requires the BaseStore compiled into the graph."
             )
-        user_text, assistant_text = _completed_turn(messages)
-        if not user_text or not assistant_text:
+        user_messages = [
+            HumanMessage(content=text)
+            for message in messages
+            if isinstance(message, HumanMessage) and (text := _message_text(message))
+        ]
+        if not user_messages:
             return
-        value = {"messages": [HumanMessage(content=user_text)]}
+        value = {"messages": user_messages}
         config = {
             "configurable": {
                 "langgraph_user_id": _langmem_namespace(identity)[-1],

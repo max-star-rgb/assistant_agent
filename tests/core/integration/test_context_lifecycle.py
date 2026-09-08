@@ -685,7 +685,9 @@ def test_deep_agent_owns_summary_retry_todo_hitl_and_tool_policy(
     assert set(subagents["browser-operator"]["interrupt_on"]) == {
         "mcp_playwright_browser_click"
     }
-    assert "middleware" not in subagents["browser-operator"]
+    from assistant_agent.runtime.local_backend import DeviceConnectionMiddleware
+    assert any(isinstance(item, DeviceConnectionMiddleware)
+               for item in subagents["browser-operator"]["middleware"])
     filesystem_profile = next(
         profile
         for profile in project_tool_profiles()

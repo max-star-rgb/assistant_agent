@@ -63,6 +63,9 @@ class _WorkingDirectorySkillsBackend(WorkingDirectoryBackend):
         )
 
     async def als(self, path: str):
+        from langgraph.runtime import get_runtime
+        if get_runtime().context.device_id is not None:
+            return await super().als(path)
         backend = self._backend()
         return (
             await backend.als(path)

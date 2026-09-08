@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import json
@@ -58,7 +59,7 @@ def create_uploaded_media_inspect_tool(
         UPLOADED_MEDIA_INSPECT_TOOL_NAME,
         response_format="content_and_artifact",
     )
-    def uploaded_media_inspect(
+    async def uploaded_media_inspect(
         question: Annotated[
             str,
             Field(
@@ -71,9 +72,10 @@ def create_uploaded_media_inspect_tool(
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """分析当前请求中由用户主动上传的图片或视频附件。"""
 
-        def inspect_uploaded_media() -> tuple[list[dict[str, Any]], dict[str, Any]]:
-            state = runtime.state if isinstance(runtime.state, dict) else {}
-            media = latest_runtime_media(state)
+        state = runtime.state if isinstance(runtime.state, dict) else {}
+        media = latest_runtime_media(state)
+
+        def inspect_uploaded_media(media, cwd) -> tuple[list[dict[str, Any]], dict[str, Any]]:
             if not media.has_uploaded_media:
                 raise ToolException(
                     "uploaded_media_required: 当前请求没有用户主动上传的图片或视频"
@@ -93,7 +95,7 @@ def create_uploaded_media_inspect_tool(
             if media.uploaded_video_ids:
                 with _sample_uploaded_video(
                     media.uploaded_video_ids[0],
-                    cwd=runtime.context.cwd,
+                    cwd=cwd,
                     max_bytes=max_video_bytes,
                     max_seconds=max_video_seconds,
                 ) as frame_refs:
@@ -111,7 +113,7 @@ def create_uploaded_media_inspect_tool(
             else:
                 with _materialized_uploaded_images(
                     media.uploaded_image_ids,
-                    cwd=runtime.context.cwd,
+                    cwd=cwd,
                     max_bytes=max_video_bytes,
                 ) as image_refs:
                     request = _vision_request(
@@ -127,7 +129,42 @@ def create_uploaded_media_inspect_tool(
             return native_content_and_artifact(_vision_model_observation(data), data)
 
         try:
-            return inspect_uploaded_media()
+            if runtime.context.device_id is None:
+                return await asyncio.to_thread(inspect_uploaded_media, media, runtime.context.cwd)
+            from dataclasses import replace
+            from assistant_agent.runtime.device_backend import device_backend_for_runtime
+            backend = device_backend_for_runtime(runtime)
+            if len(media.uploaded_image_ids) > 5 or len(media.uploaded_video_ids) > 1 or (media.uploaded_image_ids and media.uploaded_video_ids):
+                raise ValueError("uploaded_media_count_or_mix_unsupported")
+            with TemporaryDirectory(prefix="assistant-device-media-") as temporary:
+                root = Path(temporary)
+                async def materialize(refs):
+                    result = []
+                    total = 0
+                    for index, ref in enumerate(refs):
+                        if urlsplit(ref).scheme in {"data", "http", "https"}:
+                            result.append(ref)
+                            continue
+                        if urlsplit(ref).scheme:
+                            raise ValueError("unsupported client media URI")
+                        response = await backend.download(ref)
+                        if response.error:
+                            raise ValueError(f"device_media_read_failed: {response.error}")
+                        total += len(response.content)
+                        if total > max_video_bytes:
+                            raise ValueError("uploaded_media_size_invalid")
+                        target = root / f"{index}{Path(ref).suffix}"
+                        await asyncio.to_thread(target.write_bytes, response.content)
+                        result.append(str(target))
+                    return tuple(result)
+                copied = replace(media, uploaded_image_ids=await materialize(media.uploaded_image_ids),
+                                 uploaded_video_ids=await materialize(media.uploaded_video_ids))
+                work = asyncio.create_task(asyncio.to_thread(inspect_uploaded_media, copied, root))
+                try:
+                    return await asyncio.shield(work)
+                except asyncio.CancelledError:
+                    await work  # Keep temporary input alive until the decoder/Provider releases it.
+                    raise
         except ToolException:
             raise
         except Exception as exc:

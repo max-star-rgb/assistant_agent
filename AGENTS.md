@@ -71,10 +71,10 @@
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python
 ```
 
-本地开发由 PyCharm 管理唯一的 `langgraph dev`，固定使用端口 `8089` 并默认启用原生 hot reload。Codex
-修改源码后应等待并验证该服务 reload；确需完整重启时重启同一个 `8089` 服务，不得另起并行 Server。Codex
-默认作为客户端连接现有 `8089`；同一工作目录不得同时运行两套 dev server，因为它们共享 `.langgraph_api/`；启动统一使用
-`scripts/run_server.py` 的单实例锁、严格端口检查和按端口隔离日志。
+PyCharm 的正式本机服务使用 PostgreSQL backend，固定回环端口 `8089`。源码变更后重建镜像并重启同一个
+服务，不另起并行 Server；该容器部署不提供 dev hot reload。Codex 默认作为客户端连接现有 `8089`。
+`langgraph dev` 仅作为显式离线开发/回退入口，其历史状态仍位于 `.langgraph_api/`，不与 PostgreSQL 自动迁移。
+两种 backend 启动统一使用 `scripts/run_server.py` 的单实例锁、严格端口检查和按端口隔离日志。
 
 测试与 eval 的职责边界见第 8 节；具体命令和运行约束以 `tests/README.md`、
 `evals/README.md`、`scripts/README.md` 或对应 `docs/*.md` 为准。历史 runbook

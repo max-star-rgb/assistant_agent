@@ -16,3 +16,5 @@ tmp
 dist
 build
 *.egg-info
+reference
+output

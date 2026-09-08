@@ -36,7 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use local dev persistence or the dedicated PostgreSQL deployment.",
     )
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--port", type=int, default=8089)
     parser.add_argument(
         "--config",
         type=Path,
@@ -297,7 +297,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.backend == "postgres":
         if source_config.resolve() != LANGGRAPH_CONFIG.resolve():
             raise SystemExit("--config is supported only by the dev backend")
-        return _run_postgres_backend(args, env=env, log_path=log_path)
+        with hold_dev_server_lock():
+            require_available_port(args.host, args.port)
+            return _run_postgres_backend(args, env=env, log_path=log_path)
 
     require_dev_log_outside_repo(log_path)
     with materialize_dev_config(

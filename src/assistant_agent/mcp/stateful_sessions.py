@@ -102,6 +102,15 @@ class ThreadMcpSessionPool:
         context = getattr(runtime, "context", None)
         if not isinstance(context, AssistantRunContext):
             context = AssistantRunContext(cwd=getattr(context, "cwd", None))
+        if context.device_id:
+            if request.server_name != "playwright" or request.name not in config.allowed_tools:
+                raise ValueError("device MCP server/tool is not configured")
+            from assistant_agent.runtime.device_backend import device_backend_for_runtime
+            from mcp.types import CallToolResult
+            result = await device_backend_for_runtime(runtime).call("browser", {
+                "thread_id": thread_id, "name": request.name, "arguments": request.args,
+            })
+            return CallToolResult.model_validate(result)
         key = (identity, thread_id, request.server_name)
         entry = await self._entry(key, config, context.cwd)
         async with entry.call_lock:

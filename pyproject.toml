@@ -25,6 +25,9 @@ dependencies = [
     "websockets>=15.0,<16",
 ]
 
+[project.scripts]
+assistant-agent = "assistant_agent.client:main"
+
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 eval = ["PyYAML>=6.0,<7"]

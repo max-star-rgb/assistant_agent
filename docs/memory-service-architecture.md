@@ -1,6 +1,6 @@
 # LangGraph-native 长期记忆架构
 
-最后更新：2026-09-04
+最后更新：2026-09-07
 
 ## Authority contract
 
@@ -37,7 +37,7 @@ LangChain 原生 `Runnable.with_retry(stop_after_attempt=3)`；三次耗尽后�
 companion Memory thread，在该后台 thread 上使用官方 `langgraph_sdk` 调用
 `runs.list(thread_id, status="pending")`，只筛选带 `assistant_agent_run_kind=memory_extraction` metadata 的旧
 Memory run，再逐个调用 `runs.cancel(thread_id, run_id, wait=True, action="rollback")`，随后调用 `runs.create` 创建新的
-`assistant-memory-v1` delayed run，默认 `after_seconds=1800`、`multitask_strategy="enqueue"`，并写入上述
+`assistant-memory-v1` delayed run，默认 `after_seconds=30`、`multitask_strategy="enqueue"`，并写入上述
 metadata 标记。companion thread 以 `assistant_agent_source_thread_id` 记录来源；chat thread 不保留后台 pending
 run，因此 Studio 在回答完成后恢复 idle。这段回答后的 refresh 不取消 pending chat run，也不改变普通用户 chat 入口既有的 `interrupt`
 并发语义；
@@ -62,13 +62,13 @@ Assistant state。节点使用 LangGraph 原生 `RetryPolicy(max_attempts=3)`；
 - `disabled`：离线默认，召回为空、提取跳过；
 - `mem0`：复用薄 `Mem0Client`；身份通过 opaque binding，提交的 `source_turn` 优先使用 Agent Server
   `run_id`，本地 Graph 无 run ID 时使用 thread ID；不构造旧 SQLite commit ledger；
-- `langmem`：使用官方 manager，召回访问 runtime Store，后台 manager 只接收当前已完成 turn 的用户正文做
-  extract/consolidate，不把 System、AI 或 Tool message 交给提取模型，避免助理生成内容、联网来源、Tool 结果与
-  request ID 干扰长期记忆；通过官方 `create_memory_store_manager(schemas=[DurableMemory])` 限制写入为
-  `content` 与 `stable_fact|preference|long_term_goal|reusable_procedure` 类型；无长期价值时不 insert，也不得把分类判定理由写成记忆。
-  提取 instruction 只允许稳定用户事实、偏好、长期目标和可复用流程，显式排除天气、新闻、股价、
-  日期时间、交通、搜索/Tool 结果，以及助理回答、自我描述、能力限制、知识截止日期和“知识库”措辞；
-  非结构化记忆正文默认使用简体中文，代码、协议字段和专有名词可保留原文；
+- `langmem`：使用官方 manager，召回访问 runtime Store。后台 run 接收调度时的完整 messages 快照，
+  manager 接收其中全部非空用户正文，不再通过 `_completed_turn` 截取最后一轮；System、AI、Tool 和媒体载荷
+  不进入提取输入。主 Agent 的 Deep Agents summarization 保留 messages 日志，摘要只投影到模型请求。
+  采用 LangMem 0.0.30 默认 `_MEMORY_INSTRUCTIONS` 的忠实中文翻译，保留核心英文术语；不追加项目自定义的
+  排除话术。保留 `DurableMemory` 的 content/kind schema 和官方默认操作配置（delete 默认关闭）。
+  没有额外的增量游标或 exactly-once 保证；重复快照通过官方 manager 检索已有记忆并整合，重复记录与成本需要实测。
+  全部用户文本超过提取模型窗口时明确失败，不静默截成最后一轮；
 - `langmem + remote visual`：显式启用后由组合 backend 在同一个 `before_agent` hook 内并行召回 LangMem
   与远端视觉文本记忆；远端分支使用可信用户身份和最新一条用户文本检索，查询请求有意不发送
   `session_id`，从而召回该用户跨会话的长期视觉记忆。结果不添加来源标签，直接合并进冻结
@@ -78,6 +78,18 @@ Assistant state。节点使用 LangGraph 原生 `RetryPolicy(max_attempts=3)`；
 
 mock mode 只能使用 disabled；远端 backend 要求 real mode 和完整显式配置，不能探测 key 后启用，也不能静默
 回退。
+
+## PostgreSQL 与语义索引
+
+PostgreSQL 部署由 Agent Server 注入默认 Store 与 checkpointer；LangMem 不另建数据库连接或 Store。
+`langgraph.json` 的官方 `store.index` 对 `content.content` 建立 1024 维索引，使用百炼 `text-embedding-v4`。
+`agent_server.embeddings` 是 Server embedding 配置入口，复用官方 `OpenAIEmbeddings`；一次最多 10 条，显式
+float 编码，不使用 OpenAI tokenizer 自动切片。凭据优先 `QWEN_EMBEDDING_API_KEY`，其次 `QWEN_API_KEY`；
+地址优先 `QWEN_EMBEDDING_BASE_URL`，其次 `QWEN_CHAT_BASE_URL`，最后为百炼标准兼容地址。
+mock 下不调用 embedding API；real 下未配置凭据明确失败。模型与维度变更需要重新建索引，不能混用旧向量。
+
+切换 PostgreSQL 时不迁移 `.langgraph_api` 的旧记忆。删除旧长期记忆只针对 `assistant_agent` 的
+`memory_subject_*` 命名空间及其向量，不删除 thread、run 或 checkpoint；操作文件前必须停止 dev Server。
 
 ## 冻结快照与安全
 

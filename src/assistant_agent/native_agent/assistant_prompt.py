@@ -84,12 +84,9 @@ def create_assistant_runtime_prompt(
 ) -> AgentMiddleware:
     """Append user and current-message facts by volatility."""
 
-    @dynamic_prompt
-    def assistant_runtime_prompt(
-        request: ModelRequest[AssistantRunContext],
-    ) -> SystemMessage:
+    def render(request, working_directory):
         sections = [
-            render_working_directory_section(request.runtime.context.cwd),
+            working_directory,
             render_user_characteristics_section(
                 current_location=current_location,
                 clock=clock,
@@ -106,7 +103,23 @@ def create_assistant_runtime_prompt(
             sections.append(media)
         return _append_sections(request.system_message, sections)
 
-    return assistant_runtime_prompt
+    class assistant_runtime_prompt(AgentMiddleware):
+        def wrap_model_call(self, request, handler):
+            if request.runtime.context.device_id is not None:
+                raise RuntimeError("device prompt requires asynchronous execution")
+            return handler(request.override(system_message=render(
+                request, render_working_directory_section(request.runtime.context.cwd))))
+
+        async def awrap_model_call(self, request, handler):
+            if request.runtime.context.device_id is not None:
+                from assistant_agent.runtime.device_backend import device_backend_for_runtime
+                section = (await device_backend_for_runtime(request.runtime).call("instructions", {}))["text"]
+            else:
+                import asyncio
+                section = await asyncio.to_thread(render_working_directory_section, request.runtime.context.cwd)
+            return await handler(request.override(system_message=render(request, section)))
+
+    return assistant_runtime_prompt()
 
 
 def load_project_instructions(
