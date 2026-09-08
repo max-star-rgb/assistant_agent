@@ -84,7 +84,6 @@ def _prevalidate_environment(source: Mapping[str, str], mode: ProviderMode) -> N
 
     # These are the only field parsers that can reject; their legacy positions
     # are after removed-key preprocessing.
-    _qwen_protocol(source.get("QWEN_CHAT_API_PROTOCOL"))
     _reject_removed_runtime_config(source)
 
     missing = chat_settings.missing_required_env()
@@ -225,7 +224,6 @@ def _load_chat_config(source: Mapping[str, str], mode: ProviderMode) -> ChatConf
         source.get("MULTIMODAL_AGENT_CHAT_PROVIDER"), allow_real=mode == "real"
     )
     resolved = resolve_chat_provider(provider, source)
-    model_profile = chat_model_runtime_profile(resolved.model)
     stream = _chat_stream(source, provider)
     return ChatConfig(
         chat_provider=provider,
@@ -271,11 +269,7 @@ def _load_chat_config(source: Mapping[str, str], mode: ProviderMode) -> ChatConf
             512, _int(source.get("MULTIMODAL_AGENT_CONTEXT_SUMMARY_MAX_TOKENS"), 32768)
         ),
         qwen_chat_enable_thinking=_bool(source.get("QWEN_CHAT_ENABLE_THINKING"), False),
-        qwen_chat_enable_search=_bool(source.get("QWEN_CHAT_ENABLE_SEARCH"), False),
-        qwen_chat_api_protocol=_qwen_protocol(
-            source.get("QWEN_CHAT_API_PROTOCOL")
-            or (model_profile.qwen_api_protocol if model_profile else None)
-        ),
+        qwen_chat_enable_search=_bool(source.get("QWEN_CHAT_ENABLE_SEARCH"), True),
     )
 
 
@@ -434,6 +428,7 @@ def _reject_removed_runtime_config(source: Mapping[str, str]) -> None:
     if any(
         name in source
         for name in (
+            "QWEN_CHAT_API_PROTOCOL",
             "ASSISTANT_AGENT_TEXT_TURN_TIMEOUT_SECONDS",
             "LANGGRAPH_CHECKPOINTER_BACKEND",
             "MULTIMODAL_AGENT_CHECKPOINTER_BACKEND",
@@ -644,15 +639,6 @@ def _realtime_url(source: Mapping[str, str], workspace: str | None, region: str)
     if workspace:
         return f"wss://{workspace}.{region}.maas.aliyuncs.com/api-ws/v1/realtime"
     return _QWEN_REALTIME_URL
-
-
-def _qwen_protocol(value: str | None) -> str:
-    value = (value or "dashscope").strip().lower()
-    if value not in {"dashscope", "openai_compatible"}:
-        raise ValueError(
-            "QWEN_CHAT_API_PROTOCOL must be 'dashscope' or 'openai_compatible'"
-        )
-    return value
 
 
 def _platforms(value: str | None) -> tuple[str, ...]:

@@ -11,6 +11,7 @@ from langchain_core.runnables import RunnableLambda
 from langgraph.runtime import Runtime
 from langgraph_sdk import get_client, get_sync_client
 
+from assistant_agent.agent_server.config import agent_server_url
 from assistant_agent.media.runtime_media import without_uploaded_media_messages
 from assistant_agent.native_agent.context import AssistantRunContext, authenticated_user_identity
 from assistant_agent.native_agent.memory import MemoryBackend, _langmem_namespace, recall_memory
@@ -95,33 +96,39 @@ class MemoryLifecycleMiddleware(
         memory_thread_id = str(
             uuid5(NAMESPACE_URL, f"assistant-agent:memory:{source_thread_id}")
         )
-        client = get_client()
-        memory_thread = await client.threads.create(
-            thread_id=memory_thread_id,
-            graph_id=MEMORY_ASSISTANT_ID,
-            metadata={MEMORY_SOURCE_THREAD_KEY: source_thread_id},
-            if_exists="do_nothing",
-        )
-        memory_thread_id = str(memory_thread["thread_id"])
-        from langmem.reflection import RemoteReflectionExecutor
+        url = agent_server_url()
+        headers = {"X-Assistant-User": authenticated_user_identity(runtime)}
+        async with get_client(url=url, api_key=None, headers=headers) as client:
+            memory_thread = await client.threads.create(
+                thread_id=memory_thread_id,
+                graph_id=MEMORY_ASSISTANT_ID,
+                metadata={MEMORY_SOURCE_THREAD_KEY: source_thread_id},
+                if_exists="do_nothing",
+            )
+            memory_thread_id = str(memory_thread["thread_id"])
+            from langmem.reflection import RemoteReflectionExecutor
 
-        def submit_reflection() -> None:
-            with get_sync_client() as sync_client, RemoteReflectionExecutor(
-                namespace=_langmem_namespace(authenticated_user_identity(runtime)),
-                reflector=MEMORY_ASSISTANT_ID,
-                client=client,
-                sync_client=sync_client,
-            ) as reflection:
-                # Wait for Server acceptance, not the delayed extraction itself.
-                reflection.submit(
-                    {"messages": without_uploaded_media_messages(list(state.get("messages", ())))},
-                    config={"configurable": {"thread_id": memory_thread_id}},
-                    thread_id=memory_thread_id,
-                    after_seconds=self._delay_seconds,
-                ).result()
+            def submit_reflection() -> None:
+                # Sync SDK defaults to localhost:8123, unlike the async in-process client.
+                with (
+                    get_sync_client(url=url, api_key=None, headers=headers) as sync_client,
+                    RemoteReflectionExecutor(
+                        namespace=_langmem_namespace(authenticated_user_identity(runtime)),
+                        reflector=MEMORY_ASSISTANT_ID,
+                        client=client,
+                        sync_client=sync_client,
+                    ) as reflection,
+                ):
+                    # Wait for Server acceptance, not the delayed extraction itself.
+                    reflection.submit(
+                        {"messages": without_uploaded_media_messages(list(state.get("messages", ())))},
+                        config={"configurable": {"thread_id": memory_thread_id}},
+                        thread_id=memory_thread_id,
+                        after_seconds=self._delay_seconds,
+                    ).result()
 
-        # The official executor and sync client must also close outside the event loop.
-        await asyncio.to_thread(submit_reflection)
+            # The official executor and sync client must close outside the event loop.
+            await asyncio.to_thread(submit_reflection)
         return {}
 
 

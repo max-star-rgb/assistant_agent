@@ -106,6 +106,7 @@ class DashScopeVisionProviderAdapter:
             base_url=config.base_url,
             model_name=config.model,
             api_mode="multimodal",
+            structured_vision_output=True,
             temperature=0.0,
             enable_thinking=False,
             streaming=False,

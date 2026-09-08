@@ -1,6 +1,6 @@
 # Memory Backend 私有 HTTP 接入契约
 
-最后更新：2026-09-01
+最后更新：2026-09-08
 
 ## Authority contract
 
@@ -93,14 +93,22 @@ developer auth 只适用于受信内网，不能当作公网认证机制。
 ## Logical turn 召回
 
 ```http
-GET /memories?user_id=<opaque>&agent_id=<opaque>
+POST /search
+Content-Type: application/json
+
+{
+  "query": "<latest-human-text>",
+  "filters": {"user_id": "<opaque>", "agent_id": "<opaque>"},
+  "limit": 32
+}
 ```
 
-响应返回该身份下的长期记忆；只消费 `results` 数组中每条记录的 `id`、`memory`、`created_at` 和可选
+请求不带 `run_id`，以召回同一用户跨会话的相关记忆；无用户正文时不请求。响应只消费 `results` 数组中每条记录的 `id`、`memory`、`created_at` 和可选
 `score`。每个 chat run 的 `memory_recall` 调用一次并将规范化结果冻结为当前 run 的
-`memory_context`；Memory 失败恢复或同一 run resume 不重复请求。ContextBuilder 仍执行最终预算裁剪。
+`memory_context`；从召回之后的 checkpoint 恢复时复用快照，重新执行 recall 节点时允许重读。缺失或非数组
+`results` 明确失败，不能伪装为空结果；空数组是合法的未命中。预算由 Memory backend 和 Context 投影约束。
 
-## Turn capture
+## Conversation capture
 
 ```http
 POST /memories
@@ -108,8 +116,8 @@ Content-Type: application/json
 
 {
   "messages": [
-    {"role": "user", "content": "..."},
-    {"role": "assistant", "content": "..."}
+    {"role": "user", "content": "<earlier-user-text>"},
+    {"role": "user", "content": "<latest-user-text>"}
   ],
   "user_id": "<opaque>",
   "agent_id": "<opaque>",
@@ -123,6 +131,8 @@ Content-Type: application/json
 ```
 
 项目不设置 `infer=false`，不发送自定义 extraction prompt，不创建 core/daily 双记录。
+HTTP 输入包含后台快照中全部非空用户正文，不包含 AI、System、Tool 或媒体块；不新增增量游标。
+`source_turn` 只标识提交来源，不保证服务幂等；重复快照交给 Mem0 整合。sidecar 保留已有的提取配置。
 该调用只由 Agent Server 延迟调度的 `assistant-memory-v1` 后台 run 执行，不位于 chat 回答关键路径。Mem0 adapter 为原生 HTTP
 `add` 使用至少 30 秒的 I/O timeout，不自动 retry。
 
@@ -132,6 +142,6 @@ Content-Type: application/json
 
 ## 错误语义
 
-- recall 失败：节点写入 degraded 空 `memory_context` 和 `mem0_recall_failed`，当前 turn 继续。
-- extract 失败或 timeout：后台 run 失败或降级结束；已完成的 Assistant 回复不受影响。
+- recall 失败：middleware 原生重试最多三次，耗尽后 chat run 明确 error，不静默降级。
+- extract 失败或 timeout：独立节点原生重试最多三次，耗尽后后台 run 明确 error；已完成的 Assistant 回复不受影响。
 - 响应原文、URL、凭据和异常细节不进入模型上下文。

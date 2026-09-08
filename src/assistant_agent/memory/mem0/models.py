@@ -28,14 +28,20 @@ class Mem0Identity(BaseModel):
         return {"user_id": self.user_id, "agent_id": self.agent_id}
 
 
-class Mem0CompletedTurn(BaseModel):
-    """Plugin-private input for one native Mem0 ``add`` operation."""
+class Mem0UserMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    role: Literal["user"] = "user"
+    content: str = Field(min_length=1)
+
+
+class Mem0Conversation(BaseModel):
+    """Text-only user snapshot for one native Mem0 ``add`` operation."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     identity: Mem0Identity
-    user_text: str = Field(min_length=1, max_length=20_000)
-    assistant_text: str = Field(min_length=1, max_length=20_000)
+    messages: tuple[Mem0UserMessage, ...] = Field(min_length=1)
     occurred_at: datetime
     source_turn: str = Field(min_length=1, max_length=512)
 

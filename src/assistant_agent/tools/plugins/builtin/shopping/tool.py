@@ -66,10 +66,9 @@ def create_shopping_search_tool(
         runtime: ToolRuntime[AssistantRunContext],
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """针对一个或多个商品查询检索淘宝候选、比较价格与购买链接。
-
+        仅在用户明确要求查找可购买的商品、比较购买价格或获取购买链接时调用。
         每个查询独立检索并返回候选和选择。只读，不加入购物车、下单或付款。
-
-        优先采用本次检索得到的商品信息，其他渠道例如网络搜索仅可作为补充。
+        在上述购物任务中，候选商品的价格和购买链接以本次检索结果为准。
         """
 
         try:

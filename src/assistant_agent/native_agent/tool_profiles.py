@@ -264,7 +264,7 @@ class ToolProfileMiddleware(AgentMiddleware[ToolProfileState, Any]):
             args_schema=args_schema,
             description=(
                 "实现用户需求时，如果发现缺少相关工具，运行本工具以获取额外的工具集。\n"
-                "在多数场景下都需要使用本工具，但注意按需要加载，不要刻意说明‘正在加载工具’等文本\n\n"
+                "不要刻意说明‘正在加载工具’等文本\n\n"
                 "当前可用 工具集：\n"
                 f"{profile_index}"
             ),

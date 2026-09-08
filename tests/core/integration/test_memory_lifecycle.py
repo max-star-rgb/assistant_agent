@@ -107,6 +107,12 @@ class _Client:
         self.threads = _Threads()
         self.runs = _Runs()
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
 
 class _FailingRefreshClient(_Client):
     def __init__(self) -> None:
@@ -144,8 +150,8 @@ def test_unified_chat_recall_once_then_submits_remote_reflection(
     middleware_module = importlib.import_module(
         "assistant_agent.native_agent.memory_middleware"
     )
-    monkeypatch.setattr(middleware_module, "get_client", lambda: client)
-    monkeypatch.setattr(middleware_module, "get_sync_client", lambda: nullcontext(client), raising=False)
+    monkeypatch.setattr(middleware_module, "get_client", lambda **kwargs: client)
+    monkeypatch.setattr(middleware_module, "get_sync_client", lambda **kwargs: nullcontext(client), raising=False)
     graph = _assistant_graph(backend, checkpointer=InMemorySaver())
 
     config = {
@@ -217,8 +223,8 @@ def test_remote_reflection_submit_failure_is_awaited_and_retried(
     middleware_module = importlib.import_module(
         "assistant_agent.native_agent.memory_middleware"
     )
-    monkeypatch.setattr(middleware_module, "get_client", lambda: client)
-    monkeypatch.setattr(middleware_module, "get_sync_client", lambda: nullcontext(client))
+    monkeypatch.setattr(middleware_module, "get_client", lambda **kwargs: client)
+    monkeypatch.setattr(middleware_module, "get_sync_client", lambda **kwargs: nullcontext(client))
 
     with pytest.raises(ConnectionError, match="submit-failure-sentinel"):
         asyncio.run(
@@ -243,7 +249,7 @@ def test_disable_memory_skips_recall_and_extraction(monkeypatch) -> None:
     middleware_module = importlib.import_module(
         "assistant_agent.native_agent.memory_middleware"
     )
-    monkeypatch.setattr(middleware_module, "get_client", lambda: client)
+    monkeypatch.setattr(middleware_module, "get_client", lambda **kwargs: client)
     graph = _assistant_graph(backend)
 
     result = asyncio.run(
@@ -291,7 +297,7 @@ def test_refresh_reports_error_after_native_retries(monkeypatch) -> None:
     middleware_module = importlib.import_module(
         "assistant_agent.native_agent.memory_middleware"
     )
-    monkeypatch.setattr(middleware_module, "get_client", lambda: client)
+    monkeypatch.setattr(middleware_module, "get_client", lambda **kwargs: client)
     graph = _assistant_graph(_Memory())
 
     with pytest.raises(ConnectionError, match="refresh-failure-sentinel"):

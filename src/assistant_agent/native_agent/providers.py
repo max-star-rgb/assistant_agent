@@ -172,27 +172,36 @@ def create_chat_model(
         raise ProviderConfigurationError(
             f"{settings.provider} chat provider is missing {', '.join(missing)}"
         )
-    if settings.provider == "qwen" and config.qwen_chat_api_protocol == "dashscope":
+    if settings.provider == "qwen":
         from assistant_agent.providers.dashscope_langchain import (
             DashScopeNativeChatModel,
         )
 
+        # Official model families determine the endpoint, independently of tokenizer profiles.
+        model_id = (settings.model or "").strip().lower()
+        api_mode = "multimodal" if model_id.startswith((
+            "qwen3.8-", "qwen3.6-", "qwen3.5-",
+            "qwen3.7-flash", "qwen3.7-plus",
+        )) else "text"
         return DashScopeNativeChatModel(
             api_key=settings.api_key or "",
             base_url=settings.base_url or "",
             model_name=settings.model or "",
+            api_mode=api_mode,
             output_version="v1",
             timeout_seconds=config.chat_timeout_seconds,
             enable_thinking=config.qwen_chat_enable_thinking,
             enable_search=config.qwen_chat_enable_search,
-            streaming=(config.native_provider_streaming or config.chat_stream),
+            streaming=(
+                config.native_provider_streaming or config.chat_stream
+                or (api_mode == "multimodal" and config.qwen_chat_enable_search)
+            ),
         )
     if settings.adapter_kind not in {"openai_compatible", "local_http"}:
         raise ProviderConfigurationError(
             f"unsupported native chat adapter: {settings.adapter_kind}"
         )
 
-    extra_body = _provider_extra_body(config, settings.provider)
     streaming = config.native_provider_streaming or config.chat_stream
     model_type = (
         ChatOpenAI
@@ -207,27 +216,9 @@ def create_chat_model(
             timeout=config.chat_timeout_seconds,
             streaming=streaming,
             stream_usage=streaming,
-            extra_body=extra_body,
             metadata={"provider": settings.provider},
             max_retries=0,
         )
-
-
-def _provider_extra_body(config: ChatConfig, provider: str) -> dict[str, Any] | None:
-    if provider != "qwen":
-        return None
-    extra_body: dict[str, Any] = {
-        "enable_thinking": config.qwen_chat_enable_thinking,
-        "enable_search": config.qwen_chat_enable_search,
-    }
-    if config.qwen_chat_enable_search:
-        extra_body["search_options"] = {
-            "search_strategy": "turbo",
-            "forced_search": False,
-            "enable_search_extension": True,
-            "freshness": 7,
-        }
-    return extra_body
 
 
 def _last_human_text(messages: list[AnyMessage]) -> str:

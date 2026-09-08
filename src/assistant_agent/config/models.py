@@ -22,7 +22,6 @@ ShoppingSearchProviderName = Literal["mock", "http", "haodanku"]
 ShoppingCompareProviderName = Literal["mock", "http", "haodanku"]
 LodgingProviderName = Literal["mock", "flyai"]
 VisualImageSearchProviderName = Literal["mock", "qwen"]
-QwenChatApiProtocol = Literal["dashscope", "openai_compatible"]
 
 
 @dataclass(frozen=True)
@@ -30,7 +29,6 @@ class ChatModelRuntimeProfile:
     context_window_tokens: int
     tokenizer_repository: str | None = None
     tokenizer_revision: str = "main"
-    qwen_api_protocol: QwenChatApiProtocol | None = None
 
 
 _CHAT_MODEL_RUNTIME_PROFILES = {
@@ -38,7 +36,6 @@ _CHAT_MODEL_RUNTIME_PROFILES = {
         context_window_tokens=1_000_000,
         tokenizer_repository="Qwen/Qwen3.8-Flash-Next",
         tokenizer_revision="de4b8e4d43b917e7706784d8bb445c9af86a3540",
-        qwen_api_protocol="openai_compatible",
     ),
     "qwen3.6-flash": ChatModelRuntimeProfile(context_window_tokens=1_000_000),
     "deepseek-v4-flash": ChatModelRuntimeProfile(context_window_tokens=1_000_000),
@@ -81,8 +78,7 @@ class ChatConfig:
     context_compaction_safety_margin_tokens: int = 50_000
     context_summary_max_tokens: int = 32_768
     qwen_chat_enable_thinking: bool = False
-    qwen_chat_enable_search: bool = False
-    qwen_chat_api_protocol: QwenChatApiProtocol = "dashscope"
+    qwen_chat_enable_search: bool = True
 
     def __post_init__(self) -> None:
         if not (

@@ -33,7 +33,6 @@ _PROJECT_INSTRUCTIONS_MAX_BYTES = 32_768
 
 def create_assistant_base_prompt(
     *,
-    native_search_enabled: bool = False,
     fixed_persona: str | None = None,
 ) -> AgentMiddleware:
     """Build the stable core instructions."""
@@ -47,7 +46,6 @@ def create_assistant_base_prompt(
             request.system_message,
             [
                 render_assistant_core_prompt(
-                    native_search_enabled=native_search_enabled,
                     persona=persona,
                 )
             ],
@@ -178,7 +176,6 @@ def render_working_directory_section(cwd: Path) -> str:
 
 def render_assistant_core_prompt(
     *,
-    native_search_enabled: bool = False,
     persona: str = "general",
 ) -> str:
     """Render stable, provider-neutral operating rules."""
@@ -187,7 +184,7 @@ def render_assistant_core_prompt(
         if persona == "call_assistant"
         else render_studio_prompt
     )
-    return renderer(native_search_enabled=native_search_enabled)
+    return renderer()
 
 
 def render_current_media_section(

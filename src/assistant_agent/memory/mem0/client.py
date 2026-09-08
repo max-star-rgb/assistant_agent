@@ -13,7 +13,7 @@ from assistant_agent.memory.mem0.transport import (
     urllib_mem0_transport,
 )
 from assistant_agent.memory.mem0.models import (
-    Mem0CompletedTurn,
+    Mem0Conversation,
     Mem0HealthResult,
     Mem0Identity,
     Mem0IngestionResult,
@@ -33,20 +33,22 @@ class UnavailableMem0Client:
     def recall_long_term_memory(
         self,
         identity: Mem0Identity,
+        *,
+        query: str,
     ) -> list[Mem0RecallMemory]:
-        _ = identity
+        _ = identity, query
         raise Mem0OperationError("recall", "Mem0 sidecar is not configured")
 
-    def ingest_completed_turn(
+    def ingest_conversation(
         self,
-        turn: Mem0CompletedTurn,
+        turn: Mem0Conversation,
     ) -> Mem0IngestionResult:
         _ = turn
         raise Mem0OperationError("ingest", "Mem0 sidecar is not configured")
 
 
 class Mem0Client:
-    """Expose only native Mem0 get-all/add for already-bound Plugin data."""
+    """Expose native Mem0 search/add for trusted, identity-bound data."""
 
     configured = True
     _MIN_INGESTION_TIMEOUT_SECONDS = 30.0
@@ -75,29 +77,28 @@ class Mem0Client:
     def recall_long_term_memory(
         self,
         identity: Mem0Identity,
+        *,
+        query: str,
     ) -> list[Mem0RecallMemory]:
         payload = self._request(
-            "GET",
-            "/memories",
-            query=identity.long_term_filters,
+            "POST",
+            "/search",
+            body={"query": query, "filters": identity.long_term_filters, "limit": 32},
         )
         return [
             _long_term_memory(value) for value in _mapping_list(payload.get("results"))
         ]
 
-    def ingest_completed_turn(
+    def ingest_conversation(
         self,
-        turn: Mem0CompletedTurn,
+        turn: Mem0Conversation,
     ) -> Mem0IngestionResult:
         try:
             payload = self._request(
                 "POST",
                 "/memories",
                 body={
-                    "messages": [
-                        {"role": "user", "content": turn.user_text},
-                        {"role": "assistant", "content": turn.assistant_text},
-                    ],
+                    "messages": [message.model_dump() for message in turn.messages],
                     **turn.identity.mem0_filters,
                     "metadata": {
                         "source": "runtime_turn_ingestion",
@@ -186,9 +187,9 @@ def _memory_change(value: Mapping[str, Any]) -> Mem0MemoryChange | None:
 
 
 def _mapping_list(value: Any) -> list[Mapping[str, Any]]:
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, Mapping)]
+    if not isinstance(value, list) or any(not isinstance(item, Mapping) for item in value):
+        raise Mem0OperationError("response", "Mem0 results must be an array of records")
+    return value
 
 
 def _datetime(value: Any) -> datetime | None:

@@ -10,7 +10,7 @@ import importlib
 import logging
 from typing import Any, Literal, Protocol, runtime_checkable
 
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
+from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.runtime import Runtime
 from langgraph.store.base import BaseStore
 from pydantic import BaseModel, ConfigDict, Field
@@ -20,7 +20,7 @@ from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.identity import RequestIdentity
 from assistant_agent.memory.mem0.client import Mem0Client
 from assistant_agent.memory.mem0.identity import bind_mem0_identity
-from assistant_agent.memory.mem0.models import Mem0CompletedTurn
+from assistant_agent.memory.mem0.models import Mem0Conversation, Mem0UserMessage
 from assistant_agent.native_agent.context import (
     AssistantRunContext,
     authenticated_user_identity,
@@ -135,11 +135,15 @@ class Mem0MemoryBackend:
         messages: Sequence[AnyMessage],
         store: BaseStore | None,
     ) -> tuple[str, ...]:
-        del messages, store
+        del store
+        query = _last_human_text(messages)
+        if not query:
+            return ()
         bound_identity = self._identity(identity, thread_id=thread_id, run_id=run_id)
         values = await asyncio.to_thread(
             self._client.recall_long_term_memory,
             bound_identity,
+            query=query,
         )
         return _bounded_texts(getattr(value, "text", "") for value in values)
 
@@ -153,8 +157,12 @@ class Mem0MemoryBackend:
         store: BaseStore | None,
     ) -> None:
         del store
-        user_text, assistant_text = _completed_turn(messages)
-        if not user_text or not assistant_text:
+        user_messages = tuple(
+            Mem0UserMessage(content=text)
+            for message in messages
+            if isinstance(message, HumanMessage) and (text := _message_text(message))
+        )
+        if not user_messages:
             return
         from datetime import datetime, timezone
 
@@ -164,15 +172,14 @@ class Mem0MemoryBackend:
                 "Mem0 commit requires Agent Server run or thread identity."
             )
         result = await asyncio.to_thread(
-            self._client.ingest_completed_turn,
-            Mem0CompletedTurn(
+            self._client.ingest_conversation,
+            Mem0Conversation(
                 identity=self._identity(
                     identity,
                     thread_id=thread_id,
                     run_id=run_id,
                 ),
-                user_text=user_text,
-                assistant_text=assistant_text,
+                messages=user_messages,
                 occurred_at=datetime.now(timezone.utc),
                 source_turn=source_turn,
             ),
@@ -540,25 +547,6 @@ def _store_item_text(item: Any) -> str:
             return "" if value is None else str(value)
         value = value.get("content", value.get("memory", value))
     return str(value) if not isinstance(value, Mapping) else ""
-
-
-def _completed_turn(messages: Sequence[AnyMessage]) -> tuple[str, str]:
-    assistant_text = ""
-    assistant_index = -1
-    for index in range(len(messages) - 1, -1, -1):
-        message = messages[index]
-        if isinstance(message, AIMessage):
-            assistant_text = _message_text(message)
-            assistant_index = index
-            if assistant_text:
-                break
-    if assistant_index < 0:
-        return "", ""
-    for index in range(assistant_index - 1, -1, -1):
-        message = messages[index]
-        if isinstance(message, HumanMessage):
-            return _message_text(message), assistant_text
-    return "", ""
 
 
 def _last_human_text(messages: Sequence[AnyMessage]) -> str:

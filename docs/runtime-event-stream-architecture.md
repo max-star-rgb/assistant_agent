@@ -91,8 +91,14 @@ Git Tool 与 execute guard 由 Tool 领域的 `tools/git.py` 所有，不再与 
 
 主模型与维护脚本统一使用 `BaseChatModel`、标准 LangChain messages 和 `create_chat_model`。旧
 `ChatAdapter`、`ChatRequest/ChatResult`、`LLMEvent` accumulator 与平行 assistant output models 已随最后消费者删除；
-DashScope HTTP/SSE transport 和 URL 归原生 `DashScopeNativeChatModel` 直接拥有。已登记模型从同一模型 profile
-派生 API protocol；`qwen3.8-flash` 使用其工作空间 `compatible-mode/v1` 地址，不再改写到旧 Generation URL。
+DashScope HTTP/SSE transport 和 URL 归原生 `DashScopeNativeChatModel` 直接拥有。Qwen 主模型统一使用 DashScope API，不提供兼容协议分支。
+依据[官方联网搜索文档](https://platform.qianwenai.com/docs/developer-guides/tool-calling/web-search)，
+Qwen3.8、Qwen3.6、Qwen3.5 系列及 Qwen3.7-Flash/Plus（含快照版本）使用 DashScope
+`/api/v1/services/aigc/multimodal-generation/generation`，保留配置中的工作空间域名。
+该端点选择独立于 tokenizer/context profile，其余模型保持 text-generation 路径；新模型接入时须先核对官方模态。
+多模态模型启用原生搜索时使用 SSE 增量输出；Qwen3.5-Omni 的搜索策略统一为其唯一支持的 `agent`，
+其他模型保留普通搜索 `turbo`、deep research `max`。正文角标原样透传，搜索来源保留在 `provider_search_sources`。
+主对话的多模态响应支持普通正文和标准工具调用；视觉摘要调用方显式启用 `structured_vision_output`，继续校验结构化摘要。
 
 旧 `runtime/state.py`、`cancellation.py`、`capability_grants.py`、state-to-response adapter 与
 state-to-observability adapter 已随最后消费者一起删除；

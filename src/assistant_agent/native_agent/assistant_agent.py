@@ -67,6 +67,7 @@ from assistant_agent.native_agent.state import (
     AssistantWorkerState,
 )
 from assistant_agent.native_agent.tool_call_limits import PerToolCallLimitMiddleware
+from assistant_agent.native_agent.unknown_tool_feedback import UnknownToolFeedbackMiddleware
 from assistant_agent.native_agent.tool_profiles import (
     ACTIVATE_TOOL_PROFILE_TOOL_NAME,
     DEACTIVATE_TOOL_PROFILE_TOOL_NAME,
@@ -515,7 +516,6 @@ def build_assistant_agent(
     visual_history_probe: VisualObservationHistoryProbe | None = None,
     live_view_resolver: Callable[[str, str, str], Any] | None = None,
     current_location: str | None = None,
-    native_search_enabled: bool = False,
     memory_backend: MemoryBackend | None = None,
     memory_extraction_delay_seconds: int = DEFAULT_EXTRACTION_DELAY_SECONDS,
     checkpointer=None,
@@ -571,6 +571,7 @@ def build_assistant_agent(
                         available_tool_names={GIT_TOOL_NAME},
                     ),
                     ContinuousModelRetryMiddleware(),
+                    UnknownToolFeedbackMiddleware(),
                 ],
                 "interrupt_on": {name: _APPROVAL for name in _LOCAL_SIDE_EFFECTS},
             },
@@ -580,7 +581,11 @@ def build_assistant_agent(
                 "system_prompt": _BROWSER_OPERATOR_SYSTEM_PROMPT_ZH,
                 "model": model,
                 "tools": list(browser_tools),
-                "middleware": [DeviceConnectionMiddleware(), ContinuousModelRetryMiddleware()],
+                "middleware": [
+                    DeviceConnectionMiddleware(),
+                    ContinuousModelRetryMiddleware(),
+                    UnknownToolFeedbackMiddleware(),
+                ],
                 "interrupt_on": browser_interrupt_on,
             },
         ],
@@ -588,7 +593,7 @@ def build_assistant_agent(
         context_schema=AssistantRunContext,
         middleware=[
             DeviceConnectionMiddleware(),
-            create_assistant_base_prompt(native_search_enabled=native_search_enabled),
+            create_assistant_base_prompt(),
             PersonaModelSettingsMiddleware(),
             create_project_skills_middleware(skills_backend),
             git_middleware,
@@ -636,6 +641,7 @@ def build_assistant_agent(
                 jitter=False,
             ),
             ContinuousModelRetryMiddleware(),
+            UnknownToolFeedbackMiddleware(),
         ],
         interrupt_on=_interrupt_on(governed_tool_names),
         checkpointer=checkpointer,
@@ -705,7 +711,6 @@ def build_general_purpose_worker(
     visual_history_probe: VisualObservationHistoryProbe | None = None,
     live_view_resolver: Callable[[str, str, str], Any] | None = None,
     current_location: str | None = None,
-    native_search_enabled: bool = False,
 ):
     """Compile one non-delegating worker with the main Agent capabilities."""
 
@@ -735,7 +740,6 @@ def build_general_purpose_worker(
     middleware: list[AgentMiddleware] = [
         DeviceConnectionMiddleware(),
         create_assistant_base_prompt(
-            native_search_enabled=native_search_enabled,
             fixed_persona="general",
         ),
         skills_middleware,
@@ -792,6 +796,7 @@ def build_general_purpose_worker(
                 interrupt_on=_interrupt_on(set(interrupt_tool_names))
             ),
             ContinuousModelRetryMiddleware(),
+            UnknownToolFeedbackMiddleware(),
         ]
     )
     return create_agent(

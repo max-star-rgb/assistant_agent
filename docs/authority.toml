@@ -30,6 +30,7 @@ read_when = [
 ]
 source_globs = [
   "langgraph.json",
+  "langgraph.langmem.json",
   "src/assistant_agent/agent_server/**",
   "src/assistant_agent/client.py",
   "src/assistant_agent/runtime/thread_resources.py",
@@ -113,6 +114,7 @@ source_globs = [
   "src/assistant_agent/native_agent/assistant_agent.py",
   "src/assistant_agent/native_agent/providers.py",
   "src/assistant_agent/native_agent/tool_profiles.py",
+  "src/assistant_agent/native_agent/unknown_tool_feedback.py",
   "src/assistant_agent/native_agent/tools.py",
   "src/assistant_agent/runtime/local_backend.py",
   "src/assistant_agent/runtime/thread_resources.py",

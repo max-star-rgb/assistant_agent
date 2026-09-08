@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -15,6 +14,7 @@ from langgraph_sdk import get_client, get_sync_client
 
 from assistant_agent.agent_server.auth import _internal_worker_headers
 from assistant_agent.agent_server.config import WORKER_GRAPH_ID
+from assistant_agent.agent_server.config import agent_server_url as _agent_server_url
 from assistant_agent.native_agent.context import (
     AssistantRuntimeFacts,
     assistant_runtime_metadata,
@@ -499,17 +499,6 @@ def _correlation_metadata(
             )
         ),
     }
-
-
-def _agent_server_url() -> str:
-    raw_port = os.environ.get("ASSISTANT_AGENT_SERVER_PORT", "8089")
-    try:
-        port = int(raw_port)
-    except ValueError as exc:
-        raise ValueError("ASSISTANT_AGENT_SERVER_PORT must be an integer") from exc
-    if not 1 <= port <= 65_535:
-        raise ValueError("ASSISTANT_AGENT_SERVER_PORT must be between 1 and 65535")
-    return f"http://127.0.0.1:{port}"
 
 
 def _unknown_agent(subagent_type: str) -> str:

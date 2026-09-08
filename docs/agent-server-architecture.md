@@ -176,7 +176,8 @@ wrapper 仅负责 env/config 来源、工作目录级单实例锁、严格端口
 使用官方 `langgraph-runtime-inmem==0.33.0`；删除原本地 fork，队列调度和恢复行为跟随上游实现。
 checkpoint/Store 保存在 `.langgraph_api/`，重载会重建服务进程并短暂断开连接，不代表运行中任务无中断更新。
 `langgraph.json` 保留项目依赖入口、Graph、auth、HTTP 和 Store 配置；依赖安装在本机环境，变更后重新安装并重启，
-不需要构建镜像。Store embedding 入口为 `agent_server/embeddings.py`，具体规则见 Memory authority。
+不需要构建镜像。当前 Mem0 后端不使用 Server Store embedding；旧 LangMem 配置保存在
+`langgraph.langmem.json`，入口仍为 `agent_server/embeddings.py`，不再主动维护；具体规则见 Memory authority。
 不再提供项目自定义 PostgreSQL/Docker/watch 部署入口；旧 PostgreSQL 数据卷保留但不由 dev 使用，也不自动迁移。
 真实 `.env` 保持未跟踪。未来需要部署验证时再按官方 `langgraph up` 流程独立配置，不混入日常开发入口。
 

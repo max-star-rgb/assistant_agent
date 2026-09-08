@@ -82,11 +82,11 @@ CHAT_PROVIDER_SPECS: dict[str, ProviderSpec] = {
     ),
     "qwen": ProviderSpec(
         name="qwen",
-        adapter_kind="openai_compatible",
+        adapter_kind="dashscope",
         api_key_env="QWEN_API_KEY",
         base_url_env="QWEN_CHAT_BASE_URL",
         model_env="QWEN_CHAT_MODEL",
-        default_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        default_base_url="https://dashscope.aliyuncs.com/api/v1",
         default_model="qwen-plus",
         requires_api_key=True,
         requires_base_url=True,
@@ -362,7 +362,7 @@ def _chat_provider_env_with_aliases(provider: str, env: Mapping[str, str]) -> Ma
             workspace_id = (normalized.get("QWEN_CHAT_WORKSPACE_ID") or "").strip()
             if workspace_id:
                 normalized["QWEN_CHAT_BASE_URL"] = (
-                    f"https://{workspace_id}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+                    f"https://{workspace_id}.cn-beijing.maas.aliyuncs.com/api/v1"
                 )
             else:
                 normalized.pop("QWEN_CHAT_BASE_URL", None)

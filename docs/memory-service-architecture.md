@@ -1,6 +1,6 @@
 # LangGraph-native 长期记忆架构
 
-最后更新：2026-09-07
+最后更新：2026-09-08
 
 ## Authority contract
 
@@ -43,6 +43,9 @@ companion thread 以 `assistant_agent_source_thread_id` 记录来源；chat thre
 Studio 在回答完成后恢复 idle，普通 chat 的 `interrupt` 并发语义不变。
 官方 executor 的同步提交与资源关闭放在 `asyncio.to_thread` 中，只等待提交 Future 完成，即 Server 接受请求，
 不等待延迟提取；线程只负责 SDK 请求，30 分钟调度仍由 Agent Server 持久化管理。
+创建 companion thread 与同步提交使用同一个本机 Server 地址（`ASSISTANT_AGENT_SERVER_PORT`，默认 `8089`），
+并通过 `X-Assistant-User` 透传 Runtime 的认证身份。两种 SDK client 均显式设置 `api_key=None`；
+不能混用异步默认的进程内 `/noauth` 与同步默认的 `localhost:8123`，也不能把 LangSmith key 用作本机 API 凭据。
 refresh 同样使用 LangChain 原生 Runnable 三次重试，耗尽后 chat run
 明确终结为 error。
 
@@ -61,10 +64,14 @@ Assistant state。节点使用 LangGraph 原生 `RetryPolicy(max_attempts=3)`；
 当前装配：
 
 - `disabled`：离线默认，召回为空、提取跳过；
-- `mem0`：复用薄 `Mem0Client`；身份通过 opaque binding，提交的 `source_turn` 优先使用 Agent Server
-  `run_id`，本地 Graph 无 run ID 时使用 thread ID；不构造旧 SQLite commit ledger；
-- `langmem`：使用官方 manager，召回访问 runtime Store。后台 run 接收调度时的完整 messages 快照，
-  manager 接收其中全部非空用户正文，不再通过 `_completed_turn` 截取最后一轮；System、AI、Tool 和媒体载荷
+- `mem0`：当前维护的真实部署后端，复用薄 `Mem0Client`。召回以最新用户正文调用 `/search`，按 opaque
+  `user_id + agent_id` 跨会话检索，最多 32 条；没有用户正文时不请求服务。提取提交快照中全部非空用户正文，
+  排除 System、AI、Tool 和媒体载荷，不只截最后一轮。`source_turn` 优先使用后台 Agent Server
+  `run_id`，本地 Graph 无 run ID 时使用 thread ID；来源字段不是幂等键。重复快照由 Mem0 原生整合，
+  不提供 exactly-once 保证、不维护增量游标或本地 commit ledger；模型窗口不足时明确失败，不静默截断。
+  embedding、向量存储、记忆更新均由 Mem0 服务负责，backend 忽略 `runtime.store`；
+- `langmem`：仅保留的旧实现，不再主动维护或扩展。使用官方 manager，召回访问 runtime Store。后台 run 接收调度时的完整 messages 快照，
+  manager 接收其中全部非空用户正文，不截取最后一轮；System、AI、Tool 和媒体载荷
   不进入提取输入。主 Agent 的 Deep Agents summarization 保留 messages 日志，摘要只投影到模型请求。
   采用 LangMem 0.0.30 默认 `_MEMORY_INSTRUCTIONS` 的忠实中文翻译，保留核心英文术语；不追加项目自定义的
   排除话术。保留 `DurableMemory` 的 content/kind schema 和官方默认操作配置（delete 默认关闭）。
@@ -82,9 +89,17 @@ mock mode 只能使用 disabled；远端 backend 要求 real mode 和完整显�
 
 ## Store 与语义索引
 
-Agent Server 注入默认 Store 与 checkpointer；LangMem 不另建数据库连接或 Store。当前日常开发使用官方
+当前默认 `langgraph.json` 不配置 `store.index`；Mem0 不依赖 Agent Server Store 的语义索引。
+本机 `.env` 使用 `MEMORY_BACKEND=mem0`、`MEM0_BASE_URL=http://127.0.0.1:8890`，视觉远端分支保持关闭。
+离线默认仍为 `disabled`，不得因为检测到凭据而自动启用真实后端。
+Mem0 服务由 `docker/mem0/compose.yaml` 提供，记忆向量在其 Qdrant 中，历史在其 SQLite 中。
+现有 LangMem Store、checkpoints 和旧 PostgreSQL 数据均保留，不自动复制到 Mem0 或删除。
+
+旧 LangMem 的完整启动配置冻结在 `langgraph.langmem.json`，不随当前方案主动维护。
+需要恢复时显式设置 `MEMORY_BACKEND=langmem` 并用 `scripts/run_server.py --config langgraph.langmem.json` 启动。
+以下仅描述旧配置：Agent Server 注入默认 Store 与 checkpointer；LangMem 不另建数据库连接或 Store。日常开发使用官方
 `langgraph dev` 的本地持久化，状态位于 `.langgraph_api/`，不依赖 PostgreSQL。
-`langgraph.json` 的官方 `store.index` 对 `content.content` 建立 1024 维索引，使用百炼 `text-embedding-v4`。
+`langgraph.langmem.json` 的官方 `store.index` 对 `content.content` 建立 1024 维索引，使用百炼 `text-embedding-v4`。
 `agent_server.embeddings` 是 Server embedding 配置入口，复用官方 `OpenAIEmbeddings`；一次最多 10 条，显式
 float 编码，不使用 OpenAI tokenizer 自动切片。凭据优先 `QWEN_EMBEDDING_API_KEY`，其次 `QWEN_API_KEY`；
 地址优先 `QWEN_EMBEDDING_BASE_URL`，其次 `QWEN_CHAT_BASE_URL`，最后为百炼标准兼容地址。

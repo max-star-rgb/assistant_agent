@@ -83,6 +83,13 @@ message/state 协议。传输层只通用读取该 key 和标准 `type=file` blo
 暴露取消 Tool；取消只影响后续可见性，不中止已开始的 Tool，也不撤销既有副作用。
 Skill、Todo、worker 文本和 artifact 都不能声明 profile 或授权 Tool。
 
+不存在的 ToolCall 由 `UnknownToolFeedbackMiddleware` 返回标准 error `ToolMessage`，保留原始
+`tool_call_id`，并以 `unknown_tool` 和 `available_tool_names` 提示模型只调用已暴露工具。
+该 middleware 放在模型工具过滤之后，把本次 `ModelRequest.tools` 中实际本地 Tool 名保存为私有
+`exposed_tool_names`；错误反馈不使用完整注册表，不列出尚未激活或条件隐藏的 Tool，也不把
+Provider-native 能力当作本地 Tool。主 Agent、通用 worker、coder 和 browser-operator 共用此实现，
+同步与异步路径一致；快照不进入公开 input/output 或传给子 Agent。
+
 Git 使用独立 `git` Tool Profile。Tool 接收 `target_path` 与不含可执行文件名的参数数组，先对目标路径执行
 `git -C <path> rev-parse --show-toplevel`，再以 `shell=False` 在解析出的仓库根执行命令。main、通用 worker 与
 coder 共用该 middleware；`execute` 的可见描述要求优先使用 `git` Tool，并在调用边界拒绝直接或 shell 链中的
@@ -186,10 +193,12 @@ capability；只有 auth 转换出的 worker permission 配合严格 metadata �
 ## Provider-native 能力
 
 Qwen 的原生联网参数属于 `BaseChatModel` 请求能力，不伪装成本地 Tool；生产不注册本地 `web_search` Tool。
-只有 real Qwen、DashScope 协议和原生搜索开关同时启用时，统一 dynamic prompt 才向模型说明本次调用具备原生联网搜索；
-未启用时不注入搜索提示，也不提供本地搜索替代。real 模式选择 DashScope 协议时使用
-`DashScopeNativeChatModel`；模型 profile 自动选择或显式覆盖为 OpenAI-compatible 时使用 `ChatOpenAI`，不得静默回退。统一主 Agent 可按
-结构化配置启用 Provider search；worker 复用主 Agent 的同一模型配置。统一模型瞬时故障恢复与 custom stream
+提示词固定写入原生搜索默认开启的策略，不再检查 `native_search_enabled`；实际请求仍由 Provider 配置控制。
+Qwen 主模型只使用 `DashScopeNativeChatModel`，不保留 OpenAI-compatible 分支或协议选择开关；旧 `QWEN_CHAT_API_PROTOCOL` 配置会明确拒绝。
+项目的 `QWEN_CHAT_ENABLE_SEARCH` 默认 true，可显式设为 false；这属于项目默认策略，不是官方 API 默认值。
+仅在 real Qwen 配置完整时发送真实请求，mock 仍保持离线。启用原生搜索时设置 `enable_search=true` 和
+`search_options.forced_search=true`，主 Agent 与复用模型的 worker 一致；关闭时不发送搜索参数。
+官方多模态模型端点、流式要求与搜索策略见 Runtime authority。统一模型瞬时故障恢复与 custom stream
 进度事件由 runtime authority 定义，Tool 层不实现第二套模型重试。
 
 Provider 返回的 message content 是唯一正文，来源只保存在同一 `AIMessage.response_metadata`。adapter 不把来源

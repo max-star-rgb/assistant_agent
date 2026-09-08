@@ -172,6 +172,7 @@ class DashScopeNativeChatModel(BaseChatModel):
     model_name: str
     timeout_seconds: float = 75.0
     api_mode: Literal["text", "multimodal"] = "text"
+    structured_vision_output: bool = False
     temperature: float | None = None
     enable_thinking: bool = False
     enable_search: bool = False
@@ -255,10 +256,6 @@ class DashScopeNativeChatModel(BaseChatModel):
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
         del run_manager
-        if self.api_mode == "multimodal":
-            raise DashScopeProviderError(
-                "DashScope multimodal streaming is not supported."
-            )
         payload = self._build_payload(messages, stop=stop, stream=True, **kwargs)
         stream: Iterator[dict[str, Any]] | None = None
         sources: list[dict[str, Any]] = []
@@ -412,13 +409,16 @@ class DashScopeNativeChatModel(BaseChatModel):
             parameters["enable_search"] = True
             parameters["search_options"] = {
                 "search_strategy": "turbo",
-                "forced_search": False,
+                "forced_search": True,
                 "enable_search_extension": True,
                 "enable_source": True,
                 "enable_citation": True,
                 "citation_format": "[<number>]",
                 "freshness": 7,
             }
+
+        if parameters.get("enable_search") and self.model_name.lower().startswith("qwen3.5-omni-"):
+            parameters["search_options"]["search_strategy"] = "agent"
 
         tools = kwargs.get("tools")
         if isinstance(tools, list):
@@ -454,7 +454,7 @@ class DashScopeNativeChatModel(BaseChatModel):
         sources = _parse_search_sources(
             output.get("search_info", data.get("search_info"))
         )
-        if self.api_mode == "multimodal":
+        if self.structured_vision_output:
             structured_output = _json_object_from_text(content)
             summary = structured_output.get("summary")
             if not isinstance(summary, str) or not summary.strip():
@@ -522,15 +522,18 @@ def _message_to_dashscope(
     multimodal: bool = False,
 ) -> dict[str, Any]:
     if isinstance(message, HumanMessage) and multimodal:
-        if not isinstance(message.content, (list, tuple)):
-            raise ValueError("DashScope multimodal human content must be a list.")
+        blocks = (
+            [{"type": "text", "text": message.content}]
+            if isinstance(message.content, str) else message.content
+        )
         return {
             "role": "user",
             "content": [
-                _content_block_to_dashscope(block) for block in message.content
+                _content_block_to_dashscope(block) for block in blocks
             ],
         }
-    content = _message_text(message.content)
+    text = _message_text(message.content)
+    content = ([{"text": text}] if text else []) if multimodal else text
     if isinstance(message, SystemMessage):
         return {"role": "system", "content": content}
     if isinstance(message, HumanMessage):

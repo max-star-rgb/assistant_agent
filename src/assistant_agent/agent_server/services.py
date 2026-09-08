@@ -165,12 +165,6 @@ class AgentServerExecutionOwner:
                 else None
             ),
         }
-        native_search_enabled = (
-            config.provider_mode == "real"
-            and config.chat.resolved_provider().provider == "qwen"
-            and config.chat.qwen_chat_api_protocol == "dashscope"
-            and config.chat.qwen_chat_enable_search
-        )
         writable_backend = create_project_skills_backend(
             project_root,
             create_local_backend(),
@@ -190,7 +184,6 @@ class AgentServerExecutionOwner:
             visual_history_probe=tool_resources.visual_history_probe,
             live_view_resolver=tool_resources.live_view_resolver,
             current_location=config.runtime.current_location,
-            native_search_enabled=native_search_enabled,
         )
         async_middleware = build_async_subagent_middleware()
         assistant_agent = build_assistant_agent(
@@ -212,7 +205,6 @@ class AgentServerExecutionOwner:
             visual_history_probe=tool_resources.visual_history_probe,
             live_view_resolver=tool_resources.live_view_resolver,
             current_location=config.runtime.current_location,
-            native_search_enabled=native_search_enabled,
             memory_backend=memory_backend,
             memory_extraction_delay_seconds=config.memory.memory_extraction_delay_seconds,
         )
