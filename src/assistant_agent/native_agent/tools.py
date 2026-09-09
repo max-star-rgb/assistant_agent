@@ -114,7 +114,7 @@ def mcp_connections(
     *,
     discovery_root: Path | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Translate trusted stdio config to the official adapter schema."""
+    """Translate trusted MCP config to the official adapter schema."""
 
     connections: dict[str, dict[str, Any]] = {}
     for server in server_configs:

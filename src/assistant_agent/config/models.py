@@ -78,7 +78,7 @@ class ChatConfig:
     context_compaction_safety_margin_tokens: int = 50_000
     context_summary_max_tokens: int = 32_768
     qwen_chat_enable_thinking: bool = False
-    qwen_chat_enable_search: bool = True
+    qwen_chat_enable_search: bool = False
 
     def __post_init__(self) -> None:
         if not (

@@ -1,6 +1,15 @@
 {
   "servers": [
     {
+      "server_name": "bailian",
+      "transport": "streamable_http",
+      "url": "https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp",
+      "bearer_token_env": "QWEN_API_KEY",
+      "allowed_tools": ["bailian_web_search"],
+      "general_purpose_tools": ["bailian_web_search"],
+      "interrupt_tools": []
+    },
+    {
       "server_name": "playwright",
       "transport": "stdio",
       "session_scope": "thread",

@@ -269,7 +269,7 @@ def _load_chat_config(source: Mapping[str, str], mode: ProviderMode) -> ChatConf
             512, _int(source.get("MULTIMODAL_AGENT_CONTEXT_SUMMARY_MAX_TOKENS"), 32768)
         ),
         qwen_chat_enable_thinking=_bool(source.get("QWEN_CHAT_ENABLE_THINKING"), False),
-        qwen_chat_enable_search=_bool(source.get("QWEN_CHAT_ENABLE_SEARCH"), True),
+        qwen_chat_enable_search=_bool(source.get("QWEN_CHAT_ENABLE_SEARCH"), False),
     )
 
 

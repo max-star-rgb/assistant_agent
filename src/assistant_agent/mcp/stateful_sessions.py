@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack
@@ -18,6 +19,7 @@ from langchain_mcp_adapters.interceptors import (
 from mcp import ClientSession
 
 from assistant_agent.mcp.config import (
+    MCPConfigurationError,
     MCPServerConfig,
     resolve_mcp_server_env,
 )
@@ -36,7 +38,18 @@ def resolve_mcp_connection(
     cwd: Path | None = None,
     discovery_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Build one official stdio connection with server-owned path expansion."""
+    """Build an official MCP connection from trusted configuration."""
+
+    if server.transport == "streamable_http":
+        headers: dict[str, str] = {}
+        if server.bearer_token_env:
+            token = os.environ.get(server.bearer_token_env, "").strip()
+            if not token or "\r" in token or "\n" in token:
+                raise MCPConfigurationError(
+                    f"HTTP MCP requires a valid {server.bearer_token_env}"
+                )
+            headers["Authorization"] = f"Bearer {token}"
+        return {"transport": "streamable_http", "url": str(server.url), "headers": headers}
 
     if cwd is not None:
         replacements = {"{cwd}": str(cwd)}

@@ -96,7 +96,8 @@ DashScope HTTP/SSE transport 和 URL 归原生 `DashScopeNativeChatModel` 直接
 Qwen3.8、Qwen3.6、Qwen3.5 系列及 Qwen3.7-Flash/Plus（含快照版本）使用 DashScope
 `/api/v1/services/aigc/multimodal-generation/generation`，保留配置中的工作空间域名。
 该端点选择独立于 tokenizer/context profile，其余模型保持 text-generation 路径；新模型接入时须先核对官方模态。
-多模态模型启用原生搜索时使用 SSE 增量输出；Qwen3.5-Omni 的搜索策略统一为其唯一支持的 `agent`，
+主对话默认关闭原生搜索，改用 Tool authority 定义的百炼搜索 MCP。仅显式开启兼容能力时，
+多模态模型原生搜索使用 SSE 增量输出；Qwen3.5-Omni 的搜索策略统一为其唯一支持的 `agent`，
 其他模型保留普通搜索 `turbo`、deep research `max`。正文角标原样透传，搜索来源保留在 `provider_search_sources`。
 主对话的多模态响应支持普通正文和标准工具调用；视觉摘要调用方显式启用 `structured_vision_output`，继续校验结构化摘要。
 

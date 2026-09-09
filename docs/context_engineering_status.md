@@ -35,9 +35,9 @@
 
 稳定策略要求直接推进结果，只在缺少阻塞信息或关键选择会改变结果时询问，并区分
 已核验事实、失败和模型判断。Git 仓库识别与命令执行由 `git` Tool 的代码边界负责，不写入 system prompt。
-两套 persona 的「搜索」段落固定写入原生搜索默认开启、优先用它查资料和核实最新事实的策略，
-不再通过 `native_search_enabled` 判断或传参；browser 用于网页交互，
-也可在原生搜索不可用时搜索；curl 经可用的 execute 请求已知 URL/API、检查响应或下载文件。
+两套 persona 的「搜索」段落要求优先直接调用已注册且默认暴露的
+`mcp_bailian_bailian_web_search` 查资料和核实最新事实，不使用模型原生联网搜索。
+browser 用于网页交互，也可在搜索工具不可用时搜索；curl 经可用的 execute 请求已知 URL/API、检查响应或下载文件。
 这些文案只指导模型选择已有能力，不改变 Tool exposure、Provider 配置或审批边界。
 
 公开 `AssistantRunContext` 包含 `persona`、`cwd`、`enable_memory`、`require_tool_approval`，以及 Studio 可配置的成对绝对值

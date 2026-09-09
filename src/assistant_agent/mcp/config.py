@@ -9,13 +9,13 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, ValidationError, model_validator
 
 
 MCP_ENABLED_ENV = "MULTIMODAL_AGENT_MCP_ENABLED"
 MCP_CONFIG_PATH_ENV = "MULTIMODAL_AGENT_MCP_CONFIG_PATH"
 DEFAULT_MCP_CONFIG_PATH = ".local/mcp_servers.json"
-MCPTransport = Literal["stdio"]
+MCPTransport = Literal["stdio", "streamable_http"]
 MCPSessionScope = Literal["call", "thread"]
 MCPServerPreset = Literal["google_workspace", "todoist", "notion", "slack"]
 _PARENT_ENV_REFERENCE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
@@ -35,6 +35,8 @@ class MCPServerConfig(BaseModel):
     transport: MCPTransport = "stdio"
     session_scope: MCPSessionScope = "call"
     command: list[str] = Field(default_factory=list)
+    url: HttpUrl | None = None
+    bearer_token_env: str | None = Field(default=None, pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
     cwd: str | None = None
     env: dict[str, str] = Field(default_factory=dict)
     allowed_tools: list[str] = Field(default_factory=list)
@@ -71,6 +73,13 @@ class MCPServerConfig(BaseModel):
                 )
         if self.transport == "stdio" and not self.command:
             raise ValueError("stdio MCP server requires command.")
+        if self.transport == "streamable_http":
+            if self.url is None or self.url.scheme != "https" or self.url.username or self.url.password:
+                raise ValueError("HTTP MCP server requires an HTTPS URL without credentials.")
+            if self.command or self.cwd or self.env or self.session_scope != "call":
+                raise ValueError("HTTP MCP uses call scope without stdio settings.")
+        elif self.url is not None or self.bearer_token_env is not None:
+            raise ValueError("HTTP MCP settings require streamable_http transport.")
         values = [*self.command, self.cwd or ""]
         if self.session_scope == "call" and any(
             token in value

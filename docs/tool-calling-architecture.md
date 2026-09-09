@@ -190,12 +190,19 @@ start、update 与 cancel 显式进入 HITL；check/list 未列入 `interrupt_on
 capability；只有 auth 转换出的 worker permission 配合严格 metadata 才能创建 worker run，外部 shape-only 请求被
 拒绝。该 capability 不进入 Tool 参数、state、task handle 或 thread/run metadata。worker 不能递归 delegation。
 
-## Provider-native 能力
+## 联网搜索与 Provider-native 能力
 
-Qwen 的原生联网参数属于 `BaseChatModel` 请求能力，不伪装成本地 Tool；生产不注册本地 `web_search` Tool。
-提示词固定写入原生搜索默认开启的策略，不再检查 `native_search_enabled`；实际请求仍由 Provider 配置控制。
+联网搜索使用百炼 MCP 的 `bailian_web_search`，经现有官方 adapter 装配为
+`mcp_bailian_bailian_web_search`，注册后默认暴露，不归入需要激活的 Profile；主 Agent 与通用 worker 共用该 inventory。
+按照[官方外部调用文档](https://help.aliyun.com/zh/model-studio/mcp-external-calls)，使用
+`https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp` 的 `streamable_http` 传输。
+配置示例见 `deploy/mcp_servers.example.json`：显式 allowlist 和安全重试名单只包含 `bailian_web_search`，
+`bearer_token_env=QWEN_API_KEY` 在建立连接时读取环境变量并生成 Authorization 头，不复制密钥到配置。
+HTTP MCP 仅支持 HTTPS、call scope；缺失凭据时明确报错。百炼端需已开通该 MCP 服务。
+本机配置使用 `.local/mcp_servers.json` 并显式启用 `MULTIMODAL_AGENT_MCP_ENABLED=1`。
+提示词优先使用该搜索工具，不把模型原生搜索当作可调用 Tool，也不增加搜索 wrapper。
 Qwen 主模型只使用 `DashScopeNativeChatModel`，不保留 OpenAI-compatible 分支或协议选择开关；旧 `QWEN_CHAT_API_PROTOCOL` 配置会明确拒绝。
-项目的 `QWEN_CHAT_ENABLE_SEARCH` 默认 true，可显式设为 false；这属于项目默认策略，不是官方 API 默认值。
+项目的 `QWEN_CHAT_ENABLE_SEARCH` 默认 false，本机同样关闭；原生搜索仅保留显式配置能力，不作 MCP 失败回退。
 仅在 real Qwen 配置完整时发送真实请求，mock 仍保持离线。启用原生搜索时设置 `enable_search=true` 和
 `search_options.forced_search=true`，主 Agent 与复用模型的 worker 一致；关闭时不发送搜索参数。
 官方多模态模型端点、流式要求与搜索策略见 Runtime authority。统一模型瞬时故障恢复与 custom stream
