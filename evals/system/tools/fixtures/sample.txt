@@ -1,1 +1,0 @@
-assistant_agent Tool 固定输入读取样本。
