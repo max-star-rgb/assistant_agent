@@ -37,14 +37,14 @@ Windows 保留 NVIDIA 驱动、WSL2 和 Docker Desktop；Agent、Python、Node�
 在旧电脑将需要迁移的代码和本次安装文件提交并推送到你自己的仓库；只存在于旧电脑工作区的改动不会出现在 clone 中。
 本任务不自动推送仓库。
 
-在 Ubuntu 终端执行（把 `你的仓库地址` 换为实际 Git 地址）：
+在 Ubuntu 终端执行（替换仓库地址和包含安装提交的部署分支；本次工作所在分支为 `cqy`）：
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y git
 mkdir -p ~/projects
 cd ~/projects
-git clone 你的仓库地址 assistant_agent
+git clone --branch 你的部署分支 你的仓库地址 assistant_agent
 cd assistant_agent
 bash scripts/setup_wsl.sh
 ```
