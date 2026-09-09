@@ -1,6 +1,6 @@
 # AGENTS.md
 
-本文件是 Codex / coding agent 的仓库级入口。开始仓库内任何非纯问答、非单条无副作用命令任务前，以本文件为准。随后通过 `docs/authority.toml` 路由到 `docs/README.md` 和具体专项文档；源码和测试优先于过期 prose。
+开始仓库内任何任务前，以本文件为准。随后通过 `docs/authority.toml` 路由到 `docs/README.md` 和具体专项文档。
 
 ## 1. 项目与入口
 
