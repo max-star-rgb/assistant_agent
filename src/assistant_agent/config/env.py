@@ -120,7 +120,7 @@ def _prevalidate_environment(source: Mapping[str, str], mode: ProviderMode) -> N
     if _float(source.get("REMOTE_VISUAL_MEMORY_SEGMENT_SECONDS"), 30.0) <= 0:
         raise ValueError("remote visual memory segment duration must be positive")
     if not source.get(
-        "REMOTE_VISUAL_MEMORY_SPOOL_ROOT", ".data/remote_visual_memory"
+        "REMOTE_VISUAL_MEMORY_SPOOL_ROOT", "data/remote_visual_memory"
     ).strip():
         raise ValueError("remote visual memory spool root must be non-empty")
     if _int(source.get("REMOTE_VISUAL_MEMORY_FILE_TTL_SECONDS"), 86400) <= 0:
@@ -153,7 +153,7 @@ def _prevalidate_environment(source: Mapping[str, str], mode: ProviderMode) -> N
     if _float(source.get("VISUAL_MEMORY_QDRANT_TIMEOUT_SECONDS"), 2.0) <= 0:
         raise ValueError("visual memory Qdrant timeout must be positive")
     if not source.get(
-        "VISUAL_MEMORY_DENSE_MODEL_CACHE_DIR", ".data/models/fastembed"
+        "VISUAL_MEMORY_DENSE_MODEL_CACHE_DIR", "data/models/fastembed"
     ).strip():
         raise ValueError("visual memory dense model cache must be non-empty")
     if (
@@ -171,7 +171,7 @@ def _prevalidate_environment(source: Mapping[str, str], mode: ProviderMode) -> N
         raise ValueError("proactive message delivery timeout must be positive")
     if not (
         source.get("PROACTIVE_DELIVERY_STORE_PATH")
-        or ".data/agent_server/proactive_deliveries.sqlite3"
+        or "data/agent_server/proactive_deliveries.sqlite3"
     ).strip():
         raise ValueError("proactive delivery store path must be non-empty")
     if _float(source.get("PROACTIVE_DELIVERY_ACK_TIMEOUT_SECONDS"), 15.0) <= 0:
@@ -351,7 +351,7 @@ def _load_vision_config(source: Mapping[str, str], mode: ProviderMode) -> Vision
             source.get("VISUAL_MEMORY_QDRANT_TIMEOUT_SECONDS"), 2.0
         ),
         visual_memory_dense_model_cache_dir=source.get(
-            "VISUAL_MEMORY_DENSE_MODEL_CACHE_DIR", ".data/models/fastembed"
+            "VISUAL_MEMORY_DENSE_MODEL_CACHE_DIR", "data/models/fastembed"
         ),
         visual_memory_result_limit=12,
         visual_reminder_similarity_threshold=_float(
@@ -452,7 +452,7 @@ def _load_media_config(source: Mapping[str, str]) -> MediaConfig:
             source.get("PROACTIVE_MESSAGE_DELIVERY_TIMEOUT_SECONDS"), 95.0
         ),
         proactive_delivery_store_path=source.get("PROACTIVE_DELIVERY_STORE_PATH")
-        or ".data/agent_server/proactive_deliveries.sqlite3",
+        or "data/agent_server/proactive_deliveries.sqlite3",
         proactive_delivery_ack_timeout_seconds=_float(
             source.get("PROACTIVE_DELIVERY_ACK_TIMEOUT_SECONDS"), 15.0
         ),
@@ -482,7 +482,7 @@ def _load_media_config(source: Mapping[str, str]) -> MediaConfig:
             source.get("REMOTE_VISUAL_MEMORY_SEGMENT_SECONDS"), 30.0
         ),
         remote_visual_memory_spool_root=source.get(
-            "REMOTE_VISUAL_MEMORY_SPOOL_ROOT", ".data/remote_visual_memory"
+            "REMOTE_VISUAL_MEMORY_SPOOL_ROOT", "data/remote_visual_memory"
         ),
         remote_visual_memory_file_ttl_seconds=_int(
             source.get("REMOTE_VISUAL_MEMORY_FILE_TTL_SECONDS"), 86400

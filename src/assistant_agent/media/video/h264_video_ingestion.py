@@ -25,7 +25,7 @@ DEFAULT_MAX_FRAME_BYTES = 8 * 1024 * 1024
 DEFAULT_DECODE_TIMEOUT_SECONDS = 3.0
 DEFAULT_WINDOW_SIZE = REALTIME_VISUAL_TARGET_WINDOW_SIZE
 REPO_ROOT = Path(__file__).resolve().parents[4]
-DEFAULT_FRAME_ROOT = REPO_ROOT / ".data" / "agent_service_video_frames"
+DEFAULT_FRAME_ROOT = REPO_ROOT / "data" / "agent_service_video_frames"
 
 logger = logging.getLogger(__name__)
 

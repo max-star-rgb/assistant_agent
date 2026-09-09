@@ -19,7 +19,7 @@ from typing import TextIO
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LANGGRAPH = Path(sys.executable).with_name("langgraph")
-DEV_SERVER_LOCK = REPO_ROOT / ".data" / "run" / "agent_server-dev.lock"
+DEV_SERVER_LOCK = REPO_ROOT / "data" / "run" / "agent_server-dev.lock"
 LANGGRAPH_CONFIG = REPO_ROOT / "langgraph.json"
 
 

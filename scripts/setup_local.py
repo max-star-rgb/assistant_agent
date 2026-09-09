@@ -11,21 +11,21 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 MODEL_REVISION = "75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2"
-MODEL_DIR = ROOT / ".data/models/siglip2-base-patch16-224"
+MODEL_DIR = ROOT / "data/models/siglip2-base-patch16-224"
 DATA_DIRS = ("agent_server", "models", "generated")
 
 
 def migrate_data(root: Path) -> None:
     """停止服务后同盘重命名完整目录，包括 SQLite WAL；不合并、不覆盖。"""
-    lock = root / ".data/run/agent_server-dev.lock"
+    lock = root / "data/run/agent_server-dev.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
     with lock.open("a") as handle:
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RuntimeError("请先停止 Agent Server") from None
-        moves = [(root / ".local" / name, root / ".data" / name)
-                 for name in DATA_DIRS if (root / ".local" / name).exists()]
+        moves = [(root / "local" / name, root / "data" / name)
+                 for name in DATA_DIRS if (root / "local" / name).exists()]
         for source, target in moves:
             if source.is_symlink() or not source.is_dir():
                 raise RuntimeError(f"拒绝迁移非普通目录：{source}")
@@ -33,7 +33,7 @@ def migrate_data(root: Path) -> None:
                 raise FileExistsError(f"目标已存在，拒绝合并：{target}")
         for source, target in moves:
             source.rename(target)
-    print("数据目录检查完成。若 .env 显式使用旧路径，请改为 .data；原配置未改写。")
+    print("数据目录检查完成。若 .env 显式使用旧路径，请改为 data；原配置未改写。")
 
 
 def check_mock() -> None:

@@ -200,7 +200,7 @@ capability；只有 auth 转换出的 worker permission 配合严格 metadata �
 须在私有配置中显式将 `bailian_web_search` 加入 allowlist 和适用的安全重试名单，
 `bearer_token_env=QWEN_API_KEY` 在建立连接时读取环境变量并生成 Authorization 头，不复制密钥到配置。
 HTTP MCP 仅支持 HTTPS、call scope；缺失凭据时明确报错。百炼端需已开通该 MCP 服务。
-本机配置使用 `.local/mcp_servers.json` 并显式启用 `MULTIMODAL_AGENT_MCP_ENABLED=1`。
+本机配置使用 `local/mcp_servers.json` 并显式启用 `MULTIMODAL_AGENT_MCP_ENABLED=1`。
 提示词优先使用该搜索工具，不把模型原生搜索当作可调用 Tool，也不增加搜索 wrapper。
 Qwen 主模型只使用 `DashScopeNativeChatModel`，不保留 OpenAI-compatible 分支或协议选择开关；旧 `QWEN_CHAT_API_PROTOCOL` 配置会明确拒绝。
 项目的 `QWEN_CHAT_ENABLE_SEARCH` 默认 false，本机同样关闭；原生搜索仅保留显式配置能力，不作 MCP 失败回退。
@@ -220,4 +220,4 @@ python -m compileall -q src/assistant_agent/tools src/assistant_agent/mcp
 ```
 
 新电脑环境安装见 [WSL 安装说明](wsl-installation.md)。图片生成已移除旧电脑硬编码 fixture 支路，
-统一由配置对应的真实或 mock adapter 处理，不依赖被删除的 `.local/generated` 文件。
+统一由配置对应的真实或 mock adapter 处理，不依赖被删除的 `local/generated` 文件。

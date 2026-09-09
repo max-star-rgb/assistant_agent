@@ -16,7 +16,7 @@ from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.local_calen
 )
 
 
-DEFAULT_LOCAL_CALENDAR_PATH = ".data/calendar/events.sqlite3"
+DEFAULT_LOCAL_CALENDAR_PATH = "data/calendar/events.sqlite3"
 
 
 class CalendarContactsPlugin:

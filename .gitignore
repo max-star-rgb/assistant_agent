@@ -9,6 +9,8 @@ htmlcov/
 /build/
 .local/
 .data/
+/local/
+/data/
 *.jsonl
 .env
 .env.*

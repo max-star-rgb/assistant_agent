@@ -63,7 +63,7 @@ from assistant_agent.media.video.visual_memory_index import (
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_KEYFRAME_ROOT = REPO_ROOT / ".data" / "agent_service_video_keyframes"
+DEFAULT_KEYFRAME_ROOT = REPO_ROOT / "data" / "agent_service_video_keyframes"
 DEFAULT_CLOSE_WAIT_SECONDS = 1.0
 KEYFRAME_WINDOW_SIZE = 5
 

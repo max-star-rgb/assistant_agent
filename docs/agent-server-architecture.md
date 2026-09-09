@@ -146,6 +146,19 @@ media custom-app lifespan 单次加载 `AppConfig` 后，只保留 provider mode
 
 ## 本地部署
 
+### 本机目录归属
+
+仓库内 `local/` 与 `data/` 分开保留，均由 Git 忽略：
+
+- `local/`：本机私有配置（如 `mcp_servers.json`）与个人安装笔记；共享模板放 `config/`，共享说明放 `docs/`。
+- `data/models/`：可重新下载或导出的模型与缓存，如 SigLIP2 和 FastEmbed。
+- `data/calendar/`、`data/agent_server/`：日历、主动投递等持久数据库，需要单独备份，不能当缓存清理。
+- `data/visual_perception/`、`data/agent_service_video_frames/`、`data/agent_service_video_keyframes/`：视觉流水线的帧、关键帧和派生数据，按各自生命周期回收。
+- `data/remote_visual_memory/`：远端视觉记忆上传暂存，待上传内容不能直接删除；`data/run/` 保存服务运行锁。
+
+真实 `.env` 仍在仓库根目录；官方 checkpoint/Store 仍位于 `.langgraph_api/`。
+生成图片的 thread 暂存和用户 `outputs/` 继续遵循上文资源契约，不另建 `data/generated/` 输出入口。
+
 ### 安装客户端的同机体验
 
 发行入口 `assistant-agent`（`assistant_agent.client`）已连接现有生产 v4 图。它通过原生 SDK 管理对话、审批和取消，

@@ -62,7 +62,7 @@ from assistant_agent.media.proactive_messages import ProactiveMessageSink
 from assistant_agent.provider_mode import ProviderMode
 
 
-DEFAULT_VISUAL_PERCEPTION_ROOT = Path(".data") / "visual_perception"
+DEFAULT_VISUAL_PERCEPTION_ROOT = Path("data") / "visual_perception"
 
 
 class RealtimeVisualObserver(Protocol):

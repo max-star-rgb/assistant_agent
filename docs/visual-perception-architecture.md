@@ -348,7 +348,7 @@ session evidence 不是长期记忆，不写 Mem0，也不跨 user/session 搜�
 
 ```bash
 python scripts/setup_local.py check
-python scripts/setup_local.py gpu --model-dir .data/models/siglip2-base-patch16-224
+python scripts/setup_local.py gpu --model-dir data/models/siglip2-base-patch16-224
 python scripts/check_documentation_authority.py --repo-root .
 ```
 

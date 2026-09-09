@@ -131,7 +131,7 @@ class VisionConfig:
     visual_memory_qdrant_url: str = "http://127.0.0.1:6333"
     visual_memory_qdrant_collection: str = "assistant_visual_memory"
     visual_memory_qdrant_timeout_seconds: float = 2.0
-    visual_memory_dense_model_cache_dir: str = ".data/models/fastembed"
+    visual_memory_dense_model_cache_dir: str = "data/models/fastembed"
     visual_memory_result_limit: int = 12
     visual_reminder_similarity_threshold: float = 0.82
     visual_reminder_max_active: int = 16
@@ -231,7 +231,7 @@ class MemoryConfig:
 @dataclass(frozen=True)
 class MediaConfig:
     proactive_message_delivery_timeout_seconds: float = 95.0
-    proactive_delivery_store_path: str = ".data/agent_server/proactive_deliveries.sqlite3"
+    proactive_delivery_store_path: str = "data/agent_server/proactive_deliveries.sqlite3"
     proactive_delivery_ack_timeout_seconds: float = 15.0
     proactive_delivery_lease_seconds: float = 30.0
     proactive_delivery_presence_ttl_seconds: float = 45.0
@@ -242,7 +242,7 @@ class MediaConfig:
     remote_visual_memory_query_top_k: int = 8
     remote_visual_memory_download_base_url: str | None = None
     remote_visual_memory_segment_seconds: float = 30.0
-    remote_visual_memory_spool_root: str = ".data/remote_visual_memory"
+    remote_visual_memory_spool_root: str = "data/remote_visual_memory"
     remote_visual_memory_file_ttl_seconds: int = 86_400
     remote_visual_memory_poll_interval_seconds: float = 2.0
     td_gen_ip: str | None = None

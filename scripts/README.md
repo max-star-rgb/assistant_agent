@@ -18,7 +18,7 @@ assistant-agent --browser-headless
   状态由官方 `.langgraph_api/` 保存，不启动自定义 Runtime 或 PostgreSQL。
 - `agent_cli.py`：原生 SDK 对话客户端，支持 history/replay/rollback；状态变更遵守入口自身确认规则。
 - `media_simulator.py`：连接既有 `/agent-service/v1` 的媒体协议模拟客户端；不会另启 Server。
-- `setup_local.py migrate-data`：停止服务后把 `.local` 的模型、generated 和 agent_server 目录移到 `.data`；
+- `setup_local.py migrate-data`：停止服务后把 `local` 的模型、generated 和 agent_server 目录移到 `data`；
   不合并目标、不删除历史数据、不改写 `.env`，迁移后按提示更新显式路径。
 - `setup_local.py check`：隔离用户数据的 mock 三图装配与模板检查；不读密钥，不调用云端模型。
 - `setup_local.py gpu`：SigLIP2 manifest/checksum 与实际 CUDA 图文推理；使用合成输入、不上传数据。
@@ -34,7 +34,7 @@ OS 用户权限的 Shell。客户端 `--install-browser --cwd 路径` 安装独�
 - `migrate_mem0_memories_to_chinese.py`：显式真实 Provider 的记忆翻译迁移；不是新电脑安装步骤，不自动执行。
 - `export_siglip2_embedding_onnx.py`：下载固定 revision 后导出图文联合 ONNX，已存在目标拒绝覆盖。
   按安装说明手动执行，固定 revision 为 `75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2`，
-  目标 `.data/models/siglip2-base-patch16-224`。
+  目标 `data/models/siglip2-base-patch16-224`。
   `torch`、`transformers`、`onnxscript` 是导出依赖；运行只使用 ONNX Runtime GPU。
   `export_siglip2_vision_onnx.py` 为既有 deprecated 兼容入口，不用于新安装。
 

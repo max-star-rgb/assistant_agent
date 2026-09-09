@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl, ValidationError, mod
 
 MCP_ENABLED_ENV = "MULTIMODAL_AGENT_MCP_ENABLED"
 MCP_CONFIG_PATH_ENV = "MULTIMODAL_AGENT_MCP_CONFIG_PATH"
-DEFAULT_MCP_CONFIG_PATH = ".local/mcp_servers.json"
+DEFAULT_MCP_CONFIG_PATH = "local/mcp_servers.json"
 MCPTransport = Literal["stdio", "streamable_http"]
 MCPSessionScope = Literal["call", "thread"]
 MCPServerPreset = Literal["google_workspace", "todoist", "notion", "slack"]

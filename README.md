@@ -23,5 +23,5 @@
 `tools/` 与 `mcp/` 提供工具，`media/` 拥有独立视觉流水线；`memory/` 是后端适配，`runtime/` 只提供执行资源。
 `evaluation/` 保留直接消费原生 Graph 的 target，当前没有正式行为评测 runner。
 
-Git 只承载代码、文档、模板和依赖声明。`.env`、`.local/` 私有配置、`.data/` 模型与运行数据、
-`.langgraph_api/` 状态均不跟踪；数据库需单独备份，不能把整个 `.data/` 当可删除缓存。
+Git 只承载代码、文档、模板和依赖声明。`.env`、`local/` 私有配置、`data/` 模型与运行数据、
+`.langgraph_api/` 状态均不跟踪；数据库需单独备份，不能把整个 `data/` 当可删除缓存。
