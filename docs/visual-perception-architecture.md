@@ -354,8 +354,8 @@ python scripts/check_documentation_authority.py --repo-root .
 
 GPU 检查只进行本地 CUDA 图文推理；不调用真实 Chat/Judge 或发布 trace。
 已删除 evals 对应的旧 run_system 包装脚本，不再宣称它们可执行。
-新电脑默认不安装 BGE/FastEmbed，因此视觉历史检索返回 unavailable；这不删除本 authority 定义的
-SigLIP2 与并行窗口 VLM 流水线。若未来恢复检索，需显式准备 BGE 与 Qdrant，见 [安装说明](wsl-installation.md)。
+新电脑准备 BGE/FastEmbed 与 SigLIP2；视觉历史文本检索还需可用的 Qdrant。
+模型下载和导出步骤见 [安装说明](wsl-installation.md)，不改变 SigLIP2 与并行窗口 VLM 流水线。
 
 ## 非目标
 

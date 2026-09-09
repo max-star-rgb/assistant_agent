@@ -183,8 +183,8 @@ checkpoint/Store 保存在 `.langgraph_api/`，重载会重建服务进程并短
 
 ## 新电脑安装与验收
 
-Windows 新电脑使用 WSL2 Ubuntu 24.04，Git clone 后运行 `bash scripts/setup_wsl.sh`。
-密钥模板随 Git 提供，模型由安装阶段下载和导出；不再复制旧电脑的绝对路径或运行目录。
+Windows 新电脑使用 WSL2 Ubuntu 24.04，Git clone 后在虚拟环境内执行 `pip install -r requirements.txt`。
+下载 BGE、导出 SigLIP2，再手动复制旧电脑 `.env`，核对模型路径和本机服务地址。
 详细前置条件、启动、目录迁移和验收见 [WSL 安装说明](wsl-installation.md)。
 
 ```bash

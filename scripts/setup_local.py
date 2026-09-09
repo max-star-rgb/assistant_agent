@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""本机配置、显式数据迁移和安装验收；不读取密钥或调用真实 Provider。"""
+"""显式数据迁移和安装验收；不读取密钥或调用真实 Provider。"""
 from __future__ import annotations
 
 import argparse
@@ -13,34 +13,6 @@ ROOT = Path(__file__).resolve().parents[1]
 MODEL_REVISION = "75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2"
 MODEL_DIR = ROOT / ".data/models/siglip2-base-patch16-224"
 DATA_DIRS = ("agent_server", "models", "generated")
-
-
-def initialize(root: Path) -> None:
-    check_legacy_data(root)
-    env_file = root / ".env"
-    if env_file.is_file():
-        for line in env_file.read_text().splitlines():
-            key, _, value = line.partition("=")
-            if key.strip() in {"PROACTIVE_DELIVERY_STORE_PATH", "SIGLIP2_MODEL_DIR", "SIGLIP2_VISION_MODEL_DIR"}:
-                if any(f".local/{name}/" in value for name in DATA_DIRS):
-                    raise RuntimeError(f"请手工更新 .env 的 {key.strip()} 到 .data；不会覆盖现有配置")
-    for source, destination in ((".env.example", ".env"),
-                                ("config/mcp_servers.example.json", ".local/mcp_servers.json")):
-        target = root / destination
-        target.parent.mkdir(parents=True, exist_ok=True)
-        content = (root / source).read_bytes()
-        try:
-            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
-            continue
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(content)
-    (root / ".data/models").mkdir(parents=True, exist_ok=True)
-
-
-def check_legacy_data(root: Path) -> None:
-    if any((root / ".local" / name).exists() for name in DATA_DIRS):
-        raise RuntimeError("检测到旧数据目录；先停止服务，再执行 setup_local.py migrate-data")
 
 
 def migrate_data(root: Path) -> None:
@@ -137,12 +109,10 @@ def check_gpu(model_dir: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("init", "migrate-data", "check", "gpu"))
+    parser.add_argument("action", choices=("migrate-data", "check", "gpu"))
     parser.add_argument("--model-dir", type=Path, default=MODEL_DIR)
     args = parser.parse_args()
-    if args.action == "init":
-        initialize(ROOT)
-    elif args.action == "migrate-data":
+    if args.action == "migrate-data":
         migrate_data(ROOT)
     elif args.action == "check":
         check_mock()

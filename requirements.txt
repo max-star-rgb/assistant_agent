@@ -1,0 +1,10 @@
+# 在仓库根目录、Python 3.12 虚拟环境中执行 pip install -r requirements.txt。
+-c config/constraints-wsl.txt
+-e .[agent-server-dev,local-vision-embedding,google-workspace-mcp]
+# GPU 版提供同名 fastembed 模块，避免 CPU/GPU onnxruntime 同时安装。
+fastembed-gpu==0.8.0
+# SigLIP2 下载与 ONNX 导出依赖。
+torch
+transformers
+onnxscript
+sentencepiece>=0.2,<0.3

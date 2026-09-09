@@ -5,17 +5,9 @@
 
 ## 新电脑安装
 
-推荐 **WSL2 Ubuntu 24.04 + RTX 4090**。先准备 Windows NVIDIA 驱动、WSL2 与 Docker Desktop integration，
-把代码 clone 到 Ubuntu 的 `~/projects/assistant_agent`，然后运行：
-
-```bash
-bash scripts/setup_wsl.sh
-bash scripts/start.sh check
-bash scripts/start.sh server
-```
-
-另一个终端执行 `bash scripts/start.sh client`。模板随 Git 提供，安装不会覆盖已有私有配置；
-真实调用前在本机填写 `.env`。默认准备 SigLIP2，不安装 BGE。
+在 WSL2 Ubuntu 中 Git 拉取代码，创建 Python 3.12 虚拟环境后执行
+`python -m pip install -r requirements.txt`。下载 BGE、导出 SigLIP2，手动复制旧电脑 `.env` 并核对路径。
+使用 `python scripts/run_server.py --no-reload` 启动服务；另一个终端激活环境后运行 `assistant-agent`。
 
 完整步骤、前置条件、模型、数据迁移及故障处理见 [WSL 安装说明](docs/wsl-installation.md)。
 此入口迁移现有单机开发服务，不提供公网认证或跨电脑设备执行。
