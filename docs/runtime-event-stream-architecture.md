@@ -167,7 +167,7 @@ Graph node、旁路 Runtime 或 VLM 直出终态。
 ## 验证
 
 ```bash
-MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
-  tests/core/integration/test_runtime_lifecycle.py \
-  tests/tdd/unified-assistant-agent
+python -m compileall -q src/assistant_agent/native_agent
 ```
+
+以上仅检查语法；行为变更的临时测试按 `tests/README.md` 显式运行。

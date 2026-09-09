@@ -196,7 +196,8 @@ capability；只有 auth 转换出的 worker permission 配合严格 metadata �
 `mcp_bailian_bailian_web_search`，注册后默认暴露，不归入需要激活的 Profile；主 Agent 与通用 worker 共用该 inventory。
 按照[官方外部调用文档](https://help.aliyun.com/zh/model-studio/mcp-external-calls)，使用
 `https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp` 的 `streamable_http` 传输。
-配置示例见 `deploy/mcp_servers.example.json`：显式 allowlist 和安全重试名单只包含 `bailian_web_search`，
+新电脑默认模板 `config/mcp_servers.example.json` 仅包含 Chromium 浏览器。若配置百炼搜索 MCP，
+须在私有配置中显式将 `bailian_web_search` 加入 allowlist 和适用的安全重试名单，
 `bearer_token_env=QWEN_API_KEY` 在建立连接时读取环境变量并生成 Authorization 头，不复制密钥到配置。
 HTTP MCP 仅支持 HTTPS、call scope；缺失凭据时明确报错。百炼端需已开通该 MCP 服务。
 本机配置使用 `.local/mcp_servers.json` 并显式启用 `MULTIMODAL_AGENT_MCP_ENABLED=1`。
@@ -214,8 +215,9 @@ Provider 返回的 message content 是唯一正文，来源只保存在同一 `A
 ## 验证
 
 ```bash
-MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
-  tests/core/contract/test_tool_contract.py \
-  tests/core/contract/test_extension_contract.py \
-  tests/tdd/unified-assistant-agent
+python scripts/setup_local.py check
+python -m compileall -q src/assistant_agent/tools src/assistant_agent/mcp
 ```
+
+新电脑环境安装见 [WSL 安装说明](wsl-installation.md)。图片生成已移除旧电脑硬编码 fixture 支路，
+统一由配置对应的真实或 mock adapter 处理，不依赖被删除的 `.local/generated` 文件。

@@ -171,7 +171,7 @@ def _prevalidate_environment(source: Mapping[str, str], mode: ProviderMode) -> N
         raise ValueError("proactive message delivery timeout must be positive")
     if not (
         source.get("PROACTIVE_DELIVERY_STORE_PATH")
-        or ".local/agent_server/proactive_deliveries.sqlite3"
+        or ".data/agent_server/proactive_deliveries.sqlite3"
     ).strip():
         raise ValueError("proactive delivery store path must be non-empty")
     if _float(source.get("PROACTIVE_DELIVERY_ACK_TIMEOUT_SECONDS"), 15.0) <= 0:
@@ -452,7 +452,7 @@ def _load_media_config(source: Mapping[str, str]) -> MediaConfig:
             source.get("PROACTIVE_MESSAGE_DELIVERY_TIMEOUT_SECONDS"), 95.0
         ),
         proactive_delivery_store_path=source.get("PROACTIVE_DELIVERY_STORE_PATH")
-        or ".local/agent_server/proactive_deliveries.sqlite3",
+        or ".data/agent_server/proactive_deliveries.sqlite3",
         proactive_delivery_ack_timeout_seconds=_float(
             source.get("PROACTIVE_DELIVERY_ACK_TIMEOUT_SECONDS"), 15.0
         ),

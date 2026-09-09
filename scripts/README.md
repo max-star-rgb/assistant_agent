@@ -1,189 +1,51 @@
-# Scripts 入口索引
+# 脚本入口
 
-## 本机安装客户端
-
-`assistant-agent --cwd /home/lenovo1/assistant_cqy --identity lenovo1 --allow-shell` 连接唯一 8089。
-安装发行入口来自 `assistant_agent.client`；支持逐次工具审批、会话 ID 续接、Ctrl-C 原生取消，`--check` 只验证连接而不调用模型。
-本机已安装副本位于 `/home/lenovo1/assistant_cqy/.agent/client-venv/`，可直接运行其中 `bin/assistant-agent`。
-该体验环境复用 `hello_agent` 的已有依赖，但包本身来自 wheel；不代表已完成干净电脑依赖安装验证。
-在 `/home/lenovo1/assistant_cqy` 目录也可运行 `./start-assistant.sh`；裸文件名不会自动从当前目录查找。
-终端输入使用 Linux UTF-8 退格支持；无效编码整行拒绝并重输，不替换损坏字节后执行。
-Shell 默认关闭；上述 `--allow-shell` 显式开启当前系统用户权限，仍需每次审批，不提供沙箱。
-
-当前仅支持同机原生客户端、受信开发身份和文本文件/Shell RPC；Git/浏览器/媒体仍在同一服务机器运行。
-尚未提供桌面图形安装器、正式帐号登录或跨电脑执行，不能直接把服务暴露公网。
-
-## 开发与验证入口
-
-这里只保留当前 Agent Server、观测、评测和专项验收仍在使用的入口。一次性排障或已由 pytest、
-eval、Agent Server 主链路覆盖的 probe 不应继续沉积到本目录。
-
-- `scripts/check_documentation_authority.py`：离线校验 `docs/authority.toml` 的 owner、路由、排他事实与
-  changed-path 复核范围；输出结构化 JSON，不读取 `.env`、不联网、不改写文档。
-
-## Realtime runtime
-
-- `scripts/run_server.py`：日常开发的统一入口，直接调用官方 `langgraph dev`，默认自动重载，
-  状态保存在 `.langgraph_api/`，不需要 Docker 或 PostgreSQL。PyCharm **Agent Server (Real)** 使用同一入口，
-  固定回环端口 `8089`；Real 只表示使用已有真实 Provider 配置，不是生产部署模式。
-
-  ```bash
-  /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_server.py \
-    --host 127.0.0.1 --port 8089 --env-file .env
-  ```
-
-  `--no-reload` 关闭官方自动重载；`--n-jobs-per-worker` 默认 10，允许后台 Memory 与聊天并发运行。
-  `--config` 选择其他 LangGraph 配置，`--env-file` 覆盖其 env 来源；`--no-env-file` 使用空 env 配置，
-  可配合显式 mock 环境变量离线启动。新增依赖安装到本机 `hello_agent` 后重启，不再使用 `--backend`、`--watch` 或 `--rebuild`。
-  wrapper 只保留单实例锁、严格端口检查、env/config 来源和日志转发，不修改官方 watcher 或 Runtime。
-  官方 Runtime 由 `.[agent-server-dev]` 安装；不再安装本地 fork。日志默认位于系统临时目录
-  `assistant_agent/logs/agent_server-<port>.log`；`--log-file` 也必须位于仓库外，避免反馈重载。
-  锁冲突时先停止现有 launcher，不删除锁文件；端口占用时不会自动换端口。Codex 默认连接现有 8089。
-  重载会重建进程，Studio、媒体和设备连接需要重连。旧 PostgreSQL 数据卷保留，但 dev 不读取或迁移其中的对话。
-  部署策略见 `docs/agent-server-architecture.md`，官方流程见 [本地开发指南](https://docs.langchain.com/langsmith/local-dev-testing)。
-- `scripts/run_qdrant.py`：PyCharm-friendly 本地 Qdrant supervisor。它只启动
-  `docker/mem0/compose.yaml` 的 `visual-memory` profile 和 `qdrant` service，等待
-  `http://127.0.0.1:6333/healthz` 就绪，并作为一个 Run process 持续运行。仓库已提供共享配置
-  `.run/Qdrant.run.xml`；在 PyCharm 选择 **Qdrant** 后点击 Run 即可启动，点击 Stop 会停止容器但保留
-  `qdrant_data` volume。命令行可运行
-  `/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_qdrant.py`。
-- `scripts/run_mem0.py`: PyCharm-friendly local Mem0 operator console. It starts
-  Mem0 + Qdrant, waits for health, then stays attached at a `mem0> ` prompt with
-  `help`, `status`, `list`, `get`, `history`, `add`, `update`, `delete`, `clear`,
-  and `exit` commands. The console directly displays and manages raw records across
-  all Mem0 identities; `add` stores text directly by default and only enables
-  Mem0 inference with `add --infer`. Single-record deletion requires confirmation
-  unless `--yes` is supplied. `clear` accepts one or more raw identity filters;
-  `clear --all` resets every memory plus Mem0 history and always requires typing
-  `DELETE ALL MEMORIES` (`--yes` is rejected for this scope). Exiting leaves both
-  containers and persistent data running. 这是直接读写 Mem0 sidecar 原生记录的 operator console，
-  不是 Runtime Memory Plugin 管理入口，也不经过 `assistant_memory_plugin_v1` 的
-  `open_session` / `prepare_context` / `ingest_turn` / `close_session` 生命周期。
-
-Runtime Memory Plugin 的只读装配诊断不是 `scripts/` supervisor，直接运行：
+新电脑完整步骤见 [WSL 安装与迁移](../docs/wsl-installation.md)。统一命令：
 
 ```bash
-MULTIMODAL_AGENT_PROVIDER_MODE=mock \
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  -m assistant_agent.memory.cli plugins
+bash scripts/setup_wsl.sh
+bash scripts/start.sh check
+bash scripts/start.sh server
+# 另一个终端
+bash scripts/start.sh client --check
+bash scripts/start.sh client
 ```
 
-该命令只解析配置并装配 factory，输出脱敏 JSON；不启动 Mem0/Qdrant，不执行远端健康检查、召回、
-写入或真实 Provider 请求。默认 mock 会报告 sealed 的 `mem0` slot，同时以
-`readiness=unavailable` 和 `memory_plugin_offline` 明确表示后端离线。
-- `scripts/migrate_mem0_memories_to_chinese.py`：检查或迁移一个 runtime 用户已有的
-  Mem0 记忆为简体中文。默认命令只读；更新要求 real Provider mode、已配置的 Qwen 和
-  Mem0，并同时传入 `--apply` 与 `--allow-real-provider`。输出只包含数量、memory ID、
-  状态和稳定错误码，不持久化记忆正文或 Provider 响应；翻译复用生产 `create_chat_model`，并强制关闭联网搜索和流式。
-- `scripts/agent_cli.py`：通过公开 `langgraph_sdk` 调用 Agent Server。交互模式支持 `/history` 查看脱敏
-  checkpoint 元数据、`/replay <checkpoint_id>` 从历史 checkpoint 创建原生 replay 分支，以及
-  `/rollback <run_id>` 用 `action="rollback"` 丢弃可取消 run；两个变更状态的命令都要求精确确认。CLI 不读取
-  saver、不维护 checkpoint facade，也不承诺撤销已经发生的外部 Tool 副作用。`--cwd` 选择当前 run 的工作目录，
-  默认是 OS 用户 Home；普通调用、交互后续消息和 replay 使用同一个 cwd。
-- `scripts/media_simulator.py`: server-backed Media-Agent protocol simulator for
-  `/agent-service/v1`; type text repeatedly, or use `/new [sessionId]` to open a
-  new media session. Media chat 不提供模式选择命令。If the server closes the
-  connection during an interactive turn (for example close code 1012 during a
-  service restart), the client reconnects the same media session. Because delivery is ambiguous, it never retries the interrupted
-  chat automatically and asks the operator to resend it. When a successful terminal
-  response arrives it prints only the Agent Server-projected media result; it does not
-  poll a parallel Workflow facade.
-  当成功终包包含结构化 `task://` output ref 且显式传入 `--wait-proactive` 时，Simulator 不轮询
-  Task HTTP facade，而是在同一 Agent-Service WebSocket 上等待 `durable-task:<task_id>` 主动
-  `chatResponse`。服务重启导致连接关闭时，它使用相同 `sessionId + userNumber` 重新握手并继续
-  等待；任务与通知由 SQLite durable task/outbox 恢复。该模式收到第一条目标提醒后结束等待，
-  Ctrl-C 只停止客户端，不取消后台任务。
-  Agent chat responses默认只打印流式正文，不输出 raw vendor envelope 或来源列表。
-  `--citations` 显式协商 `urlCitationAnnotationsV1`，但不承担 App UI 渲染；需要检查媒体 wire
-  来源时显式增加 `--citation-debug`，该参数也会自动启用 citation capability。
-  The handshake marks `clientInfo.clientType=media_simulator`
-  so trace and Agent Server custom-route metadata can distinguish local protocol tests from
-  ordinary media-agent calls. It is not a generic Agent Server client and
-  uses an explicit bounded receive limit for Base64 IMAGE response frames.
+`setup_wsl.sh` 配置 `hello_agent`、Node、ffmpeg、浏览器和 SigLIP2；默认不安装 BGE。
+`--skip-model` 只跳过模型准备和 GPU 验收，不表示视觉可用。模板随 Git 分发，仅在私有配置不存在时复制。
+`start.sh` 使用安装记录的 Python 路径，不要求每个终端手工激活 conda；服务保持 8089 回环地址。
+`start.sh memory` 使用 `.env` 启动 Mem0/Qdrant，需先填写真实配置；安装阶段只构建镜像。
 
-For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
-`scripts/run_server.py` under `supervisord` and restart it after crashes.
+## 服务与客户端
 
-## Observability and local operations
+- `run_server.py`：官方 `langgraph dev` 薄入口，保留单实例锁、端口检查、配置来源和仓库外日志。
+  PyCharm 可继续使用 `hello_agent` 执行；默认重载，`--no-reload` 关闭。`--no-env-file` 忽略真实 `.env`。
+  状态由官方 `.langgraph_api/` 保存，不启动自定义 Runtime 或 PostgreSQL。
+- `agent_cli.py`：原生 SDK 对话客户端，支持 history/replay/rollback；状态变更遵守入口自身确认规则。
+- `media_simulator.py`：连接既有 `/agent-service/v1` 的媒体协议模拟客户端；不会另启 Server。
+- `setup_local.py init`：初始化私有配置；拒绝旧数据目录或旧 `.env` 数据路径，不覆盖文件。
+- `setup_local.py migrate-data`：停止服务后把 `.local` 的模型、generated 和 agent_server 目录移到 `.data`；
+  不合并目标、不删除历史数据、不改写 `.env`，迁移后按提示更新显式路径。
+- `setup_local.py check`：隔离用户数据的 mock 三图装配与模板检查；不读密钥，不调用云端模型。
+- `setup_local.py gpu`：SigLIP2 manifest/checksum 与实际 CUDA 图文推理；使用合成输入、不上传数据。
 
-- AssistantAgent 与后台视觉窗口统一使用 LangSmith native trace。视觉窗口以独立
-  `vision.observation` root 展示，内含 callback-native `vlm.infer` model run；Qwen 的有序 JPEG 与最终 prompt
-  位于 child inputs，root attachment 只保留关键帧短视频；
-  通过相同 `thread_id` 与对话 runs 关联。仓库不再维护独立视觉报告服务或日志解析 UI。
+发行命令 `assistant-agent` 与服务在同一 Ubuntu 内使用，默认逐次工具审批；`--allow-shell` 显式允许当前
+OS 用户权限的 Shell。客户端 `--install-browser --cwd 路径` 安装独立 Chromium，Node 由 WSL 安装脚本提供。
+默认工作目录 `~/assistant_cqy/studio`；改 cwd 时先为那个目录安装浏览器。
 
-## Eval and evidence
+## Memory 与模型准备
 
-- `evals/system/tools/<tool_name>.py`: 每个当前注册 Tool 一个可在 PyCharm 直接运行的离线固定输入冒烟脚本；
-  通过原生 `ToolNode` 调用一次，只检查调用成功且返回结果，不断言候选数量、排序或具体业务内容。
-  `scripts/run_system_calendar_create_eval.py` 与 `scripts/run_system_calendar_search_eval.py` 仅保留为相应脚本的
-  兼容 PyCharm 入口。
-- `evals/system/tools/run_all.py`: 可在 PyCharm 中直接运行；递归发现并依次运行目录下除 helper 与自身之外的
-  全部 Tool 冒烟脚本，最后输出逐脚本 return code 和聚合通过状态。
-- `scripts/run_system_multimodal_embedding_eval.py`: 验证本地 SigLIP2 联合 image/text ONNX
-  资产。`--dry-run` 不加载模型；真实 CUDA session 必须显式传入 `--allow-local-model`，结果写入
-  `.data/evals/system/multimodal_embedding/`，不保存向量、文本、图片内容或媒体路径。dry-run 还列出
-  原始帧 SigLIP2 latest-pending、1 FPS 关键帧保底、纯语义选帧、关键帧独立并行 VLM、VLM 文本索引和无 query-time VLM
-  的架构检查面；流水线行为
-  由离线 pytest 验证。
-- `scripts/run_system_realtime_visual_target_window_eval.py`：验证 live camera SigLIP2 latest-wins、chat
-  冻结严格 1～5 个逻辑关键帧 sequence、只等待最后一个 target 的行为。默认
-  `--dry-run` 不读取图片、不联网；真实运行要求 real Provider mode、完整 Qwen vision 配置、
-  `--allow-real-provider` 和 operator 提供的恰好 5 张 sequence-named JPEG。每个关闭窗口使用隔离的 DashScope
-  `BaseChatModel` 有序多图请求，已选窗口可并行执行，Tool 只等待逻辑窗口的 exact target；artifact 只保存
-  sequence/status/latency/concurrency 和 vision trace/root/model run ID。
-- 旧 Runtime/Workflow/Release Review LangSmith runner 已随旧 Graph Runtime 删除。后续评测重建必须直接消费
-  Agent Server 或 `NativeGraphEvaluationTarget` 的标准 messages/native trace，当前不得宣称存在上线前行为门禁。
+- `run_mem0.py`：现有 Mem0/Qdrant operator 控制台；包含真实记忆读写和删除操作，按其自身确认规则使用。
+- `run_qdrant.py`：现有 Qdrant supervisor。BGE 暂不安装，不代表 Mem0 的 Qdrant 可以省略。
+- `migrate_mem0_memories_to_chinese.py`：显式真实 Provider 的记忆翻译迁移；不是新电脑安装步骤，不自动执行。
+- `export_siglip2_embedding_onnx.py`：下载固定 revision 后导出图文联合 ONNX，已存在目标拒绝覆盖。
+  安装脚本自动调用，固定 revision 为 `75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2`，
+  目标 `.data/models/siglip2-base-patch16-224`。
+  `torch`、`transformers`、`onnxscript` 是导出依赖；运行只使用 ONNX Runtime GPU。
+  `export_siglip2_vision_onnx.py` 为既有 deprecated 兼容入口，不用于新安装。
 
-## Specialized integrations
+## 文档校验与已删除入口
 
-### SigLIP2 unified image/text embedding model
-
-Runtime 不下载模型。先在 operator 明确允许联网和安装 export-only 依赖的环境中，把批准的
-`google/siglip2-base-patch16-224` image/text projection 从同一 revision 导出为 FP16 ONNX：
-
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/export_siglip2_embedding_onnx.py \
-  --model-id google/siglip2-base-patch16-224 \
-  --revision main \
-  --output-dir .local/models/siglip2-base-patch16-224
-```
-
-脚本把 `main` 解析为不可变 Hugging Face commit SHA，并将共同 revision/space、图文预处理、输出维度、
-两个 ONNX graph、tokenizer 及 checksum 写入 schema v2 manifest；目标目录已存在时拒绝覆盖。旧
-`export_siglip2_vision_onnx.py` 只保留 deprecated 兼容入口。模型资产留在未跟踪的 `.local/`，禁止提交。
-
-服务启用时同时显式设置 real provider mode、主 Chat/Vision 配置以及：
-
-```bash
-MULTIMODAL_AGENT_EMBEDDING_PROVIDER=local_siglip2
-SIGLIP2_MODEL_DIR=.local/models/siglip2-base-patch16-224
-SIGLIP2_CUDA_DEVICE_ID=0
-```
-
-安装 Runtime 可选依赖使用 `.[local-vision-embedding]`；该 extra 将 ONNX Runtime GPU 限定为
-CUDA 12.8 对应的 `1.21 <= version < 1.27`，启动时还会验证实际 session 未回退到 CPU。
-Runtime 使用 `onnx` 解析图中真实 external-data 引用并核对 manifest；`torch`、`transformers`
-和 `onnxscript` 只属于模型准备环境，不是线上 Runtime 依赖。
-旧 provider/model-dir 环境变量是迁移 alias，计划不早于 `0.3.0` 删除。完整平台边界见
-`docs/visual-perception-architecture.md`。
-
-### Playwright MCP setup
-
-浏览器能力由 `deploy/mcp_servers.example.json` 中固定版本的官方 Playwright MCP 提供，不再安装 Python
-Playwright 或注册项目内建 Website guidance plugin。运行环境需要 Node.js 20+，Chrome 需安装官方
-Playwright Extension；把示例 server 合并到未跟踪的 `.local/mcp_servers.json`，并设置
-`MULTIMODAL_AGENT_MCP_ENABLED=1`。启动时 MCP discovery 成功后，`browser` Profile 才会出现；`--extension`
-直接连接用户现有 Chrome 标签页并复用登录状态。`AssistantRunContext.require_tool_approval` 本机开发默认关闭；
-需要审批时显式设为 true。若不想逐次批准扩展连接，把扩展状态页显示的 `PLAYWRIGHT_MCP_EXTENSION_TOKEN`
-只写入未跟踪的 `.env`。示例中的 `{cwd}` 在每个 thread 首次调用时替换为 `AssistantRunContext.cwd`，
-Playwright 产物写入 `<cwd>/.agent/browser`，不使用 thread scratch/artifact 目录。
-
-新增脚本必须对应当前权威文档中的稳定入口或无法由现有 pytest/eval 表达的 operator 流程；
-临时诊断优先使用不提交的一次性命令。
-
-### 客户端独立浏览器
-
-安装时在用户 cwd 执行 `assistant-agent --install-browser --cwd /path/to/workspace`，要求 PATH 中有 Node.js 20+ 和 npm。
-固定版本 Playwright MCP 与匹配 Chromium 安装到该 cwd 的 `.agent/browser-runtime`。之后普通启动即可使用，
-无桌面显示环境可加 `--browser-headless`。不要求安装 Chrome 扩展；浏览器 profile 与输出在 `.agent/browser/<thread-hash>`。
-该命令不启动 Agent Server、不调用模型；当前 wheel 尚未捆绑 Node 或 Linux 系统浏览器依赖，不能视为跨平台一键安装包。
+`python scripts/check_documentation_authority.py --repo-root .` 检查 authority 路由。
+原 `evals/` 已清理，依赖它的四个 `run_system_*` 包装脚本同时删除；不恢复旧 runner 或测试目录。
+开发验证按 [tests/README.md](../tests/README.md) 在临时 feature 目录显式运行。

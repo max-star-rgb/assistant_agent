@@ -10,7 +10,7 @@
 | Owns | dynamic system prompt、Memory 数据边界、标准 message history、task state allowlist 与官方 summarization middleware |
 | Does not own | Tool schema、Memory backend、Provider wire、媒体 frame、旧 ContextService |
 | 源码与 schema 入口 | `src/assistant_agent/native_agent/assistant_prompt.py`、`native_agent/assistant_agent.py`、`native_agent/user_context.py`、`native_agent/context.py`、`native_agent/state.py`、`native_agent/token_counter.py` |
-| 验证入口 | `docs/authority.toml` 中 `context-engineering.verification`；核心不变量 `CTX-001` |
+| 验证入口 | `docs/authority.toml` 中 `context-engineering.verification` |
 | 相邻 authority | Runtime 见 [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md)；Memory 见 [`memory-service-architecture.md`](memory-service-architecture.md) |
 
 ## 当前主链
@@ -115,6 +115,7 @@ tokenizer 时启动直接失败，不回退近似计数。已登记的托管模�
 ## 验证
 
 ```bash
-MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
-  tests/core/integration/test_context_lifecycle.py
+python -m compileall -q src/assistant_agent/native_agent/context.py
 ```
+
+以上仅检查语法；行为变更的临时测试按 `tests/README.md` 显式运行。

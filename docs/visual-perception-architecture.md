@@ -347,20 +347,15 @@ session evidence 不是长期记忆，不写 Mem0，也不跨 user/session 搜�
 ## 验证入口
 
 ```bash
-MULTIMODAL_AGENT_PROVIDER_MODE=mock /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/run_system_realtime_visual_target_window_eval.py --dry-run
-
-MULTIMODAL_AGENT_PROVIDER_MODE=mock /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/run_system_multimodal_embedding_eval.py --dry-run
-
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/run_system_multimodal_embedding_eval.py --dry-run
-
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/check_documentation_authority.py --repo-root .
+python scripts/setup_local.py check
+python scripts/setup_local.py gpu --model-dir .data/models/siglip2-base-patch16-224
+python scripts/check_documentation_authority.py --repo-root .
 ```
 
-真实本地 CUDA 使用 `--allow-local-model`；真实 Chat/Judge 与 LangSmith publish/run 使用各自 operator gate。
-pytest、dry-run 或检测到凭据都不得自动触发这些调用。
+GPU 检查只进行本地 CUDA 图文推理；不调用真实 Chat/Judge 或发布 trace。
+已删除 evals 对应的旧 run_system 包装脚本，不再宣称它们可执行。
+新电脑默认不安装 BGE/FastEmbed，因此视觉历史检索返回 unavailable；这不删除本 authority 定义的
+SigLIP2 与并行窗口 VLM 流水线。若未来恢复检索，需显式准备 BGE 与 Qdrant，见 [安装说明](wsl-installation.md)。
 
 ## 非目标
 

@@ -7,11 +7,11 @@
 | 字段 | 内容 |
 | --- | --- |
 | 定位 | 生产 Graph 原生 tracing 与脱敏边界的当前权威 |
-| Owns | LangSmith native tracing、callback/parent 传播、thread 关联与脱敏边界 |
+| Owns | LangSmith native tracing、callback/parent 传播、thread 关联与脱敏边界、原生 Graph evaluation target 及当前评测边界 |
 | Does not own | Graph 路由、Agent Server/media wire、Provider 语义、评测 Dataset 与发布决策 |
-| 源码与 schema 入口 | `native_agent/assistant_agent.py`、`agent_server/services.py`、`media/vision/observability.py` |
-| 验证入口 | `docs/authority.toml` 中 `runtime-observability.verification`；核心不变量 `OBS-001` |
-| 相邻 authority | [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md)、[`visual-perception-architecture.md`](visual-perception-architecture.md)、[`observability-diagnosis-runbook.md`](observability-diagnosis-runbook.md)、[`../evals/README.md`](../evals/README.md) |
+| 源码与 schema 入口 | `native_agent/assistant_agent.py`、`agent_server/services.py`、`media/vision/observability.py`、`evaluation/native_graph_target.py` |
+| 验证入口 | `docs/authority.toml` 中 `runtime-observability.verification`；evaluation target 使用 `python -m compileall -q src/assistant_agent/evaluation` |
+| 相邻 authority | [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md)、[`visual-perception-architecture.md`](visual-perception-architecture.md)、[`observability-diagnosis-runbook.md`](observability-diagnosis-runbook.md) |
 
 ## 生产 tracing
 
@@ -64,13 +64,22 @@ child usage 相加。
 历史 trace 诊断按
 [`observability-diagnosis-runbook.md`](observability-diagnosis-runbook.md) 的独立 owner 执行。
 
-未来行为评测可以把 production graph 作为 target，但 Dataset、Experiment 与 Score 的 owner 仍是
-`evals/README.md`。当前旧 Release Review runner 已删除；不得从评测或本地 ledger 构造第二棵“看起来像”
-生产执行树。
+## 原生 Graph evaluation target
+
+`evaluation/native_graph_target.py` 保留 `NativeGraphEvaluationTarget`，通过
+`AgentServerExecutionOwner.compose()` 直接调用生产 Graph，返回公开输出、thread ID 与 run ID，
+不创建第二套 Runtime。当前测试清理已删除 system eval 数据和 runner 实现；残留脚本不代表可运行的能力评审。
+当前没有 Dataset、Experiment、Score 或 Release Review runner 的执行契约，后续重建必须显式补齐。
+不得从评测或本地 ledger 构造第二棵“看起来像”生产执行树。
+
+默认验证仅使用 mock/local/offline，并关闭远端 tracing。真实 Provider 评审必须由用户明确要求，
+显式设置 `MULTIMODAL_AGENT_PROVIDER_MODE=real`、本机私有配置以及评审所需的 operator 确认开关；
+不能因为发现 key 自动开启，也不能用 mock fallback 伪装真实结果。报告必须说明调用范围与验证结果。
 
 ## 验证
 
 ```bash
-MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
-  tests/core/contract/test_observability_contract.py
+python -m compileall -q src/assistant_agent/evaluation src/assistant_agent/agent_server/services.py src/assistant_agent/media/vision/observability.py
 ```
+
+以上仅检查语法；行为变更的临时测试按 `tests/README.md` 显式运行。

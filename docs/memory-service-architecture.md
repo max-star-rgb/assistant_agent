@@ -10,7 +10,7 @@
 | Owns | `MemoryBackend`、`MemoryLifecycleMiddleware`、`memory_extract`、`memory_context`、Mem0/LangMem/第三方装配 |
 | Does not own | Mem0 HTTP wire、prompt 渲染、Agent Server Store 实现、旧 Memory bundle/ledger |
 | 源码与 schema 入口 | `src/assistant_agent/native_agent/memory.py`、`src/assistant_agent/memory/mem0/` |
-| 验证入口 | `docs/authority.toml` 中 `graph-memory.verification`；核心不变量 `MEMORY-001` |
+| 验证入口 | `docs/authority.toml` 中 `graph-memory.verification` |
 | 相邻 authority | Mem0 wire 见 [`memory_server_api_spec.md`](memory_server_api_spec.md)；Context 见 [`context_engineering_status.md`](context_engineering_status.md) |
 
 ## Read hot path 与 write cold path
@@ -95,11 +95,10 @@ mock mode 只能使用 disabled；远端 backend 要求 real mode 和完整显�
 Mem0 服务由 `docker/mem0/compose.yaml` 提供，记忆向量在其 Qdrant 中，历史在其 SQLite 中。
 现有 LangMem Store、checkpoints 和旧 PostgreSQL 数据均保留，不自动复制到 Mem0 或删除。
 
-旧 LangMem 的完整启动配置冻结在 `langgraph.langmem.json`，不随当前方案主动维护。
-需要恢复时显式设置 `MEMORY_BACKEND=langmem` 并用 `scripts/run_server.py --config langgraph.langmem.json` 启动。
-以下仅描述旧配置：Agent Server 注入默认 Store 与 checkpointer；LangMem 不另建数据库连接或 Store。日常开发使用官方
-`langgraph dev` 的本地持久化，状态位于 `.langgraph_api/`，不依赖 PostgreSQL。
-`langgraph.langmem.json` 的官方 `store.index` 对 `content.content` 建立 1024 维索引，使用百炼 `text-embedding-v4`。
+旧 LangMem 启动配置已在目录清理时删除，当前没有可直接启动的 LangMem 配置文件。
+旧 backend 和 embedding adapter 仍保留在源码；如需重新启用，应先显式配置官方 `store.index`，
+并验证索引维度与已有数据兼容。日常开发使用官方 `langgraph dev` 的本地持久化，状态位于
+`.langgraph_api/`，不依赖 PostgreSQL。旧索引使用百炼 `text-embedding-v4`，维度为 1024。
 `agent_server.embeddings` 是 Server embedding 配置入口，复用官方 `OpenAIEmbeddings`；一次最多 10 条，显式
 float 编码，不使用 OpenAI tokenizer 自动切片。凭据优先 `QWEN_EMBEDDING_API_KEY`，其次 `QWEN_API_KEY`；
 地址优先 `QWEN_EMBEDDING_BASE_URL`，其次 `QWEN_CHAT_BASE_URL`，最后为百炼标准兼容地址。
@@ -125,6 +124,7 @@ Runtime 删除；对应失效环境变量会在启动时明确拒绝。Mem0 HTTP
 ## 验证
 
 ```bash
-MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
-  tests/core/integration/test_memory_lifecycle.py
+python -m compileall -q src/assistant_agent/native_agent/memory.py src/assistant_agent/memory
 ```
+
+以上仅检查语法；行为变更的临时测试按 `tests/README.md` 显式运行。

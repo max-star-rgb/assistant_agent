@@ -23,7 +23,6 @@ from assistant_agent.tools.capability_output import (
     CapabilityOutputContract,
     build_text_capability_output,
 )
-from assistant_agent.providers.provider_errors import ProviderAdapterError
 from assistant_agent.tools.plugins.builtin.image_generation.backend import (
     ImageGenerationAdapter,
     MockImageGenerationAdapter,
@@ -47,16 +46,10 @@ from assistant_agent.runtime.thread_resources import ThreadResourceManager
 from assistant_agent.tools.delivery import with_tool_delivery
 
 
-IMAGE_GENERATION_FIXTURE = Path(
-    "/home/lenovo1/pycharm_project/assistant_agent/.local/generated/1fa3105676e9af305a8c555e.png"
-)
-
-
 def create_image_generation_tool(
     adapter: ImageGenerationAdapter | None = None,
     *,
     thread_resource_manager: ThreadResourceManager,
-    use_fixture: bool = False,
 ) -> BaseTool:
     """Create the native image generation Tool."""
 
@@ -89,7 +82,6 @@ def create_image_generation_tool(
                 prompt,
                 runtime,
                 thread_resource_manager=thread_resource_manager,
-                use_fixture=use_fixture,
             )
             if result.status == "failed":
                 raise RuntimeError(result.error or "image_generation_failed")
@@ -137,7 +129,6 @@ def _execute_image_generation_from_runtime(
     runtime: ToolRuntime[AssistantRunContext],
     *,
     thread_resource_manager: ThreadResourceManager,
-    use_fixture: bool = False,
 ) -> ImageGenerationResult:
     state = runtime.state if isinstance(runtime.state, Mapping) else {}
     request = ImageGenerationRequest(
@@ -157,7 +148,6 @@ def _execute_image_generation_from_runtime(
         artifact_dir=resources.artifact_root / "generated",
         output_dir=None if runtime.context.device_id is not None else Path(runtime.context.cwd) / "outputs",
         public_prefix=public_prefix,
-        use_fixture=use_fixture,
     )
 
 
@@ -168,33 +158,8 @@ def _execute_image_generation(
     artifact_dir: Path,
     output_dir: Path | None,
     public_prefix: str,
-    use_fixture: bool = False,
 ) -> ImageGenerationResult:
-    # ponytail: temporary global fixture; remove this branch to restore Provider generation.
-    if use_fixture:
-        if not IMAGE_GENERATION_FIXTURE.is_file():
-            raise ProviderAdapterError(
-                "provider_unconfigured", "hardcoded image fixture is missing"
-            )
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        fixture_path = artifact_dir / IMAGE_GENERATION_FIXTURE.name
-        shutil.copyfile(IMAGE_GENERATION_FIXTURE, fixture_path)
-        output_ref = f"{public_prefix.rstrip('/')}/{fixture_path.name}"
-        result = ImageGenerationResult(
-            task_id="hardcoded_image_fixture",
-            status="succeeded",
-            image_url=output_ref,
-            image_urls=[output_ref],
-            download_url=output_ref,
-            download_urls=[output_ref],
-            prompt=input.prompt,
-            provider="mock",
-            model="hardcoded-local-fixture",
-            output_ref=output_ref,
-            prompt_used=input.prompt,
-        )
-    else:
-        result = adapter.generate(input)
+    result = adapter.generate(input)
     if result.status != "succeeded":
         return result
     result = _publish_image_ids(

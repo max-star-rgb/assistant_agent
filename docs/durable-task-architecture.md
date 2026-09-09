@@ -10,7 +10,7 @@
 | Owns | `TaskPlan/TaskStep`、task/checkpoint/wait schema、状态转换、Store、lease、resume、worker 与 failure atomicity |
 | Does not own | Assistant Graph、Tool schema/HITL、媒体主动投递 wire、Provider 调用和长期 Memory |
 | 源码与 schema 入口 | `src/assistant_agent/automation/durable_tasks/` |
-| 验证入口 | `docs/authority.toml` 中 `durable-tasks.verification`；核心不变量 `DUR-001` |
+| 验证入口 | `docs/authority.toml` 中 `durable-tasks.verification` |
 | 相邻 authority | Tool 接入见 [`tool-calling-architecture.md`](tool-calling-architecture.md)；测试策略见 [`../tests/README.md`](../tests/README.md) |
 
 ## 当前边界
@@ -40,6 +40,7 @@ adapter；对话 Agent 中的 Tool 才走标准 `BaseTool -> ToolNode` 与原生
 ## 验证
 
 ```bash
-MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
-  tests/core/integration/test_durable_lifecycle.py
+python -m compileall -q src/assistant_agent/automation/durable_tasks
 ```
+
+以上仅检查语法；行为变更的临时测试按 `tests/README.md` 显式运行。

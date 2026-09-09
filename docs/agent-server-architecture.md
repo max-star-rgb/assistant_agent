@@ -83,7 +83,7 @@ Skill。worker 不装配同步或异步 delegation middleware，也不运行主 
 两者的官方 summarization 从同一 composition 投影的 `ChatConfig` 取得 context window、trigger/target ratio 与模型 token counter；
 real DeepSeek/native compactor 缺 tokenizer 时在模型 composition 前启动失败。
 
-生成媒体的 thread 临时资源位于 `/home/lenovo1/assistant_agent/threads/<thread_ref>/artifacts/generated/`，供协议交付与 TTL 回收；
+生成媒体的 thread 临时资源位于 `~/assistant_agent/threads/<thread_ref>/artifacts/generated/`，供协议交付与 TTL 回收；
 同一图片同时复制到用户 `<cwd>/outputs/` 供本地持续使用。thread 目录不是 Agent filesystem mount、源码、安装副本或默认 cwd。`thread_ref` 由认证 identity 与 Agent Server
 thread ID 的摘要确定，目录按 24 小时 TTL 回收；不存在
 `workspace_id`、`workspace.json`、project registry、仓库副本、Git worktree 或 patch 回灌层。Agent 直接操作
@@ -176,16 +176,20 @@ wrapper 仅负责 env/config 来源、工作目录级单实例锁、严格端口
 使用官方 `langgraph-runtime-inmem==0.33.0`；删除原本地 fork，队列调度和恢复行为跟随上游实现。
 checkpoint/Store 保存在 `.langgraph_api/`，重载会重建服务进程并短暂断开连接，不代表运行中任务无中断更新。
 `langgraph.json` 保留项目依赖入口、Graph、auth、HTTP 和 Store 配置；依赖安装在本机环境，变更后重新安装并重启，
-不需要构建镜像。当前 Mem0 后端不使用 Server Store embedding；旧 LangMem 配置保存在
-`langgraph.langmem.json`，入口仍为 `agent_server/embeddings.py`，不再主动维护；具体规则见 Memory authority。
+不需要构建 Agent 镜像。当前 Mem0 后端不使用 Server Store embedding；旧 LangMem 部署配置已删除，
+具体后端规则见 Memory authority。
 不再提供项目自定义 PostgreSQL/Docker/watch 部署入口；旧 PostgreSQL 数据卷保留但不由 dev 使用，也不自动迁移。
 真实 `.env` 保持未跟踪。未来需要部署验证时再按官方 `langgraph up` 流程独立配置，不混入日常开发入口。
 
-## 验证
+## 新电脑安装与验收
+
+Windows 新电脑使用 WSL2 Ubuntu 24.04，Git clone 后运行 `bash scripts/setup_wsl.sh`。
+密钥模板随 Git 提供，模型由安装阶段下载和导出；不再复制旧电脑的绝对路径或运行目录。
+详细前置条件、启动、目录迁移和验收见 [WSL 安装说明](wsl-installation.md)。
 
 ```bash
-MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
-  tests/core/contract/test_gateway_contract.py \
-  tests/core/integration/test_runtime_lifecycle.py \
-  tests/tdd/unified-assistant-agent
+python scripts/setup_local.py check
+python scripts/check_documentation_authority.py --repo-root .
 ```
+
+第一条只检查 mock 配置及三张原生图装配，不启动 Server，不代表实际对话质量验证。

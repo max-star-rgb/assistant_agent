@@ -1,0 +1,161 @@
+{
+  "servers": [
+    {
+      "server_name": "bailian",
+      "transport": "streamable_http",
+      "url": "https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp",
+      "bearer_token_env": "QWEN_API_KEY",
+      "allowed_tools": [
+        "bailian_web_search"
+      ],
+      "general_purpose_tools": [
+        "bailian_web_search"
+      ],
+      "interrupt_tools": []
+    },
+    {
+      "server_name": "playwright",
+      "transport": "stdio",
+      "session_scope": "thread",
+      "cwd": "{cwd}",
+      "command": [
+        "npx",
+        "--yes",
+        "@playwright/mcp@0.0.78",
+        "--browser",
+        "chromium",
+        "--headless",
+        "--output-dir",
+        "{cwd}/.agent/browser"
+      ],
+      "allowed_tools": [
+        "browser_close",
+        "browser_resize",
+        "browser_console_messages",
+        "browser_handle_dialog",
+        "browser_evaluate",
+        "browser_file_upload",
+        "browser_drop",
+        "browser_find",
+        "browser_fill_form",
+        "browser_press_key",
+        "browser_type",
+        "browser_navigate",
+        "browser_navigate_back",
+        "browser_network_requests",
+        "browser_network_request",
+        "browser_run_code_unsafe",
+        "browser_take_screenshot",
+        "browser_snapshot",
+        "browser_click",
+        "browser_drag",
+        "browser_hover",
+        "browser_select_option",
+        "browser_tabs",
+        "browser_wait_for"
+      ],
+      "interrupt_tools": [
+        "browser_close",
+        "browser_resize",
+        "browser_handle_dialog",
+        "browser_evaluate",
+        "browser_file_upload",
+        "browser_drop",
+        "browser_fill_form",
+        "browser_press_key",
+        "browser_type",
+        "browser_navigate",
+        "browser_navigate_back",
+        "browser_run_code_unsafe",
+        "browser_click",
+        "browser_drag",
+        "browser_hover",
+        "browser_select_option",
+        "browser_tabs"
+      ],
+      "env": {
+        "PLAYWRIGHT_BROWSERS_PATH": "${PLAYWRIGHT_BROWSERS_PATH}"
+      },
+      "general_purpose_tools": [
+        "browser_close",
+        "browser_resize",
+        "browser_console_messages",
+        "browser_handle_dialog",
+        "browser_evaluate",
+        "browser_file_upload",
+        "browser_drop",
+        "browser_find",
+        "browser_fill_form",
+        "browser_press_key",
+        "browser_type",
+        "browser_navigate",
+        "browser_navigate_back",
+        "browser_network_requests",
+        "browser_network_request",
+        "browser_run_code_unsafe",
+        "browser_take_screenshot",
+        "browser_snapshot",
+        "browser_click",
+        "browser_drag",
+        "browser_hover",
+        "browser_select_option",
+        "browser_tabs",
+        "browser_wait_for"
+      ]
+    },
+    {
+      "server_name": "amap_maps",
+      "transport": "stdio",
+      "command": [
+        "npx",
+        "-y",
+        "@amap/amap-maps-mcp-server@0.0.8"
+      ],
+      "env": {
+        "AMAP_MAPS_API_KEY": "${AMAP_MAPS_API_KEY}"
+      },
+      "allowed_tools": [
+        "maps_geo",
+        "maps_weather",
+        "maps_bicycling",
+        "maps_direction_walking",
+        "maps_direction_driving",
+        "maps_direction_transit_integrated",
+        "maps_text_search",
+        "maps_around_search"
+      ],
+      "general_purpose_tools": [
+        "maps_geo",
+        "maps_weather",
+        "maps_bicycling",
+        "maps_direction_walking",
+        "maps_direction_driving",
+        "maps_direction_transit_integrated",
+        "maps_text_search",
+        "maps_around_search"
+      ]
+    },
+    {
+      "server_name": "google_gmail_readonly",
+      "transport": "stdio",
+      "command": [
+        "workspace-mcp",
+        "--tools",
+        "gmail",
+        "--read-only"
+      ],
+      "allowed_tools": [
+        "search_gmail_messages",
+        "get_gmail_messages_content_batch"
+      ],
+      "general_purpose_tools": [
+        "search_gmail_messages",
+        "get_gmail_messages_content_batch"
+      ],
+      "env": {
+        "GOOGLE_OAUTH_CLIENT_ID": "${GOOGLE_OAUTH_CLIENT_ID}",
+        "GOOGLE_OAUTH_CLIENT_SECRET": "${GOOGLE_OAUTH_CLIENT_SECRET}"
+      }
+    }
+  ]
+}

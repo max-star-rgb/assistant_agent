@@ -17,7 +17,9 @@ dependencies = [
     "langgraph-checkpoint-sqlite>=3.1.1,<4",
     "langgraph-sdk>=0.4.2,<0.5",
     "langsmith>=0.9.8,<1",
+    "langmem>=0.0.30,<0.1",
     "openai>=2.0",
+    "volcengine-python-sdk[ark]>=5.0.35,<6",
     "pydantic>=2.0",
     "tqdm>=4.66,<5",
     "tokenizers>=0.20,<1",
@@ -35,7 +37,7 @@ local-vision-embedding = [
     "numpy>=2.0,<3",
     "onnx>=1.17,<2",
     "Pillow>=10,<12",
-    "onnxruntime-gpu>=1.21,<1.27",
+    "onnxruntime-gpu[cuda,cudnn]>=1.21,<1.27",
 ]
 visual-memory-search = [
     "fastembed>=0.8,<1",
@@ -54,8 +56,6 @@ google-workspace-mcp = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests/core"]
 pythonpath = ["src"]
-markers = [
-    "core_invariant(id): stable core-framework invariant identifier",
-]
+# 临时 TDD 仅显式选择 feature 目录，不默认收集。
+norecursedirs = ["tests/tdd", ".*", "build", "dist"]

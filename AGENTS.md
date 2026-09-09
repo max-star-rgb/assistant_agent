@@ -7,7 +7,7 @@
 项目名、发行名和 Python 包名均为 `assistant_agent`，源码在 `src/assistant_agent/`。默认 Python 使用本机 conda 环境 `hello_agent`，除非用户明确要求，不要重命名环境路径。
 
 本项目是本地优先的助理 Agent。默认运行和 pytest 使用
-`MULTIMODAL_AGENT_PROVIDER_MODE=mock`。只有 `evals/system` 的明确真实能力评审可以使用真实 Provider，并且必须通过
+`MULTIMODAL_AGENT_PROVIDER_MODE=mock`。只有用户明确要求的真实能力评审可以使用真实 Provider，并且必须通过
 `MULTIMODAL_AGENT_PROVIDER_MODE=real`、本机未跟踪配置和对应 operator 确认开关显式启用。
 
 `docs/authority.toml` 是机器可读文档路由和 owner 清单，`docs/README.md` 是其人类可读文档入口。开始工程任务时：
@@ -76,7 +76,7 @@ PyCharm 的本机服务通过 `scripts/run_server.py` 调用官方 `langgraph de
 启动脚本只维护单实例锁、严格端口检查、env 来源和仓库外日志。Codex 默认作为客户端连接现有 `8089`，不另起并行 Server。
 
 测试与 eval 的职责边界见第 8 节；具体命令和运行约束以 `tests/README.md`、
-`evals/README.md`、`scripts/README.md` 或对应 `docs/*.md` 为准。历史 runbook
+`docs/observability-harness.md`、`scripts/README.md` 或对应 `docs/*.md` 为准。历史 runbook
 只有用户点名时才读取。只有在需要 conda 激活环境变量时才使用
 `conda run -n hello_agent <command>`。
 
@@ -85,11 +85,9 @@ PyCharm 的本机服务通过 `scripts/run_server.py` 调用官方 `langgraph de
 | path | responsibility |
 | --- | --- |
 | `src/assistant_agent/` | 主源码；具体归属先用 `docs/authority.toml` 匹配 owner authority |
-| `tests/core/` | 永久、默认收集的离线核心 pytest；只保护已登记 core invariant |
-| `tests/tdd/*/` | 每个 feature 独立、显式运行且可由用户手动删除的临时 RED/GREEN pytest；不自动晋升 core |
-| `evals/system/` | 正式真实能力验证，以及 `incubating/<feature>/` 中可删除的节点专项检查；边界与结果权威见 `evals/README.md` |
+| `tests/tdd/*/` | 每个 feature 独立、显式运行且可由用户手动删除的临时 RED/GREEN pytest |
 | `src/assistant_agent/evaluation/` | 原生 Graph evaluation target；当前没有 Release Review runner |
-| `scripts/` | 服务、demo 和 system eval 的稳定命令入口；索引见 `scripts/README.md` |
+| `scripts/` | 服务、模型准备与维护命令入口；索引见 `scripts/README.md` |
 | `docs/authority.toml` | coding agent 的机器可读文档路由和 owner 清单 |
 | `docs/README.md` | 由文档路由指向的人类可读入口；导航到具体 authority |
 | `docs/*.md` | 当前架构、接口和状态权威文档 |
@@ -111,7 +109,7 @@ PyCharm 的本机服务通过 `scripts/run_server.py` 调用官方 `langgraph de
 ## 7. 文档与工作模式
 
 - `AGENTS.md` 是当前唯一 agent 工作入口，应简短稳定；`docs/authority.toml` 负责代码化路由，`docs/README.md` 负责文档导航，根 `README.md` 只做人类轻导航。
-- 当前 authority 只保留在 `docs/*.md`、`tests/README.md` 与 `evals/README.md`，并全部登记在
+- 当前 authority 只保留在 `docs/*.md`、`tests/README.md`，并全部登记在
   `docs/authority.toml`。新增、删除或重命名 authority 时，同步更新 manifest、文首 contract card；仅当
   人类导航需要时再更新 README，不在 `AGENTS.md` 复制领域路由表。
 - 普通开发默认不读 `docs/development/**`、`docs/superpowers/**`、`docs/interview/**`，除非用户点名或任务明确属于历史 runbook、历史设计记录或面试资料。
@@ -121,24 +119,24 @@ PyCharm 的本机服务通过 `scripts/run_server.py` 调用官方 `langgraph de
   `/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/check_documentation_authority.py --repo-root .`；
   `review_required` 只表示必须复核 owner，不要求机械制造文档 diff。
 - 新增或修改 pytest、判断代码变更的验证范围、补充回归测试或诊断确定性测试失败时，先完整读取
-  `tests/README.md` 和 `tests/core/INVARIANTS.md`；不得为小功能机械增加永久测试。
+  `tests/README.md`；不得为小功能机械增加永久测试。
 - 不回滚用户已有改动；提交时只包含本任务相关文件；新增设计文档默认不提交，除非用户明确要求纳入版本控制。
 - 完成修改后需要判断是否应该提交本任务改动；Codex 处于计划模式时，完成后直接提交本任务改动；除非用户明确要求，否则不 push、不合并、不创建 PR。
 - 结束任务时报告完成内容、验证结果、未完成/限制和下一步建议。
 
 ## 8. 测试导航
 
-永久、默认 pytest 只有 `tests/core`；`tests/tdd/*/` 下的 feature 仅用于显式临时 RED/GREEN；
-`evals/system/incubating/<feature>` 是可删除的节点专项区。是否新增测试、目录归属、最小验证范围和
-`Core invariant:` / `Tests:` 汇报格式统一以 `tests/README.md` 为准。正式真实能力验证见
-`evals/system`。当前没有上线前 Agent 行为质量 runner；后续重建必须直接消费原生 Graph，不得用 mock
-fallback、路径混放、旧 Runtime facade 或重复 runner 伪装成真实评审。`AGENTS.md` 只提供入口，不复制具体规则。
+`tests/tdd/<feature>/` 保存可删除的临时 RED/GREEN 测试；当前没有永久核心测试集。
+是否新增测试、目录归属、最小验证范围和 `Tests:` 汇报格式统一以 `tests/README.md` 为准。
+原生 Graph evaluation target 与真实评测边界见 `docs/observability-harness.md`。
+当前没有上线前 Agent 行为质量 runner；后续重建必须直接消费原生 Graph，不得用 mock
+fallback、旧 Runtime facade 或重复 runner 伪装成真实评审。`AGENTS.md` 只提供入口，不复制具体规则。
 
 ## 9. 业务专项
 
 涉及好单库相关功能时，先读取：
 
-- `haodanku-openapi-docs/AI使用说明.md`
-- `haodanku-openapi-docs/接口目录.md`
+- `docs/haodanku-openapi-docs/AI使用说明.md`
+- `docs/haodanku-openapi-docs/接口目录.md`
 
 再按意图路由到对应分类文档编码。不要跳过本地 validator、executor、policy、audit 边界直接调用外部服务。

@@ -327,11 +327,7 @@ Studio 当前只显示最终文本，不承诺渲染 Tool artifact。
 ## 8. 验证
 
 ```bash
-MULTIMODAL_AGENT_PROVIDER_MODE=mock \
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
-  tests/core/contract/test_gateway_contract.py
-
-MULTIMODAL_AGENT_PROVIDER_MODE=mock LANGSMITH_TRACING=false \
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  evals/system/incubating/agent_server_native_runtime/checks_deployment.py
+python -m compileall -q src/assistant_agent/agent_server/media_app.py src/assistant_agent/agent_server/media_protocol.py
 ```
+
+以上仅检查语法；行为变更的临时测试按 `tests/README.md` 显式运行。

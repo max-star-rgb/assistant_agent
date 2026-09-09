@@ -8,8 +8,6 @@ __pycache__/
 htmlcov/
 /build/
 .local/
-.local/generated/
-.local/rendered/
 .data/
 *.jsonl
 .env
@@ -31,4 +29,17 @@ htmlcov/
 /tests/tdd/
 /reference/hello-claw/
 /reference/hermes-agent-anatomy/
+/config/*.local.*
+/.agent/
+/.venv/
+/output/
+/dist/
+/docs/development/
+/docs/superpowers/
+/.superpowers/
+*.onnx
+*.onnx.data
+*.safetensors
+*.pt
+*.pth
 /docs/superpowers/

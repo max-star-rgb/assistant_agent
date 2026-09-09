@@ -26,7 +26,6 @@ class ImageGenerationToolPlugin:
                     provider_mode=context.provider_mode,
                 ),
                 thread_resource_manager=context.thread_resource_manager,
-                use_fixture=True,
             )
         ]
 

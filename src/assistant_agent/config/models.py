@@ -231,7 +231,7 @@ class MemoryConfig:
 @dataclass(frozen=True)
 class MediaConfig:
     proactive_message_delivery_timeout_seconds: float = 95.0
-    proactive_delivery_store_path: str = ".local/agent_server/proactive_deliveries.sqlite3"
+    proactive_delivery_store_path: str = ".data/agent_server/proactive_deliveries.sqlite3"
     proactive_delivery_ack_timeout_seconds: float = 15.0
     proactive_delivery_lease_seconds: float = 30.0
     proactive_delivery_presence_ttl_seconds: float = 45.0

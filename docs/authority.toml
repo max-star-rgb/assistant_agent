@@ -30,20 +30,15 @@ read_when = [
 ]
 source_globs = [
   "langgraph.json",
-  "langgraph.langmem.json",
   "src/assistant_agent/agent_server/**",
   "src/assistant_agent/client.py",
   "src/assistant_agent/runtime/thread_resources.py",
   "src/assistant_agent/proactive_delivery.py",
   "scripts/run_server.py",
   "scripts/agent_cli.py",
-  "tests/core/contract/test_gateway_contract.py",
-  "tests/core/integration/test_runtime_lifecycle.py",
 ]
 thin_references = ["README.md", "scripts/README.md"]
 verification = [
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_gateway_contract.py tests/core/integration/test_runtime_lifecycle.py",
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/unified-assistant-agent",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python scripts/agent_cli.py --help",
 ]
 exclusive_literals = []
@@ -95,8 +90,7 @@ source_globs = [
 ]
 thin_references = ["README.md", "docs/agent-server-architecture.md"]
 verification = [
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/integration/test_runtime_lifecycle.py",
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/unified-assistant-agent",
+  "python -m compileall -q src/assistant_agent/native_agent",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
@@ -128,9 +122,7 @@ source_globs = [
 ]
 thin_references = ["README.md", "scripts/README.md"]
 verification = [
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_tool_contract.py",
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_extension_contract.py",
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/unified-assistant-agent",
+  "python -m compileall -q src/assistant_agent/tools src/assistant_agent/mcp",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
@@ -144,11 +136,10 @@ read_when = [
 ]
 source_globs = [
   "src/assistant_agent/automation/durable_tasks/**",
-  "tests/core/integration/test_durable_lifecycle.py",
 ]
 thin_references = ["docs/tool-calling-architecture.md", "tests/README.md"]
 verification = [
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/integration/test_durable_lifecycle.py",
+  "python -m compileall -q src/assistant_agent/automation/durable_tasks",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
@@ -167,11 +158,10 @@ source_globs = [
   "src/assistant_agent/native_agent/memory_middleware.py",
   "src/assistant_agent/native_agent/state.py",
   "src/assistant_agent/memory/**",
-  "tests/core/integration/test_memory_lifecycle.py",
 ]
 thin_references = ["README.md", "docs/context_engineering_status.md", "scripts/README.md"]
 verification = [
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/integration/test_memory_lifecycle.py",
+  "python -m compileall -q src/assistant_agent/native_agent/memory.py src/assistant_agent/memory",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
@@ -213,7 +203,7 @@ source_globs = [
 ]
 thin_references = ["README.md", "docs/runtime-event-stream-architecture.md"]
 verification = [
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/integration/test_context_lifecycle.py",
+  "python -m compileall -q src/assistant_agent/native_agent/context.py",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
@@ -239,13 +229,10 @@ source_globs = [
   "src/assistant_agent/media/vision/vision_client.py",
   "src/assistant_agent/media/visual_perception/**",
   "src/assistant_agent/media/video/**",
-  "scripts/run_system_multimodal_embedding_eval.py",
-  "scripts/run_system_realtime_visual_target_window_eval.py",
 ]
 thin_references = ["README.md", "docs/media-agent-service-websocket.md"]
 verification = [
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python scripts/run_system_realtime_visual_target_window_eval.py --dry-run",
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python scripts/run_system_multimodal_embedding_eval.py --dry-run",
+  "python -m compileall -q src/assistant_agent/media/visual_perception src/assistant_agent/media/embedding",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
@@ -255,17 +242,16 @@ id = "runtime-observability"
 authority = "docs/observability-harness.md"
 read_when = [
   "trace、observability 或 LangSmith native tracing",
-  "trace lifecycle 或日常异常 trace 沉淀",
+  "trace lifecycle、原生 Graph evaluation target 或真实评测边界",
 ]
 source_globs = [
+  "src/assistant_agent/evaluation/**",
   "src/assistant_agent/agent_server/services.py",
   "src/assistant_agent/native_agent/assistant_agent.py",
   "src/assistant_agent/media/vision/observability.py",
-  "tests/core/contract/test_observability_contract.py",
 ]
 thin_references = ["scripts/README.md"]
 verification = [
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_observability_contract.py",
   "python -m compileall -q src/assistant_agent/agent_server/services.py src/assistant_agent/native_agent/assistant_agent.py src/assistant_agent/media/vision/observability.py",
 ]
 exclusive_literals = []
@@ -293,39 +279,26 @@ exclusive_allowlist = []
 id = "test-policy"
 authority = "tests/README.md"
 read_when = [
-  "新增或修改 pytest、选择 core/TDD/incubating 目录",
-  "判断验证范围、core invariant 或汇报测试决策",
+  "新增或修改 pytest、选择临时 TDD 目录",
+  "判断验证范围、临时测试 或汇报测试决策",
 ]
 source_globs = [
-  "tests/core/**",
-  "tests/tdd/**",
+  "tests/README.md",
   "pyproject.toml",
 ]
 thin_references = ["AGENTS.md"]
 verification = [
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/unit/test_test_policy.py",
+  "python scripts/check_documentation_authority.py --repo-root .",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
 
 [[domains]]
-id = "system-eval"
-authority = "evals/README.md"
-read_when = [
-  "system eval、真实能力专项验证或 operator 副作用门禁",
-  "原生 Graph evaluation target 或未来行为评测重建",
-]
-source_globs = [
-  "evals/system/**",
-  "src/assistant_agent/evaluation/**",
-]
-thin_references = [
-  "docs/observability-harness.md",
-  "scripts/README.md",
-]
-verification = [
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python scripts/run_system_calendar_create_eval.py --dry-run",
-  "python -m compileall -q src/assistant_agent/evaluation evals/system",
-]
+id = "local-installation"
+authority = "docs/wsl-installation.md"
+read_when = ["新电脑安装、WSL、依赖约束、模型准备或本地数据迁移"]
+source_globs = ["scripts/setup_wsl.sh", "scripts/setup_local.py", "scripts/start.sh", "config/**", ".gitignore", ".gitattributes"]
+thin_references = ["README.md", "scripts/README.md", "docs/agent-server-architecture.md"]
+verification = ["bash -n scripts/setup_wsl.sh scripts/start.sh", "python scripts/setup_local.py check"]
 exclusive_literals = []
 exclusive_allowlist = []
