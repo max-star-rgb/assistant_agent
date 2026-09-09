@@ -45,8 +45,16 @@ python -m pip install -r requirements.txt
 ```
 
 已有专用 conda 环境也可直接激活后执行最后两条命令，不需要再创建 venv。
-requirements 包含服务、GPU 推理、BGE 和 SigLIP2 导出依赖，并复用项目关键版本约束。
-BGE 使用 `fastembed-gpu`；不要另装 CPU 版 `fastembed` / `onnxruntime` 到同一环境。
+`config/hello-agent-packages.txt` 保存本机 `hello_agent` 的全部 227 个 Python 包及版本，
+包括开发工具和传递依赖。`requirements.txt` 基于这份完整快照生成，明确做了以下迁移调整：
+
+- 当前项目通过 `-e .[...]` 安装，排除旧发行记录 `multimodal-agent`，避免引用旧电脑路径或下载错误的同名包。
+- `fastembed==0.8.0` 替换为 `fastembed-gpu==0.8.0`，移除 CPU `onnxruntime==1.28.0`，
+  保留 `onnxruntime-gpu==1.26.0`，避免两套发行包覆盖同一个 Python 模块。
+- 其余已安装包保留原版本；项目 extras 所需但原环境缺少的传递依赖由 pip 补齐。
+
+完整快照用于核对，安装使用根目录 `requirements.txt`。它记录 Python 包，不包含 conda 的 Python
+解释器、ffmpeg、Node.js、驱动或模型权重；这些仍按本说明分别准备。
 
 ## 3. 下载 BGE、准备 SigLIP2
 
