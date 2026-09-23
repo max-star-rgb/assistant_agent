@@ -89,25 +89,7 @@ python scripts/agent_cli.py --interactive
 
 ## 架构与关键设计
 
-```mermaid
-flowchart TD
-    C[客户端 / 通信样机] -->|HTTP / WebSocket| S[LangGraph Agent Server]
-    S --> A[统一 AssistantAgent]
-    A --> T[业务工具 / MCP / 子 Agent]
-    A -->|执行前召回| M[Memory backend / Mem0]
-    A -->|回答后提交| B[独立 Memory thread]
-    B -->|延迟提取| M
-    A --> V[视觉工具]
-    C -->|视频帧，经媒体入口解码| K[SigLIP2 语义选帧]
-    subgraph P[独立视觉感知流水线]
-        K --> W[关键帧窗口 / 并行 VLM]
-        W --> H[视觉文本时间线 / Qdrant 检索]
-    end
-    V -->|读取当前窗口或检索历史| H
-    T --> D[结构化 Tool artifact]
-    D --> E[媒体入口校验与交付]
-    E --> C
-```
+![Agent 架构图](docs/assets/Agent_Graph.png)
 
 Agent Server 负责会话和执行生命周期；Deep Agents 提供规划、子 Agent、文件操作、上下文压缩与人工审批。项目重点处理以下场景问题：
 

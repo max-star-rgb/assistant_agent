@@ -132,9 +132,13 @@ class FastEmbedDenseTextEncoder:
         if not cache_dir.strip():
             raise ValueError("FastEmbed cache directory must be non-empty")
         try:
+            import onnxruntime as ort
             from fastembed import TextEmbedding
         except ImportError as exc:
             raise RuntimeError("fastembed_dependency_unavailable") from exc
+        if "CUDAExecutionProvider" in ort.get_available_providers():
+            # BGE can initialize before SigLIP2 has loaded the pip CUDA libraries.
+            ort.preload_dlls(directory="")
         self._model = TextEmbedding(
             model_name=DENSE_MODEL_NAME,
             cache_dir=cache_dir,

@@ -146,7 +146,9 @@ backend，不能只凭资产文件存在宣称 ready。
 `VISUAL_MEMORY_QDRANT_COLLECTION`、`VISUAL_MEMORY_QDRANT_TIMEOUT_SECONDS` 和
 `VISUAL_MEMORY_DENSE_MODEL_CACHE_DIR`。本地部署先显式安装 `.[visual-memory-search]`，再由 operator 在
 可联网准备阶段把 `BAAI/bge-small-zh-v1.5` 下载到配置的 cache；运行时固定
-`local_files_only=True`。Qdrant 可用以下 profile 单独启动，不会同时启动 Mem0：
+`local_files_only=True`。BGE 初始化检测到 ONNX CUDA execution provider 时，先通过
+`onnxruntime.preload_dlls(directory="")` 加载 pip 安装的 CUDA/cuDNN 动态库，不依赖 SigLIP2 的初始化顺序。
+Qdrant 可用以下 profile 单独启动，不会同时启动 Mem0：
 
 ```bash
 docker compose -f docker/mem0/compose.yaml --profile visual-memory up -d qdrant
