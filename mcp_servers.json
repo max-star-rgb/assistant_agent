@@ -91,6 +91,48 @@
         "browser_select_option",
         "browser_tabs"
       ]
+    },
+    {
+      "server_name": "amap_maps",
+      "transport": "stdio",
+      "command": [
+        "npx",
+        "--offline",
+        "--yes",
+        "@amap/amap-maps-mcp-server@0.0.8"
+      ],
+      "env": {
+        "AMAP_MAPS_API_KEY": "${AMAP_MAPS_API_KEY}",
+        "NODE_OPTIONS": "--dns-result-order=ipv4first"
+      },
+      "allowed_tools": [
+        "maps_weather",
+        "maps_regeocode",
+        "maps_geo",
+        "maps_ip_location",
+        "maps_search_detail",
+        "maps_bicycling",
+        "maps_direction_walking",
+        "maps_direction_driving",
+        "maps_direction_transit_integrated",
+        "maps_distance",
+        "maps_text_search",
+        "maps_around_search"
+      ],
+      "general_purpose_tools": [
+        "maps_weather",
+        "maps_regeocode",
+        "maps_geo",
+        "maps_ip_location",
+        "maps_search_detail",
+        "maps_bicycling",
+        "maps_direction_walking",
+        "maps_direction_driving",
+        "maps_direction_transit_integrated",
+        "maps_distance",
+        "maps_text_search",
+        "maps_around_search"
+      ]
     }
   ]
 }

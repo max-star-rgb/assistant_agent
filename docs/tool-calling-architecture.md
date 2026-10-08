@@ -83,6 +83,15 @@ message/state 协议。传输层只通用读取该 key 和标准 `type=file` blo
 暴露取消 Tool；取消只影响后续可见性，不中止已开始的 Tool，也不撤销既有副作用。
 Skill、Todo、worker 文本和 artifact 都不能声明 profile 或授权 Tool。
 
+根目录 `mcp_servers.json` 是纳入 Git 的本机部署配置，本机 `.env` 通过
+`MULTIMODAL_AGENT_MCP_CONFIG_PATH=mcp_servers.json` 选择它。高德使用固定版本
+`@amap/amap-maps-mcp-server@0.0.8`，凭据仅引用环境变量 `AMAP_MAPS_API_KEY`，不得写入 JSON。
+该版本的 12 个只读工具进入显式 allowlist；`mcp_amap_maps_maps_weather` 不归属任何 Profile，
+成功注册后默认暴露。其余 11 个高德工具归属 `travel`，通过 `activate_tool_profile(profile_id="travel")`
+渐进暴露；这是预注册工具的可见性切换，不是调用时动态注册 MCP。
+本机高德命令使用 `npx --offline`，避免每次 MCP 会话启动都访问 npm registry；新机器须先缓存固定包版本，
+例如 `npm exec --yes --package=@amap/amap-maps-mcp-server@0.0.8 -- node --version`。
+
 不存在的 ToolCall 由 `UnknownToolFeedbackMiddleware` 返回标准 error `ToolMessage`，保留原始
 `tool_call_id`，并以 `unknown_tool` 和 `available_tool_names` 提示模型只调用已暴露工具。
 该 middleware 放在模型工具过滤之后，把本次 `ModelRequest.tools` 中实际本地 Tool 名保存为私有
