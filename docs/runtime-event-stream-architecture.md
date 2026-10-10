@@ -101,6 +101,12 @@ Qwen3.8、Qwen3.6、Qwen3.5 系列及 Qwen3.7-Flash/Plus（含快照版本）使
 其他模型保留普通搜索 `turbo`、deep research `max`。正文角标原样透传，搜索来源保留在 `provider_search_sources`。
 主对话的多模态响应支持普通正文和标准工具调用；视觉摘要调用方显式启用 `structured_vision_output`，继续校验结构化摘要。
 
+Qwen/DashScope ChatModel 的 HTTP 与 HTTPS 连接固定只解析和连接 IPv4（`AF_INET`），普通 JSON 和 SSE
+共用该规则，复用此模型的主 Agent 与 worker 一致。规则保存在代码中，重启后持续生效，不依赖临时 shell
+设置，也不修改进程全局 DNS。域名、TLS/SNI、证书校验、环境代理与 `NO_PROXY` 保持原有语义；没有 IPv4
+地址时明确失败，不回退 IPv6。使用代理时只保证应用到代理的连接为 IPv4，代理出口由代理自身配置决定。
+该规则不代表其他 ChatModel adapter、Mem0 容器或所有外部服务已强制 IPv4。
+
 旧 `runtime/state.py`、`cancellation.py`、`capability_grants.py`、state-to-response adapter 与
 state-to-observability adapter 已随最后消费者一起删除；
 旧 multi-agent `AgentRunResponse` 及其平行 `tool_calls/tool_results` ledger 已随最后消费者删除。

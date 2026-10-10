@@ -7,7 +7,9 @@ from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 import json
 from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
-from urllib.request import Request, urlopen
+from urllib.request import Request
+
+from assistant_agent.providers.provider_http import ipv4_urlopen
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
@@ -56,7 +58,7 @@ class UrllibDashScopeTransport:
             headers=headers,
             method="POST",
         )
-        with urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310
+        with ipv4_urlopen(request, timeout=timeout_seconds) as response:
             data = json.loads(response.read().decode("utf-8"))
         if not isinstance(data, dict):
             raise ValueError("DashScope returned a non-object response")
@@ -76,7 +78,7 @@ class UrllibDashScopeTransport:
             headers=headers,
             method="POST",
         )
-        with urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310
+        with ipv4_urlopen(request, timeout=timeout_seconds) as response:
             yield from _iter_dashscope_sse(response)
 
 
