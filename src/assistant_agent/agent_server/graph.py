@@ -15,14 +15,6 @@ _process_owner_lock = asyncio.Lock()
 
 
 @asynccontextmanager
-async def native_assistant_graph(runtime: ServerRuntime):
-    """Yield the process-owned static graph for every Agent Server access."""
-
-    owner = await _get_process_owner(store=runtime.store)
-    yield owner.graph
-
-
-@asynccontextmanager
 async def native_memory_graph(runtime: ServerRuntime):
     """Yield the process-owned cold-path Memory graph."""
 
@@ -36,6 +28,13 @@ async def native_worker_graph(runtime: ServerRuntime):
 
     owner = await _get_process_owner(store=runtime.store)
     yield owner.worker_graph
+
+
+@asynccontextmanager
+async def native_business_graph(runtime: ServerRuntime):
+    """Business runs submitted by Studio, SDK clients, and realtime sessions."""
+    owner = await _get_process_owner(store=runtime.store)
+    yield owner.graph
 
 
 async def _get_process_owner(*, store) -> AgentServerExecutionOwner:
@@ -67,7 +66,7 @@ def current_native_execution_owner() -> AgentServerExecutionOwner:
 __all__ = [
     "close_native_assistant_graph",
     "current_native_execution_owner",
-    "native_assistant_graph",
+    "native_business_graph",
     "native_memory_graph",
     "native_worker_graph",
 ]

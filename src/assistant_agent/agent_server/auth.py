@@ -287,7 +287,7 @@ async def authorize_run_create(
     metadata["owner"] = str(ctx.user.identity)
     return {
         "owner": str(ctx.user.identity),
-        "graph_id": ASSISTANT_GRAPH_ID,
+        "graph_id": graph_id,
     }
 
 
@@ -298,7 +298,9 @@ def _run_graph_id(assistant_id: UUID) -> str | None:
         uuid5(NAMESPACE_GRAPH, "assistant-native-v1"),
         uuid5(NAMESPACE_GRAPH, "assistant-native-v2"),
         uuid5(NAMESPACE_GRAPH, "assistant-native-v3"),
+        uuid5(NAMESPACE_GRAPH, "assistant-native-v4"),
         uuid5(NAMESPACE_GRAPH, "assistant-worker-v1"),
+        uuid5(NAMESPACE_GRAPH, "assistant-voice-v1"),
     }:
         return None
     return _current_system_assistant_graphs().get(assistant_id, ASSISTANT_GRAPH_ID)

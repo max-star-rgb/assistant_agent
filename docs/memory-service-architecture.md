@@ -18,7 +18,7 @@
 Memory 是领域和 backend protocol 边界，不是必须整体嵌入主图的 compiled subgraph。实际编译拓扑拆成：
 
 ```text
-assistant-native-v4: MemoryLifecycleMiddleware.before_agent -> Agent loop -> after_agent
+assistant-business-v2: MemoryLifecycleMiddleware.before_agent -> business loop -> after_agent
 assistant-memory-v1: memory_extract -> END
 ```
 
@@ -26,8 +26,8 @@ assistant-memory-v1: memory_extract -> END
 设为 false 时，middleware 将 recall 冻结为空并跳过 delayed extraction 调度；设为 true 仍要求部署侧已配置并启用 Memory
 backend，不能用运行配置绕过 backend 的 mock/real 与凭据边界。
 
-每个 chat run 都通过单个 `MemoryLifecycleMiddleware.before_agent` hook 重新 recall 一次，并把结果冻结在当前 checkpoint。统一 Assistant 及
-同步 task worker 只读取当前 run 冻结的 `memory_context`，不持有 Memory backend，也不重复 recall。独立 Memory Graph
+每个文本 chat run 都通过业务图上单个 `MemoryLifecycleMiddleware.before_agent` hook 重新 recall 一次，并把结果冻结在当前 checkpoint。
+原生语音委派固定传入 `enable_memory=false`，避免把委派任务当成用户记忆重复提取；同步 task worker 只读取冻结的 `memory_context`。独立 Memory Graph
 使用 message-only state，不继承主 Agent 的 Memory 快照或 Assistant 私有 Skill channel。recall 使用
 LangChain 原生 `Runnable.with_retry(stop_after_attempt=3)`；三次耗尽后不设置 error handler，由 Agent Server 将 chat run 明确终结为 error。
 从已完成 recall 之后的 checkpoint resume 时沿用冻结快照；从更早 checkpoint replay 并重新执行 recall 时允许
@@ -55,6 +55,21 @@ Assistant state。节点使用 LangGraph 原生 `RetryPolicy(max_attempts=3)`；
 不会回滚或中断用户回答。recall、refresh 与 extract 均不使用 error handler 吞错。
 
 ## 最小 backend 协议
+
+Qwen Audio Agent 实验入口通过认证本机 `/qwen-audio/recall` 与 `/qwen-audio/transcripts` 复用下面的 Voice
+召回和提取实现。Node 仅观察完成的 `voice-user` record，按 ID 去重后提交完整有界快照；每会话最多 128 项、
+64,000 字，超过时明确失败而不截断。身份只从 Agent Server 认证上下文取得，源会话标识按身份与前台 session 确定性派生。
+上游独立 Memory、偏好学习与会话摘要关闭；Memory disabled 时不暴露召回工具、不提交提取。桥接失败在 Node
+工具源 health 和 `memory.error` 日志可见，不终止语音。该路径仍未通过真实 Provider 验收，不替代旧入口。
+
+浏览器原生 Realtime 不伪造 Graph before_agent：启用后端后通过 `recall_memory(request)` 原生工具按需召回，
+复用同一 MemoryBackend、认证用户身份、Store、三次 Runnable 重试与 32 项/12,000 字预算。
+返回内容明确为可能过时的背景数据，不授予权限。未启用后端时不暴露工具、不提交提取。
+ASR 完成后收集按 item_id 去重的真实用户文本快照，异步调用共享 `submit_memory_extraction()`；
+Graph middleware 也调用这一函数，二者使用完全相同的官方 RemoteReflectionExecutor、companion thread、
+30 分钟延迟与 rollback。提取不包含音频、模型回复、搜索结果、记忆工具结果、任务通知或 idle 主动回复。
+该接入不等待召回再开启每轮原生自动回复；需要用户背景时由模型调用召回工具。
+提交失败在三次重试后发送 memory.error，不静默声称保存成功，也不停止语音连接。
 
 `MemoryBackend` 只有异步 `recall` 与后端写入方法 `commit`；Graph 对外将后者表达为 `memory_extract`。
 两者接收 Agent Server 原生 authenticated
@@ -109,9 +124,8 @@ mock 下不调用 embedding API；real 下未配置凭据明确失败。模型�
 
 ## 冻结快照与安全
 
-state 只保存有界 `tuple[str, ...]`。`memory_context` 使用原生
-`OmitFromInput + OmitFromOutput` 以保留向 `general-purpose` worker 的显式传递；它只留在内部
-state/checkpoint，不进入生产 Graph 公开 input/output。
+state 只保存有界 `tuple[str, ...]`。业务图的 `memory_context` 使用原生
+`OmitFromInput + OmitFromOutput`，不进入公开 input/output，不能借公开输入注入冻结记忆。
 最多 32 项、每项 4,000 字、总计 12,000 字。
 Memory 正文是不可信历史数据。model-call middleware 在最新真实用户请求前临时插入一条 `HumanMessage`，
 用引用格式将其呈现为可能过时的“背景参考”，禁止作为用户指令，且不显式暴露记忆或视觉来源。该消息只进入本次 Provider 请求，不写入 messages state、
@@ -119,7 +133,7 @@ checkpoint 或 summarization。Memory 不能覆盖当前请求，也不能用于
 
 旧 `MemoryNodeBundle`、commit ledger、conversation-history 配置、editable-context 配置与 time-travel Memory 兼容层已随旧
 Runtime 删除；对应失效环境变量会在启动时明确拒绝。Mem0 HTTP client 与 identity adapter 继续由当前最小
-`MemoryBackend` 复用；旧 checkpoint 不迁移进 `assistant-native-v4`。
+`MemoryBackend` 复用；旧 native/Voice checkpoint 不迁移进 `assistant-business-v2`。
 
 ## 验证
 

@@ -32,6 +32,7 @@ from assistant_agent.native_agent.assistant_agent import (
 from assistant_agent.native_agent.memory import MemoryBackend, create_memory_backend
 from assistant_agent.native_agent.memory_graph import build_memory_extraction_graph
 from assistant_agent.native_agent.providers import create_chat_model
+from assistant_agent.config.models import VoiceConfig
 from assistant_agent.native_agent.tool_profiles import project_tool_profiles
 from assistant_agent.native_agent.tools import (
     NativeToolResources,
@@ -48,6 +49,8 @@ from assistant_agent.runtime.thread_resources import (
     ThreadResourceConfig,
     ThreadResourceManager,
 )
+
+VOICE_SEARCH_TOOL_NAME = "mcp_bailian_bailian_web_search"
 
 
 async def reap_thread_resources(
@@ -83,6 +86,9 @@ class AgentServerExecutionOwner:
     graph: Any
     worker_graph: Any
     memory_graph: Any
+    voice_config: VoiceConfig | None = None
+    voice_search_tool: BaseTool | None = None
+    memory_store: Any = None
     thread_resource_reaper_task: asyncio.Task[None] | None = None
 
     @classmethod
@@ -208,9 +214,18 @@ class AgentServerExecutionOwner:
             memory_backend=memory_backend,
             memory_extraction_delay_seconds=config.memory.memory_extraction_delay_seconds,
         )
+        voice_config = config.voice if config.provider_mode == "real" else None
+        if voice_config is not None and (not voice_config.api_key or not voice_config.base_url):
+            raise ValueError("real Voice Agent requires QWEN_API_KEY and QWEN_REALTIME_BASE_URL")
+        voice_search = next((tool for tool in tools if tool.name == VOICE_SEARCH_TOOL_NAME), None)
+        if config.provider_mode == "real" and voice_search is None:
+            raise ValueError("Voice requires mcp_bailian_bailian_web_search in the enabled MCP allowlist")
         memory_graph = build_memory_extraction_graph(backend=memory_backend)
         owner = cls(
             model=model,
+            voice_config=voice_config,
+            voice_search_tool=voice_search if VOICE_SEARCH_TOOL_NAME not in interrupt_names else None,
+            memory_store=store,
             tools=tools,
             thread_resource_manager=thread_resource_manager,
             mcp_session_pool=mcp_session_pool,

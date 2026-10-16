@@ -1,5 +1,7 @@
 # LangGraph Agent Server 部署架构
 
+本地启动脚本默认监听 `0.0.0.0`（所有 IPv4 网卡），systemd 与 PyCharm 启动配置保持一致。局域网客户端使用宿主机 IP 连接；仅需本机访问时显式传入 `--host 127.0.0.1`。
+
 最后更新：2026-09-08
 
 ## Authority contract
@@ -7,7 +9,7 @@
 | 字段 | 内容 |
 | --- | --- |
 | 定位 | 生产 Assistant Graph 的 Agent Server 部署、身份和资源生命周期权威 |
-| Owns | auth、assistant、thread、run、queue、checkpoint、Store、cancel、stream 与 custom route 装配 |
+| Owns | auth、assistant、thread、run、queue、checkpoint、Store、cancel、stream、custom route 装配与本地部署准备 |
 | Does not own | Assistant 节点推理、Tool schema、Memory 后端语义、Media-Agent wire 字段 |
 | 源码与 schema 入口 | `langgraph.json`、`src/assistant_agent/agent_server/` |
 | 验证入口 | `docs/authority.toml` 中 `agent-server.verification` |
@@ -15,65 +17,143 @@
 
 ## 可运行 Graph 与 Assistant identity
 
-`langgraph.json` 只注册三张当前可运行原生 Graph：
+`langgraph.json` 注册三张当前可运行原生 Graph：
 
 ```text
-assistant-native-v4 -> assistant_agent.agent_server.graph:native_assistant_graph
+assistant-business-v2 -> assistant_agent.agent_server.graph:native_business_graph
 assistant-worker-v2 -> assistant_agent.agent_server.graph:native_worker_graph
 assistant-memory-v1 -> assistant_agent.agent_server.graph:native_memory_graph
 ```
 
-用户会话直接运行 v4 `AssistantAgent`；Memory recall 与 delayed extraction 调度由其
-`MemoryLifecycleMiddleware.before_agent/after_agent` 接入。同步 task 在主 run 内调用通用 worker；异步 delegation
-才创建 v2 worker thread/run。Memory 延迟提取使用 v1 Memory graph。
-Agent Server 原生拥有 assistant、thread、run、queue、checkpoint、interrupt/resume、cancel、stream 和 Store；
-项目不维护第二套 run manager、checkpoint facade 或产品状态机。
+Studio/SDK 直接运行 `assistant-business-v2` 业务图，使用业务模型与原生 ToolNode/HITL。
+浏览器 Voice 只运行原生 Realtime 会话，通过 `VoiceTasks` 提交独立业务 run。
+业务图保留 Memory lifecycle；语音委派显式关闭业务 Memory，语音记忆使用原生会话接入。
+同步 task 在原 run 内调用 worker，异步 delegation 使用 worker thread/run；延迟记忆提取使用 Memory graph。
+real 装配仍要求 Realtime 配置和受信百炼搜索完整，mock 不打开真实 Realtime 连接。
+Agent Server 拥有业务 assistant/thread/run/checkpoint/interrupt/resume/cancel/Store。
+`assistant-voice-v1`、Graph Realtime ChatModel、跨 run WS 池和 `DELETE /voice/sessions/{thread_id}` 已删除。
+语音连接由浏览器会话持有并在挂断时关闭，不进入 Graph checkpoint。
 
 run auth 接收的是 Agent Server Assistant UUID，不是 graph ID 字符串。三张系统 Assistant 使用
 `uuid5(langgraph_api.graph.NAMESPACE_GRAPH, graph_id)` 的确定性 UUID：
 
-| graph | system Assistant UUID |
-| --- | --- |
-| `assistant-native-v4` | `8d030b92-89be-5d58-918d-ff35e996429a` |
-| `assistant-worker-v2` | `ad895394-eb31-5aa1-a5ac-d24c4050ca05` |
-| `assistant-memory-v1` | `b209df74-50ea-53ce-89ad-cc13d3c44e1b` |
+三张系统图为 `assistant-business-v2`、`assistant-worker-v2`、`assistant-memory-v1`。
 
 auth 将这三个 UUID 精确映射到各自 graph。retired `assistant-native-v1`、`assistant-native-v2`、
-`assistant-native-v3` 与 `assistant-worker-v1` 的系统 Assistant UUID 明确拒绝，不能借旧 identity 创建当前 run。
-其他合法 UUID 只可能作为 Agent Server 已持久化的 v4 custom Assistant 进入 main graph：custom Assistant 的创建
-只能选择 v4；name、description、config、context、版本和 active 状态由原生 Assistant API 持久化。read/search
+`assistant-native-v3`、`assistant-native-v4`、`assistant-voice-v1` 与 `assistant-worker-v1` 的系统 Assistant UUID 明确拒绝，不能借旧 identity 创建当前 run。
+其他合法 UUID 只可能作为 Agent Server 已持久化的业务 custom Assistant 进入 main graph：custom Assistant 的创建
+只能选择业务图；name、description、config、context、版本和 active 状态由原生 Assistant API 持久化。read/search
 对普通 API 身份按 owner filter 隔离，三个当前 system Assistant UUID 与 Studio 身份保持可见；update/delete 同样
 受 owner filter 治理。run 创建时 Agent Server 会复用 Assistant read filter 校验 custom Assistant 所有权，不能在自己的
 thread 上运行其他 owner 的 custom Assistant。auth 不把 custom Assistant 复制成项目配置或另一套 Runtime。
 
 ## Thread、checkpoint 与迁移
 
+### Qwen Audio Agent 实验入口
+
+`integrations/qwen_audio_agent/` 锁定 Qwen Audio Agent 2.0.1，通过公开 Gateway 与 BackendPort 扩展接入。
+Node 只负责任务协议适配，独立监听回环端口，复用当前 V2 的 `8088` Server；默认 mock 拒绝启动真实语音。
+真实入口另需 `QWEN_AUDIO_ENABLE_REAL=1` 与完整 key。配置、运行和限制见该目录 README；目前未切换默认入口。
+
+新入口按安装 namespace、受信身份与 Gateway task ID 确定业务 thread；不同任务隔离，采用原生 `reject` 并发策略。
+模型输入只有委派指令，固定 `enable_memory=false`、`require_tool_approval=true`；附件目前明确拒绝。
+Adapter 的 `submit` 等待最终结果，前台由上游 Runtime 管理即时受理；SDK `status` 仅查询活动任务，历史可用集成包 task 查询命令对账。
+提交结果未知时先核对原生记录，不自动重投。取消指向该任务 thread 内当前 run，关闭 Gateway 只停止观测。
+
+发布版前台授权具有任务/会话自动授权语义，因此本接入拒绝前台审批响应，保留 Studio 原生逐次 HITL；
+Studio 恢复后的新 run 被同一个 Gateway task 跟踪。此限制阻塞完整 WebUI 审批验收，不得据离线测试宣布 M1/M2 完成。
+已识别的单个 text-input interrupt 可通过原生 resume 回应；未知 interrupt 报告需 Studio 处理。
+`/qwen-audio/*` 为认证本机 Memory 薄桥，语义由 Memory authority 所有，不提供通用业务执行入口。
+
+### 独立浏览器语音入口
+
+本机 V2 打开 `http://127.0.0.1:8088/media-lab`，连接后点击“开始持续对话”。浏览器持续上传 16kHz
+单声道 PCM16（约 100ms/包），包括静音、模型回复及业务工具执行期间；页面不做 VAD、不按句缓存或提交。
+模型配置 `server_vad`（threshold=0.5、silence_duration_ms=800），自动提交输入并创建回复。
+Qwen3.5 Realtime 另设置 `idle_timeout_ms=5000`：服务端完成上一段音频播报后，用户持续静默 5 秒由模型原生主动回复；
+不在浏览器或服务端另建计时器，不等于把用户停顿阈值改为 5 秒。
+浏览器收到 `voice.speech_started` 时立即停止播放、清空音频队列并开始新的字幕轮次。
+此入口独立于正式视频通话 `/agent-service/v1`，不修改其媒体处理边界。
+
+`/media-lab/ws` 使用认证身份和随机 UUID 标识语音会话，不创建空的 Graph thread；开始收音后打开原生 Qwen Realtime WS。
+为兼容浏览器协议，`session.ready.thread_id` 携带语音 session UUID，不是可运行的 Graph thread ID。
+`RealtimeSession` 直接处理 VAD、回复音频、转写和 function call，不将每句话转换为 Voice Graph run，
+不经过 ChatModel/ToolNode 语音循环。原始音频不写入 checkpoint；ASR 与回复文本来自 Provider 转写事件，
+只用于语音字幕与 Voice trace，不复制到业务输入。
+
+模型完成的工具调用通过 `VoiceTasks` 提交独立 `assistant-business-v2` run，并立即返回 task_id/run_id/accepted。
+每个语音会话只创建一个独立业务 thread，后续委派复用该 thread 并设置 `multitask_strategy="rollback"`，
+由 Agent Server 回滚冲突中的旧 run，执行最新任务。已完成业务历史遵循原生 checkpoint 语义，不清空整个 thread。
+每次 input 只有一条 `HumanMessage(name="voice_agent")` 委派任务；必要背景由 Voice 写入 request。
+task_id 是稳定的业务 thread_id，run_id 区分各次执行；业务 trace 以自身输入和原生 loop 开始，不嵌套语音过程。
+百炼搜索直接调用受信装配中已注册、无需审批的只读 MCP Tool，暴露原生参数 schema 并返回真实搜索结果；
+不创建业务 run，不递增任务版本，也不触发业务 rollback。配置为需要审批的搜索不在原生语音中直接暴露。
+任务强制 `require_tool_approval=true`；审批在业务 thread 的 Studio 中处理，语音连接保持可用。
+任务状态通过原生 SDK 查询；审批恢复后跟踪该 thread 最新 run。完成结果以独立的外部数据消息通知模型，
+不对已返回 accepted 的 call_id 重复提交结果。用户讲话或模型生成时延后通知。
+轮询与排队通知携带本地委派版本，替换任务后丢弃尚未发送的旧通知。
+
+语音打断仅停止生成/播放并丢弃旧响应音频；只有新业务委派才触发业务 rollback，讲话本身不触发。
+仅显式 `cancel_business_task(task_id)` 调用原生 run cancel(action=interrupt)，不撤销已完成副作用。
+挂断只关闭 Provider WS 和状态轮询；已受理任务继续由 Agent Server 管理。页面记录任务编号，
+同一身份可以通过任务编号查询；重新连接不自动恢复旧语音上下文或订阅旧任务通知。
+`get_business_task` 每次查询最新 run 与完成结果，`cancel_business_task` 等待原生 interrupt 受理；
+沿用 Deep Agents 异步工具的“受理后不立即轮询、用户询问时查实时状态、明确要求时取消”语义，保留现有工具名称。
+启用 Memory backend 时原生 Voice 额外提供 `recall_memory(request)`，按需读取认证用户的长期背景。
+ASR 用户文本独立提交到既有 delayed Memory Graph；具体策略见 Memory authority。
+业务结果保存在原生 thread/checkpoint；其持久性遵循当前 in-memory Agent Server 的约束。
+Provider 协议异常记录 session_id、响应标识、事件阶段及脱敏错误类别，不记录原始参数、媒体或错误正文。
+事件接收只关联实际消费的回复增量、工具完成与 response.done；字幕/音频片段完成等辅助通知直接忽略。
+无法关联的输出丢弃并记录事件类型，不补造当前轮次、不关闭连接；单次 Provider 请求错误和工具提交错误局部报告。
+网络断开、会话初始化失败或资源上限等连接级错误才结束会话。断线提示只列出已确认受理的待查询任务，不声称任务必然正在运行。
+业务 run 提交失败保留 task_id 和脱敏 HTTP 状态；不将创建了 thread 等同于已受理，不自动重试不确定的提交。
+修改 langgraph.json 的注册图后必须重启启动脚本：脚本使用启动时的临时配置副本，源码自动重载不会更新注册列表。
+
+页面与 WS 仅接受 loopback，WS 校验同源 Origin，不用于公网部署。协议：
+
+- `audio.start` 指定 `sample_rate=16000`、`channels=1`、`format=pcm_s16le`，整个连接只发送一次。
+  `audio.started.vad=server_vad` 表示 Provider 会话就绪。结束持续对话关闭连接，不发送逐句 commit。
+- 二进制头 13 bytes，小端 `<BId>`：类型 uint8、递增序号 uint32、时间戳毫秒 float64；
+  输入类型 1 为 16kHz PCM16，输出类型 3 为 24kHz PCM16。每包最多 200ms，浏览器按序播放。
+- `voice.speech_started` / `voice.speech_stopped` 携带 turn_id；`voice.interrupted` 清空播放。
+  `voice_input_transcript` / `voice_reply_text` 提供字幕，客户端忽略旧 turn_id 事件；兜底工具前言仍为文字提示。
+  `turn.started` / `turn.finished` 标记 Provider response，`turn.error` 报告错误。
+- `turn.cancel` 仅停止当前语音回复，继续收音，业务任务不受影响；关闭页面或切到后台结束持续语音并释放麦克风。
+- WS 缓冲超过 256KiB 时停止采集；服务端每连接最多 80 消息/秒，空闲 120 秒关闭，控制消息最多 4096 字符。
+  单个 Provider 响应事件预算 16MiB，队列有界；持续会话 115 分钟后要求重连。
+
+页面显示已收到的音频时长和播放器状态。“测试扬声器 / 恢复播放”只生成本地提示音，不调用模型。
+浏览器开启回声消除和降噪，但真实扬声器回声与设备音量仍需本机验收。
+纯采集校验/回环协议保留在 `/media-lab/capture/ws`；验证入口为 `tests/tdd/browser-media/`、`tests/tdd/voice-agent/`。
+
+### 原生会话迁移
+
 项目控制的 thread 只使用 SDK 原生 `metadata.graph_id` 作为 graph identity。thread create、run create 与 SDK stream
-边界都复核 owner 和精确 graph identity，thread metadata update 禁止改写该字段。v4 custom Assistant 仍绑定 main graph identity；
+边界都复核 owner 和精确 graph identity，thread metadata update 禁止改写该字段。业务 custom Assistant 绑定 main graph identity；
 worker 和 Memory 使用自己的 identity。
 
 thread metadata 中服务端签发的 `assistant_agent_runtime` 只允许在 thread create 时写入，创建后保持冻结；任何
 identity（包括 internal worker）的 thread metadata update 只要包含该保留 key 都直接拒绝。普通 label update、
 不携带 metadata 的 state update 以及 owner-scoped interrupt/rollback 保持可用。
 
-retired native v1/v2/v3、worker-v1 或缺失 identity 的 thread/checkpoint 只读，不能进入 v4
+retired native v1/v2/v3/v4、voice-v1、worker-v1 或缺失 identity 的 thread/checkpoint 只读，不能进入业务
 run/resume/replay/stream，也不能靠 metadata update 伪装升级。旧 run 的 interrupt/rollback 仍按 owner 开放，供部署
-前 drain/cancel。迁移不转换旧 checkpoint；Studio、CLI 与媒体客户端必须新建 v4 thread。
+前 drain/cancel。迁移不转换旧 checkpoint；Studio 与 CLI 必须新建业务 thread；旧媒体 chat 暂不开放。
 
-媒体确定性 thread UUID 的 seed 包含当前 v4 graph ID，因此同一 v4 connection 重连稳定，但不会命中旧版本 UUID。
+媒体确定性 thread UUID 的 seed 包含当前业务 graph ID，因此同一 connection 重连稳定，但不会命中旧版本 UUID。
 `SdkAgentServerClient` 对 `if_exists="do_nothing"` 返回的 existing thread 同样复核 identity，并在 stream 前再次读取
 thread；失败时不创建 run、不改变 checkpoint。
 
 ## 统一 composition、本机文件系统与 worker
 
 每个 Agent Server worker 进程只创建一个 `AgentServerExecutionOwner`。其 `compose()` 在装配期局部加载并持有完整、
-冻结的 `AppConfig`，只向下游投影所需的窄配置段；owner 本身持有一个模型、一次发现的业务/MCP Tool inventory、一个
-`MemoryBackend`、一个 `ThreadResourceManager`、线程级 MCP session pool，以及编译后的 main、worker、Memory graph。
+冻结的 `AppConfig`，只向下游投影所需的窄配置段；owner 持有业务模型和窄 VoiceConfig（mock 时为 None）、一次发现的业务/MCP Tool inventory、一个
+`MemoryBackend`、一个 `ThreadResourceManager`、线程级 MCP session pool，以及编译后的业务、worker、Memory graph。
 schema/history/state 请求和 run 都复用该 owner；custom-app lifespan 在进程 shutdown 时关闭一次。
 `load_app_config()` 仅位于 composition/入口；Provider、Tool、Memory、Media 叶子只接收显式窄配置，不读取应用配置
 环境变量。Provider SDK policy 自身的 `from_env()` 不是应用配置 loader。
 
-main Agent 使用按当前 run 的 `AssistantRunContext.cwd` 创建的 `LocalShellBackend`，并用 Deep Agents 原生
+本节 main Agent 指业务 Agent，Voice 不持有执行工具。业务 Agent 使用按当前 run 的 `AssistantRunContext.cwd` 创建的 `LocalShellBackend`，并用 Deep Agents 原生
 `virtual_mode=False` 接受真实绝对路径；filesystem
 将 `.` 映射为 cwd，`/`、`/.` 和其他绝对路径保持宿主 OS 语义。
 不装配 `/artifacts/`、`/scratch/`、`/uploads/` 等虚拟 filesystem route。main 和 worker 复用同一个
@@ -95,7 +175,7 @@ Playwright 的 thread session 只复用浏览器进程状态，不使用上述 t
 `start_async_task` 只把父子 thread/run correlation 写入 task handle、child thread metadata 和 worker run metadata。
 只有进程内 async adapter 会在 start/update 的 loopback SDK
 请求中附加随机 internal capability；auth 将其转换为 worker-only permission，并同时严格校验 worker metadata。普通
-`X-Assistant-User` caller 即使提交形状完整的 async metadata 也不能创建 worker thread/run。main v4 与 Memory 的
+`X-Assistant-User` caller 即使提交形状完整的 async metadata 也不能创建 worker thread/run。业务与 Memory 的
 thread/run 明确拒绝 `entry_profile=async_worker` 和 worker-only permission；worker metadata 必须是
 `entry_profile=async_worker`。
 worker 与媒体 loopback 各自使用当前本地单进程部署的进程内随机 internal capability，不进入 state、thread/run metadata、
@@ -115,17 +195,13 @@ worker 与媒体 loopback 各自使用当前本地单进程部署的进程内随
 {"messages":[{"role":"user","content":"hello"}]}
 ```
 
-Studio/普通 Agent Server 客户端上传图片或视频时沿用 LangChain 标准多模态 content block，可使用
-`type=image|video`、`base64`、`mime_type`，无需增加 Graph input 字段或专属上传 Graph。缺少
-`source` 的标准多模态块按用户主动上传处理；`source=live_camera` 仍只属于实时视觉入口，不会误入静态上传。
-上传实体保留在 Graph state 供 `uploaded_media_inspect` 读取，但在每次主模型调用的投影中移除，主模型只接收
-文本和 Tool observation，Memory 后台抽取请求也只复制该文本投影，避免把历史 Base64 重复发送给 Provider。
+Studio 直接提交文字给业务图；浏览器音频只进入原生 Realtime WS，不经 Graph middleware 或 checkpoint。
+业务图既有媒体工具保留；旧媒体 chat 入口仍关闭。
 
 公开 `AssistantRunContext` 包含 `persona`、`cwd`、`enable_memory`、`require_tool_approval`，以及可选的
 `context_compaction_trigger_tokens` / `context_compaction_keep_tokens`；Studio 的 `cwd` 默认是
 `~/assistant_cqy/studio`，且只接受 Home 内绝对路径。context coercion 不访问文件系统；工作区目录由异步入口准备。媒体握手的 `context` 复用同一 schema，cwd 默认按握手用户稳定映射到
-`~/assistant_cqy/media/usr_<opaque-id>`。`persona` 允许 `general` / `call_assistant`，Studio 默认前者，媒体默认后者；只改变顶层回复策略，不授予身份或能力。两个压缩值必须同时设置且 `0 < keep < trigger`；都不设置时继续使用 Provider context window 的
-75% 触发、压缩后保留 15%。`require_tool_approval` 在受信本机开发环境默认 false，保存为 true 的
+`~/assistant_cqy/media/usr_<opaque-id>`。`persona` 保留 `general` / `call_assistant` 兼容字段；Voice 使用固定 Voice 策略，业务委派固定 general，不授予身份或能力。两个压缩值必须同时设置且 `0 < keep < trigger`；都不设置时业务图使用业务模型窗口的 75%/15%。`require_tool_approval` 在受信本机开发环境默认 false，保存为 true 的
 Assistant 才让已配置 Tool 进入 HITL。身份、入口和视觉 capability 只在
 服务端签发的 namespaced run metadata 中。认证用户唯一来自 `Runtime.server_info.user.identity`；当前 tokenless
 developer hook 从 `X-Assistant-User` 取得 identity，省略时为 `local-developer`，因此端口不得暴露给不受信网络。
@@ -161,7 +237,7 @@ media custom-app lifespan 单次加载 `AppConfig` 后，只保留 provider mode
 
 ### 安装客户端的同机体验
 
-发行入口 `assistant-agent`（`assistant_agent.client`）已连接现有生产 v4 图。它通过原生 SDK 管理对话、审批和取消，
+发行入口 `assistant-agent`（`assistant_agent.client`）使用统一 graph 常量连接业务图；必须新建会话，不能继续旧 native/Voice 保存的 thread。它通过原生 SDK 管理对话、审批和取消，
 同时启动本地执行连接，不创建 Agent loop 或第二个 Agent Server。`--cwd` 选择用户目录，客户端在该目录的 `.agent/`
 保存按服务地址和身份区分的会话 ID；下次启动读取服务端同一 thread，checkpoint/Memory 仍由既有服务保存。
 
@@ -183,9 +259,13 @@ media custom-app lifespan 单次加载 `AppConfig` 后，只保留 provider mode
 拥有当前 OS 用户权限而非沙箱。完整启动与安装命令见 `scripts/README.md`。
 
 日常开发遵循 [官方本地开发指南](https://docs.langchain.com/langsmith/local-dev-testing)，使用 `langgraph dev`。
-PyCharm 的 **Agent Server (Real)** 通过 `scripts/run_server.py --port 8089 --env-file .env` 调用官方 CLI，
+PyCharm 的 **Agent Server (Real)** 在 V2 通过 `scripts/run_server.py --port 8088 --env-file .env` 调用官方 CLI，
 直接使用本机 `hello_agent` 环境和源码，默认自动重载；`--no-reload` 可关闭。Real 指 Provider 配置，不表示生产部署。
 wrapper 仅负责 env/config 来源、工作目录级单实例锁、严格端口检查和仓库外日志，不修改官方 watcher 或 Runtime。
+本机多分支部署使用同级独立 worktree：`cqy` 绑定 `8089`，`V2` 绑定 `8088`，由各自用户级
+systemd unit 管理。代码、checkpoint/Store 和仓库相对数据路径独立；宿主用户目录与外部服务不自动隔离。
+本机 unit 已经用户授权运行 real，systemd 共享读取原 `.env`，再加载各目录的非密钥
+`local/deployment.env` 覆盖端口与路径；具备用户登录后自启和故障重启。具体启停及共享边界见 `scripts/README.md`。
 使用官方 `langgraph-runtime-inmem==0.33.0`；删除原本地 fork，队列调度和恢复行为跟随上游实现。
 checkpoint/Store 保存在 `.langgraph_api/`，重载会重建服务进程并短暂断开连接，不代表运行中任务无中断更新。
 `langgraph.json` 保留项目依赖入口、Graph、auth、HTTP 和 Store 配置；依赖安装在本机环境，变更后重新安装并重启，
@@ -198,11 +278,11 @@ checkpoint/Store 保存在 `.langgraph_api/`，重载会重建服务进程并短
 
 Windows 新电脑使用 WSL2 Ubuntu 24.04，Git clone 后在虚拟环境内执行 `pip install -r requirements.txt`。
 下载 BGE、导出 SigLIP2，再手动复制旧电脑 `.env`，核对模型路径和本机服务地址。
-详细前置条件、启动、目录迁移和验收见 [WSL 安装说明](wsl-installation.md)。
+启动、目录迁移与模型准备的脚本入口见 [脚本说明](../scripts/README.md)。
 
 ```bash
 python scripts/setup_local.py check
 python scripts/check_documentation_authority.py --repo-root .
 ```
 
-第一条只检查 mock 配置及三张原生图装配，不启动 Server，不代表实际对话质量验证。
+第一条只检查 mock 配置、业务、worker、Memory 三张注册图装配，不启动 Server，不代表实际对话质量验证。

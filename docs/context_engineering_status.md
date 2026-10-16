@@ -20,8 +20,17 @@
 此阶段只开放同机注册，但项目指令和 cwd Skills 已由绑定客户端读取，服务端不再依赖同名路径。
 源码 Skills 仍随服务发布。Deep Agents 生成的压缩历史保存在执行目录 `.agent/history`；原有 Home 历史不自动迁移。
 
-生产上下文以 LangChain 标准 `messages` channel 为事实源。统一 `AssistantAgent` 使用一个分层 Prompt Builder：
-顶层主 Agent 的原生 dynamic prompt 根据公开 `context.persona` 选择稳定核心策略：`general` 使用
+浏览器持续语音 PCM 直接转发 Provider，原生 Realtime 会话不经过 Graph middleware 或占位消息。
+模型返回的 ASR 与回复转写用于语音 trace，不作为业务输入历史。浏览器委派只有一条
+`HumanMessage(name="voice_agent", content=request)`，request 最多 16,000 字符，必要背景由 Voice 自行写入。
+同一会话复用独立业务 thread，新委派以 rollback 替换冲突的旧 run；已完成业务历史保留在业务 checkpoint。
+业务任务关闭 Memory，显式开启工具审批。挂断或说话打断不回滚任务。
+Graph 驱动的 Voice 与分段音频兼容路径已删除。
+
+业务图上下文以 LangChain 标准 `messages` channel 为事实源，Studio/SDK 直接输入业务图。
+原生 Voice 使用 `prompts/voice.py`，委派 request 是普通 HumanMessage，不提升为系统指令。
+不再保留同步 Voice 子图委派、历史业务 artifact 回投或父 Voice state 投影。
+以下分层 Prompt Builder、Skills 和执行上下文规则适用于内部 `AssistantAgent`：其 dynamic prompt 的 `general` 使用
 `native_agent/prompts/studio.py`，`call_assistant` 使用 `native_agent/prompts/media.py`。Studio 默认 `general`，
 媒体握手默认 `call_assistant`，均可显式覆盖；入口事实不再决定提示词。Deep Agents Skills L0 目录随后注入，dynamic prompt 最后追加当前工作目录、
 项目指令、北京时间自然日、可信用户地区与本轮媒体事实。当前工作目录来自公开 `AssistantRunContext.cwd`；Studio
@@ -42,10 +51,10 @@ browser 用于网页交互，也可在搜索工具不可用时搜索；curl 经�
 
 公开 `AssistantRunContext` 包含 `persona`、`cwd`、`enable_memory`、`require_tool_approval`，以及 Studio 可配置的成对绝对值
 `context_compaction_trigger_tokens` / `context_compaction_keep_tokens`。压缩值都不设置时使用 Provider context window 的
-75%/15%，设置时必须满足 `0 < keep < trigger`，并由 main/worker 的 Deep Agents
+75%/15%，设置时必须满足 `0 < keep < trigger`，并由 业务/worker 的 Deep Agents
 `SummarizationMiddleware.awrap_model_call` 在当前 run 中读取而不修改进程共享 middleware。
-`call_assistant` 顶层模型调用在原生 model-call middleware 设置 `max_tokens=128`，约束用户可见的工具前导与最终回复；
-`general` 不覆盖模型输出上限，内部 worker 固定使用通用策略与默认上限。`enable_memory` 默认 true，控制本轮 recall 与 delayed extraction；
+业务 factory 保留 `call_assistant` 的 128-token 策略供独立调用，但生产委派固定 `general`，不限制业务输出为口语长度。
+Voice 使用独立 Realtime 会话，worker 固定使用通用策略与默认上限。`enable_memory` 默认 true，控制业务图本轮 recall 与 delayed extraction；语音委派显式关闭。
 `require_tool_approval` 在本机开发默认 false，可由单次 run 显式开启已配置 Tool 的 HITL interrupt；两者都不进入 prompt。`entry_profile` 与视觉 capability token 属于服务端签发的
 `AssistantRuntimeFacts`，只放在 namespaced run metadata。用户身份只来自 Agent Server
 `Runtime.server_info.user.identity`。公开 context 的 `persona` 仅选择回复策略，不是认证身份或执行模式，不接受任意 prompt；`cwd` 是用户可见的
@@ -72,9 +81,8 @@ working-directory backend 一起交给同一套 filesystem Tool，因此 Prompt 
 Todo、`async_tasks`、Tool Profile、Skill metadata、文件读取 transcript 和未知未来字段都不会
 跨越该边界。worker 内部 transcript 也不回灌父级。middleware 自有 channel 使用 `PrivateStateAttr`，包括
 `ToolProfileMiddleware.active_tool_profile_ids` 和递归收尾的 `remaining_steps`；它们不是 task 或公开 context 合同。
-`async_tasks` 同样使用 `PrivateStateAttr`，仅供当前 state/checkpoint 流程消费。`memory_context` 需经上述
-allowlist 传给 `general-purpose` worker，因此使用
-`OmitFromInput + OmitFromOutput`。两种原生 metadata 都保证这些字段不进入生产 Graph 公开 input/output。
+`async_tasks` 同样使用 `PrivateStateAttr`，仅供业务 state/checkpoint 消费。业务图的 `memory_context` 使用
+`OmitFromInput + OmitFromOutput`，仅通过 allowlist 传给 worker。
 若 worker 既没有非空 `AIMessage`，也没有非空 structured response，输出投影会生成一条有界的明确失败报告，
 不会用空 `AIMessage` 伪装成功；已有非空文本或 structured response 的投影语义不变。
 
@@ -92,14 +100,14 @@ dynamic prompt 只加入 `Asia/Shanghai` 的自然日和可信配置地区，不
 不会反向修改配置。Provider 联网来源只属于产生它的 `AIMessage.response_metadata`，不会变成下一轮上下文消息。
 Tool observation 使用标准 `ToolMessage(content, artifact)`；runtime-owned 字段不进入模型可见 schema。
 
-统一 Agent 与通用 worker 都只装配一套 Deep Agents summarization；该 model-call middleware 统计当前可见的 system message、
+业务 Agent 与通用 worker 各只装配一套 Deep Agents summarization；该 model-call middleware 统计当前可见的 system message、
 有效历史与 Tool schema，并通过 `_summarization_event` 保留原始 message log。被压缩的完整历史沿用 Deep Agents
 `/conversation_history/session_<uuid>.md` 约定，实际写入本轮执行目录 `<cwd>/.agent/history`，有设备绑定时由客户端完成，不使用 thread artifact。
 main/worker 在同一 model superstep 内每 Tool 最多并行 12 次，并在
 `recursion_limit` 只剩 8 个 superstep 时关闭 Tool 生成自然综合。所有显式配置 Tool 的审批由 Runtime/Tool authority
 统一定义，不通过上下文模式切换。
 
-summarization 的绝对 token trigger/keep 分别由同一 composition 投影的
+业务/worker summarization 的绝对 token trigger/keep 分别由同一 composition 投影的
 `ChatConfig.context_input_token_limit * context_compaction_trigger_ratio/target_ratio` 计算，不写死模型窗口。
 composition 启动时按主模型 ID 解析 API protocol、context window 与 tokenizer，并把同一个 `count_messages`、`context_window_tokens`、
 `compaction_trigger_ratio` 和 `compaction_target_ratio` 投影同时传给 main 与 worker。real DeepSeek V4 或 native LLM compactor 缺少本地

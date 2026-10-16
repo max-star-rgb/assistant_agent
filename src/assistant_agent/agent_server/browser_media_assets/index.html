@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Assistant · 语音对话</title>
+<style>
+:root{color-scheme:light;font-family:system-ui,-apple-system,sans-serif;color:#183329;background:#f3f5f1}*{box-sizing:border-box}body{margin:0}main{max-width:1080px;margin:auto;padding:40px 24px}header{display:flex;justify-content:space-between;gap:20px;align-items:center}h1{font-size:30px;letter-spacing:-1px;margin:8px 0}h2{font-size:17px;margin:0 0 16px}.eyebrow{color:#617a6c;font-size:12px;letter-spacing:2px}p{color:#64736a;line-height:1.7}.badge{background:#e2e9e0;border-radius:30px;padding:9px 16px;font-size:13px}.notice{padding:14px 18px;border-left:3px solid #bc9962;background:#faf5e9;font-size:14px;margin:24px 0}.grid{display:grid;grid-template-columns:1.4fr 1fr;gap:20px}.card{background:white;border:1px solid #dfe5dd;border-radius:18px;padding:22px}.preview{background:#16261f;border-radius:12px;aspect-ratio:4/3;display:grid;place-items:center;overflow:hidden;position:relative}.preview span{color:#9baea2;font-size:14px}.preview video{width:100%;height:100%;object-fit:contain;position:absolute}.controls{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}button{font:inherit;font-size:14px;border:1px solid #cbd6cb;border-radius:9px;padding:11px 16px;cursor:pointer;background:white;color:#264235}button.primary{background:#235c46;color:white;border-color:#235c46}button:disabled{opacity:.45;cursor:default}button:focus-visible{outline:3px solid #abcfb6;outline-offset:2px}label{display:block;font-size:14px;margin:18px 0}input{accent-color:#235c46}meter{width:100%;height:16px}dl{display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:14px}dt{color:#68796e}dd{margin:0;text-align:right;font-variant-numeric:tabular-nums}.logs{margin-top:20px}pre{height:160px;overflow:auto;white-space:pre-wrap;font:12px/1.8 ui-monospace,monospace;color:#557261;margin:0}small{color:#748579;line-height:1.6;display:block}#error{color:#a33030;min-height:24px}footer{font-size:12px;color:#7c8c80;margin-top:22px}@media(max-width:720px){.grid{grid-template-columns:1fr}header{align-items:flex-start}main{padding:24px 16px}h1{font-size:25px}}
+</style>
+<main>
+<header><div><div class="eyebrow">ASSISTANT / VOICE</div><h1>和助理说句话</h1><p>使用麦克风提问，听取 Agent 的语音回复</p></div><span id="status" class="badge" role="status">未连接</span></header>
+<div class="notice">无需摄像头。点击「开始持续对话」，音频将持续上传，模型自动判断讲话起止；直接开口即可打断回复。语音将发送至已配置的 Qwen 服务；原始录音不落盘。结束对话或离开页面即释放麦克风。</div>
+<div class="controls"><button id="connect" class="primary">连接 Agent Server</button><button id="disconnect" disabled>断开并释放设备</button></div>
+<p id="error" role="alert"></p>
+<div class="grid">
+<section class="card"><h2>麦克风</h2><p id="mic-state">点击开始持续对话，之后无需逐句发送</p><meter id="level" min="0" max="1" value="0" aria-label="麦克风音量"></meter><div class="controls"><button id="mic" class="primary" disabled>开始持续对话</button><button id="cancel" disabled>停止语音回复</button></div><p>建议先说：“你好，请介绍一下你自己。”</p><small>持续上传由模型进行 VAD，回复和工具执行期间也保持收音。停止语音回复只停止播报，后台业务任务继续执行；取消任务请明确告诉助理。</small><hr style="border:0;border-top:1px solid #edf0e9;margin:24px 0"><dl><dt>连接往返</dt><dd id="rtt">—</dd><dt>累计音频上传</dt><dd id="audio-count">0.0 秒</dd><dt>累计上传</dt><dd id="bytes">0 KB</dd></dl></section>
+<section class="card"><h2>对话字幕</h2><small>你说</small><p id="user-text" style="white-space:pre-wrap">等待语音输入…</p><hr style="border:0;border-top:1px solid #edf0e9;margin:24px 0"><small>Agent 回复</small><p id="reply-text" style="white-space:pre-wrap" role="status">回复文字会显示在这里。</p><p id="playback-state" role="status">等待回复音频</p><button id="speaker-test">测试扬声器 / 恢复播放</button><small>播放一声本地提示音，不录音、不调用模型。没有声音时请检查标签页静音和系统输出设备。</small></section>
+</div>
+<section class="card logs"><h2>连接记录</h2><pre id="log" role="log" aria-label="连接记录"></pre></section>
+<footer>独立浏览器语音入口 · 原生 Voice Agent · 采集联调协议仍单独保留</footer>
+</main>
+<script type="module" src="/media-lab/assets/client.js"></script>
+</html>

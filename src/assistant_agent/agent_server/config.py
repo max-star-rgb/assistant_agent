@@ -2,7 +2,8 @@
 
 import os
 
-ASSISTANT_GRAPH_ID = "assistant-native-v4"
+BUSINESS_GRAPH_ID = "assistant-business-v2"
+ASSISTANT_GRAPH_ID = BUSINESS_GRAPH_ID
 MEMORY_GRAPH_ID = "assistant-memory-v1"
 WORKER_GRAPH_ID = "assistant-worker-v2"
 
@@ -20,6 +21,7 @@ def agent_server_url() -> str:
 
 __all__ = [
     "ASSISTANT_GRAPH_ID",
+    "BUSINESS_GRAPH_ID",
     "MEMORY_GRAPH_ID",
     "WORKER_GRAPH_ID",
     "agent_server_url",

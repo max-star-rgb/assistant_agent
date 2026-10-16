@@ -15,28 +15,27 @@
 
 ## 统一生产图
 
-每个用户会话直接运行一个 `AssistantAgent`，没有外层 wrapper graph，也没有公开或内部的 fast、planning、coding 模式路由：
+Studio/SDK 直接运行 Deep Agents 编译的业务图；浏览器语音通过原生 Realtime 会话委派独立业务 run：
 
 ```text
-AssistantAgent
-  -> MemoryLifecycleMiddleware.before_agent (recall)
-  -> direct answer | write_todos | task(precompiled roles) | tools | filesystem | execute
-  -> MemoryLifecycleMiddleware.after_agent (delayed extraction refresh)
+Studio/SDK -> Agent Server -> AssistantAgent (assistant-business-v2)
+浏览器 -> RealtimeSession -> VoiceTasks -> Agent Server -> assistant-business-v2
 ```
+
+业务图接入 MemoryLifecycleMiddleware；语音委派设置 enable_memory=false，原生 Voice 单独接入记忆。
+`assistant-voice-v1` 及其 ChatModel、同步业务委派、分段音频兼容路径已删除。
 
 公开 Graph input 只有标准 `messages`。公开 `AssistantRunContext` 包含默认指向 `~/assistant_cqy/studio` 的 `cwd`、默认 true 的
 `enable_memory`、默认 `general` 的 `persona`、本机开发默认 false 的 `require_tool_approval`，以及 Studio 可选的成对绝对 token 压缩阈值；不设置压缩值时沿用服务端
-75% 触发、15% 保留。`enable_memory` 同时控制本轮 recall 与 delayed extraction，`require_tool_approval` 允许 Assistant 配置关闭其全部原生 Tool
+业务模型窗口的 75%/15%。`enable_memory` 同时控制本轮 recall 与 delayed extraction，`require_tool_approval` 允许 Assistant 配置关闭其全部原生 Tool
 审批。身份、入口和视觉 capability 只存在于 Agent Server
 签发的 namespaced metadata，不是 Assistant 配置。主图不绑定 saver；thread、run、checkpoint、interrupt、resume、
 cancel 和 Store 均由 Agent Server 注入。应用配置不再声明 checkpointer backend、checkpoint path 或外层 text-turn timeout；
 这些已失效环境变量会在启动时明确拒绝，避免形成看似生效的第二套 Runtime 配置。
 
-同一主图的顶层主 Agent 通过原生 dynamic prompt middleware 读取公开 `context.persona`：`general` 使用
-`native_agent/prompts/studio.py`，`call_assistant` 使用 `native_agent/prompts/media.py` 并额外设置
-`max_tokens=128`。Studio 默认通用，媒体握手默认通话助理，均支持显式选择；内部角色继续使用通用核心提示词和默认输出上限，不复制 Graph，也不让媒体 route
-自行拼接提示词。第三方 OpenAI-compatible Provider adapter 在最终 wire 中保留这些 Provider 支持的 `max_tokens` 字段；
-OpenAI 官方 Provider 仍沿用 SDK 的 `max_completion_tokens`。
+Voice 使用 `native_agent/prompts/voice.py` 的中文策略，决定直接回答、直接百炼搜索或业务委派。公开 context 沿用既有 schema；
+语音业务委派固定使用 `persona=general`，不继承通话提示词的 128-token 限制。业务图保留 cwd、设备、身份和审批 context。
+以下 Todo、filesystem、Skills、角色 task、Tool Profile 与业务模型规则属于内部 `AssistantAgent`，不直接暴露给 Voice。
 
 `AssistantAgent` 由 Deep Agents `create_deep_agent` 编译，直接拥有官方 Todo、filesystem、同步 `task`、
 summarization、HITL 与 `ToolNode`。简单请求可直接回答；复杂请求可由模型自主使用 `write_todos`。主 Agent 的
@@ -81,7 +80,7 @@ worker thread/run 必须来自进程内 async adapter 签发的 internal capabil
 
 `native_agent/` 是当前生产 Agent 核心，包含统一 Assistant/worker factory、Prompt 与公开 context、原生 state、
 Memory middleware、Provider composition、Tool/Profile middleware 和模型循环限制。这里的模块均由当前
-`assistant-native-v4` composition 或其 worker/Memory 图消费，不再与旧 Runtime 实现并列分类。
+`assistant-business-v2` composition 或 worker/Memory 图消费，不再与旧 Runtime 实现并列分类。
 
 `runtime/` 只保留以下跨领域契约：
 
@@ -89,7 +88,20 @@ Memory middleware、Provider composition、Tool/Profile middleware 和模型循�
 共享 `identity.py` 持有跨 Memory 与 durable task 使用的最小 `RequestIdentity` 和默认 agent ID。
 Git Tool 与 execute guard 由 Tool 领域的 `tools/git.py` 所有，不再与 filesystem backend 混放。
 
-主模型与维护脚本统一使用 `BaseChatModel`、标准 LangChain messages 和 `create_chat_model`。旧
+Voice 仅使用窄 `VoiceConfig`，读取 `QWEN_REALTIME_MODEL`、`QWEN_REALTIME_BASE_URL`、`QWEN_API_KEY`
+和 `VOICE_TIMEOUT_SECONDS`；不继承 BaseChatModel，不装配 Graph callback 或跨 run 连接池。
+
+浏览器持续语音使用 `realtime_session.RealtimeSession` 原生双向会话：Provider 自动 VAD/响应，
+音频和字幕直接发送浏览器，不转换为 ChatModel chunk、不为每句语音创建或回滚 Graph run。
+工具桥接负责提交、查询、明确取消独立 `assistant-business-v2` 任务；业务图复用标准 ToolNode/HITL。
+百炼搜索直接复用受信装配中无需审批的只读 MCP Tool，返回真实搜索结果，不经过业务模型。原生任务生命周期和身份仍由 Agent Server 所有。
+语音打断不取消业务任务；任务受理与最终完成分别反馈，完成通知等待语音空闲后发送。
+每次任务输入仅包含 `HumanMessage(name="voice_agent")` 委派文本，不复制语音历史、不提升为 system prompt。
+同一语音会话按需创建并复用独立业务 thread，以原生 rollback 替换冲突 run。Voice 的 ASR、工具与回复转写由
+官方 LangSmith RunTree 记录为独立语音轨迹；业务 trace 只包含自身 input 与 loop，详见观测 authority。
+连接不自动重建或重放媒体；115 分钟后要求重新连接。Studio 只使用业务模型，不保留 Realtime ChatModel 适配与连接池。
+
+业务模型与维护脚本统一使用 `BaseChatModel`、标准 LangChain messages 和 `create_chat_model`。旧
 `ChatAdapter`、`ChatRequest/ChatResult`、`LLMEvent` accumulator 与平行 assistant output models 已随最后消费者删除；
 DashScope HTTP/SSE transport 和 URL 归原生 `DashScopeNativeChatModel` 直接拥有。Qwen 主模型统一使用 DashScope API，不提供兼容协议分支。
 依据[官方联网搜索文档](https://platform.qianwenai.com/docs/developer-guides/tool-calling/web-search)，
@@ -119,14 +131,9 @@ Durable task 的 `DurableTaskRequest/TaskPlan/TaskStep` 归 `automation/durable_
 internal capability 当前是进程内随机 secret，适配本地单进程部署且不会写入 state、thread/run metadata、日志或
 配置文件。多进程 Agent Server 启用前必须改为共享 secret 或正式 service identity。
 
-主图以标准 messages 为事实源，只增加冻结的 `memory_context` 与按 task ID 合并的 `async_tasks`；
-这些项目自定义字段使用官方 schema metadata，仍可由 middleware、Tool 和 checkpoint 读写，但不进入公开
-input/output schema。生产终态返回标准 `messages` 及 Deep Agents/LangChain 原生可选字段
-`todos/structured_response`，不另造 `final_response` 或顶层 Memory 投影。
-`memory_context` 使用 `OmitFromInput + OmitFromOutput`，以便 Deep Agents 仍能按已有显式 allowlist 传给
-`general-purpose` worker；其余不得进入任何 subagent 的内部字段使用 `PrivateStateAttr`。
-Tool Profile 和递归步数属于 middleware 私有 state。当前生产图是 `assistant-native-v4`；retired native v1/v2/v3
-和 worker-v1 的 thread/checkpoint 只能检查或 drain/cancel，不能进入 v4 run/resume/replay/stream。
+业务图以标准 messages 为持久化事实源，冻结的 `memory_context` 使用 `OmitFromInput + OmitFromOutput`。
+worker 只接受 allowlist 投影的任务和冻结记忆，不复制父级 Todo、Tool Profile 或 async_tasks。
+当前主图是 `assistant-business-v2`；旧 native、voice-v1 和 worker-v1 thread/checkpoint 不能执行新 run。
 
 ## HITL 与执行边界
 
@@ -144,14 +151,14 @@ container 或 remote sandbox backend。
 
 ## 原生流与视觉边界
 
-生产消费者直接使用 Agent Server 的 messages/updates/custom/values 和原生生命周期协议。`AssistantAgent` 是顶层
-graph；主模型 token 不再依赖 subgraph stream，媒体入口仍可启用 subgraph stream 以接收并过滤内部 task worker，且只投影标准 assistant
-正文；同步 task 与 worker 的内部消息、Tool 参数和 ToolMessage 正文不进入媒体 wire。
+业务图消费者使用 Agent Server 的 messages/updates/custom/values 和原生生命周期协议。
+Studio 的最终回答来自业务图顶层 AIMessage。浏览器音频与字幕来自 Realtime 原生事件，业务完成后通过通知交回语音模型。
+旧媒体 chat 入口仍明确拒绝，独立视觉处理不受本次删除影响。
 
 `ToolProgressMiddleware` 通过原生 custom stream 发送 `tool_name`、`tool_call_id` 和
 `started|completed|failed`，不发送参数、结果或异常正文。模型循环不设置 model 或单 Tool 的 run 累计次数上限；
 同一 model superstep 内同名 Tool 最多并行 12 次，并在 `recursion_limit` 只剩 8 步时关闭 Tool 完成一次自然综合。
-main 与 worker 的单一 Deep Agents `SummarizationMiddleware.awrap_model_call` 从同一 composition 投影的 `ChatConfig` 取得窗口、
+业务图与 worker 的单一 Deep Agents `SummarizationMiddleware.awrap_model_call` 从同一 composition 投影的 `ChatConfig` 取得窗口、
 trigger/target ratio 和模型 token counter，并由 Studio 的成对绝对值只覆盖当前 run；
 real DeepSeek/native compactor 缺 tokenizer 时 composition 启动失败。
 main、general-purpose worker、coder 与 browser-operator（以及单独构建的预留 reviewer）统一通过原生 `AgentMiddleware` 模型调用边界处理
@@ -165,10 +172,8 @@ latest-wins、关键帧窗口和并行 VLM 始终由视觉 authority 负责，�
 根据服务端签发的 run-scoped capability 和冻结投影暴露，dynamic prompt 再根据最终可见 Tool 注入规则。
 主 LLM 不接收 video ID、sequence 或其他投影内部字段。
 
-Studio/普通 Agent Server 的静态图片和视频继续作为标准 HumanMessage content block 进入 Graph state；
-`ConditionalToolExposureMiddleware` 据此暴露 `uploaded_media_inspect`，并只在主模型调用视图中移除上传媒体块。
-ToolNode 仍从未改写的 state 取得附件，VLM 结果作为标准 ToolMessage 返回后由同一个主模型完成最终回复；不增加
-Graph node、旁路 Runtime 或 VLM 直出终态。
+Studio 直接运行业务图，浏览器持续语音独立使用 Realtime 会话。
+业务图既有 uploaded_media_inspect 与独立视觉流水线保留，重新开放上传和通话入口需单独适配并验收。
 
 ## 验证
 

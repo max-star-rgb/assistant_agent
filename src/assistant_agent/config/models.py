@@ -356,6 +356,26 @@ class ToolConfig:
 
 
 @dataclass(frozen=True)
+class VoiceConfig:
+    model: str = "qwen3.5-omni-flash-realtime"
+    api_key: str | None = field(default=None, repr=False)
+    base_url: str | None = None
+    timeout_seconds: float = 60.0
+
+    def __post_init__(self) -> None:
+        from urllib.parse import urlsplit
+
+        if self.model != "qwen3.5-omni-flash-realtime":
+            raise ValueError("QWEN_REALTIME_MODEL must be qwen3.5-omni-flash-realtime")
+        if not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
+            raise ValueError("VOICE_TIMEOUT_SECONDS must be positive and finite")
+        if self.base_url:
+            url = urlsplit(self.base_url)
+            if url.scheme != "wss" or not url.hostname or url.username or url.password or url.fragment or url.query:
+                raise ValueError("QWEN_REALTIME_BASE_URL must be a wss URL without credentials, query or fragment")
+
+
+@dataclass(frozen=True)
 class AppConfig:
     provider_mode: ProviderMode = "mock"
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
@@ -364,8 +384,11 @@ class AppConfig:
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     media: MediaConfig = field(default_factory=MediaConfig)
     tools: ToolConfig = field(default_factory=ToolConfig)
+    voice: VoiceConfig = field(default_factory=VoiceConfig)
 
     def __post_init__(self) -> None:
+        if self.provider_mode == "real" and not (self.voice.api_key and self.voice.base_url):
+            raise ValueError("real Voice Agent requires QWEN_API_KEY and QWEN_REALTIME_BASE_URL")
         missing = self.chat.resolved_provider().missing_required_env()
         if self.provider_mode == "real" and (
             self.chat.chat_provider == "mock" or missing

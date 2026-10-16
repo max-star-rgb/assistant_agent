@@ -1,0 +1,9 @@
+{
+  "name": "assistant-agent-qwen-audio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": "^22.22.2 || ^24.15.0 || >=26.0.0", "npm": ">=10" },
+  "scripts": { "start": "node src/gateway.mjs", "task": "node src/task.mjs", "test": "node --test test/*.test.mjs" },
+  "dependencies": { "qwen-audio-agent": "2.0.1" }
+}

@@ -15,6 +15,17 @@
 
 ## 统一 Tool surface
 
+Studio/SDK 直接运行 `assistant-business-v2`，使用业务 Agent 的完整受信 Tool surface。
+以下 filesystem、Profile、MCP 与具体 Tool 规则适用于业务 Agent 及其 worker，不直接暴露给 Voice。
+浏览器原生 Realtime 暴露业务任务提交、直接百炼搜索、get_business_task 与 cancel_business_task；仅业务委派创建独立业务 run。
+直接搜索复用受信 inventory 内无需审批的只读搜索 BaseTool 及其原生 schema，返回搜索内容，异步等待不阻塞 WS 收音。
+这些 run 复用该语音会话专属的业务 thread，以原生 rollback 替换冲突的旧任务。
+接入桥只接受静态 schema，仅委派 request 作为 HumanMessage，经 Agent Server 的身份边界进入业务图，强制开启原生 HITL。
+不复制 Voice 的 ASR 历史、工具轨迹或 prompt；业务自行运行其原生 Agent loop。
+语音打断不触发任务取消；仅明确取消工具请求使用 run cancel(action=interrupt)。
+启用 Memory backend 时原生 Voice 增加 `recall_memory(request)` 只读工具，使用受信身份和同一后端，
+不允许模型指定用户或写入记忆；写入由已有独立 Memory Graph 处理。
+
 生产边界是 LangChain 标准 `BaseTool -> ToolNode`。受信 composition 静态装配业务 Tool、官方 MCP Tool 和
 Deep Agents middleware；不使用项目自建 Registry/Executor、动态 Python discovery 或第二套 Tool schema。
 `AssistantAgent` 可在同一个模型循环中直接回答，或使用 `write_todos`、同步只读 `task`、业务 Tool、本机 filesystem
@@ -205,12 +216,17 @@ capability；只有 auth 转换出的 worker permission 配合严格 metadata �
 `mcp_bailian_bailian_web_search`，注册后默认暴露，不归入需要激活的 Profile；主 Agent 与通用 worker 共用该 inventory。
 按照[官方外部调用文档](https://help.aliyun.com/zh/model-studio/mcp-external-calls)，使用
 `https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp` 的 `streamable_http` 传输。
-新电脑默认模板 `config/mcp_servers.example.json` 仅包含 Chromium 浏览器。若配置百炼搜索 MCP，
-须在私有配置中显式将 `bailian_web_search` 加入 allowlist 和适用的安全重试名单，
+新电脑默认模板 `config/mcp_servers.example.json` 包含百炼搜索和 Chromium 浏览器；百炼搜索默认加入
+allowlist 和安全重试名单，并作为业务 Agent 的常驻核心工具暴露，不需要激活 Profile。
+已有私有配置不会被安装脚本覆盖，升级时应核对正在使用的配置文件也注册了 `bailian` server。
 `bearer_token_env=QWEN_API_KEY` 在建立连接时读取环境变量并生成 Authorization 头，不复制密钥到配置。
 HTTP MCP 仅支持 HTTPS、call scope；缺失凭据时明确报错。百炼端需已开通该 MCP 服务。
-本机配置使用 `local/mcp_servers.json` 并显式启用 `MULTIMODAL_AGENT_MCP_ENABLED=1`。
+配置文件由 `MULTIMODAL_AGENT_MCP_CONFIG_PATH` 指定，未指定时使用 `local/mcp_servers.json`；
+必须显式启用 `MULTIMODAL_AGENT_MCP_ENABLED=1`。默认模板不绕过该开关或凭据检查。
 提示词优先使用该搜索工具，不把模型原生搜索当作可调用 Tool，也不增加搜索 wrapper。
+Voice 可直接查询公开资料与实时信息，复杂分析、用户数据和操作委派给业务 Agent；两者复用同一个搜索 Tool。
+Qwen Realtime 保持 `enable_search` 关闭，因为百炼[客户端事件文档](https://help.aliyun.com/zh/model-studio/client-events)
+规定原生搜索与 `tools` 不可同时启用，Voice 需要保留业务委派工具。
 Qwen 主模型只使用 `DashScopeNativeChatModel`，不保留 OpenAI-compatible 分支或协议选择开关；旧 `QWEN_CHAT_API_PROTOCOL` 配置会明确拒绝。
 项目的 `QWEN_CHAT_ENABLE_SEARCH` 默认 false，本机同样关闭；原生搜索仅保留显式配置能力，不作 MCP 失败回退。
 仅在 real Qwen 配置完整时发送真实请求，mock 仍保持离线。启用原生搜索时设置 `enable_search=true` 和
@@ -228,5 +244,5 @@ python scripts/setup_local.py check
 python -m compileall -q src/assistant_agent/tools src/assistant_agent/mcp
 ```
 
-新电脑环境安装见 [WSL 安装说明](wsl-installation.md)。图片生成已移除旧电脑硬编码 fixture 支路，
+新电脑环境准备见 [部署说明](agent-server-architecture.md#新电脑安装与验收)。图片生成已移除旧电脑硬编码 fixture 支路，
 统一由配置对应的真实或 mock adapter 处理，不依赖被删除的 `local/generated` 文件。

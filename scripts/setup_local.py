@@ -82,7 +82,7 @@ def check_mock() -> None:
                 asyncio.run(compose())
         finally:
             os.chdir(old_cwd)
-    print("PASS: mock 配置、MCP 模板和三张原生图装配；未启动 Server，未调用真实 Provider")
+    print("PASS: mock 配置、MCP 模板、业务/worker/Memory 三张注册图装配；未启动 Server，未调用真实 Provider")
 
 
 def check_gpu(model_dir: Path) -> None:

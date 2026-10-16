@@ -27,15 +27,22 @@ authority = "docs/agent-server-architecture.md"
 read_when = [
   "Agent Server、thread、run、cancel、reconnect、checkpoint、Store 或部署生命周期",
   "custom route、认证、公开 SDK 或媒体入口到 Graph 的映射",
+  "本地安装、依赖约束、模型准备或数据迁移",
 ]
 source_globs = [
   "langgraph.json",
   "src/assistant_agent/agent_server/**",
+  "integrations/qwen_audio_agent/**",
   "src/assistant_agent/client.py",
   "src/assistant_agent/runtime/thread_resources.py",
   "src/assistant_agent/proactive_delivery.py",
   "scripts/run_server.py",
   "scripts/agent_cli.py",
+  "requirements.txt",
+  "scripts/setup_local.py",
+  "config/**",
+  ".gitignore",
+  ".gitattributes",
 ]
 thin_references = ["README.md", "scripts/README.md"]
 verification = [
@@ -79,6 +86,7 @@ read_when = [
 ]
 source_globs = [
   "src/assistant_agent/native_agent/assistant_agent.py",
+  "src/assistant_agent/providers/realtime_session.py",
   "src/assistant_agent/native_agent/memory_middleware.py",
   "src/assistant_agent/native_agent/state.py",
   "src/assistant_agent/native_agent/search_profiles.py",
@@ -245,6 +253,7 @@ read_when = [
   "trace lifecycle、原生 Graph evaluation target 或真实评测边界",
 ]
 source_globs = [
+  "src/assistant_agent/providers/realtime_trace.py",
   "src/assistant_agent/evaluation/**",
   "src/assistant_agent/agent_server/services.py",
   "src/assistant_agent/native_agent/assistant_agent.py",
@@ -290,15 +299,5 @@ thin_references = ["AGENTS.md"]
 verification = [
   "python scripts/check_documentation_authority.py --repo-root .",
 ]
-exclusive_literals = []
-exclusive_allowlist = []
-
-[[domains]]
-id = "local-installation"
-authority = "docs/wsl-installation.md"
-read_when = ["新电脑安装、WSL、依赖约束、模型准备或本地数据迁移"]
-source_globs = ["requirements.txt", "scripts/setup_local.py", "config/**", ".gitignore", ".gitattributes"]
-thin_references = ["README.md", "scripts/README.md", "docs/agent-server-architecture.md"]
-verification = ["python scripts/setup_local.py check"]
 exclusive_literals = []
 exclusive_allowlist = []

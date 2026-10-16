@@ -33,11 +33,12 @@
 
 硬边界：
 
-- 入口层只负责接入和归一化请求；生产主运行时是由 `create_deep_agent` 直接编译的统一
-  `native_agent.AssistantAgent`，Memory lifecycle 通过官方 Agent middleware 接入，不按请求切换执行模式，
-  也不保留外层 Assistant wrapper graph。
+- 入口层只负责接入和归一化请求；公开业务图是 `assistant-business-v2`，由原生 `create_deep_agent` 编译，
+  Studio/SDK 直接运行该图。Voice 只使用原生 Realtime 会话，业务委派提交独立业务 run；不再保留 Graph 驱动的 Voice 路径。
+  业务图使用 Memory lifecycle；语音委派关闭业务 Memory，语音记忆通过原生会话工具与后台 Memory Graph 接入。
 - LangGraph Agent Server 负责 assistant/thread/run/checkpoint/cancel/interrupt/resume/stream 生命周期；媒体
-  custom route 只做协议归一化与连接关联，不承担主大脑职责。
+  custom route 负责协议归一化与连接关联。浏览器原生 Realtime 会话可直接消费 Provider 事件并桥接工具任务，
+  不强制映射为逐轮 Voice Graph；业务执行仍必须提交原生 Agent Server run，不重建业务 Runtime。
 - 生产主链的本地显式工具调用使用标准 `BaseTool -> ToolNode` 与 `ToolRuntime` 注入；可安全重试的 read Tool 使用官方
   retry middleware；全部副作用 Tool 使用统一原生 HITL，同步与异步 worker 都只读；副作用幂等归具体 Tool 或业务 API。旧
   Registry/Executor 兼容链已经删除；durable task 等外围能力使用显式 allowlist 与窄业务 adapter。配置为 `qwen` provider 的百炼兼容
@@ -71,9 +72,9 @@
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python
 ```
 
-PyCharm 的本机服务通过 `scripts/run_server.py` 调用官方 `langgraph dev`，固定回环端口 `8089`，默认自动重载。
+PyCharm 的本机服务通过 `scripts/run_server.py` 调用官方 `langgraph dev`，默认自动重载。本机多分支部署中，`cqy` 独立 worktree 使用端口 `8089`，当前 `V2` 目录使用 `8088`；默认监听所有 IPv4 网卡，启动时显式传入 `--port`。
 使用官方 in-memory Runtime，状态保存在 `.langgraph_api/`；不装配 Docker/PostgreSQL 或自定义 Runtime 补丁。
-启动脚本只维护单实例锁、严格端口检查、env 来源和仓库外日志。Codex 默认作为客户端连接现有 `8089`，不另起并行 Server。
+启动脚本只维护工作目录级单实例锁、严格端口检查、env 来源和仓库外日志。Codex 默认作为客户端连接目标分支已有实例，不为同一工作目录另起 Server；多分支部署操作见 `scripts/README.md`。
 
 测试与 eval 的职责边界见第 8 节；具体命令和运行约束以 `tests/README.md`、
 `docs/observability-harness.md`、`scripts/README.md` 或对应 `docs/*.md` 为准。历史 runbook

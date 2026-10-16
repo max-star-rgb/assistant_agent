@@ -17,7 +17,6 @@
 | 主题 | 当前 authority |
 | --- | --- |
 | Agent Server、thread/run/checkpoint、部署和公开入口 | [agent-server-architecture.md](agent-server-architecture.md) |
-| 新电脑 WSL 一键安装、配置与数据迁移 | [wsl-installation.md](wsl-installation.md) |
 | Media-Agent WebSocket、音视频 wire contract | [media-agent-service-websocket.md](media-agent-service-websocket.md) |
 | 统一 Assistant、Memory middleware、通用 worker、stream 与原生 state | [runtime-event-stream-architecture.md](runtime-event-stream-architecture.md) |
 | Tool、MCP、Tool Profile、Provider-native 能力和副作用治理 | [tool-calling-architecture.md](tool-calling-architecture.md) |

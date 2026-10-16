@@ -25,6 +25,8 @@ from langchain_core.messages import AIMessage
 from assistant_agent.agent_server.auth import _internal_media_headers
 from assistant_agent.agent_server.client import SdkAgentServerClient
 from assistant_agent.agent_server.devices import router as local_device_router
+from assistant_agent.agent_server.browser_media import router as browser_media_router
+from assistant_agent.agent_server.voice_bridge import router as voice_bridge_router
 from assistant_agent.agent_server.graph import (
     close_native_assistant_graph,
     current_native_execution_owner,
@@ -211,6 +213,8 @@ app = FastAPI(
 )
 app.include_router(rendering_3d_callback_router)
 app.include_router(local_device_router)
+app.include_router(browser_media_router)
+app.include_router(voice_bridge_router)
 
 
 @app.get("/internal/memory-media/{token}", include_in_schema=False)
@@ -620,6 +624,8 @@ async def _handle_frame(
     video_archive=None,
     received_ns: int | None = None,
 ) -> None:
+    if frame.message == "chat":
+        raise MediaProtocolError("文本对话请使用 Studio；旧媒体 chat 入口尚未迁移")
     if frame.message in {"assistantControl", "assistantControlStart"}:
         user_id = _control_user_id(frame.message, frame.body)
         authenticated_user = websocket.scope.get("user")

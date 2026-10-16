@@ -59,3 +59,6 @@ google-workspace-mcp = [
 pythonpath = ["src"]
 # 临时 TDD 仅显式选择 feature 目录，不默认收集。
 norecursedirs = ["tests/tdd", ".*", "build", "dist"]
+
+[tool.setuptools.package-data]
+"assistant_agent.agent_server" = ["browser_media_assets/*.html", "browser_media_assets/*.js"]

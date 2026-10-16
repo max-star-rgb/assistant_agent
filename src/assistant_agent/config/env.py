@@ -27,6 +27,7 @@ from .models import (
     ShoppingConfig,
     ToolConfig,
     VisionConfig,
+    VoiceConfig,
     chat_model_runtime_profile,
 )
 
@@ -49,6 +50,12 @@ def load_app_config(env: Mapping[str, str] | None = None) -> AppConfig:
         memory=_load_memory_config(source),
         media=_load_media_config(source),
         tools=_load_tool_config(source, mode),
+        voice=VoiceConfig(
+            model=source.get("QWEN_REALTIME_MODEL", "qwen3.5-omni-flash-realtime"),
+            api_key=source.get("QWEN_API_KEY"),
+            base_url=source.get("QWEN_REALTIME_BASE_URL"),
+            timeout_seconds=_float(source.get("VOICE_TIMEOUT_SECONDS"), 60.0),
+        ),
     )
 
 
