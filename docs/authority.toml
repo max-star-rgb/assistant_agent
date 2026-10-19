@@ -60,6 +60,7 @@ read_when = [
 ]
 source_globs = [
   "src/assistant_agent/agent_server/media_app.py",
+  "src/assistant_agent/agent_server/media_audio.py",
   "src/assistant_agent/agent_server/media_protocol.py",
   "src/assistant_agent/agent_server/media_session.py",
   "src/assistant_agent/agent_server/rendering_3d_callback.py",
@@ -185,6 +186,7 @@ read_when = [
 source_globs = [
   "src/assistant_agent/memory/mem0/**",
   "src/assistant_agent/memory/remote_service.py",
+  "docker/mem0/**",
 ]
 thin_references = ["README.md", "docs/memory-service-architecture.md"]
 verification = [
@@ -254,6 +256,9 @@ read_when = [
 ]
 source_globs = [
   "src/assistant_agent/providers/realtime_trace.py",
+  "integrations/qwen_audio_agent/src/frontend-trace.mjs",
+  "integrations/qwen_audio_agent/src/frontend-execution-events.mjs",
+  "integrations/qwen_audio_agent/src/frontend-observation-patch.mjs",
   "src/assistant_agent/evaluation/**",
   "src/assistant_agent/agent_server/services.py",
   "src/assistant_agent/native_agent/assistant_agent.py",

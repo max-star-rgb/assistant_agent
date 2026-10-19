@@ -23,8 +23,10 @@ Studio/SDK 直接运行 `assistant-business-v2`，使用业务 Agent 的完整�
 接入桥只接受静态 schema，仅委派 request 作为 HumanMessage，经 Agent Server 的身份边界进入业务图，强制开启原生 HITL。
 不复制 Voice 的 ASR 历史、工具轨迹或 prompt；业务自行运行其原生 Agent loop。
 语音打断不触发任务取消；仅明确取消工具请求使用 run cancel(action=interrupt)。
-启用 Memory backend 时原生 Voice 增加 `recall_memory(request)` 只读工具，使用受信身份和同一后端，
-不允许模型指定用户或写入记忆；写入由已有独立 Memory Graph 处理。
+启用 Memory backend 时原生 Voice 增加 `recall_memory`。read 使用受信身份和同一后端；
+Mem0 的 append/replace 通过业务任务交给标准 `memory_edit` BaseTool，走统一原生 HITL，
+不在 Voice/Node 入口执行写入。`memory_read` 提供可编辑记录的 ID 和完整原文；编辑工具不向 worker 暴露。
+自动提取仍由独立 Memory Graph 处理，并通过 Mem0 用户修订与显式编辑协调；模型不能指定用户身份。
 
 生产边界是 LangChain 标准 `BaseTool -> ToolNode`。受信 composition 静态装配业务 Tool、官方 MCP Tool 和
 Deep Agents middleware；不使用项目自建 Registry/Executor、动态 Python discovery 或第二套 Tool schema。
@@ -225,6 +227,7 @@ HTTP MCP 仅支持 HTTPS、call scope；缺失凭据时明确报错。百炼端�
 必须显式启用 `MULTIMODAL_AGENT_MCP_ENABLED=1`。默认模板不绕过该开关或凭据检查。
 提示词优先使用该搜索工具，不把模型原生搜索当作可调用 Tool，也不增加搜索 wrapper。
 Voice 可直接查询公开资料与实时信息，复杂分析、用户数据和操作委派给业务 Agent；两者复用同一个搜索 Tool。
+Qwen Audio Gateway 通过 Agent Server 的 `/qwen-audio/capabilities` 和 `/qwen-audio/search` 复用同一个 `voice_search_tool`，保留 MCP 原始描述和参数 schema；该只读端点只调用受信装配且无需审批的百炼搜索，不接受任意工具名。前台不再提供旧 `web_search`、`fetch_url`，也不装配它们的 Provider 或回退路径。
 Qwen Realtime 保持 `enable_search` 关闭，因为百炼[客户端事件文档](https://help.aliyun.com/zh/model-studio/client-events)
 规定原生搜索与 `tools` 不可同时启用，Voice 需要保留业务委派工具。
 Qwen 主模型只使用 `DashScopeNativeChatModel`，不保留 OpenAI-compatible 分支或协议选择开关；旧 `QWEN_CHAT_API_PROTOCOL` 配置会明确拒绝。

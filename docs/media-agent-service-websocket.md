@@ -1,13 +1,13 @@
 # Media-Agent WebSocket 接口权威文档
 
-Last updated: 2026-09-04
+Last updated: 2026-10-16
 
 ## Authority contract
 
 | 字段 | 内容 |
 | --- | --- |
 | 定位 | Media-Agent WebSocket envelope、消息字段与当前兼容面的协议权威 |
-| Owns | `/agent-service/v1` 的 assistantControl、chat、audio/video ACK、interrupt、chatResponseAck 与 3D callback wire |
+| Owns | `/agent-service/v1` 的 assistantControl、chat、audioStreamV1 双向音频、audio/video ACK、interrupt、chatResponseAck 与 3D callback wire |
 | Does not own | Agent Server thread/run/checkpoint、Assistant 推理、Tool/Memory 策略和媒体服务内部实现 |
 | 源码与 schema 入口 | `src/assistant_agent/agent_server/media_*.py`、`src/assistant_agent/agent_server/rendering_3d_callback.py`、`src/assistant_agent/media/generated_artifacts.py`、`media/image_to_3d*.py` |
 | 验证入口 | `docs/authority.toml` 中 `media-agent-protocol.verification` |
@@ -16,12 +16,12 @@ Last updated: 2026-09-04
 ## 1. 连接与 envelope
 
 **当前支持范围：** Studio/SDK 直接运行 `assistant-business-v2`。`/agent-service/v1` 的旧 `chat` 仍明确拒绝；
-持续语音只通过 `/media-lab/ws` 原生 Realtime 会话运行。握手、音视频接收/ACK、独立视觉流水线和 callback 保留，
-ACK 不代表已送入语音模型。下文旧 chat 流协议仅作为待迁移合同，不表示已重新开放。
+声明 `clientCapabilities.audioStreamV1=true` 的媒体连接通过本机 Qwen Gateway 的公开 GCP 7 接入实时模型，
+双向音频合同见第 5.1 节。未声明的连接仍只做音频 ACK；ACK 不代表模型已理解。
+独立视觉流水线和 callback 保留。下文旧 Graph chat 流协议仅作为待迁移合同，不表示已重新开放。
 
 - WebSocket：`ws://<agent_host>:<port>/agent-service/v1`
-- 默认本地端口：`8000`；PyCharm 管理的本地 Studio 与媒体联调固定使用
-  `scripts/run_server.py --port 8089`。Codex 默认连接该实例，不另起并行 Server。
+- 本机 V2 端口 `8088`，cqy 独立 worktree 端口 `8089`；本文新增音频合同属于 V2。
 - 外层是 JSON object，`body` 必须是序列化后的 JSON string。
 
 ```json
@@ -61,7 +61,7 @@ ACK 不代表已送入语音模型。下文旧 chat 流协议仅作为待迁移�
 非法 context 在创建 thread 前返回协议错误。握手配置保存在当前连接，后续每个 chat run 复用；重连需重新传入，
 省略时重新采用默认值。无握手的 legacy lazy bind 路径采用媒体默认配置。角色不改变认证或媒体能力。
 
-服务端发送成功 control ACK 后，立即在同一连接发送一次非 durable 问候：
+未启用 `audioStreamV1` 时，服务端发送成功 control ACK 后，立即在同一连接发送一次非 durable 问候：
 
 ```json
 {
@@ -230,7 +230,7 @@ enqueue 时已有有效在线 presence 才排队，在线写成功后记为 sent
 
 ## 5. audio、video 与 3D callback
 
-`audio` 继续做字段校验后的传输层 ACK，不把原始音频写入 Graph State。`video` 先在 WebSocket 热路径完成
+未启用 `audioStreamV1` 的 `audio` 继续只做传输层 ACK，不把原始音频写入 Graph State。`video` 先在 WebSocket 热路径完成
 字段校验，再进入连接级 `one in-flight + one latest pending` 后台解码边界；新 pending 会替换尚未开始的旧
 pending，旧消息仍收到正常 `videoResponse`，但不再解码、提交 VLM 或进入视觉窗口。后台任务在 media edge
 的工作线程中把独立 Annex-B H.264 frame 解码为有界 JPEG window，因此消费速度下降时不会形成历史 FIFO
@@ -285,6 +285,76 @@ POST /calling-agent-service/v1/{job_or_session_id}/{chat_index}/3d-gen-back
 投影为带 `TD_MODEL/VIDEO/IMAGE` detail 的 `chatResponse`。当前 hub 是进程内在线交付，不是 Agent Server
 run/checkpoint，也不宣称跨进程、离线或 exactly-once 投递；没有 job 且没有在线 subscriber 时 callback
 返回失败，让上游决定是否重试。
+
+### 5.1 V2 双向音频 `audioStreamV1`
+
+此扩展复用同一个 `/agent-service/v1` WebSocket 和 JSON-string `body`。媒体发送：
+
+```json
+{"message":"assistantControl","sessionId":"call-1","body":"{\"number\":\"user-1\",\"callType\":\"AUDIO\",\"clientCapabilities\":{\"audioStreamV1\":true}}"}
+```
+
+Agent 先连接 `ws://127.0.0.1:3101/api/realtime`，收到真实 `voice.ready` 后返回 control ACK 与
+`audioReady`。不发送旧固定 TTS 问候。`audioReady.body`：
+
+```json
+{"version":1,"input":{"codec":"pcm_s16le","sampleRate":16000,"channels":1,"encoding":"hex"},"output":{"codec":"pcm_s16le","sampleRate":24000,"channels":1,"encoding":"base64"}}
+```
+
+需要 V2 `MULTIMODAL_AGENT_PROVIDER_MODE=real` 及已显式启用真实能力的 Gateway。当前只支持本机 personal
+Gateway 的 `local-developer` 认证身份，不把媒体 `number` 伪装成 Gateway 多用户身份；业务和 Memory 使用
+Gateway 已配置的个人身份。Gateway 如配置了其他业务身份，不应启用此扩展。浏览器与媒体遵循 Gateway 的语音
+占用规则，不强制接管浏览器；占用或连接失败返回错误，释放语音后重新建立媒体连接。
+
+**上行：** 保留 `audio` 消息和 `contents[].audioContent` 十六进制字段。必须声明
+`audioConfig={"codec":"pcm_s16le","sampleRate":16000,"channels":1}`，无 WAV/RTP 头、16-bit little-endian。
+`contents` 1～10 项，总量每消息不超过 32000 bytes（1 秒），推荐 20～100ms 一包，按采集节奏持续发送静音与讲话。
+`userNumber` 必须与现代 control 握手一致。错误标注的 `opus` 明确拒绝，不自动猜格式或转码。
+合法音频发送到 Gateway 后 ACK 为 `audioResponse` / `{"code":0,"message":"audio forwarded"}`，
+不表示 ASR 成功。单独的 `chat` ASR 只返回 `chatAck`，不再次驱动模型，避免同一句话回答两遍。
+
+**下行：** 下表 `body` 均为解开 JSON string 后的对象；外层 `sessionId` 沿用 control。
+
+| message | body 字段 | 语义 |
+| --- | --- | --- |
+| `audioStart` | `taskId`, `streamId`, `codec:"pcm_s16le"`, `sampleRate:24000`, `channels:1`, `encoding:"base64"` | 首个分片前声明格式 |
+| `audioChunk` | `taskId`, `streamId`, `sequence`, `audioContent` | Base64 原始 PCM；sequence 从 0 连续递增；每片最多 4800 bytes / 100ms |
+| `audioEnd` | `taskId`, `streamId`, `lastSequence` | 发送结束，不代表 APP 播放完成 |
+| `audioInterrupt` | `taskId`, `streamId`, `reason` | 立即停止对应流、清空播放队列并丢弃迟到包；reason 为 `NEW_SPEECH`、`MEDIA_INTERRUPT` 或 `GATEWAY_ERROR` |
+| `audioError` | `code`, `message` | 连接不可继续时显式失败，媒体关闭连接并按自身重连策略重新握手；不补播旧流 |
+
+`taskId="voice:<Gateway responseId>"`，`streamId="audio:<Gateway responseId>"`。这是语音回复关联 ID，
+不是业务委派 task/run ID。每条回复独立编号，媒体应按当前 WebSocket + streamId 隔离队列。
+`audioEnd` 后仍可能收到打断（发送结束但尚未播放完）。Agent 保留最多 16 个等待播放回执的流，
+超限明确失败；慢接收端写入超过 5 秒也结束音频链路，不静默丢音频。
+
+示例（两个零值采样，仅用于说明格式）：
+
+```json
+{"message":"audioChunk","sessionId":"call-1","body":"{\"taskId\":\"voice:r1\",\"streamId\":\"audio:r1\",\"sequence\":0,\"audioContent\":\"AAAAAA==\"}"}
+```
+
+**媒体必须回传 `audioStatus`：** body 携带原样的 `taskId`、`streamId` 和 `status`：
+
+- `accepted`：已建立播放队列，可选。
+- `playing`：真正开始播放，映射为 Gateway `playback.started`，随后 Gateway 可发布字幕。
+- `completed`：收到 `audioEnd` 且该流播放队列已排空，映射 `playback.ended`；不能在收包时提前回传。
+- `interrupted`：该流已停止并清空，映射 `playback.cancelled`。
+- `failed`：不能播放，映射 `playback.cancelled`；可附媒体自己的 `code`、`message`，Agent 不记录原始错误正文。
+
+终态回执可重复，未知 streamId 或 taskId 不匹配返回协议错误。媒体收到 interrupt 后不得再报告 completed。
+`interrupt` 上行沿用原名，既取消实时回复也发出 `audioInterrupt`，随后仍返回原 interrupt ACK。
+断线时媒体必须自行清空全部音频队列；Agent 关闭对应 Gateway 会话，不保存或重放音频。
+
+**文本与重复 TTS：** 模型最终字幕仍使用 `chatResponse`，`message.chatIndex=taskId`，同时附带顶层
+`taskId`、`streamId`、`audioSource:"model"`、`displayOnly:true`、`display_only:true`、`final:true`。
+媒体只显示该字幕，绝不能再触发自己的 TTS。文本正文为完整最终字幕，`sequence=1`；本扩展不转发字幕增量。
+已有非模型音频文本消息规则保持不变。
+
+媒体服务负责 PCM 缓冲、必要的重采样和编码为 WebRTC 协商的 Opus/PCMU/PCMA，再发送到 APP；
+本接口不传 RTP 头、SDP、SSRC，也不声称 socket 发送成功等于 APP 已播放。
+24kHz 输出与当前锁定 Gateway DashScope adapter 一致，参考
+[百炼服务端事件文档](https://www.alibabacloud.com/help/en/model-studio/server-events)。
 
 ## 6. 错误与认证
 

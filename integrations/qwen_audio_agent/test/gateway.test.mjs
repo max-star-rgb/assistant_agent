@@ -11,6 +11,7 @@ import { serverFixture, work } from './fixture.mjs';
 import { AgentServerClient } from '../src/agent-server-client.mjs';
 import { LangGraphBackendAdapter } from '../src/backend-adapter.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
+import { FrontendTrace } from '../src/frontend-trace.mjs';
 
 test('default mock blocks Gateway before loading upstream or opening a connection', async () => {
   const config = loadConfig({ DASHSCOPE_API_KEY: 'present-but-not-authorized' });
@@ -53,10 +54,15 @@ test('installation namespace persists and separates independent task counters', 
 
 test('actual Gateway startup, occupied port and shutdown with a local HTTP backend', async t => {
   const stateDirectory = await mkdtemp(join(tmpdir(), 'qwen-integration-test-'));
-  const server = await serverFixture({ memory: true });
+  const server = await serverFixture({ memory: true, search: true });
   const config = { ...loadConfig({}), mode: 'real', apiKey: '', port: 0, stateDirectory };
   const backend = new LangGraphBackendAdapter({ client: new AgentServerClient({ url: server.url, identity: 'local-developer' }), ownerId: work.ownerId });
-  const app = await startGateway(config, { backend });
+  const traceRecords = new Map();
+  const traceObserver = new FrontendTrace({ client: {
+    async createRun(run) { traceRecords.set(run.id, structuredClone(run)); },
+    async updateRun(id, patch) { Object.assign(traceRecords.get(id), structuredClone(patch)); },
+  } });
+  const app = await startGateway(config, { backend, traceObserver });
   t.after(async () => { await app.close(); await server.close(); await rm(stateDirectory, { recursive: true, force: true }); });
   const port = app.server.address().port;
   assert.ok((await readFile(`${process.env.QWEN_AUDIO_AGENT_FRONTEND_PROMPT_DIR}/PROMPT.md`, 'utf8')).trim());
@@ -67,14 +73,54 @@ test('actual Gateway startup, occupied port and shutdown with a local HTTP backe
   await once(ws, 'close');
   const response = await fetch(`http://127.0.0.1:${port}/`);
   assert.equal(response.status, 200);
+  // Real upstream Runtime, fake model transport: no Provider/network inference.
+  let provider;
+  const session = app.services.frontendRuntime.createSession({
+    ownerId: work.ownerId, sessionId: 'trace-fixture', send() {}, actionCapabilities: {},
+    voiceAccess: { claim: () => ({ granted: true }), release: () => false, changed() {}, isActive: () => true },
+    realtimeFrontendFactory(options) {
+      assert.deepEqual(options.agentContext.recentMessages, [], 'provider history must not be rebuilt locally');
+      provider = options;
+      return { ready: true, provider: { key: 'dashscope', inputSampleRate: 16000 }, capabilities: {},
+        connect: async () => {}, updateAgentContext() {}, setInputMuted() {}, cancel() {}, close() {},
+        clearPendingImage() {}, sendFunctionOutput: async () => {},
+      };
+    },
+  });
+  session.start();
+  session.handleClientEvent({ type: 'connect', inputEnabled: false, outputEnabled: true, textOnly: true });
+  for (let n = 0; n < 100 && !provider; n++) await delay(1);
+  assert.ok(provider, 'upstream actually connected to the fixture model');
+  const { frontendTools } = await import('../node_modules/qwen-audio-agent/server/src/frontend/frontend-tools.mjs');
+  const toolNames = frontendTools(provider.agentContext).map(tool => tool.function.name);
+  assert.ok(toolNames.includes('mcp_bailian_bailian_web_search'), 'frontend must expose the shared Bailian MCP tool');
+  assert.ok(!toolNames.includes('web_search'));
+  assert.ok(!toolNames.includes('fetch_url'));
+  assert.deepEqual(app.services.frontendRetrieval.capabilities(), []);
+  provider.onEvent({ type: 'input_audio_buffer.speech_started', item_id: 'i1' });
+  provider.onEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'i1' });
+  provider.onEvent({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'i1', transcript: '你好' });
+  provider.onEvent({ type: 'response.created', response: { id: 'r1' } });
+  provider.onEvent({ type: 'response.function_call_arguments.done', response_id: 'r1', call_id: 'c1', name: 'get_current_time', arguments: '{}' });
+  provider.onEvent({ type: 'response.done', response: { id: 'r1', status: 'completed', output: [{ type: 'function_call' }] } });
+  for (let n = 0; n < 100 && ![...traceRecords.values()].some(r => r.run_type === 'tool' && r.end_time); n++) await delay(1);
+  provider.onEvent({ type: 'response.created', response: { id: 'r2' } });
+  provider.onEvent({ type: 'response.done', response: { id: 'r2', status: 'completed', output: [{ type: 'message', content: [{ type: 'text', text: '你好！' }] }] } });
+  await traceObserver.queue;
+  const root = [...traceRecords.values()].find(r => r.name === 'FrontendAgent');
+  assert.equal(root.inputs.messages[0].content, '你好');
+  assert.equal(root.outputs.status, 'completed');
+  assert.equal([...traceRecords.values()].filter(r => r.run_type === 'llm').length, 2);
+  assert.equal([...traceRecords.values()].filter(r => r.run_type === 'tool').length, 1);
+  session.close();
   const task = app.services.runtimeCommands.createTask({ event_id: 'integration-submit', message: { parts: [{ type: 'text', text: '测试委派' }] } }, { ownerId: work.ownerId });
   for (let n = 0; n < 100 && app.services.runtimeCommands.getTask(task.id, { ownerId: work.ownerId }).status !== 'completed'; n++) await delay(10);
   const completed = app.services.runtimeCommands.getTask(task.id, { ownerId: work.ownerId });
   assert.equal(completed.status, 'completed');
   assert.equal(server.requests.filter(r => r.method === 'POST' && r.path.endsWith('/runs')).length, 1);
   app.services.conversationSync.record({ ownerId: work.ownerId, sessionId: 'integration-session', id: 'asr1', source: 'voice-user', role: 'user', content: '我是小明' });
-  for (let n = 0; n < 100 && !server.requests.some(r => r.path.endsWith('/transcripts')); n++) await delay(10);
-  assert.equal(server.requests.find(r => r.path.endsWith('/transcripts')).body.items[0].text, '我是小明');
+  for (let n = 0; n < 100 && !server.requests.some(r => r.path.endsWith('/transcripts') && r.body.session_id === 'integration-session'); n++) await delay(10);
+  assert.equal(server.requests.find(r => r.path.endsWith('/transcripts') && r.body.session_id === 'integration-session').body.items[0].text, '我是小明');
   // Upstream maps cancellation rejection to FAILED. It must not claim cancellation.
   let entered, release;
   const polled = new Promise(resolve => { entered = resolve; });

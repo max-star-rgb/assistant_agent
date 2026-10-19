@@ -51,8 +51,21 @@ thread 上运行其他 owner 的 custom Assistant。auth 不把 custom Assistant
 
 ### Qwen Audio Agent 实验入口
 
+V2 媒体连接可通过 `clientCapabilities.audioStreamV1=true` 启用双向音频。
+`media_audio.py` 作为连接级薄客户端使用 Gateway 3101 的公开 GCP 7 WebSocket，
+输入明确为 16kHz PCM16，输出为 24kHz PCM16；不使用旧 Python RealtimeSession，也不新建业务 Runtime。
+模型、业务委派和 Memory 继续由既有 Gateway 集成管理；媒体播放回执映射回 Gateway，断线即关闭语音客户端。
+本机 personal Gateway 仅对应 `local-developer`；不支持把任意媒体号码映射成独立 Gateway 用户。
+不抢占现有浏览器语音会话，旧未协商客户端保持 ACK 行为；详细消息合同见媒体 authority 第 5.1 节。
+
 `integrations/qwen_audio_agent/` 锁定 Qwen Audio Agent 2.0.1，通过公开 Gateway 与 BackendPort 扩展接入。
-Node 只负责任务协议适配，独立监听回环端口，复用当前 V2 的 `8088` Server；默认 mock 拒绝启动真实语音。
+Gateway 承载上游事件驱动的前台 Realtime Agent（不使用 LangGraph），独立监听回环端口；本项目 Node
+集成层负责装配、任务/Memory 协议适配和观测接入，业务委派复用 V2 的 `8088` Agent Server。
+Gateway 与 Agent Server 分别承载前台和业务 Agent，生命周期能力不等价；默认 mock 拒绝启动真实语音。
+前台通用执行事件与 LangSmith 边界见 [`observability-harness.md`](observability-harness.md)。
+Realtime 对话历史由服务端会话维护；Gateway 不从本地对话记录回灌 `recentMessages`，重连建立新上下文。
+本地 UI 历史和 Memory 桥记录不作为模型会话历史。
+前台通过 `/qwen-audio/capabilities` 获取已装配的 `mcp_bailian_bailian_web_search` 原始 schema，并通过认证的 `/qwen-audio/search` 薄桥调用同一个 `voice_search_tool`；不依赖 Memory 开关。工具未配置时不暴露，调用返回明确不可用错误。旧 `web_search`、`fetch_url` 从本项目前台工具面移除，搜索 Provider 和 URL fetcher 均不实例化，不保留旧搜索回退。mock 模式仍拒绝启动真实 Gateway。
 真实入口另需 `QWEN_AUDIO_ENABLE_REAL=1` 与完整 key。配置、运行和限制见该目录 README；目前未切换默认入口。
 
 新入口按安装 namespace、受信身份与 Gateway task ID 确定业务 thread；不同任务隔离，采用原生 `reject` 并发策略。
@@ -63,7 +76,7 @@ Adapter 的 `submit` 等待最终结果，前台由上游 Runtime 管理即时�
 发布版前台授权具有任务/会话自动授权语义，因此本接入拒绝前台审批响应，保留 Studio 原生逐次 HITL；
 Studio 恢复后的新 run 被同一个 Gateway task 跟踪。此限制阻塞完整 WebUI 审批验收，不得据离线测试宣布 M1/M2 完成。
 已识别的单个 text-input interrupt 可通过原生 resume 回应；未知 interrupt 报告需 Studio 处理。
-`/qwen-audio/*` 为认证本机 Memory 薄桥，语义由 Memory authority 所有，不提供通用业务执行入口。
+`/qwen-audio/*` 为认证本机 Voice 薄桥：Memory 语义由 Memory authority 所有，百炼搜索语义由 Tool authority 所有，不提供通用业务执行入口。
 
 ### 独立浏览器语音入口
 

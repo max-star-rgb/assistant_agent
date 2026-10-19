@@ -38,6 +38,7 @@ class MemoryExtractionInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     messages: list[AnyMessage]
+    memory_snapshot_reference: str | None = None
 
 
 class AssistantAgentState(DeepAgentState):
@@ -46,6 +47,7 @@ class AssistantAgentState(DeepAgentState):
     memory_context: NotRequired[
         Annotated[tuple[str, ...], OmitFromInput, OmitFromOutput]
     ]
+    memory_extraction_blocked: NotRequired[Annotated[bool, OmitFromInput, OmitFromOutput]]
     async_tasks: NotRequired[AsyncTasks]
 
 
@@ -64,7 +66,7 @@ class AssistantWorkerState(AgentState):
 class MemoryExtractionState(MessagesState):
     """Message-only state for the independent Memory extraction graph."""
 
-    pass
+    memory_snapshot_reference: NotRequired[str | None]
 
 
 __all__ = [

@@ -2,6 +2,50 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { SessionBridge } from '../src/session-bridge.mjs';
 
+test('explicit edits use business task admission and snapshots notify only on changes', async () => {
+  const calls = [];
+  const bridge = new SessionBridge({ ownerId: 'owner', client: { request: async (path, options) => {
+    calls.push({ path, options });
+    if (path.endsWith('capabilities')) return { memory: true, memory_editable: true,
+      memory_tool: { type: 'function', function: { name: 'recall_memory' } } };
+    return { status: 'ok', documents: [{ memory_id: '1', content: 'background', editable: true }] };
+  } } });
+  await bridge.initialize();
+  let notifications = 0;
+  bridge.subscribeMemory(() => notifications++);
+  await bridge.refreshSnapshot();
+  await bridge.refreshSnapshot();
+  assert.equal(notifications, 1);
+  assert.deepEqual(bridge.memorySnapshot('other'), []);
+  assert.match(bridge.memorySnapshot('owner')[0].content, /background/);
+  const submitted = [];
+  bridge.submitEdit = (args, context) => { submitted.push({ args, context }); return { status: 'accepted' }; };
+  const context = { ownerId: 'owner', sessionId: 's', turnId: 't' };
+  assert.equal((await bridge.execute('recall_memory', { action: 'append', content: 'new' }, context)).status, 'accepted');
+  assert.equal(submitted.length, 1);
+  await assert.rejects(bridge.execute('recall_memory', { action: 'replace', memory_id: '1', old_text: 'old' }, context));
+  assert.ok(calls.every(c => c.path !== '/memory-edits'));
+});
+
+test('Bailian schema and arguments pass through the authenticated bridge without memory', async () => {
+  const definition = { type: 'function', function: { name: 'mcp_bailian_bailian_web_search',
+    description: '远端原始描述', parameters: { type: 'object', properties: { query: { type: 'string' } } } } };
+  const calls = [];
+  const bridge = new SessionBridge({ ownerId: 'owner', client: { request: async (path, options) => {
+    calls.push({ path, options });
+    return path.endsWith('capabilities') ? { memory: false, search_tool: definition } : { result: '资料' };
+  } } });
+  await bridge.initialize();
+  assert.deepEqual(bridge.tools().map(tool => tool.definition), [definition]);
+  const context = { ownerId: 'owner', sessionId: 's' };
+  assert.deepEqual(await bridge.execute(definition.function.name, { query: '天气' }, context), { result: '资料' });
+  assert.deepEqual(calls[1], { path: '/qwen-audio/search', options: { method: 'POST',
+    body: { session_id: 's', arguments: { query: '天气' } } } });
+  await assert.rejects(bridge.execute(definition.function.name, {}, { ...context, ownerId: 'other' }), /owner/);
+  await assert.rejects(bridge.execute('web_search', {}, context));
+  await assert.rejects(bridge.execute('fetch_url', {}, context));
+});
+
 test('completed voice-user records submit deduplicated snapshots, not assistant/tool results', async () => {
   const calls = [];
   const client = { request: async (path, options) => {

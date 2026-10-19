@@ -34,7 +34,13 @@ export function loadConfig(env = process.env) {
   if (!isAbsolute(stateDirectory)) throw new Error('QWEN_AUDIO_STATE_DIR must be absolute');
   const identity = env.ASSISTANT_AGENT_USER || 'local-developer';
   if (!/^[a-zA-Z0-9_.@-]{1,128}$/.test(identity)) throw new Error('Invalid Agent Server identity');
-  return Object.freeze({ mode, model, realtimeBaseUrl, port, stateDirectory, identity,
+  const tracing = Object.freeze({
+    enabled: mode === 'real' && env.LANGSMITH_TRACING === 'true',
+    apiKey: env.LANGSMITH_API_KEY?.trim(), endpoint: env.LANGSMITH_ENDPOINT?.trim(),
+    project: env.LANGSMITH_PROJECT || 'default', model,
+    hideInputs: env.LANGSMITH_HIDE_INPUTS === 'true', hideOutputs: env.LANGSMITH_HIDE_OUTPUTS === 'true',
+  });
+  return Object.freeze({ mode, model, realtimeBaseUrl, port, stateDirectory, identity, tracing,
     ownerId: 'user_personal', url: loopbackUrl(env.ASSISTANT_AGENT_URL || 'http://127.0.0.1:8088'),
     apiKey: mode === 'real' ? env.DASHSCOPE_API_KEY.trim() : '' });
 }

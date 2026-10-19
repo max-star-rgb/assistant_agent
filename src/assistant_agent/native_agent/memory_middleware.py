@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
@@ -60,7 +61,16 @@ class MemoryLifecycleMiddleware(
     ) -> dict[str, Any]:
         if self._backend.backend_id == "disabled" or not runtime.context.enable_memory:
             return {"memory_context": ()}
-        return await self._recall.ainvoke((state, runtime))
+        extraction_blocked = False
+        if callable(getattr(self._backend, 'register_history', None)):
+            try:
+                await self._backend.register_history(identity=authenticated_user_identity(runtime),
+                    thread_id=_execution_value(runtime, 'thread_id'), messages=list(state.get('messages', ())))
+            except Exception:
+                # Long legacy histories may exceed the extraction budget; do not prevent answering.
+                logging.getLogger(__name__).warning('memory_history_registration_failed')
+                extraction_blocked = True
+        return {**await self._recall.ainvoke((state, runtime)), 'memory_extraction_blocked': extraction_blocked}
 
     async def aafter_agent(
         self,
@@ -88,21 +98,25 @@ class MemoryLifecycleMiddleware(
         payload: tuple[AssistantAgentState, Runtime[AssistantRunContext]],
     ) -> dict[str, Any]:
         state, runtime = payload
-        if self._backend.backend_id == "disabled" or not runtime.context.enable_memory:
+        if self._backend.backend_id == "disabled" or not runtime.context.enable_memory or state.get('memory_extraction_blocked'):
             return {}
         return await submit_memory_extraction(
             list(state.get("messages", ())),
             identity=authenticated_user_identity(runtime),
             source_thread_id=_execution_value(runtime, "thread_id"),
             delay_seconds=self._delay_seconds,
+            backend=self._backend,
         )
 
 
 async def submit_memory_extraction(messages, *, identity: str, source_thread_id: str | None,
-                                   delay_seconds: int = DEFAULT_EXTRACTION_DELAY_SECONDS):
+                                   delay_seconds: int = DEFAULT_EXTRACTION_DELAY_SECONDS, backend=None):
     """Share the official delayed reflector between Graph and native voice ingress."""
     if not source_thread_id:
         raise ValueError("memory extraction orchestration requires thread_id")
+    reference = None
+    if backend is not None and callable(getattr(backend, 'prepare_extraction', None)):
+        reference = await backend.prepare_extraction(identity=identity, thread_id=source_thread_id, messages=messages)
     memory_thread_id = str(
         uuid5(NAMESPACE_URL, f"assistant-agent:memory:{source_thread_id}")
     )
@@ -131,7 +145,8 @@ async def submit_memory_extraction(messages, *, identity: str, source_thread_id:
             ):
                 # Wait for Server acceptance, not the delayed extraction itself.
                 reflection.submit(
-                    {"messages": without_uploaded_media_messages(list(messages))},
+                    {"messages": [] if reference else without_uploaded_media_messages(list(messages)),
+                     **({'memory_snapshot_reference': reference} if reference else {})},
                     config={"configurable": {"thread_id": memory_thread_id}},
                     thread_id=memory_thread_id,
                     after_seconds=delay_seconds,

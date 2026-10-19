@@ -141,6 +141,8 @@ class AgentServerExecutionOwner:
             mcp_server_configs=mcp_server_configs,
             mcp_session_pool=mcp_session_pool,
         )
+        from assistant_agent.tools.memory_edit import memory_tools
+        tools = [*tools, *memory_tools(memory_backend)]
         general_purpose_names = general_purpose_tool_names(
             tools,
             mcp_server_configs,

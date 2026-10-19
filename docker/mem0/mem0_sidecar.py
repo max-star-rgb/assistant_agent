@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import Body, FastAPI, HTTPException, Query
 from qdrant_client import QdrantClient
+from memory_edits import MemoryEdits
 
 os.environ.setdefault("MEM0_TELEMETRY", "False")
 
@@ -24,6 +25,46 @@ from mem0_env import (
 app = FastAPI(title="assistant_agent Mem0 sidecar", version="2.0.11")
 _MEMORY: Memory | None = None
 _MEMORY_LOCK = Lock()
+_EDITS: MemoryEdits | None = None
+
+
+def edits():
+    global _EDITS
+    with _MEMORY_LOCK:
+        if _EDITS is None:
+            _EDITS = MemoryEdits(os.path.join(os.path.dirname(os.getenv('HISTORY_DB_PATH', '/data/history/history.db')), 'edits.sqlite'))
+    return _EDITS
+
+
+@app.post('/memory-edits')
+def explicit_edit(payload: dict[str, Any] = Body(...)):
+    try:
+        return edits().apply(memory(), payload['user_id'], payload['agent_id'], payload['operation_id'], payload['edit'])
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(422, 'invalid_memory_edit') from exc
+
+
+@app.post('/memory-edits/status')
+def edit_status(payload: dict[str, Any] = Body(...)):
+    return edits().receipt(payload['user_id'], payload['agent_id'], payload['operation_id'])
+
+
+@app.post('/memory-snapshots')
+def prepare_snapshot(payload: dict[str, Any] = Body(...)):
+    try:
+        ref = edits().prepare(payload['user_id'], payload['agent_id'], payload['source'], payload['messages'],
+                              register_only=payload.get('register_only') is True)
+        return {'reference': ref}
+    except (KeyError, ValueError, TypeError) as exc:
+        raise HTTPException(422, 'invalid_memory_snapshot') from exc
+
+
+@app.post('/memory-snapshots/extract')
+def extract_snapshot(payload: dict[str, Any] = Body(...)):
+    try:
+        return edits().extract(memory(), payload['user_id'], payload['agent_id'], payload['reference'])
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(422, 'invalid_memory_snapshot') from exc
 
 
 def memory() -> Memory:
@@ -93,15 +134,23 @@ def ready() -> dict[str, Any]:
 
 @app.post("/memories")
 def add_memories(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    result = memory().add(
-        payload.get("messages") or payload.get("memory") or "",
-        user_id=payload.get("user_id"),
-        agent_id=payload.get("agent_id"),
-        run_id=payload.get("run_id"),
-        metadata=payload.get("metadata") or {},
-        infer=bool(payload.get("infer", True)),
-    )
-    return _result(result)
+    # Legacy delayed runs must not restore facts after an explicit edit.
+    coordinator = edits()
+    with coordinator.lock:
+        if payload.get('metadata', {}).get('source') == 'runtime_turn_ingestion':
+            with coordinator.connect() as db:
+                owner = coordinator.owner(payload.get('user_id'), payload.get('agent_id'))
+                if coordinator.revision(db, owner):
+                    raise HTTPException(409, 'snapshot_reference_required')
+        result = memory().add(
+            payload.get("messages") or payload.get("memory") or "",
+            user_id=payload.get("user_id"),
+            agent_id=payload.get("agent_id"),
+            run_id=payload.get("run_id"),
+            metadata=payload.get("metadata") or {},
+            infer=bool(payload.get("infer", True)),
+        )
+        return _result(result)
 
 
 @app.post("/search")

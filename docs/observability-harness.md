@@ -30,8 +30,36 @@ Tool artifact 和 message content 是否记录遵循 LangSmith/部署脱敏配�
 
 ### Voice 首 token 观测
 
-Qwen Audio Agent 实验入口目前只提供集成层脱敏事件日志及原生业务 Graph tracing；它未接入下述旧浏览器 Voice
-首 token RunTree，也未完成真实延迟验收。业务 thread metadata 的 `qwen_task_id`、`qwen_namespace` 与 run metadata
+Qwen Audio Agent 前台使用上游事件驱动 Realtime Runtime，不使用 LangGraph；Gateway 是其服务宿主。
+集成包的 `frontend-observation-patch.mjs` 为锁定的 2.0.1 暴露通用 `onExecution` observer，Runtime
+只投影轮次、转写、模型响应、工具执行和关闭事实，不依赖 LangSmith。补丁启动前检查版本与唯一源码锚点，
+可重复应用；依赖升级或锚点变化必须复核。`frontend-trace.mjs` 通过官方 JS SDK 创建
+`FrontendAgent` root、`QwenRealtime` LLM 与 tool children，按上游 turn/response/call ID 关联。
+模型响应结束不等于含工具交互结束；使用上游 `awaitsToolFollowUp` 判断是否等待续答。
+迟到 ASR 只回补关联轮次 root Inputs；广播通知使用独立 root。LLM Inputs 的 `messages` 包含有效 system
+instructions 与当轮可观测输入；`session_configuration/response_configuration` 保存实际发送的配置及响应覆盖项，
+`extra.invocation_params` 保存 tools schema、tool_choice 等调用参数。配置只在 WS 发送路径接受消息后采集，
+显式响应按原生 request 关联快照，自动响应取可观测 session 配置；这不声称 Provider 已确认每次配置更新。
+配置投影有 1 MiB 上限，超限省略并标记；`LANGSMITH_HIDE_INPUTS` 同时隐藏配置及 invocation parameters。
+历史上下文由 Realtime 服务侧维护，LangSmith 不重建或展示完整服务端历史；标记
+`conversation_history=provider_managed`。当前 Gateway 禁止把本地 UI/Memory 记录经 `recentMessages` 回灌，
+因此重连建立新的模型上下文，界面旧记录不代表新连接的模型记忆。Outputs 为最终转写或实际增量。
+LLM start_time 是首个可观测响应事件，标记
+`ttft_origin=unavailable`，不据此上报 TTFT；usage 只记录实际返回的计数。
+打断、失败、连接丢失和会话关闭终结未完成 span，不取消业务任务。前台 root 的 `qwen_namespace`
+与 tool 的 `qwen_task_id` 关联业务 thread，不伪造前后台父子关系；前台 `thread_id/voice_session_id`
+表示 Gateway 会话，不是 Graph thread。
+
+Gateway 显式读取 `LANGSMITH_TRACING/API_KEY/ENDPOINT/PROJECT/HIDE_INPUTS/HIDE_OUTPUTS`，配置仅传给适配层；
+mock 始终不创建远端 client。适配层异步排队、有界保留内容，过滤媒体和敏感字段，隐藏开关在入队前生效。
+上报失败只记录固定错误码；关闭时限时排空，超时停止剩余上报。追踪为 best-effort，不阻塞语音。
+已通过离线上游 Runtime 和本机 HTTP SDK fixture 验证。2026-10-16 已启用本机 Gateway 观测并重启，
+通过现有 WebUI 文字输入触发真实 Qwen Realtime 响应，在 LangSmith 确认完成的
+`FrontendAgent → QwenRealtime` 父子 trace、无错误与实际 token 用量。此验证未覆盖麦克风采集、
+真实工具调用、语音打断或延迟验收，不等同于完整语音验收。
+同日补充真实配置验收：LLM trace 的 Inputs 包含 system/user、session 配置，invocation parameters
+含 5 个实际工具 schema，`conversation_history=provider_managed`；响应无覆盖时记录空覆盖对象。
+本接入不复用下述旧浏览器 Voice 首 token RunTree。业务 thread metadata 的 `qwen_task_id`、`qwen_namespace` 与 run metadata
 的 `qwen_submission_id` 用于任务关联和不确定提交对账，不进入模型输入。Node logger 丢弃任意上游错误正文与媒体；
 上游会话/任务持久状态位于仓库外专属目录，不作为可提交日志。不能将此入口的离线 Gateway 测试报告为真实语音评测。
 

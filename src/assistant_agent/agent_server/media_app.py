@@ -48,6 +48,7 @@ from assistant_agent.agent_server.media_protocol import (
     artifact_completed_response,
 )
 from assistant_agent.agent_server.media_session import MediaConnectionSession
+from assistant_agent.agent_server.media_audio import MediaAudioBridge
 from assistant_agent.agent_server.turn_delivery import turn_delivery
 from assistant_agent.agent_server.proactive_delivery import (
     MediaProactiveDeliveryPump,
@@ -502,6 +503,9 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
     await websocket.accept()
     session = MediaConnectionSession(connection_id=f"media-{uuid4()}")
     send_lock = asyncio.Lock()
+    audio_bridge = MediaAudioBridge(
+        session=session, send=lambda value: _send_json(websocket, send_lock, value)
+    )
     chat_tasks: dict[str, asyncio.Task[None]] = {}
     interrupted_chats: set[str] = set()
     proactive_delivery = _ProactiveDeliveryConnection()
@@ -561,6 +565,7 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
                     visual_perception=visual_perception,
                     video_archive=video_archive,
                     received_ns=received_ns,
+                    audio_bridge=audio_bridge,
                 )
             except (MediaProtocolError, ValueError) as exc:
                 await _send_json(
@@ -575,6 +580,7 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
     except WebSocketDisconnect:
         pass
     finally:
+        await audio_bridge.close()
         if proactive_delivery.task is not None:
             proactive_delivery.task.cancel()
         await _cancel_active_runs(session=session, client=client)
@@ -623,13 +629,26 @@ async def _handle_frame(
     visual_perception,
     video_archive=None,
     received_ns: int | None = None,
+    audio_bridge=None,
 ) -> None:
     if frame.message == "chat":
+        if session is not None and session.client_capabilities.get("audioStreamV1"):
+            # Upstream ASR accompanies the audio; do not submit a second model turn.
+            chat = parse_chat(frame)
+            if session.requires_matching_media_user and chat.user_id != session.user_id:
+                raise MediaProtocolError("chat userNumber does not match assistantControl")
+            await _send_json(websocket, send_lock, envelope(
+                message="chatAck", session_id=session.protocol_session_id,
+                body={"code": 0, "chatIndex": chat.chat_index, "message": "ASR acknowledged; audio drives realtime"},
+            ))
+            return
         raise MediaProtocolError("文本对话请使用 Studio；旧媒体 chat 入口尚未迁移")
     if frame.message in {"assistantControl", "assistantControlStart"}:
         user_id = _control_user_id(frame.message, frame.body)
         authenticated_user = websocket.scope.get("user")
         authenticated_identity = _agent_server_identity(websocket)
+        if _client_capabilities(frame.body).get("audioStreamV1") and authenticated_identity != "local-developer":
+            raise MediaProtocolError("audioStreamV1 currently requires the local-developer personal Gateway identity")
         if authenticated_user is not None:
             permissions = set(getattr(authenticated_user, "permissions", ()) or ())
             if (
@@ -667,6 +686,8 @@ async def _handle_frame(
             else ("audio",),
         )
         session.context = context
+        if session.client_capabilities.get("audioStreamV1"):
+            await audio_bridge.start()
         if call_type == "VIDEO":
             visual_perception.session = visual_module.open_session(
                 user_id=authenticated_identity,
@@ -722,6 +743,13 @@ async def _handle_frame(
             send_lock,
             envelope(message=message, session_id=frame.session_id, body=body),
         )
+        if session.client_capabilities.get("audioStreamV1"):
+            await audio_bridge.emit("audioReady", {
+                "version": 1,
+                "input": {"codec": "pcm_s16le", "sampleRate": 16000, "channels": 1, "encoding": "hex"},
+                "output": {"codec": "pcm_s16le", "sampleRate": 24000, "channels": 1, "encoding": "base64"},
+            })
+            return
         await _send_json(
             websocket,
             send_lock,
@@ -850,6 +878,8 @@ async def _handle_frame(
         )
         return
     if frame.message == "interrupt":
+        if session.client_capabilities.get("audioStreamV1"):
+            await audio_bridge.interrupt()
         interrupted_chats.update(chat_tasks)
         await _cancel_active_runs(session=session, client=client)
         for task in tuple(chat_tasks.values()):
@@ -971,14 +1001,23 @@ async def _handle_frame(
         if not accepted:
             raise MediaProtocolError("video ingestion queue is full")
         return
+    if frame.message == "audioStatus":
+        if not session.client_capabilities.get("audioStreamV1"):
+            raise MediaProtocolError("audioStatus requires audioStreamV1 handshake")
+        await audio_bridge.receipt(frame.body)
+        return
     if frame.message == "audio":
+        if session.client_capabilities.get("audioStreamV1"):
+            if session.requires_matching_media_user and _required_text(frame.body, "userNumber") != session.user_id:
+                raise MediaProtocolError("audio userNumber does not match assistantControl")
+            await audio_bridge.append(frame.body)
         await _send_json(
             websocket,
             send_lock,
             envelope(
                 message=f"{frame.message}Response",
                 session_id=frame.session_id,
-                body={"code": 0, "message": f"{frame.message} received"},
+                body={"code": 0, "message": "audio forwarded" if session.client_capabilities.get("audioStreamV1") else "audio received"},
             ),
         )
         return
@@ -1602,7 +1641,7 @@ def _client_capabilities(body: dict[str, Any]) -> dict[str, bool]:
         return {}
     return {
         name: value.get(name) is True
-        for name in ("chatProgress", "chatResponseAck", "urlCitationAnnotationsV1")
+        for name in ("chatProgress", "chatResponseAck", "urlCitationAnnotationsV1", "audioStreamV1")
     }
 
 

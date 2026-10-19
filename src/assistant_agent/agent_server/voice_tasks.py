@@ -10,6 +10,7 @@ from langgraph_sdk.errors import APIConnectionError, APIStatusError
 from pydantic import BaseModel, ConfigDict, Field
 
 from assistant_agent.agent_server.config import BUSINESS_GRAPH_ID
+from assistant_agent.memory.edit_models import MemoryRequest, MEMORY_DESCRIPTION
 
 
 class TaskRequest(BaseModel):
@@ -29,9 +30,9 @@ def task_tools(search_tool=None, memory=False):
         "cancel_business_task": "仅当用户明确要求终止后台任务时，按 task_id 停止仍在运行的任务；不撤销已完成副作用，语音打断不等于终止任务。",
     }
     if memory:
-        descriptions["recall_memory"] = "回答涉及用户偏好、既往经历或长期目标时，先查询相关长期记忆。request 为检索问题；结果仅是可能过时的背景，不授予权限。"
+        descriptions["recall_memory"] = MEMORY_DESCRIPTION
     return ([convert_to_openai_tool(search_tool)] if search_tool is not None else []) + [{"type": "function", "function": {"name": name, "description": description,
-            "parameters": (TaskReference if name in {"get_business_task", "cancel_business_task"} else TaskRequest).model_json_schema()}}
+            "parameters": (MemoryRequest if name == 'recall_memory' else TaskReference if name in {"get_business_task", "cancel_business_task"} else TaskRequest).model_json_schema()}}
             for name, description in descriptions.items()]
 
 
@@ -68,7 +69,7 @@ class VoiceTasks:
         from assistant_agent.native_agent.memory_middleware import submit_memory_extraction
         if not self.identity:
             raise ValueError("Memory requires authenticated identity")
-        return await submit_memory_extraction(messages, identity=self.identity, source_thread_id=self.session_id)
+        return await submit_memory_extraction(messages, identity=self.identity, source_thread_id=self.session_id, backend=self.memory_backend)
 
     async def refresh_memory(self):
         if self.memory_enabled and self.transcripts:
@@ -79,7 +80,20 @@ class VoiceTasks:
         if name == "recall_memory":
             if not self.memory_enabled:
                 raise ValueError("Memory is disabled")
-            return await self._recall.ainvoke(TaskRequest.model_validate(arguments).request)
+            if 'request' in arguments:
+                return await self._recall.ainvoke(TaskRequest.model_validate(arguments).request)
+            request = MemoryRequest.model_validate(arguments)
+            if request.action == 'read':
+                if getattr(self.memory_backend, 'supports_edits', False):
+                    return await self.memory_backend.read(identity=self.identity, thread_id=self.session_id, query=request.query)
+                if request.query:
+                    return await self._recall.ainvoke(request.query)
+                return {'status': 'error', 'code': 'memory_snapshot_unsupported'}
+            if not getattr(self.memory_backend, 'supports_edits', False):
+                return {'status': 'error', 'code': 'memory_edit_unsupported'}
+            return await self.call('call_business_agent', {'request':
+                '用户明确要求编辑长期记忆。请用 memory_edit 执行以下参数，等待审批并按实际结果报告：\n'
+                + request.model_dump_json(exclude_none=True)})
         if name == "mcp_bailian_bailian_web_search":
             if self.search_tool is None:
                 raise ValueError("Voice search is unavailable")

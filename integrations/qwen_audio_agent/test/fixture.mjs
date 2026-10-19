@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 
 // A protocol fixture, not a substitute for real Agent Server acceptance testing.
-export async function serverFixture({ hold = false, interrupt = null, dropSubmit = false, memory = false } = {}) {
+export async function serverFixture({ hold = false, interrupt = null, dropSubmit = false, memory = false, search = false } = {}) {
   const threads = new Map();
   const requests = [];
   let accepted;
@@ -15,7 +15,10 @@ export async function serverFixture({ hold = false, interrupt = null, dropSubmit
     const parts = new URL(req.url, 'http://localhost').pathname.split('/').filter(Boolean);
     const json = (value, status = 200) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)); };
     if (parts[0] === 'info') return json({ version: 'fixture' });
-    if (parts[0] === 'qwen-audio' && parts[1] === 'capabilities') return json({ memory });
+    if (parts[0] === 'qwen-audio' && parts[1] === 'capabilities') return json({ memory, search_tool: search ? {
+      type: 'function', function: { name: 'mcp_bailian_bailian_web_search', description: '百炼搜索',
+        parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } },
+    } : null });
     if (parts[0] === 'qwen-audio' && parts[1] === 'transcripts') return json({ status: 'submitted' });
     if (parts.length === 1 && parts[0] === 'threads' && req.method === 'POST') {
       if (!threads.has(body.thread_id)) threads.set(body.thread_id, {

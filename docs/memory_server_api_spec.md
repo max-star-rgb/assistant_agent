@@ -18,7 +18,7 @@
 
 ## 远端视觉 Memory Service
 
-该能力只在 `provider_mode=real`、`MEMORY_BACKEND=langmem`、
+该能力只在 `provider_mode=real`、`MEMORY_BACKEND=langmem|mem0`、
 `REMOTE_VISUAL_MEMORY_ENABLED=true` 且地址完整时启用。部署 URL 只来自本机未跟踪配置，不硬编码进源码。
 
 ### 视频段摄入
@@ -60,7 +60,7 @@ Server lifespan 重启后以同一稳定 `file_id` 重新提交。归档、容�
 
 ### 视觉记忆召回
 
-当前 `memory_recall` 内部并行执行 LangMem 文本召回和：
+当前 `memory_recall` 内部并行执行所配置文本后端召回和：
 
 ```http
 POST /v1/memories/query
@@ -139,6 +139,24 @@ HTTP 输入包含后台快照中全部非空用户正文，不包含 AI、System
 响应只消费原生 `results` 中每条合法记录的 `id`、`memory` 和 `event`。支持的 event 为
 `ADD`、`UPDATE`、`DELETE`；空数组表示没有提炼出长期记忆。memory text 只可进入显式启用的
 本机观测 overlay，不进入 canonical trace 或普通日志。
+
+## 显式 Mem0 编辑与受保护提取
+
+Realtime 列表通过 `GET /memories?user_id=...&agent_id=...&limit=33` 获取，额外一项用于标识截断。
+`POST /memory-edits` 接收可信 user_id/agent_id、operation_id 和严格 edit：append 携带 content，
+replace 携带 memory_id/old_text/new_text。sidecar 在同一临界区复核记录身份与完整原文，
+执行原文新增（infer=false）、更新或删除。空 new_text 表示删除。operation_id 在用户内唯一；
+同 ID 不同参数返回 operation_conflict，持久化回执可由 `POST /memory-edits/status` 查询。
+不确定的外部提交保持 outcome_unknown，不自动再执行。
+
+`POST /memory-snapshots` 接收可信用户、source 和有界用户文本列表，返回 opaque reference。
+`POST /memory-snapshots/extract` 按用户复核 reference，并在修订有效时调用原生 Mem0 add。
+已被编辑取代的快照返回 superseded，空基线返回 skipped；错误不伪装为成功。
+旧 `/memories` 的 runtime_turn_ingestion 在用户已有显式编辑后拒绝，防止旧 delayed run 绕过修订保护。
+后台自动提取仍使用 infer=true；显式编辑的 infer=false 与自动提取分离。
+
+edits.sqlite 与 history.db 同目录持久化；新模块由镜像 COPY 和 compose 挂载提供。
+默认单进程 uvicorn 下共享串行锁。协调器重启保留修订与回执，不能通过增加 uvicorn worker 数扩容。
 
 ## 错误语义
 

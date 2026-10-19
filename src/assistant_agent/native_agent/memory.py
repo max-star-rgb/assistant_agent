@@ -121,10 +121,39 @@ class DisabledMemoryBackend:
 
 class Mem0MemoryBackend:
     backend_id = "mem0"
+    supports_edits = True
 
     def __init__(self, *, client: Any, identity_namespace: str) -> None:
         self._client = client
         self._identity_namespace = identity_namespace
+
+    async def read(self, *, identity, thread_id, query=None):
+        bound = self._identity(identity, thread_id=thread_id, run_id=None)
+        return await asyncio.to_thread(self._client.read_documents, bound, query)
+
+    async def edit(self, *, identity, thread_id, operation_id, edit):
+        bound = self._identity(identity, thread_id=thread_id, run_id=None)
+        return await asyncio.to_thread(self._client.apply_edit, bound, operation_id, edit)
+
+    async def edit_status(self, *, identity, thread_id, operation_id):
+        bound = self._identity(identity, thread_id=thread_id, run_id=None)
+        return await asyncio.to_thread(self._client.edit_status, bound, operation_id)
+
+    async def prepare_extraction(self, *, identity, thread_id, messages):
+        bound = self._identity(identity, thread_id=thread_id, run_id=None)
+        texts = [_message_text(m) for m in messages if isinstance(m, HumanMessage) and _message_text(m)]
+        return await asyncio.to_thread(self._client.prepare_snapshot, bound, thread_id, texts)
+
+    async def register_history(self, *, identity, thread_id, messages):
+        bound = self._identity(identity, thread_id=thread_id, run_id=None)
+        texts = [_message_text(m) for m in messages if isinstance(m, HumanMessage) and _message_text(m)]
+        # Register legacy history first, then this run's new input before any model-triggered edit.
+        for values in (texts[:-1], texts):
+            await asyncio.to_thread(self._client.prepare_snapshot, bound, thread_id, values, register_only=True)
+
+    async def extract_reference(self, *, identity, thread_id, reference):
+        bound = self._identity(identity, thread_id=thread_id, run_id=None)
+        return await asyncio.to_thread(self._client.extract_snapshot, bound, reference)
 
     async def recall(
         self,
@@ -273,6 +302,10 @@ class HybridMemoryBackend:
 
     backend_id = "hybrid"
 
+    @property
+    def supports_edits(self):
+        return getattr(self._text_backend, 'supports_edits', False)
+
     def __init__(
         self,
         *,
@@ -285,6 +318,40 @@ class HybridMemoryBackend:
         self._visual_client = visual_client
         self._visual_timeout_seconds = visual_timeout_seconds
         self._visual_top_k = visual_top_k
+
+    async def read(self, *, identity, thread_id, query=None):
+        result, visual = await asyncio.gather(
+            self._text_backend.read(identity=identity, thread_id=thread_id, query=query),
+            self._visual_recall(identity=identity, query=query or ''))
+        documents = list(result['documents'])
+        remaining = 12000 - sum(len(d['content']) for d in documents)
+        for text in visual:
+            if len(documents) >= 32 or remaining <= 0:
+                result['truncated'] = True
+                break
+            content = text[:remaining]
+            documents.append({'content': content, 'source': 'visual', 'editable': False})
+            remaining -= len(content)
+        return {**result, 'documents': documents, 'count': len(documents),
+                'status': 'ok' if documents else 'not_found'}
+
+    async def edit(self, **kwargs):
+        return await self._text_backend.edit(**kwargs)
+
+    async def edit_status(self, **kwargs):
+        return await self._text_backend.edit_status(**kwargs)
+
+    async def prepare_extraction(self, **kwargs):
+        method = getattr(self._text_backend, 'prepare_extraction', None)
+        return await method(**kwargs) if method else None
+
+    async def register_history(self, **kwargs):
+        method = getattr(self._text_backend, 'register_history', None)
+        if method:
+            await method(**kwargs)
+
+    async def extract_reference(self, **kwargs):
+        return await self._text_backend.extract_reference(**kwargs)
 
     async def recall(
         self,
@@ -378,10 +445,19 @@ def create_memory_backend(
             api_key=config.mem0_api_key,
             timeout_seconds=config.mem0_timeout_seconds,
         )
-        return Mem0MemoryBackend(
+        backend = Mem0MemoryBackend(
             client=client,
             identity_namespace=config.mem0_identity_namespace,
         )
+        if media_config.remote_visual_memory_enabled:
+            from assistant_agent.memory.remote_service import RemoteMemoryServiceClient
+            backend = HybridMemoryBackend(text_backend=backend,
+                visual_client=visual_memory_client or RemoteMemoryServiceClient(
+                    base_url=media_config.remote_visual_memory_base_url or '',
+                    timeout_seconds=media_config.remote_visual_memory_query_timeout_seconds),
+                visual_timeout_seconds=media_config.remote_visual_memory_query_timeout_seconds,
+                visual_top_k=media_config.remote_visual_memory_query_top_k)
+        return backend
     if config.memory_backend == "langmem":
         manager = langmem_manager or _create_langmem_manager(
             config,
@@ -445,6 +521,10 @@ async def memory_extract_node(
 ) -> dict[str, Any]:
     """Extract memories only during an explicit background Memory run."""
 
+    if state.get('memory_snapshot_reference'):
+        await backend.extract_reference(identity=authenticated_user_identity(runtime),
+            thread_id=_execution_value(runtime, 'thread_id'), reference=state['memory_snapshot_reference'])
+        return {}
     await backend.commit(
         identity=authenticated_user_identity(runtime),
         thread_id=_execution_value(runtime, "thread_id"),

@@ -41,6 +41,7 @@ GENERAL_PURPOSE_BUILTIN_TOOL_NAMES = frozenset(
 )
 INTERRUPT_BUILTIN_TOOL_NAMES = frozenset(
     {
+        "memory_edit",
         "calendar_create",
         "hotel_price_watch_create",
         "image_generation",

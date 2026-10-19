@@ -102,6 +102,8 @@ async def serve_voice(socket: WebSocket):
                 tasks.memory_backend = current_native_execution_owner().memory_backend
                 tasks.memory_store = current_native_execution_owner().memory_store
                 tasks.identity = owner
+                if getattr(tasks.memory_backend, 'supports_edits', False):
+                    await tasks.memory_backend.prepare_extraction(identity=owner, thread_id=session_id, messages=[])
                 live = RealtimeSession(voice_config(), session_id, send, tasks)
                 await live.open()
                 await send({'type': 'audio.started', 'vad': 'server_vad'})

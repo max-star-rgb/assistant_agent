@@ -116,8 +116,8 @@ def _prevalidate_environment(source: Mapping[str, str], mode: ProviderMode) -> N
     if remote_enabled:
         if mode != "real":
             raise ValueError("remote visual memory requires provider mode real")
-        if memory_backend != "langmem":
-            raise ValueError("remote visual memory requires MEMORY_BACKEND=langmem")
+        if memory_backend not in {"langmem", "mem0"}:
+            raise ValueError("remote visual memory requires MEMORY_BACKEND=langmem or mem0")
         if not (source.get("REMOTE_VISUAL_MEMORY_BASE_URL") or "").strip():
             raise ValueError("remote visual memory requires a base URL")
     if _float(source.get("REMOTE_VISUAL_MEMORY_QUERY_TIMEOUT_SECONDS"), 5.0) <= 0:

@@ -402,7 +402,7 @@ class AppConfig:
         if self.media.remote_visual_memory_enabled:
             if self.provider_mode != "real":
                 raise ValueError("remote visual memory requires provider mode real")
-            if self.memory.memory_backend != "langmem":
-                raise ValueError("remote visual memory requires MEMORY_BACKEND=langmem")
+            if self.memory.memory_backend not in {"langmem", "mem0"}:
+                raise ValueError("remote visual memory requires MEMORY_BACKEND=langmem or mem0")
             if not (self.media.remote_visual_memory_base_url or "").strip():
                 raise ValueError("remote visual memory requires a base URL")

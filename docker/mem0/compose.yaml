@@ -26,6 +26,7 @@ services:
       - mem0_history:/data/history
       - ./mem0_sidecar.py:/app/mem0_sidecar.py:ro
       - ./mem0_env.py:/app/mem0_env.py:ro
+      - ./memory_edits.py:/app/memory_edits.py:ro
     depends_on:
       qdrant:
         condition: service_healthy
