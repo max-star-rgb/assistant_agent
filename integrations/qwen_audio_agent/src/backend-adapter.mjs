@@ -1,17 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { AgentServerError } from './agent-server-client.mjs';
+import { finalResult } from './task-results.mjs';
 
 function interrupts(state) { return (state.tasks || []).flatMap(task => task.interrupts || []); }
 
-function finalResult(state) {
-  const message = [...(state.values?.messages || [])].reverse().find(m =>
-    ['ai', 'assistant'].includes(m.type || m.role) && !m.tool_calls?.length);
-  const content = typeof message?.content === 'string' ? message.content :
-    (Array.isArray(message?.content) ? message.content.filter(p => p.type === 'text').map(p => p.text).join('\n') : '');
-  if (!content.trim()) throw new Error('business_result_missing');
-  return { content: content.slice(0, 16000), artifacts: [] };
-}
 
 /** Owns correlation and observation only; Agent Server owns execution and checkpoints. */
 export class LangGraphBackendAdapter {
@@ -101,8 +94,12 @@ export class LangGraphBackendAdapter {
             continue;
           }
           const pending = interrupts(state);
-          if (pending.length) this.waitForInput(record, pending, state.checkpoint);
-          else if (run.status === 'success') return finalResult(state);
+          if (pending.length) await this.waitForInput(record, pending, state.checkpoint);
+          else if (run.status === 'success') {
+            const result = await finalResult(state, this.client, handle);
+            if (record.stopped || this.closed) throw Error(record.stopped || 'adapter_closed');
+            return result;
+          }
           else if (!record.pending) throw new Error('business_interrupted');
         } else if (!['pending', 'running'].includes(run.status)) throw new Error('unsupported_run_status');
         failures = 0;
@@ -115,39 +112,31 @@ export class LangGraphBackendAdapter {
     }
     throw new Error(record.stopped || 'adapter_closed');
   }
-  waitForInput(record, pending, checkpoint) {
+  async waitForInput(record, pending, checkpoint) {
     const signature = JSON.stringify(pending);
-    if (record.pending?.signature === signature) return;
-    const approval = pending.every(i => Array.isArray(i.value?.action_requests));
+    if (record.pending?.signature === signature && JSON.stringify(record.pending.checkpoint) === JSON.stringify(checkpoint)) return;
+    if (record.pending) this.resolvePending(record, 'cancelled');
     const input = pending.length === 1 && pending[0].value?.type === 'input' && pending[0].value?.mode === 'text';
-    if (!approval && !input) throw new Error('unsupported_interrupt_use_Studio');
+    if (!input) throw new Error('unsupported_interrupt_use_Studio');
     const id = randomUUID();
-    record.pending = { id, signature, interrupts: pending, checkpoint, kind: approval ? 'permission' : 'input' };
-    record.phase = approval ? 'waiting_authorization' : 'waiting_input';
-    if (approval) {
-      const permission = { id, taskId: record.task.id, status: 'pending', approvalScope: 'once',
-        summary: '请在 Agent Server Studio 审核本次操作；前台不接受整任务或会话授权。', createdAt: Date.now() };
-      record.pending.public = permission;
-      this.emit(record, 'backend.permission.requested', { permission });
-    } else {
-      const request = { id, taskId: record.task.id, status: 'pending', kind: 'input', mode: 'text',
-        prompt: String(pending[0].value.prompt).slice(0, 4000), createdAt: Date.now() };
-      record.pending.public = request;
-      this.emit(record, 'backend.input.requested', { input: request });
-    }
+    record.pending = { id, signature, interrupts: pending, checkpoint, kind: 'input' };
+    record.phase = 'waiting_input';
+    const request = { id, taskId: record.task.id, status: 'pending', kind: 'input', mode: 'text',
+      prompt: String(pending[0].value.prompt).slice(0, 4000), createdAt: Date.now() };
+    record.pending.public = request;
+    this.emit(record, 'backend.input.requested', { input: request });
   }
+
   resolvePending(record, status) {
     const pending = record.pending;
     if (!pending) return;
-    const field = pending.kind === 'permission' ? 'permission' : 'input';
-    // Studio's actual approval decision is unknown; don't fabricate approval.
-    const publicStatus = status === 'resolved' ? (field === 'permission' ? 'cancelled' : 'accepted') : status;
-    this.emit(record, `backend.${field}.resolved`, { [field]: { ...pending.public, status: publicStatus, resolvedAt: Date.now() } });
+    const publicStatus = status === 'resolved' ? 'accepted' : status;
+    if (pending.public) this.emit(record, 'backend.input.resolved', { input: { ...pending.public, status: publicStatus, resolvedAt: Date.now() } });
     record.pending = null;
   }
   async respondAuthorization(taskId, _authorizationId, _decision, { ownerId } = {}) {
     this.record(taskId, ownerId);
-    throw new Error('Per-operation authorization must be completed in Agent Server Studio');
+    throw new Error('backend_authorization_not_supported');
   }
   async respondInput(taskId, inputId, response, { ownerId } = {}) {
     const record = this.record(taskId, ownerId);

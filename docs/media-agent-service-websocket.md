@@ -9,7 +9,7 @@ Last updated: 2026-10-16
 | 定位 | Media-Agent WebSocket envelope、消息字段与当前兼容面的协议权威 |
 | Owns | `/agent-service/v1` 的 assistantControl、chat、audioStreamV1 双向音频、audio/video ACK、interrupt、chatResponseAck 与 3D callback wire |
 | Does not own | Agent Server thread/run/checkpoint、Assistant 推理、Tool/Memory 策略和媒体服务内部实现 |
-| 源码与 schema 入口 | `src/assistant_agent/agent_server/media_*.py`、`src/assistant_agent/agent_server/rendering_3d_callback.py`、`src/assistant_agent/media/generated_artifacts.py`、`media/image_to_3d*.py` |
+| 源码与 schema 入口 | `integrations/qwen_audio_agent/src/media-entry.mjs`、`src/assistant_agent/agent_server/media_*.py`、`src/assistant_agent/agent_server/rendering_3d_callback.py`、`src/assistant_agent/media/generated_artifacts.py`、`media/image_to_3d*.py` |
 | 验证入口 | `docs/authority.toml` 中 `media-agent-protocol.verification` |
 | 相邻 authority | Agent Server 部署见 [`agent-server-architecture.md`](agent-server-architecture.md)；视觉能力见 [`visual-perception-architecture.md`](visual-perception-architecture.md) |
 
@@ -20,9 +20,50 @@ Last updated: 2026-10-16
 双向音频合同见第 5.1 节。未声明的连接仍只做音频 ACK；ACK 不代表模型已理解。
 独立视觉流水线和 callback 保留。下文旧 Graph chat 流协议仅作为待迁移合同，不表示已重新开放。
 
-- WebSocket：`ws://<agent_host>:<port>/agent-service/v1`
-- 本机 V2 端口 `8088`，cqy 独立 worktree 端口 `8089`；本文新增音频合同属于 V2。
+- 对外媒体 WebSocket：`ws://<agent_host>:3101/agent-service/v1`；`8081/agent-service/v1` 保留，二者使用同一适配器。
+- 两个 Gateway 端口均支持 `/agent-service/v1?number=00860332`：以 URL 号码自动初始化实时会话，无需先发送 `assistantControl` 或声明 `audioStreamV1`，也不再等待控制握手超时。
+  初始化时返回 `audioConnecting`，成功后返回 `audioReady`；期间输入保序等待，不设置接收队列的消息条数或累计字节上限，不再因 `MEDIA_BACKPRESSURE` 断连。初始化失败仍返回 `audioError` 并断连，单消息大小及音频格式校验保留。
+  无 URL 号码的旧客户端仍可通过 `assistantControl` / `assistantControlStart` 提供号码；带 URL 号码的连接也可发送旧控制消息，但不能更换身份。
+  音频格式校验继续执行；`chat` 仍只确认 ASR 字幕，不触发重复模型输入。首个 `video` 自动建立内部视觉链路。
+  本段自动初始化规则仅适用于 Gateway 的 3101/8081；下文旧 8088 媒体协议的强制握手及能力声明规则不适用于这两个端口。
+- `integrations/qwen_audio_agent/src/media-entry.mjs` 在 Gateway 同一进程监听 `8081`，只开放此路径。
+  音频直接适配到 Gateway 的公开 GCP 会话；3101 与 8081 均监听 `0.0.0.0`，接受局域网连接。
+  `8088` 继续承载业务 Agent Server 和内部视觉服务，不再是媒体客户端的目标地址。
+- 唯一后台 Agent Server 使用 `8088`；冗余 8089 实例停用。
 - 外层是 JSON object，`body` 必须是序列化后的 JSON string。
+
+Gateway 媒体适配器只负责连接身份、消息转换、Realtime 事件转发及连接资源释放，不创建业务 run。
+后台 Tool 的文本附加产物通过既有任务通道交付：`task-results.mjs` 从当前用户轮次最后一条同名
+ToolMessage 的 `assistant_agent_delivery_v1.text`（含 MCP `structured_content` 包装）投影为原生
+`artifacts[].parts[].text`，媒体类型为 `text/plain`。失败的最新 Tool 不回退旧结果；不从模型正文推断产物。
+文本去重、累计上限 16000 字符，超限报告交付失败，不截断 `<detail>` 标签。
+当前 GCP session 的完成事件由前台原样转发为 `chatResponse.message.content.intentResult.description`，
+保留购物 `<detail>...</detail>`、`<link>` 和 `<pic>`，不要求前台模型复述，也不下载卡片中的链接或图片。
+文本包使用 `chatIndex=deliveryId=text:<taskId>`、`displayOnly/display_only=true`、`final=true`，
+只展示附加产物，语音解说仍由 Realtime 模型负责。同连接同任务仅发送一次；文本与图片独立交付，
+文本不等待图片下载。`media.text_delivery` 仅记录任务 ID 和写出状态；断线重投及端侧展示 ACK 尚未实现。
+后台任务完成后的图片也由此适配器交付：接收当前 GCP session 的 `task.completed` / 已完成 `task.updated`，
+只消费显式 `artifacts[].parts` 的图片引用，通过身份 header 读取同一 Agent Server 的 `/artifacts/...`，
+转换为 `chatResponse.message.content.intentResult.detail[]` 中的 `IMAGE`、`imageId` 与 Base64 `image`。
+本地 mock 和真实图片使用同一路径；每个连接内同一任务只交付一次，不能串入网页或其他媒体会话。
+最多交付 4 张、每张 25 MiB；禁止外部 URL/重定向，检查媒体类型与图片头。图片读取异步进行，不阻塞音频事件转发，断连取消读取。
+同一媒体 WebSocket 由单个发送器管理实时消息与图片两个队列：各队列内部保序，待发音频、控制和 ACK 优先于尚未开始写出的图片。
+图片一旦开始写出不可被应用层音频抢占；等待写出期间不再因自身图片超过 2 MiB 缓冲而报协议错误。图片写出时限为 30 秒，其他消息为 5 秒，从实际开始写出计时；超时或真实写入错误关闭失效连接，拒绝剩余队列。
+上行音频转发不等待下行 `audioResponse` 写出，图片下行缓慢不会阻断相反方向的音频接收。图片保持原内容和既有 Base64 envelope，不要求媒体新增接口。
+`media.image_delivery` 记录任务 ID、已写出图片数和读取失败标记；写出成功不等于端侧已展示。
+读取失败只报告图片传输失败，保留语音连接，不重跑生成任务；断线后的图片重投/ACK 持久化尚未实现。
+音频上行按 100 ms（16 kHz、PCM16、单声道共 3200 字节）合并或拆分后提交 Gateway；发送暂停 100 ms 后发送不足一包的剩余样本，不补零、不丢弃尾音。
+这是每包音频时长，不是额外按墙钟限速；历史积压仍按序转发。既有 `audioResponse` 字段保持兼容，表示适配器已接收数据进入转发流程，不代表模型已消费。
+连接关闭日志区分收到的 `audioPackets` 与提交 Gateway 的 `uplinkChunks`；视频保持最多 1 FPS。
+已建立的 Gateway 会话收到普通 command/response `error` 时记录脱敏诊断，不立即断开；
+`client_occupied`、`session_expired`、协议版本不兼容、会话停用或 GCP WebSocket 关闭仍终止连接。
+`voice.connection` 的 disconnected/reconnecting/unavailable 状态允许上游原生恢复最多 15 秒，
+期间通知 `audioConnecting` 并中断旧播放，恢复后通知 `audioReady`；超时返回
+`audioError.code=GATEWAY_RECOVERY_TIMEOUT` 并释放连接。初始化失败仍立即结束。
+Gateway 日志带 UTC 时间，`media.gateway_event` 只保留事件类型、已知状态和白名单错误码，不记录原始错误正文。
+后台视觉连接释放只清理本地状态与任务，不再向已关闭的 WebSocket 发送画面清空事件。
+会话初始化与对外 `audioReady` 通知分开：URL 自动接入在初始化完成后通知；兼容控制消息保持先 ACK、再通知的顺序。
+显式 VIDEO 控制与首个视频消息共用同一个内部视觉连接初始化函数，解码事件进入原有同一个 Realtime 会话。
 
 ```json
 {
@@ -111,7 +152,7 @@ capability token 放入 namespaced run metadata；token 按认证身份与 threa
 
 - `chatIndex`、`userNumber` 和非空 `contents` 必填；现代 `assistantControl` 链路中 `userNumber`
   必须与握手一致，legacy `assistantControlStart` 保持独立号码口径兼容。
-- 每个媒体 run 的 cwd 由握手用户稳定映射到 `~/assistant_cqy/media/usr_<opaque-id>`；客户端不能提交 cwd。
+- 媒体 run 与网页、Studio 默认共用 `~/assistant_cqy/`；媒体客户端不能提交 cwd。
 - 每项必须有 `speakerNumber`、`time`；当前 Graph 输入取最后一条非空 `speechContent`。
 - `chatIndex` 关联 run，`deliveryId` 只关联本次媒体投递 ACK。
 - 媒体入口以 `multitask_strategy=interrupt` 创建 native run。若同一 thread 的旧 chat run 仍处于
@@ -187,11 +228,11 @@ Tool 负责从已校验的领域结果构造卡片、导航链接或 `output_ref
 保留最后一条；如果该条失败，不回退同名旧结果。标准 `type=file` block 可通用交付安全 HTTP(S)
 下载链接。所有文本、URL 和 refs 均有界、去重；Graph 拓扑、ToolNode 和 checkpoint 生命周期不变。
 
-Memory debounce 是所有入口共享的
-主图规则：生成回答后通过官方 `RemoteReflectionExecutor.submit()`，在由 chat thread 确定性派生的 companion
-Memory thread 上以 rollback 策略提交新的 30 分钟 delayed Memory run；chat thread 不保留后台
-pending run。该 orchestration 不扩展媒体 wire，
-WebSocket 挂断也不承担 Memory 语义。
+媒体客户端只关闭 WebSocket 表示会话结束，不新增挂断消息。媒体入口释放内部 Gateway
+连接，由其统一 `onSessionClosed` 消费原生 ConversationSync 的本批用户记录；直接 Gateway 网页文字和语音也走同一 hook。媒体层不另建记忆收集器。
+同一进程内每会话只提交一次，媒体层不额外提交。网络断线与主动挂断无法区分，均作为结束；重连是新会话。
+提交使用官方 `RemoteReflectionExecutor.submit(after_seconds=0)` 在 companion Memory thread
+立即运行提取图，业务图与转写事件均不调度提取；没有 30 分钟延迟或静默计时器。
 
 当客户端声明 `clientCapabilities.urlCitationAnnotationsV1=true`，媒体入口只读取最新终态 `AIMessage` 自身的
 `provider_search_sources`，把正文中实际存在的 `[n]` 角标投影为 `intentResult.annotations`，并保持
@@ -229,6 +270,12 @@ at-least-once；缺少 ACK capability 时保持 queued，不降级为 socket 写
 enqueue 时已有有效在线 presence 才排队，在线写成功后记为 sent-unacknowledged，离线不补投。
 
 ## 5. audio、video 与 3D callback
+
+未启用前台 `audioStreamV1` 且 `REALTIME_VISUAL_ENABLED=false`（默认）时 VIDEO 握手仍可成功，视频消息通过身份与字段校验后返回
+`videoResponse` / `{"code":0,"message":"realtime visual disabled"}`，不进入实时解码或感知队列。
+若独立启用了远端视觉记忆归档，归档仍按原配置接收已校验数据。此开关不影响 audio 或业务 Graph。
+前台 `VIDEO + audioStreamV1` 直接桥接至 Realtime 模型，见 5.2；后台窗口冻结及视觉工具能力仅在设置
+`REALTIME_VISUAL_ENABLED=true` 并重启后启用。
 
 未启用 `audioStreamV1` 的 `audio` 继续只做传输层 ACK，不把原始音频写入 Graph State。`video` 先在 WebSocket 热路径完成
 字段校验，再进入连接级 `one in-flight + one latest pending` 后台解码边界；新 pending 会替换尚未开始的旧
@@ -288,13 +335,13 @@ run/checkpoint，也不宣称跨进程、离线或 exactly-once 投递；没有 
 
 ### 5.1 V2 双向音频 `audioStreamV1`
 
-此扩展复用同一个 `/agent-service/v1` WebSocket 和 JSON-string `body`。媒体发送：
+此扩展复用 `8081/agent-service/v1` WebSocket 和 JSON-string `body`。媒体发送：
 
 ```json
 {"message":"assistantControl","sessionId":"call-1","body":"{\"number\":\"user-1\",\"callType\":\"AUDIO\",\"clientCapabilities\":{\"audioStreamV1\":true}}"}
 ```
 
-Agent 先连接 `ws://127.0.0.1:3101/api/realtime`，收到真实 `voice.ready` 后返回 control ACK 与
+Gateway 媒体适配器先连接本进程的 `ws://127.0.0.1:3101/api/realtime`，收到真实 `voice.ready` 后返回 control ACK 与
 `audioReady`。不发送旧固定 TTS 问候。`audioReady.body`：
 
 ```json
@@ -303,8 +350,16 @@ Agent 先连接 `ws://127.0.0.1:3101/api/realtime`，收到真实 `voice.ready` 
 
 需要 V2 `MULTIMODAL_AGENT_PROVIDER_MODE=real` 及已显式启用真实能力的 Gateway。当前只支持本机 personal
 Gateway 的 `local-developer` 认证身份，不把媒体 `number` 伪装成 Gateway 多用户身份；业务和 Memory 使用
-Gateway 已配置的个人身份。Gateway 如配置了其他业务身份，不应启用此扩展。浏览器与媒体遵循 Gateway 的语音
-占用规则，不强制接管浏览器；占用或连接失败返回错误，释放语音后重新建立媒体连接。
+Gateway 已配置的个人身份。Gateway 如配置了其他业务身份，不应启用此扩展。浏览器与媒体可同时运行；
+每条媒体连接使用服务端随机生成的独立 Gateway session ID，连接和语音租约按 owner + session 隔离。
+同一会话的重复连接仍受占用规则保护，媒体关闭不影响网页会话。任务通知只自动交付来源会话。
+
+8081 必须显式协商 `audioStreamV1`；未协商会返回明确失败，不再静默进入仅 ACK 模式。
+媒体 `context` 业务配置不应用于前台模型，8081 拒绝非空 `context`，前台配置沿用 Gateway。
+8088 的旧入口暂时兼容原行为，迁移期间不能同时把同一媒体会话发往两个端口。
+VIDEO 握手还建立本机 `/internal/media-visual/v1` 连接，在复用既有视频处理的同时，
+把 `gatewayVisualEvent` 内的 JPEG/画面状态事件转入前台 GCP 会话。这些内部事件不发给媒体服务。
+内部视觉连接失败时明确关闭媒体实时连接；`videoClear` 清除画面缓冲并返回 `videoResponse`。
 
 **上行：** 保留 `audio` 消息和 `contents[].audioContent` 十六进制字段。必须声明
 `audioConfig={"codec":"pcm_s16le","sampleRate":16000,"channels":1}`，无 WAV/RTP 头、16-bit little-endian。
@@ -356,6 +411,35 @@ Gateway 已配置的个人身份。Gateway 如配置了其他业务身份，不�
 24kHz 输出与当前锁定 Gateway DashScope adapter 一致，参考
 [百炼服务端事件文档](https://www.alibabacloud.com/help/en/model-studio/server-events)。
 
+### 5.2 前台原生 Realtime 视频上下文
+
+媒体握手声明 `callType="VIDEO"` 和 `clientCapabilities.audioStreamV1=true` 后，现有音频桥同时向 Gateway
+协商 `input.image_buffer` 与 `client.events`。继续发送原有 `video` 消息：`videoConfig.codec="H264"`，
+`contents[].videoContent` 为带 Annex-B 起始码、可独立解码的 H.264 十六进制帧，`time` 使用 ISO 8601 时间。
+身份、个人 Gateway 占用和真实模式门槛与 5.1 相同；没有该音频会话时不会自动创建另一条模型连接。
+
+数据路径：媒体 H.264 → 连接级 latest-wins 解码 → JPEG → 同一 Gateway 会话的
+`input_image_buffer.append` → DashScope Realtime。图片最长边界为 1280×720，Base64 不超过 256 KiB，
+桥接最多每秒一张，Gateway 还会校验尺寸和时间顺序并限流。音频接收不等待视频解码；视频队列最多一个
+执行中任务和一个最新 pending。多个输入帧、音频和响应通过同一 WebSocket 的发送顺序关联，
+`occurred_at` 只供 Gateway 排除旧帧，不作为模型 API 的音画精确对齐时间戳。
+
+`REALTIME_VISUAL_ENABLED=false` 不阻止此路径；后台开启时复用解码结果提交原有感知流水线。
+关闭后端视觉且未启用远端归档时，只保留连接级有界 JPEG 窗口，断线清理，不写 Graph State、Memory 或视觉索引。
+`videoResponse` 成功只表示本地处理/提交，超频帧和被替换的 pending 可以跳过；不是 Provider 已理解的确认。
+
+**上下文归属：** Python 服务不先生成画面文字；Gateway 通过图片事件提交原生多模态输入。
+图片与音频分别追加到同一个 Provider 会话，在 VAD 轮次结束时由 Provider 提交输入并生成回复；桥不会逐帧
+触发 `response.create`。发送图片前如果尚无音频，现有 Gateway adapter 会补 20ms PCM 静音建立输入时间线。
+模型在其会话上下文内结合图像、语音和既有对话回答；具体图片编码、上下文淘汰和跨轮保留由 Provider 实现，
+本地不承诺“每帧永久保留”或“只看最后一帧”。参考[官方客户端事件](https://help.aliyun.com/en/model-studio/client-events)。
+
+初始无画面、首次成功提交图片、连续 3 秒无新提交图片时，桥通过 `client.event.publish` 的 `context`
+方式同步视觉状态，不主动请求模型回答。超时会发送 GCP `input_image_buffer.clear`，下一张有效帧可恢复。
+此清空只清理 Gateway 待发图片及限流状态；当前 DashScope adapter 没有远端图片历史清空操作。
+停止视频不代表已经提交的历史图片从模型上下文消失，状态文本明确旧画面不能当作当前环境。
+断线关闭此 Realtime 连接，不重放历史 JPEG；该路径不提供跨会话视觉记忆。
+
 ## 6. 错误与认证
 
 - 非 `v1` 连接返回失败并以 1008 关闭。
@@ -389,10 +473,10 @@ producer。citation、生成图片 detail、H.264 显式
 生成图片使用标准 `ToolMessage(content, artifact)` 双通道，公共 Graph 不改写最终 `AIMessage`。媒体入口从
 当前用户轮次成功的 `image_generation` ToolMessage 中优先读取 `artifact.images[].output_ref`；对旧 checkpoint
 兼容读取 `download_urls` / `output_ref`。新写入 checkpoint 的唯一稳定引用为
-`artifact://v1/{thread_ref}/generated/{filename}`；随后由媒体 resolver 按需读取有界本地图片，并继续按本协议投影为
-`intentResult.detail[].type=IMAGE` 的 Base64 正文。生成文件位于当前 thread 的非 Git
-`artifacts/generated/`；旧 `/artifacts/{thread_ref}/generated/{filename}` 引用仍可解析。文件与引用默认随
-thread 的 24 小时 TTL 回收，Base64 只存在于最终媒体 wire，不写回 Graph State。
+`/artifacts/{thread_ref}/generated/{filename}`；媒体 resolver 按原生 Store 登记读取 `<cwd>/outputs/` 内唯一的正式文件，
+校验 owner/thread、路径、大小和媒体类型后投影为 `intentResult.detail[].type=IMAGE` 的 Base64 正文。
+旧 `artifact://v1/...` 语法仍可解析，但必须有相应 Store 登记；不扫描旧磁盘目录补全引用。
+正式文件不做 thread TTL 回收；Base64 只存在于媒体 wire，不写回 Graph State。
 Studio 当前只显示最终文本，不承诺渲染 Tool artifact。
 
 媒体连接只关闭自己取得的视觉 session handle，不关闭 Agent Server 进程级视觉 owner；完整资源所有权和

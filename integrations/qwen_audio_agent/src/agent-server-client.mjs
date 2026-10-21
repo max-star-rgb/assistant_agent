@@ -48,6 +48,19 @@ export class AgentServerClient {
 
   path(id) { return `/threads/${encodeURIComponent(id)}`; }
 
+  async checkArtifact(path) {
+    if (!/^\/artifacts\/[a-f0-9]{32}\/generated\/[a-zA-Z0-9_-]+\.(png|jpe?g|gif|webp)$/i.test(path)) throw Error('invalid_artifact');
+    const response = await this.fetchImpl(`${this.url}${path}`, {
+      redirect: 'error', signal: AbortSignal.timeout(this.requestTimeoutMs),
+      headers: { 'X-Assistant-User': this.identity },
+    });
+    try {
+      const type = response.headers.get('content-type')?.split(';')[0];
+      if (!response.ok || !['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(type)) throw Error('artifact_unavailable');
+      return type;
+    } finally { await response.body?.cancel(); }
+  }
+
   async verifyThread(id, taskId) {
     const thread = await this.request(this.path(id));
     const metadata = thread.metadata || {};
@@ -92,7 +105,7 @@ export class AgentServerClient {
     try {
       const run = await this.request(`${this.path(id)}/runs`, { method: 'POST', body: {
         ...payload, assistant_id: BUSINESS_GRAPH, multitask_strategy: 'reject',
-        context: { enable_memory: false, require_tool_approval: true },
+        context: { enable_memory: false, require_tool_approval: false },
         metadata: { qwen_task_id: taskId, qwen_submission_id: submissionId },
       } });
       return { threadId: id, runId: run.run_id };

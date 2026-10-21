@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
@@ -66,12 +67,7 @@ class _WorkingDirectorySkillsBackend(WorkingDirectoryBackend):
         from langgraph.runtime import get_runtime
         if get_runtime().context.device_id is not None:
             return await super().als(path)
-        backend = self._backend()
-        return (
-            await backend.als(path)
-            if backend.cwd.is_dir() and backend.cwd != self._source_skills_root
-            else LsResult(entries=[])
-        )
+        return await asyncio.to_thread(self.ls, path)
 
 
 def _project_skills_update(

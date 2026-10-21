@@ -441,21 +441,13 @@ def project_tool_profiles() -> tuple[ToolProfile, ...]:
         ),
         ToolProfile(
             profile_id="travel",
-            description="酒店、地点发现、周边搜索以及步行、骑行、公交、高铁和驾车路线规划。",
-            tool_names=(
-                "lodging_search",
-                "mcp_amap_maps_maps_regeocode",
-                "mcp_amap_maps_maps_geo",
-                "mcp_amap_maps_maps_ip_location",
-                "mcp_amap_maps_maps_search_detail",
-                "mcp_amap_maps_maps_bicycling",
-                "mcp_amap_maps_maps_direction_walking",
-                "mcp_amap_maps_maps_direction_driving",
-                "mcp_amap_maps_maps_direction_transit_integrated",
-                "mcp_amap_maps_maps_distance",
-                "mcp_amap_maps_maps_text_search",
-                "mcp_amap_maps_maps_around_search",
-            ),
+            description="按地点名称查询驾车、公交、步行、骑行路线，以及地点周边的商家和设施。",
+            tool_names=("travel_route", "travel_nearby"),
+        ),
+        ToolProfile(
+            profile_id="lodging",
+            description="查询酒店、房型与住宿价格。",
+            tool_names=("lodging_search",),
         ),
         ToolProfile(
             profile_id="visual-creation",

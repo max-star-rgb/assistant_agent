@@ -371,12 +371,14 @@ class RemoteVideoArchiveUploader:
         poll_interval_seconds: float,
         max_status_polls: int = 1_800,
         manifest: VideoArchiveManifest | None = None,
+        on_completed: Callable[[str, str], None] | None = None,
     ) -> None:
         self.client = client
         self.registry = registry
         self.poll_interval_seconds = poll_interval_seconds
         self.max_status_polls = max_status_polls
         self.manifest = manifest
+        self.on_completed = on_completed
 
     async def process(
         self,
@@ -433,6 +435,8 @@ class RemoteVideoArchiveUploader:
                     task_id=result.task_id,
                 )
                 if status.status == "completed":
+                    if self.on_completed is not None:
+                        self.on_completed(user_id, segment.file_id)
                     await asyncio.to_thread(segment.path.unlink, missing_ok=True)
                     if self.manifest is not None:
                         await asyncio.to_thread(

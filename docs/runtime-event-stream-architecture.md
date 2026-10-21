@@ -25,9 +25,9 @@ Studio/SDK -> Agent Server -> AssistantAgent (assistant-business-v2)
 业务图接入 MemoryLifecycleMiddleware；语音委派设置 enable_memory=false，原生 Voice 单独接入记忆。
 `assistant-voice-v1` 及其 ChatModel、同步业务委派、分段音频兼容路径已删除。
 
-公开 Graph input 只有标准 `messages`。公开 `AssistantRunContext` 包含默认指向 `~/assistant_cqy/studio` 的 `cwd`、默认 true 的
+公开 Graph input 只有标准 `messages`。公开 `AssistantRunContext` 包含默认指向 `~/assistant_cqy/` 的 `cwd`、默认 true 的
 `enable_memory`、默认 `general` 的 `persona`、本机开发默认 false 的 `require_tool_approval`，以及 Studio 可选的成对绝对 token 压缩阈值；不设置压缩值时沿用服务端
-业务模型窗口的 75%/15%。`enable_memory` 同时控制本轮 recall 与 delayed extraction，`require_tool_approval` 允许 Assistant 配置关闭其全部原生 Tool
+业务模型窗口的 75%/15%。`enable_memory` 控制业务图本轮 recall；记忆提取仅由前台 Realtime 会话关闭触发。`require_tool_approval` 允许 Assistant 配置关闭其全部原生 Tool
 审批。身份、入口和视觉 capability 只存在于 Agent Server
 签发的 namespaced metadata，不是 Assistant 配置。主图不绑定 saver；thread、run、checkpoint、interrupt、resume、
 cancel 和 Store 均由 Agent Server 注入。应用配置不再声明 checkpointer backend、checkpoint path 或外层 text-turn timeout；
@@ -44,7 +44,7 @@ summarization、HITL 与 `ToolNode`。简单请求可直接回答；复杂请求
 
 `reviewer` 仅保留独立的 `build_reviewer_agent()` 构建定义与审查提示词，作为尚未接入的只读 Agent。
 生产主图不创建或调用 reviewer，不向 `task` 注册该角色，也不在工具执行后或最终答复前触发审查。
-原强制验证门禁、专用状态与失败哨兵已删除；工具执行、HITL、递归收尾和回答后的 Memory 提取沿用原生链路。
+原强制验证门禁、专用状态与失败哨兵已删除；工具执行、HITL、递归收尾沿用原生链路，业务图回答后不再触发 Memory 提取。
 
 主 Agent 的同步 `task` 只选择受信 composition 预装的 `general-purpose`、`coder` 和 `browser-operator`，不能在
 task 参数中创建 Tool、backend 或权限。`description` 只帮助模型选择角色，不参与授权。`general-purpose` 使用编译好的
@@ -84,7 +84,7 @@ Memory middleware、Provider composition、Tool/Profile middleware 和模型循�
 
 `runtime/` 只保留以下跨领域契约：
 
-- `local_backend.py`、`thread_resources.py`：生产 composition、filesystem 和 thread 资源使用的执行基础设施。
+- `local_backend.py`、`thread_resources.py`：生产 composition、filesystem 和原生 Store 产物引用使用的执行基础设施。
 共享 `identity.py` 持有跨 Memory 与 durable task 使用的最小 `RequestIdentity` 和默认 agent ID。
 Git Tool 与 execute guard 由 Tool 领域的 `tools/git.py` 所有，不再与 filesystem backend 混放。
 

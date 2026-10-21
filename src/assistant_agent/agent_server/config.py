@@ -9,7 +9,7 @@ WORKER_GRAPH_ID = "assistant-worker-v2"
 
 
 def agent_server_url() -> str:
-    raw_port = os.environ.get("ASSISTANT_AGENT_SERVER_PORT", "8089")
+    raw_port = os.environ.get("ASSISTANT_AGENT_SERVER_PORT", "8088")
     try:
         port = int(raw_port)
     except ValueError as exc:

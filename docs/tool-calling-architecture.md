@@ -15,6 +15,10 @@
 
 ## 统一 Tool surface
 
+实时视觉 Tool 受启动配置 `REALTIME_VISUAL_ENABLED` 统一控制（默认 `false`）：关闭时不注册
+`live_view_inspect`、`visual_memory_search` 和 `visual_reminder_manage`，包括业务 Agent 与 worker。
+`uploaded_media_inspect` 继续按附件和 Provider readiness 暴露；开启实时视觉后仍按受信会话事实缩小可见集合。
+
 Studio/SDK 直接运行 `assistant-business-v2`，使用业务 Agent 的完整受信 Tool surface。
 以下 filesystem、Profile、MCP 与具体 Tool 规则适用于业务 Agent 及其 worker，不直接暴露给 Voice。
 浏览器原生 Realtime 暴露业务任务提交、直接百炼搜索、get_business_task 与 cancel_business_task；仅业务委派创建独立业务 run。
@@ -25,8 +29,11 @@ Studio/SDK 直接运行 `assistant-business-v2`，使用业务 Agent 的完整�
 语音打断不触发任务取消；仅明确取消工具请求使用 run cancel(action=interrupt)。
 启用 Memory backend 时原生 Voice 增加 `recall_memory`。read 使用受信身份和同一后端；
 Mem0 的 append/replace 通过业务任务交给标准 `memory_edit` BaseTool，走统一原生 HITL，
-不在 Voice/Node 入口执行写入。`memory_read` 提供可编辑记录的 ID 和完整原文；编辑工具不向 worker 暴露。
-自动提取仍由独立 Memory Graph 处理，并通过 Mem0 用户修订与显式编辑协调；模型不能指定用户身份。
+不在 Voice/Node 入口执行写入。
+Qwen Audio Gateway（Node）使用上游原生 `memory` 工具编辑本地 Markdown，原生会话结束提取也写入同一文档。
+Gateway 不再委派 `memory_edit` 或调用 Python 文本记忆桥，后台业务 run 仍固定 require_tool_approval=false。
+Gateway 不提供长期视觉召回工具，文本记忆只通过原生 memory 工具读写。
+上文 Python Voice 的旧记忆链路仅在显式配置 backend 时适用，当前部署 disabled。
 
 生产边界是 LangChain 标准 `BaseTool -> ToolNode`。受信 composition 静态装配业务 Tool、官方 MCP Tool 和
 Deep Agents middleware；不使用项目自建 Registry/Executor、动态 Python discovery 或第二套 Tool schema。
@@ -63,12 +70,17 @@ filesystem 与 `execute`；`browser-operator` 只接收 Playwright Tool。角色
 成功结果使用标准 `ToolMessage(content, artifact)`：`content` 是有界模型投影，`artifact` 保存结构化业务结果；
 失败由 `ToolException` 或 `handle_tool_error` 转为可解释 error `ToolMessage`。Provider 原始响应、secret 和宿主路径
 不进入模型上下文或 artifact。`image_generation` 成功后只把
-`artifact://v1/{thread_ref}/generated/{filename}` 短引用写入文本 observation 和 artifact，不在
+`/artifacts/{thread_ref}/generated/{filename}` 短引用写入文本 observation 和 artifact，不在
 `ToolMessage` 中写入 Base64 或 `image` content block；主模型默认不读取生成物。需要图片实体的媒体投影、
 `image_to_3d` 等消费者在自身边界按需通过统一 resolver 读取同一引用，并复核线程归属、大小、路径和媒体类型。
-生成成功后还将同名图片复制到当前用户 `<cwd>/outputs/`；该用户副本不参与协议解析或 thread TTL 回收。
+生成图片直接写入当前 `<cwd>/outputs/`，不再复制到 thread 暂存。原生 Store 登记 owner、thread 和文件位置；交付只读取登记产物，正式文件不做 TTL 删除。
+图片生成以 `MULTIMODAL_AGENT_IMAGE_PROVIDER=mock|qwen|ark` 选择实现；全局 mock 仍强制离线。
+全局 real 下允许显式选择图片 mock（不属于真实服务失败后的回退），其他 Provider 保持原配置。
+`MULTIMODAL_AGENT_IMAGE_MOCK_PATH` 可指定本机图片：mock 直接读取该文件，不创建目录或复制图片；原生 Store 将不含宿主路径的产物引用关联到源文件，复用同一交付流程，
+不向模型暴露源文件路径；文件不可读或超限则明确失败。留空保留无实体的离线占位结果。
+真实服务凭据配好后只改 `MULTIMODAL_AGENT_IMAGE_PROVIDER` 即可切换，fixture 路径无需删除。
 `image_to_3d` 未收到显式引用时，可从 checkpoint 的历史成功 `image_generation` ToolMessage 中选择最近引用，
-因此支持跨对话轮次联动；显式引用始终优先，实体过期仍由 thread TTL 和 resolver 拒绝。
+因此支持跨对话轮次联动；显式引用始终优先，实体删除或登记缺失时由 resolver 拒绝。
 高德路线 MCP interceptor 在保留模型可见导航 Markdown 的同时，把同一受校验 URL 写入 namespaced
 `structuredContent`；终端入口只从转换后的标准 ToolMessage artifact 确定性交付，不解析模型正文。
 
@@ -99,9 +111,17 @@ Skill、Todo、worker 文本和 artifact 都不能声明 profile 或授权 Tool�
 根目录 `mcp_servers.json` 是纳入 Git 的本机部署配置，本机 `.env` 通过
 `MULTIMODAL_AGENT_MCP_CONFIG_PATH=mcp_servers.json` 选择它。高德使用固定版本
 `@amap/amap-maps-mcp-server@0.0.8`，凭据仅引用环境变量 `AMAP_MAPS_API_KEY`，不得写入 JSON。
-该版本的 12 个只读工具进入显式 allowlist；`mcp_amap_maps_maps_weather` 不归属任何 Profile，
-成功注册后默认暴露。其余 11 个高德工具归属 `travel`，通过 `activate_tool_profile(profile_id="travel")`
-渐进暴露；这是预注册工具的可见性切换，不是调用时动态注册 MCP。
+该版本的只读工具先经显式 allowlist 过滤；`mcp_amap_maps_maps_weather` 不归属任何 Profile，
+成功注册后默认暴露。其余高德原始 Tool 不进入模型 inventory，只作为薄业务组合的内部依赖。
+`travel` 只包含 `travel_route(origin, destination, mode)` 和 `travel_nearby(place, keywords="", radius=1000)`；
+`lodging_search` 移到独立 `lodging` Profile，保留酒店查询能力。
+两个业务 Tool 复用官方 MCP adapter 和 interceptor，不绕过 allowlist、不直连高德 HTTP API、也不增加 Agent loop。
+各地点先以完整名称搜索，固定选择第一个 POI，再查详情取得坐标；公交另取详情中的城市。
+路线方式仅支持驾车、公交、步行、骑行；周边半径单位米，范围 1–50000，默认 1000，关键词为空时不限类别。
+返回实际选中的地点名称、地址和结果；路线仍产生经本地校验的导航链接和统一交付声明。
+无候选、无效坐标、缺少公交城市、MCP 错误或无路线时明确失败，不换候选、不换方式、不伪造坐标。
+依赖未完整注册时不暴露对应组合 Tool；依赖配置了审批时拒绝组合，避免内部调用绕过 HITL。
+新工具加入官方只读 retry 名单；原始工具不会因移出 Profile 而变成常驻工具。
 本机高德命令使用 `npx --offline`，避免每次 MCP 会话启动都访问 npm registry；新机器须先缓存固定包版本，
 例如 `npm exec --yes --package=@amap/amap-maps-mcp-server@0.0.8 -- node --version`。
 
@@ -149,6 +169,20 @@ Agent Server OS identity 的权限边界。当前 backend 仅适合受信本地�
 
 ## 客户端执行实验与同机生产接线
 
+Qwen Gateway 前台的 `get_pending_approvals` / `respond_to_approval` 只读取待审操作与提交原生 HITL 决定，
+不执行业务工具，也不改变 `require_tool_approval=true`。审批 ID 由桥接层生成，身份与原始参数来自受信上下文和
+后台 checkpoint。首次 approve 授予当前任务内同名工具权限（含后续参数变化），后续由桥接层静默提交原生决定；
+不同工具仍分别确认，多个 action 收齐决定后按原生顺序恢复。只开放 approve/reject，不允许改写待审参数。
+前台详情准备（受信播报回调或查询工具）必须发生在提交决定之前的轮次；准备仅限当前 owner/session/task，
+超大结果不截断后放行。是否表达明确同意仍由模型判断，响应纠正不得代替用户决定。
+授权随任务结束清空，也可通过语言撤销。
+Gateway 接线、旧授权入口禁用与恢复限制见 Agent Server authority 的 Qwen Audio Agent 小节。
+
+图片生成、正式文件写入与原生 Store 登记在工作线程执行，不能阻塞 Agent Server 事件循环。
+生成执行异常终止原生 run，不转换成可由模型反复重试的 ToolException；生成成功后的设备上传失败
+保留服务端图片及交付声明，并报告交付错误。产物重取不调用生成服务；Provider 返回前或下载阶段失败仍可能没有可交付声明，
+此时不得推断未发生生成并自动重投。
+
 `runtime/device_backend.py` 的 `DeviceBackend` 实现 Deep Agents 原生 `SandboxBackendProtocol` 的
 异步文件操作与 `aexecute`；接口名不意味着本地执行具备沙箱。实验把它注入既有 `build_assistant_agent`，
 不创建第二套 Agent loop、run manager 或 Graph identity，原生 ToolNode、Profile、HITL 与 checkpoint 保持原样。
@@ -192,6 +226,7 @@ Shell 不继承服务端/客户端应用凭据环境，使用最小环境。路�
 名单，两者互不推导；未列入
 `interrupt_tools` 的 MCP Tool 默认执行。
 生产不建立 MCP proxy、ToolSpec 镜像、plugin-private runner 或旧远端 Tool 映射。
+高德出行按上述明确业务契约组合已装配的官方 BaseTool，仅两个业务入口拥有自己的参数 schema。
 浏览器能力由固定版本官方 Playwright MCP 提供。有 device_id 时 thread-scoped Playwright 调用经设备 RPC 执行，
 客户端使用 `assistant-agent --install-browser --cwd <cwd>` 安装的 Chromium（需要 Node.js 20+ 和 npm）。
 运行时放在 `<cwd>/.agent/browser-runtime`，每个 thread 的持久 profile 和输出放在 `.agent/browser/<thread-hash>`，

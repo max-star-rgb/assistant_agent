@@ -15,6 +15,22 @@
 
 ## 当前主链
 
+Qwen Audio Gateway 前台通过原生目录配置加载项目 `integrations/qwen_audio_agent/prompts/PROMPT.md`，
+以 qwen-audio-agent 2.0.1 官方正文为基础，仅直接修改记忆个性化规则；默认人设继续加载官方 `ASSISTANT.md`。
+复用原生 `buildFrontendInstructions`、`resolveAssistantProfile`、`buildMemoryContext`。
+项目另维护 `integrations/qwen_audio_agent/prompts/BACKEND_TASK.md`（工具描述）、`TIME_LOCATION.md`（时间地点）。
+记忆使用说明直接加载上游 `server/src/memory/PROMPT.md` 原文，不保留项目副本。日期按 `Asia/Shanghai` 在构建时替换 `{{current_date}}`，地点固定为上海西岑地铁站。
+时间地点以 `current_date`、`location` 字段合并进原生 `runtime_context`，不再生成独立的“时间与地点”段落。
+记忆规则通过原生 memory feature 注入；文本数据由原生 Markdown provider 和订阅直接提供，不再注入外部 Mem0 快照。
+`USER.md` 使用原生 `<user_preferences>`，`MEMORY.md` 使用 `<user_memory>`，保留版本与空内容省略机制。
+远端视觉快照单独作为 `<visual_memory>` 注入前台提示词，按 JSON 编码并转义标签边界，明确是可能过时的背景数据而非指令。
+会话初始化先读取快照，此后每处理完成 10 个视频段异步刷新；更新期间使用旧快照，成功空结果清空文本但保留该段及状态，不进入 Markdown 或会话提取。生命周期见 Memory authority。
+主 `PROMPT.md` 的个性化顺序为当前明确要求、用户明确表达的长期偏好、默认人设；系统推测不提升为用户要求。
+历史事实与视觉观察只是可能过时的背景，不授予权限。文本外部快照补丁已撤销，视觉快照保持独立。
+语音前台沿用官方交互和授权机制，明确请求直接执行，需要确认时在对话中澄清。
+Gateway 业务委派关闭 LangGraph 原生 HITL，不提供自定义审批工具、同工具授权缓存或审批纠正响应。
+该策略只适用于 Qwen Audio Gateway，不修改独立 `/media-lab` 的 Voice 或 Studio/SDK 的显式审批配置。
+
 本机安装客户端新增可选公开字段 `device_id`。它只选择已由服务注册并绑定当前 identity/cwd 的执行连接，
 不代表用户身份或授权凭据；省略时保持既有 Studio/媒体行为。安装客户端显式开启 `require_tool_approval`。
 此阶段只开放同机注册，但项目指令和 cwd Skills 已由绑定客户端读取，服务端不再依赖同名路径。
@@ -34,9 +50,10 @@ Graph 驱动的 Voice 与分段音频兼容路径已删除。
 `native_agent/prompts/studio.py`，`call_assistant` 使用 `native_agent/prompts/media.py`。Studio 默认 `general`，
 媒体握手默认 `call_assistant`，均可显式覆盖；入口事实不再决定提示词。Deep Agents Skills L0 目录随后注入，dynamic prompt 最后追加当前工作目录、
 项目指令、北京时间自然日、可信用户地区与本轮媒体事实。当前工作目录来自公开 `AssistantRunContext.cwd`；Studio
-默认使用 `~/assistant_cqy/studio`，媒体入口按握手用户稳定映射到
-`~/assistant_cqy/media/usr_<opaque-id>`。工作区首次使用时创建目录和空的用户级 `ASSISTANT.md`，已有文件不覆盖。
-同时创建 `.agent/browser`、`.agent/downloads` 与 `outputs` 三个产物目录。
+网页、媒体和 Studio/SDK 默认共用 `~/assistant_cqy/`；显式 cwd 或设备绑定保留。
+工作目录按文件能力需要创建，Server 启动不预建目录或空 `ASSISTANT.md`；`.agent/browser`、`.agent/downloads` 与 `outputs` 由对应能力按需创建。
+通用 backend 构造、目录读取和 Skills discovery 不创建目录；不存在的 Skills 目录返回空。只有实际写入按原生 filesystem backend 语义创建目标父目录。Shell 要求 cwd 已存在。异步 backend 准备与 Skills 目录检查在工作线程执行，不阻塞 Agent Server 事件循环。
+工作目录 prompt 明确普通下载默认保存到 `<cwd>/.agent/downloads/`，正式交付文件保存到 `<cwd>/outputs/`，浏览器使用配置的 `<cwd>/.agent/browser/`。这属于默认执行约定，不是文件系统沙箱；显式用户路径仍可覆盖。
 项目指令只沿 Home 到 cwd 的祖先链读取 `ASSISTANT.md`，单次最多注入 32 KiB，不扫描 Home 的其他目录。
 预算不足时优先保留最接近 cwd 的指令，再以祖先到子目录的顺序呈现；自动加载拒绝解析到 Home 外的
 指令文件 symlink，避免把 cwd 选择扩大为隐式文件读取授权。最终 runtime dynamic prompt 将上游 middleware
@@ -54,7 +71,7 @@ browser 用于网页交互，也可在搜索工具不可用时搜索；curl 经�
 75%/15%，设置时必须满足 `0 < keep < trigger`，并由 业务/worker 的 Deep Agents
 `SummarizationMiddleware.awrap_model_call` 在当前 run 中读取而不修改进程共享 middleware。
 业务 factory 保留 `call_assistant` 的 128-token 策略供独立调用，但生产委派固定 `general`，不限制业务输出为口语长度。
-Voice 使用独立 Realtime 会话，worker 固定使用通用策略与默认上限。`enable_memory` 默认 true，控制业务图本轮 recall 与 delayed extraction；语音委派显式关闭。
+Voice 使用独立 Realtime 会话，worker 固定使用通用策略与默认上限。`enable_memory` 默认 true，只控制业务图本轮 recall；语音委派显式关闭。记忆提取调度仅由前台 Realtime 会话关闭触发。
 `require_tool_approval` 在本机开发默认 false，可由单次 run 显式开启已配置 Tool 的 HITL interrupt；两者都不进入 prompt。`entry_profile` 与视觉 capability token 属于服务端签发的
 `AssistantRuntimeFacts`，只放在 namespaced run metadata。用户身份只来自 Agent Server
 `Runtime.server_info.user.identity`。公开 context 的 `persona` 仅选择回复策略，不是认证身份或执行模式，不接受任意 prompt；`cwd` 是用户可见的

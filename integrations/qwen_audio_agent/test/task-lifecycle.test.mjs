@@ -66,10 +66,10 @@ test('active task status requires owner even if task id is known', async t => {
 });
 
 test('cancel targets resumed run rather than the old interrupted run', async t => {
-  const f = await setup(t, { interrupt: { id: 'approval', value: { action_requests: [{ name: 'write_file' }] } } });
+  const f = await setup(t, { interrupt: { id: 'input', value: { type: 'input', mode: 'text', prompt: '日期？' } } });
   let ready;
   const waiting = new Promise(resolve => { ready = resolve; });
-  f.backend.subscribe(e => { if (e.type === 'backend.permission.requested') ready(); });
+  f.backend.subscribe(e => { if (e.type === 'backend.input.requested') ready(); });
   const pending = assert.rejects(f.backend.submit(work), /cancel/);
   await waiting;
   const thread = [...f.threads.values()][0];

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 
@@ -77,7 +78,7 @@ class WorkingDirectoryBackend(LocalShellBackend):
             inherit_env=False,
         )
 
-    def _async_backend(self):
+    async def _async_backend(self):
         runtime = get_runtime(AssistantRunContext)
         if runtime.context.device_id is not None:
             from assistant_agent.agent_server.devices import local_devices
@@ -86,31 +87,31 @@ class WorkingDirectoryBackend(LocalShellBackend):
             owner = authenticated_user_identity(runtime)
             local_devices.require_binding(owner, runtime.context)
             return DeviceBackend(local_devices.broker, runtime.context.device_id, owner=owner, subdirectory=self._subdirectory)
-        return self._backend()
+        return await asyncio.to_thread(self._backend)
 
     async def als(self, path):
-        return await self._async_backend().als(path)
+        return await (await self._async_backend()).als(path)
 
     async def aread(self, file_path, offset=0, limit=2000):
-        return await self._async_backend().aread(file_path, offset, limit)
+        return await (await self._async_backend()).aread(file_path, offset, limit)
 
     async def awrite(self, file_path, content):
-        return await self._async_backend().awrite(file_path, content)
+        return await (await self._async_backend()).awrite(file_path, content)
 
     async def aedit(self, file_path, old_string, new_string, replace_all=False):
-        return await self._async_backend().aedit(file_path, old_string, new_string, replace_all)
+        return await (await self._async_backend()).aedit(file_path, old_string, new_string, replace_all)
 
     async def adelete(self, file_path):
-        return await self._async_backend().adelete(file_path)
+        return await (await self._async_backend()).adelete(file_path)
 
     async def aglob(self, pattern, path=None):
-        return await self._async_backend().aglob(pattern, path)
+        return await (await self._async_backend()).aglob(pattern, path)
 
     async def agrep(self, pattern, path=None, glob=None, *, max_count=None):
-        return await self._async_backend().agrep(pattern, path, glob, max_count=max_count)
+        return await (await self._async_backend()).agrep(pattern, path, glob, max_count=max_count)
 
     async def aexecute(self, command, *, timeout=None):
-        return await self._async_backend().aexecute(command, timeout=timeout)
+        return await (await self._async_backend()).aexecute(command, timeout=timeout)
 
     def ls(self, path: str):
         return self._backend().ls(path)
@@ -160,13 +161,13 @@ class WorkingDirectoryBackend(LocalShellBackend):
         return self._backend().upload_files(files)
 
     async def aupload_files(self, files: list[tuple[str, bytes]]):
-        return await self._async_backend().aupload_files(files)
+        return await (await self._async_backend()).aupload_files(files)
 
     def download_files(self, paths: list[str]):
         return self._backend().download_files(paths)
 
     async def adownload_files(self, paths: list[str]):
-        return await self._async_backend().adownload_files(paths)
+        return await (await self._async_backend()).adownload_files(paths)
 
     def execute(self, command: str, *, timeout: int | None = None):
         return self._backend().execute(command, timeout=timeout)

@@ -13,13 +13,13 @@
 | 验证入口 | `docs/authority.toml` 中 `memory-server-api.verification` |
 | 相邻 authority | Graph memory 架构见 [`memory-service-architecture.md`](memory-service-architecture.md) |
 
-项目不定义通用 Memory Server 协议。本文件记录当前 Graph 实际消费的两个私有 adapter 子集：Mem0 OSS REST，
-以及显式启用的远端视觉 Memory Service。其他 backend 不依赖本协议。
+项目不定义通用 Memory Server 协议。本文件记录远端视觉服务与保留的旧 Mem0 adapter。
+Gateway 文本记忆使用 Node 原生 Markdown，不调用以下 Mem0 HTTP 接口；旧数据不自动删除。
 
 ## 远端视觉 Memory Service
 
-该能力只在 `provider_mode=real`、`MEMORY_BACKEND=langmem|mem0`、
-`REMOTE_VISUAL_MEMORY_ENABLED=true` 且地址完整时启用。部署 URL 只来自本机未跟踪配置，不硬编码进源码。
+该能力只在 `provider_mode=real`、`REMOTE_VISUAL_MEMORY_ENABLED=true` 且地址完整时启用，
+不依赖文本 MEMORY_BACKEND。部署 URL 只来自本机未跟踪配置，不硬编码进源码。
 
 ### 视频段摄入
 
@@ -60,7 +60,7 @@ Server lifespan 重启后以同一稳定 `file_id` 重新提交。归档、容�
 
 ### 视觉记忆召回
 
-当前 `memory_recall` 内部并行执行所配置文本后端召回和：
+Gateway 视觉快照及保留的 Python hybrid backend 复用以下远端请求：
 
 ```http
 POST /v1/memories/query
@@ -75,8 +75,10 @@ Content-Type: application/json
 ```
 
 adapter 只消费 `results[]` 中 `type=text` 的非空 `content`。图片、Base64、URL、direct answer、远端身份字段
-和原始响应都不进入 Graph state。视觉分支具有独立 timeout，任何失败规范化为空结果；LangMem 和当前 turn
-继续。远端文本不添加来源标签，直接与 LangMem 结果合并，仍受 `memory_context` 既有预算约束。
+和原始响应都不进入模型上下文。Gateway 通过受信回环接口 `/qwen-audio/visual-memory/snapshot`
+POST 等待有界初始化召回、GET 读取进程内快照；身份来自认证 principal，客户端不能覆盖。
+初始化及每成功处理完成 10 个视频段时以固定概括性 query 刷新，不依赖本轮用户问题；前台不暴露召回 Tool。
+旧 Python hybrid 分支保留独立 timeout 和 fail-open 语义，仍受 memory_context 预算约束。
 
 ### 远端视觉服务身份
 

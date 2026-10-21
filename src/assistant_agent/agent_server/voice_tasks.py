@@ -7,6 +7,7 @@ from langchain_core.messages import HumanMessage
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from langchain_core.runnables import RunnableLambda
 from langgraph_sdk.errors import APIConnectionError, APIStatusError
+from langsmith import tracing_context
 from pydantic import BaseModel, ConfigDict, Field
 
 from assistant_agent.agent_server.config import BUSINESS_GRAPH_ID
@@ -69,12 +70,15 @@ class VoiceTasks:
         from assistant_agent.native_agent.memory_middleware import submit_memory_extraction
         if not self.identity:
             raise ValueError("Memory requires authenticated identity")
-        return await submit_memory_extraction(messages, identity=self.identity, source_thread_id=self.session_id, backend=self.memory_backend)
+        return await submit_memory_extraction(messages, identity=self.identity, source_thread_id=self.session_id,
+            backend=self.memory_backend)
 
     async def refresh_memory(self):
         if self.memory_enabled and self.transcripts:
             async with self.memory_lock:
-                await self._refresh.ainvoke([HumanMessage(content=t) for t in self.transcripts.values() if t.strip()])
+                # Scheduling is Realtime housekeeping, not an independent agent trace.
+                with tracing_context(enabled=False):
+                    await self._refresh.ainvoke([HumanMessage(content=t) for t in self.transcripts.values() if t.strip()])
 
     async def call(self, name, arguments):
         if name == "recall_memory":

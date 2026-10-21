@@ -1,9 +1,8 @@
-"""Run-scoped recall and delayed extraction through native agent middleware."""
+"""Business recall middleware and Realtime session-end extraction submission."""
 
 from __future__ import annotations
 
 import asyncio
-import logging
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
@@ -14,37 +13,29 @@ from langgraph_sdk import get_client, get_sync_client
 
 from assistant_agent.agent_server.config import agent_server_url
 from assistant_agent.media.runtime_media import without_uploaded_media_messages
-from assistant_agent.native_agent.context import AssistantRunContext, authenticated_user_identity
+from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.memory import MemoryBackend, _langmem_namespace, recall_memory
 from assistant_agent.native_agent.state import AssistantAgentState
 
 
 MEMORY_ASSISTANT_ID = "assistant-memory-v1"
-DEFAULT_EXTRACTION_DELAY_SECONDS = 1800
 MEMORY_SOURCE_THREAD_KEY = "assistant_agent_source_thread_id"
 
 
 class MemoryLifecycleMiddleware(
     AgentMiddleware[AssistantAgentState, AssistantRunContext]
 ):
-    """Recall once before the agent and debounce extraction after it."""
+    """Recall once before the business agent; extraction belongs to Realtime."""
 
     def __init__(
         self,
         backend: MemoryBackend,
-        *,
-        extraction_delay_seconds: int = DEFAULT_EXTRACTION_DELAY_SECONDS,
     ) -> None:
         super().__init__()
         self._backend = backend
-        self._delay_seconds = extraction_delay_seconds
         self._recall = RunnableLambda(
             self._recall_once,
             name="memory_recall",
-        ).with_retry(stop_after_attempt=3, wait_exponential_jitter=False)
-        self._refresh = RunnableLambda(
-            self._refresh_once,
-            name="refresh_memory_extraction",
         ).with_retry(stop_after_attempt=3, wait_exponential_jitter=False)
 
     def before_agent(
@@ -61,30 +52,7 @@ class MemoryLifecycleMiddleware(
     ) -> dict[str, Any]:
         if self._backend.backend_id == "disabled" or not runtime.context.enable_memory:
             return {"memory_context": ()}
-        extraction_blocked = False
-        if callable(getattr(self._backend, 'register_history', None)):
-            try:
-                await self._backend.register_history(identity=authenticated_user_identity(runtime),
-                    thread_id=_execution_value(runtime, 'thread_id'), messages=list(state.get('messages', ())))
-            except Exception:
-                # Long legacy histories may exceed the extraction budget; do not prevent answering.
-                logging.getLogger(__name__).warning('memory_history_registration_failed')
-                extraction_blocked = True
-        return {**await self._recall.ainvoke((state, runtime)), 'memory_extraction_blocked': extraction_blocked}
-
-    async def aafter_agent(
-        self,
-        state: AssistantAgentState,
-        runtime: Runtime[AssistantRunContext],
-    ) -> dict[str, Any]:
-        return await self._refresh.ainvoke((state, runtime))
-
-    def after_agent(
-        self,
-        state: AssistantAgentState,
-        runtime: Runtime[AssistantRunContext],
-    ) -> dict[str, Any]:
-        return asyncio.run(self.aafter_agent(state, runtime))
+        return await self._recall.ainvoke((state, runtime))
 
     async def _recall_once(
         self,
@@ -93,25 +61,10 @@ class MemoryLifecycleMiddleware(
         state, runtime = payload
         return await recall_memory(state, runtime, backend=self._backend)
 
-    async def _refresh_once(
-        self,
-        payload: tuple[AssistantAgentState, Runtime[AssistantRunContext]],
-    ) -> dict[str, Any]:
-        state, runtime = payload
-        if self._backend.backend_id == "disabled" or not runtime.context.enable_memory or state.get('memory_extraction_blocked'):
-            return {}
-        return await submit_memory_extraction(
-            list(state.get("messages", ())),
-            identity=authenticated_user_identity(runtime),
-            source_thread_id=_execution_value(runtime, "thread_id"),
-            delay_seconds=self._delay_seconds,
-            backend=self._backend,
-        )
-
 
 async def submit_memory_extraction(messages, *, identity: str, source_thread_id: str | None,
-                                   delay_seconds: int = DEFAULT_EXTRACTION_DELAY_SECONDS, backend=None):
-    """Share the official delayed reflector between Graph and native voice ingress."""
+                                   backend=None):
+    """Submit the official reflector immediately for a closed Realtime session."""
     if not source_thread_id:
         raise ValueError("memory extraction orchestration requires thread_id")
     reference = None
@@ -143,26 +96,21 @@ async def submit_memory_extraction(messages, *, identity: str, source_thread_id:
                     sync_client=sync_client,
                 ) as reflection,
             ):
-                # Wait for Server acceptance, not the delayed extraction itself.
+                # Wait for Server acceptance, not extraction completion.
                 reflection.submit(
                     {"messages": [] if reference else without_uploaded_media_messages(list(messages)),
                      **({'memory_snapshot_reference': reference} if reference else {})},
                     config={"configurable": {"thread_id": memory_thread_id}},
                     thread_id=memory_thread_id,
-                    after_seconds=delay_seconds,
+                    after_seconds=0,
                 ).result()
 
         # The official executor and sync client must close outside the event loop.
         await asyncio.to_thread(submit_reflection)
     return {}
 
-def _execution_value(runtime: Runtime[Any], field: str) -> str | None:
-    value = getattr(runtime.execution_info, field, None)
-    return str(value) if value else None
-
 
 __all__ = [
-    "DEFAULT_EXTRACTION_DELAY_SECONDS",
     "MEMORY_ASSISTANT_ID",
     "MemoryLifecycleMiddleware",
 ]

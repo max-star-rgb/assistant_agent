@@ -16,7 +16,7 @@ import httpx
 from langgraph_sdk import get_client
 
 from assistant_agent.agent_server.config import ASSISTANT_GRAPH_ID
-from assistant_agent.native_agent.context import AssistantRunContext, ensure_working_directory
+from assistant_agent.native_agent.context import AssistantRunContext, default_working_directory, ensure_working_directory
 from assistant_agent.runtime.device_client import run_device_client
 
 
@@ -183,9 +183,9 @@ def main():
     os.environ["PATH"] = str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", os.defpath)
     parser = argparse.ArgumentParser(description="Assistant 本机安装客户端（连接现有 Agent Server）")
     parser.add_argument("text", nargs="*")
-    parser.add_argument("--server", default="http://127.0.0.1:8089")
+    parser.add_argument("--server", default="http://127.0.0.1:8088")
     parser.add_argument("--identity", default="local-cli")
-    parser.add_argument("--cwd", type=Path, default=Path.cwd())
+    parser.add_argument("--cwd", type=Path, default=default_working_directory())
     parser.add_argument("--thread-id")
     parser.add_argument("--allow-shell", action="store_true", help="允许当前系统用户权限的 Shell；仍须逐次审批")
     parser.add_argument("--check", action="store_true", help="仅检查连接，不调用模型")

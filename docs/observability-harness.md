@@ -36,12 +36,24 @@ Qwen Audio Agent 前台使用上游事件驱动 Realtime Runtime，不使用 Lan
 可重复应用；依赖升级或锚点变化必须复核。`frontend-trace.mjs` 通过官方 JS SDK 创建
 `FrontendAgent` root、`QwenRealtime` LLM 与 tool children，按上游 turn/response/call ID 关联。
 模型响应结束不等于含工具交互结束；使用上游 `awaitsToolFollowUp` 判断是否等待续答。
-迟到 ASR 只回补关联轮次 root Inputs；广播通知使用独立 root。LLM Inputs 的 `messages` 包含有效 system
-instructions 与当轮可观测输入；`session_configuration/response_configuration` 保存实际发送的配置及响应覆盖项，
+迟到 ASR 按轮次回补 root Inputs 与已经预留该输入位置的模型快照，不追加后续消息；广播通知使用独立 root。
+LLM Inputs 的 `messages` 包含有效 system instructions 与当前 Provider 会话的跨轮文本观测历史；
+`session_configuration/response_configuration` 保存实际发送的配置及响应覆盖项，
 `extra.invocation_params` 保存 tools schema、tool_choice 等调用参数。配置只在 WS 发送路径接受消息后采集，
 显式响应按原生 request 关联快照，自动响应取可观测 session 配置；这不声称 Provider 已确认每次配置更新。
 配置投影有 1 MiB 上限，超限省略并标记；`LANGSMITH_HIDE_INPUTS` 同时隐藏配置及 invocation parameters。
-历史上下文由 Realtime 服务侧维护，LangSmith 不重建或展示完整服务端历史；标记
+模型 Outputs 保留标准 `tool_calls`；后续模型 Inputs 连接此前各轮用户转写、模型消息与已经被 WS 发送路径接受的
+`function_call_output`，按 `call_id` 关联。工具节点仍记录执行结果，模型输入使用发送时的结果投影，
+不以工具原始返回值代替。发送结果最多保留 64 项、每项 16,000 字符，超限内容显式省略，重连清空；
+只用于观测，不回灌模型。`input_scope=observed_session_history` 和 Inputs 中的
+`observation.representation=observed_text_history` 明确其为可读文本历史，而非完整模型内部上下文。
+每次响应创建独立快照，后续消息不改变旧快照；仅迟到 ASR 可以回补关联的预留位置，并标记 `asr_backfilled`。
+历史最多保留 256 条消息、128 KiB 序列化字符，超限按消息组淘汰最早内容并标记 `history_trimmed`。
+收到新 `session.created` 或连接丢失后清空观测历史，`provider_session_id` 区分 Provider 会话；旧 trace 保留。
+已确认的 item 删除/截断只改变未来快照；没有文本与音频对齐时保守移除对应消息组，不推断用户实际听到的文本。
+输入/输出隐藏开关均阻止工具结果通过续答 Inputs 泄露。根 Inputs 保留用户请求，根 Outputs 保存最终回答。
+运行中输入 PATCH 显式传 `end_time=null`，避免输入回补被 ingestion 视为结束；终结 PATCH 携带真实结束时间和输出。
+实际上下文由 Realtime 服务侧维护，LangSmith 文本投影不用于会话恢复、模型回灌或精确重放；标记
 `conversation_history=provider_managed`。当前 Gateway 禁止把本地 UI/Memory 记录经 `recentMessages` 回灌，
 因此重连建立新的模型上下文，界面旧记录不代表新连接的模型记忆。Outputs 为最终转写或实际增量。
 LLM start_time 是首个可观测响应事件，标记
@@ -50,9 +62,22 @@ LLM start_time 是首个可观测响应事件，标记
 与 tool 的 `qwen_task_id` 关联业务 thread，不伪造前后台父子关系；前台 `thread_id/voice_session_id`
 表示 Gateway 会话，不是 Graph thread。
 
+Gateway 的直接百炼搜索由 `FrontendAgent` 下的 tool child 记录完整执行生命周期。
+Python `/qwen-audio/search` 仅在该次 `BaseTool.ainvoke` 周围使用 `tracing_context(enabled=False)`，
+避免跨 HTTP 缺少 parent 时再次自动创建独立 Tool root；不全局关闭追踪，不影响业务 Graph 中的 MCP children，
+也不影响旧浏览器 Voice 通过 `tracing_context(parent=tool_trace)` 传播的原生父子关系。
+
+记忆提取调度仅由前台 Realtime 会话关闭触发，业务图不再注册 Memory after_agent。
+`VoiceTasks.refresh_memory` 在三次重试的提交调用周围使用 `tracing_context(enabled=False)`，
+避免 HTTP 转写桥接或后台协程生成独立 `refresh_memory_extraction` root。
+该局部开关不影响前台轮次、业务 Graph 或实际 `assistant-memory-v1` 后台提取的原生 tracing；
+提交失败仍通过已有 memory.error/桥接错误报告。
+
 Gateway 显式读取 `LANGSMITH_TRACING/API_KEY/ENDPOINT/PROJECT/HIDE_INPUTS/HIDE_OUTPUTS`，配置仅传给适配层；
 mock 始终不创建远端 client。适配层异步排队、有界保留内容，过滤媒体和敏感字段，隐藏开关在入队前生效。
-上报失败只记录固定错误码；关闭时限时排空，超时停止剩余上报。追踪为 best-effort，不阻塞语音。
+上报失败记录固定事件 `frontend_trace_export_failed`，`status` 只包含失败阶段
+（`createRun/updateRun/projection/flush`）和 HTTP 状态码或白名单网络/异常类型；未知原因记为 `unknown`。
+不记录错误正文、URL、响应体或凭据。关闭时限时排空，超时停止剩余上报。追踪为 best-effort，不阻塞语音。
 已通过离线上游 Runtime 和本机 HTTP SDK fixture 验证。2026-10-16 已启用本机 Gateway 观测并重启，
 通过现有 WebUI 文字输入触发真实 Qwen Realtime 响应，在 LangSmith 确认完成的
 `FrontendAgent → QwenRealtime` 父子 trace、无错误与实际 token 用量。此验证未覆盖麦克风采集、

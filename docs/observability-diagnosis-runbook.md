@@ -129,7 +129,7 @@ token 统计只能选择一个口径：汇总 root 的聚合 token，或汇总 L
 查询顺序固定如下：
 
 1. LangSmith 精确 run/thread 查询；
-2. 若 8089 dev worker 持有凭据但当前 shell 没有，识别该唯一 worker 的安全配置来源后在同等环境重试，
+2. 若 8088 dev worker 持有凭据但当前 shell 没有，识别该唯一 worker 的安全配置来源后在同等环境重试，
    不输出配置值，也不按监听列表顺序猜父进程；
 3. 仅在 LangSmith 404、不可达或无权限时，按用户给定 ID 与时间范围查 Agent Server/媒体 transport 日志；
 4. 历史 custom canonical JSONL 只用于诊断迁移前旧 run，不能作为当前 AssistantAgent 或视觉 trace 的主证据。

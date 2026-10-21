@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-import hashlib
 import os
 from pathlib import Path
 from typing import Any, Literal, Self
@@ -12,31 +11,27 @@ from langgraph.runtime import Runtime
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-def studio_working_directory() -> Path:
-    """Return the shared local Studio workspace."""
+def default_working_directory() -> Path:
+    """Return the shared local workspace for every entry point."""
 
-    return Path.home() / "assistant_cqy" / "studio"
+    return Path.home() / "assistant_cqy"
 
 
 def media_user_working_directory(user_id: str) -> Path:
-    """Return a stable workspace without exposing the media user identifier."""
+    """Use the same personal workspace as web and SDK requests."""
 
     identity = user_id.strip()
     if not identity:
         raise ValueError("media user identity is required")
-    opaque_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
-    return Path.home() / "assistant_cqy" / "media" / f"usr_{opaque_id}"
+    return default_working_directory()
 
 
 def ensure_working_directory(path: Path) -> Path:
     host_root = Path.home().resolve()
-    path.mkdir(parents=True, exist_ok=True)
-    resolved = path.resolve(strict=True)
+    resolved = path.resolve()
     if not resolved.is_relative_to(host_root):
         raise ValueError(f"cwd must be a directory under {host_root}")
-    (resolved / "ASSISTANT.md").touch(exist_ok=True)
-    for subdirectory in (".agent/browser", ".agent/downloads", "outputs"):
-        (resolved / subdirectory).mkdir(parents=True, exist_ok=True)
+    resolved.mkdir(parents=True, exist_ok=True)
     return resolved
 
 
@@ -56,10 +51,10 @@ class AssistantRunContext(BaseModel):
         json_schema_extra={"langgraph_nodes": ["model"]},
     )
     cwd: Path = Field(
-        default_factory=studio_working_directory,
+        default_factory=default_working_directory,
         description="本轮 Assistant 使用的默认工作目录。",
         json_schema_extra={
-            "default": str(Path.home() / "assistant_cqy" / "studio")
+            "default": str(default_working_directory())
         },
     )
     enable_memory: bool = Field(
@@ -67,7 +62,6 @@ class AssistantRunContext(BaseModel):
         json_schema_extra={
             "langgraph_nodes": [
                 "MemoryLifecycleMiddleware.before_agent",
-                "MemoryLifecycleMiddleware.after_agent",
             ]
         },
     )
@@ -184,5 +178,5 @@ __all__ = [
     "authenticated_user_identity",
     "ensure_working_directory",
     "media_user_working_directory",
-    "studio_working_directory",
+    "default_working_directory",
 ]

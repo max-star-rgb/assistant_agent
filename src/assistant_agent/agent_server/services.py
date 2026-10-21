@@ -46,32 +46,18 @@ from assistant_agent.runtime.local_backend import (
     create_local_backend,
 )
 from assistant_agent.runtime.thread_resources import (
-    ThreadResourceConfig,
-    ThreadResourceManager,
+    GeneratedArtifactStore,
 )
 
 VOICE_SEARCH_TOOL_NAME = "mcp_bailian_bailian_web_search"
 
 
-async def reap_thread_resources(
+async def _run_mcp_session_reaper(
     pool: ThreadMcpSessionPool,
-    manager: ThreadResourceManager,
-) -> None:
-    """Close thread MCP sessions before deleting expired thread directories."""
-
-    await pool.aclose_idle(manager.config.ttl_seconds)
-    thread_refs = await asyncio.to_thread(manager.expired_thread_refs)
-    for thread_ref in thread_refs:
-        await asyncio.to_thread(manager.remove_expired, thread_ref)
-
-
-async def _run_thread_resource_reaper(
-    pool: ThreadMcpSessionPool,
-    manager: ThreadResourceManager,
 ) -> None:
     while True:
         await asyncio.sleep(60)
-        await reap_thread_resources(pool, manager)
+        await pool.aclose_idle(86_400)
 
 
 @dataclass
@@ -80,7 +66,7 @@ class AgentServerExecutionOwner:
 
     model: BaseChatModel
     tools: list[BaseTool]
-    thread_resource_manager: ThreadResourceManager
+    artifact_store: GeneratedArtifactStore
     mcp_session_pool: ThreadMcpSessionPool
     memory_backend: MemoryBackend
     graph: Any
@@ -89,7 +75,7 @@ class AgentServerExecutionOwner:
     voice_config: VoiceConfig | None = None
     voice_search_tool: BaseTool | None = None
     memory_store: Any = None
-    thread_resource_reaper_task: asyncio.Task[None] | None = None
+    mcp_session_reaper_task: asyncio.Task[None] | None = None
 
     @classmethod
     async def compose(
@@ -110,28 +96,26 @@ class AgentServerExecutionOwner:
             tool_resources,
             memory_backend,
             project_root,
-            thread_resource_config,
         ) = await asyncio.to_thread(
             _compose_sync,
             config,
             store,
         )
-        thread_resource_manager = ThreadResourceManager(thread_resource_config)
+        artifact_store = GeneratedArtifactStore(store)
         tool_resources = replace(
             tool_resources,
-            thread_resource_manager=thread_resource_manager,
+            artifact_store=artifact_store,
             visual_timeline_context_service=create_visual_timeline_context_service(
                 config.vision,
                 model,
                 provider_mode=config.provider_mode,
                 token_counter=context_token_counter,
-            ),
+            ) if config.vision.realtime_visual_enabled else None,
         )
         mcp_server_configs = load_mcp_server_configs_from_env()
         mcp_session_pool = ThreadMcpSessionPool(
             mcp_server_configs,
         )
-        await reap_thread_resources(mcp_session_pool, thread_resource_manager)
         tools = await create_native_tool_inventory(
             config.tools,
             provider_mode=config.provider_mode,
@@ -214,7 +198,6 @@ class AgentServerExecutionOwner:
             live_view_resolver=tool_resources.live_view_resolver,
             current_location=config.runtime.current_location,
             memory_backend=memory_backend,
-            memory_extraction_delay_seconds=config.memory.memory_extraction_delay_seconds,
         )
         voice_config = config.voice if config.provider_mode == "real" else None
         if voice_config is not None and (not voice_config.api_key or not voice_config.base_url):
@@ -229,32 +212,32 @@ class AgentServerExecutionOwner:
             voice_search_tool=voice_search if VOICE_SEARCH_TOOL_NAME not in interrupt_names else None,
             memory_store=store,
             tools=tools,
-            thread_resource_manager=thread_resource_manager,
+            artifact_store=artifact_store,
             mcp_session_pool=mcp_session_pool,
             memory_backend=memory_backend,
             graph=assistant_agent,
             worker_graph=worker_graph,
             memory_graph=memory_graph,
         )
-        owner.thread_resource_reaper_task = asyncio.create_task(
-            _run_thread_resource_reaper(mcp_session_pool, thread_resource_manager),
-            name="thread-resource-reaper",
+        owner.mcp_session_reaper_task = asyncio.create_task(
+            _run_mcp_session_reaper(mcp_session_pool),
+            name="mcp-session-reaper",
         )
         return owner
 
     async def aclose(self) -> None:
-        if self.thread_resource_reaper_task is not None:
-            self.thread_resource_reaper_task.cancel()
+        if self.mcp_session_reaper_task is not None:
+            self.mcp_session_reaper_task.cancel()
             await asyncio.gather(
-                self.thread_resource_reaper_task,
+                self.mcp_session_reaper_task,
                 return_exceptions=True,
             )
-            self.thread_resource_reaper_task = None
+            self.mcp_session_reaper_task = None
         seen: set[int] = set()
         for target in (
             self.mcp_session_pool,
             self.memory_backend,
-            self.thread_resource_manager,
+            self.artifact_store,
             self.model,
             *self.tools,
         ):
@@ -272,7 +255,6 @@ def _compose_sync(
     NativeToolResources,
     MemoryBackend,
     Path,
-    ThreadResourceConfig,
 ]:
     model = create_chat_model(
         config.chat,
@@ -303,15 +285,11 @@ def _compose_sync(
         langmem_store=store,
     )
     project_root = Path(__file__).resolve().parents[3]
-    thread_resource_config = ThreadResourceConfig(
-        root=Path.home() / "assistant_agent" / "threads",
-    )
     return (
         model,
         tool_resources,
         memory_backend,
         project_root,
-        thread_resource_config,
     )
 
 

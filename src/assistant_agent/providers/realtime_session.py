@@ -174,9 +174,6 @@ class RealtimeSession:
                 raise RealtimeSessionError("invalid_transcript")
             if getattr(self.tasks, "memory_enabled", False) and text.strip():
                 self.tasks.transcripts[event["item_id"]] = text
-                job = asyncio.create_task(self.refresh_memory())
-                self.jobs.add(job)
-                job.add_done_callback(self.jobs.discard)
             await self.emit({"type": "voice_input_transcript", "text": text, "turn_id": event.get("item_id")})
             return
         if kind == "response.created":
@@ -352,3 +349,4 @@ class RealtimeSession:
         if self.socket:
             await self.socket.close()
         self.trace.close()
+        await self.refresh_memory()

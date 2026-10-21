@@ -109,15 +109,11 @@ def _prevalidate_environment(source: Mapping[str, str], mode: ProviderMode) -> N
         raise ValueError("Mem0 timeout must be positive")
     if not (source.get("MEM0_IDENTITY_NAMESPACE") or "assistant-agent").strip():
         raise ValueError("Mem0 identity namespace must be non-empty")
-    if _int(source.get("MEMORY_EXTRACTION_DELAY_SECONDS"), 1800) <= 0:
-        raise ValueError("memory extraction delay must be positive")
 
     remote_enabled = _bool(source.get("REMOTE_VISUAL_MEMORY_ENABLED"), False)
     if remote_enabled:
         if mode != "real":
             raise ValueError("remote visual memory requires provider mode real")
-        if memory_backend not in {"langmem", "mem0"}:
-            raise ValueError("remote visual memory requires MEMORY_BACKEND=langmem or mem0")
         if not (source.get("REMOTE_VISUAL_MEMORY_BASE_URL") or "").strip():
             raise ValueError("remote visual memory requires a base URL")
     if _float(source.get("REMOTE_VISUAL_MEMORY_QUERY_TIMEOUT_SECONDS"), 5.0) <= 0:
@@ -307,6 +303,7 @@ def _load_vision_config(source: Mapping[str, str], mode: ProviderMode) -> Vision
     region = _realtime_region(source.get("QWEN_REALTIME_VISION_REGION"))
     device = _int(source.get("SIGLIP2_CUDA_DEVICE_ID"), 0)
     return VisionConfig(
+        realtime_visual_enabled=_bool(source.get("REALTIME_VISUAL_ENABLED"), False),
         qwen_realtime_vision_api_key=resolved.api_key if provider == "qwen" else None,
         vision_provider=provider,
         vision_api_key=resolved.api_key,
@@ -406,9 +403,6 @@ def _load_memory_config(source: Mapping[str, str]) -> MemoryConfig:
         mem0_identity_namespace=source.get("MEM0_IDENTITY_NAMESPACE")
         or "assistant-agent",
         memory_backend=source.get("MEMORY_BACKEND", "disabled"),
-        memory_extraction_delay_seconds=_int(
-            source.get("MEMORY_EXTRACTION_DELAY_SECONDS"), 1800
-        ),
         langmem_model=source.get("LANGMEM_MODEL"),
         embedding_api_key=source.get("QWEN_EMBEDDING_API_KEY") or source.get("QWEN_API_KEY"),
         embedding_base_url=source.get("QWEN_EMBEDDING_BASE_URL")
@@ -531,6 +525,7 @@ def _load_tool_config(source: Mapping[str, str], mode: ProviderMode) -> ToolConf
             image_generation_base_url=resolved.base_url,
             image_generation_model=resolved.model,
             image_generation_adapter_kind=resolved.adapter_kind,
+            image_generation_mock_path=source.get("MULTIMODAL_AGENT_IMAGE_MOCK_PATH"),
             qwen_image_default_size=source.get("QWEN_IMAGE_DEFAULT_SIZE", "1024*1024"),
         ),
         search=SearchConfig(

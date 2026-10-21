@@ -37,6 +37,11 @@ source_globs = [
   "src/assistant_agent/runtime/thread_resources.py",
   "src/assistant_agent/proactive_delivery.py",
   "scripts/run_server.py",
+  "scripts/run_pycharm.py",
+  "scripts/run_pycharm.py",
+  ".run/Agent Server (Real).run.xml",
+  ".run/Realtime Server.run.xml",
+  ".run/Assistant (All).run.xml",
   "scripts/agent_cli.py",
   "requirements.txt",
   "scripts/setup_local.py",
@@ -59,6 +64,8 @@ read_when = [
   "图片交付、3D submit/callback、H.264 或媒体联调",
 ]
 source_globs = [
+  "integrations/qwen_audio_agent/src/media-entry.mjs",
+  "integrations/qwen_audio_agent/src/media-artifacts.mjs",
   "src/assistant_agent/agent_server/media_app.py",
   "src/assistant_agent/agent_server/media_audio.py",
   "src/assistant_agent/agent_server/media_protocol.py",
@@ -158,7 +165,7 @@ id = "graph-memory"
 authority = "docs/memory-service-architecture.md"
 read_when = [
   "LangGraph 长期记忆节点、memory_context、冻结快照或 commit ledger",
-  "记忆读取、写入、time-travel、Mem0/LangMem/disabled 后端装配",
+  "Node 原生 Markdown 记忆读写和提取、视觉查询、旧 Mem0/LangMem/disabled 后端装配",
 ]
 source_globs = [
   "src/assistant_agent/native_agent/memory.py",
@@ -167,6 +174,10 @@ source_globs = [
   "src/assistant_agent/native_agent/memory_middleware.py",
   "src/assistant_agent/native_agent/state.py",
   "src/assistant_agent/memory/**",
+  "integrations/qwen_audio_agent/src/session-bridge.mjs",
+  "integrations/qwen_audio_agent/src/visual-memory-bridge.mjs",
+  "integrations/qwen_audio_agent/src/frontend-memory-context.mjs",
+  "integrations/qwen_audio_agent/src/config.mjs",
 ]
 thin_references = ["README.md", "docs/context_engineering_status.md", "scripts/README.md"]
 verification = [

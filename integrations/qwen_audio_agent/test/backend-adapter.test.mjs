@@ -22,14 +22,14 @@ test('official BackendPort conformance over native HTTP wire', async t => {
 
 test('isolates tasks, guards context and sends only instruction', async t => {
   const f = await fixture(t);
-  const result = await f.backend.submit({ ...work, rawTranscript: 'do not forward', context: { require_tool_approval: false } });
-  assert.deepEqual(result, { content: '业务完成', artifacts: [] });
+  const result = await f.backend.submit({ ...work, rawTranscript: 'do not forward', context: { require_tool_approval: true } });
+  assert.deepEqual(result, { content: '业务完成', artifacts: [], execution_status: 'completed', delivery_status: 'ready' });
   await f.backend.submit({ ...work, id: 'task-two' });
   assert.equal(f.threads.size, 2);
   const creates = f.requests.filter(r => r.method === 'POST' && r.path.endsWith('/runs'));
   assert.equal(creates.length, 2);
   assert.deepEqual(creates[0].body.input, { messages: [{ role: 'user', name: 'voice_agent', content: '整理旅行计划' }] });
-  assert.deepEqual(creates[0].body.context, { enable_memory: false, require_tool_approval: true });
+  assert.deepEqual(creates[0].body.context, { enable_memory: false, require_tool_approval: false });
   assert.equal(creates[0].body.multitask_strategy, 'reject');
   assert.equal(creates[0].user, 'local-developer');
 });
@@ -57,21 +57,10 @@ test('closing adapter stops observation but never cancels business', async t => 
   assert.equal(f.requests.filter(r => r.path.includes('/cancel')).length, 0);
 });
 
-test('HITL waits for Studio and refuses Gateway auto-granted permissions', async t => {
-  const interrupt = { id: 'private-interrupt', value: { action_requests: [{ name: 'write_file', args: { path: 'x', content: 'secret' } }], review_configs: [{ action_name: 'write_file', allowed_decisions: ['approve', 'reject'] }] } };
-  const f = await fixture(t, { interrupt });
-  let permission;
-  const requested = new Promise(resolve => f.backend.subscribe(e => { if (e.type === 'backend.permission.requested') { permission = e.permission; resolve(); } }));
-  const result = f.backend.submit(work);
-  await requested;
-  assert.equal(permission.approvalScope, 'once');
-  assert.equal(JSON.stringify(permission).includes('secret'), false);
-  await assert.rejects(f.backend.respondAuthorization(work.id, permission.id, 'once', { ownerId: work.ownerId }), /Studio/);
+test('unexpected old HITL is not silently approved or resumed', async t => {
+  const f = await fixture(t, { interrupt: { id: 'old', value: { action_requests: [{ name: 'write_file' }] } } });
+  await assert.rejects(f.backend.submit(work), /unsupported_interrupt_use_Studio/);
   assert.equal(f.requests.filter(r => r.body?.command).length, 0);
-  const thread = [...f.threads.values()][0];
-  thread.interrupt = null;
-  thread.runs.push({ run_id: 'studio-resume', status: 'success', metadata: {} });
-  assert.equal((await result).content, '业务完成');
 });
 
 test('input resume is bound to owner and current interrupt and happens once', async t => {

@@ -2,12 +2,13 @@
 
 import hashlib
 import mimetypes
+import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from assistant_agent.config import ImageGenerationConfig
 from assistant_agent.media.generated_artifacts import MAX_ARTIFACT_BYTES
@@ -46,18 +47,25 @@ class MockImageGenerationAdapter:
     provider = "mock"
     model = "mock-image-generation"
 
+    def __init__(self, image_path: str | None = None) -> None:
+        self.image_path = image_path
+
     def generate(self, input: ImageGenerationRequest) -> ImageGenerationResult:
         prompt = build_image_prompt(input)
+        image_url = (
+            Path(self.image_path).expanduser().resolve().as_uri()
+            if self.image_path else "local://generated/poster.png"
+        )
         return ImageGenerationResult(
             task_id="mock_image_task_1",
             status="succeeded",
-            image_url="local://generated/poster.png",
-            image_urls=["local://generated/poster.png"],
+            image_url=image_url,
+            image_urls=[image_url],
             request_id="mock_image_request_1",
             prompt=prompt,
             provider=self.provider,
             model=self.model,
-            output_ref="local://generated/poster.png",
+            output_ref=image_url,
             prompt_used=prompt,
         )
 
@@ -105,6 +113,23 @@ def materialize_image_generation_result(
     """Download provider-hosted images and expose backend-owned download URLs."""
 
     image_urls = result.image_urls or ([result.image_url] if result.image_url else [])
+    # Only the trusted mock adapter can supply a local fixture, never a real provider.
+    if result.provider == "mock" and image_urls and urlparse(image_urls[0]).scheme == "file":
+        source = Path(unquote(urlparse(image_urls[0]).path))
+        try:
+            with source.open("rb") as stream:
+                payload = stream.read(MAX_ARTIFACT_BYTES + 1)
+        except OSError as exc:
+            raise ProviderAdapterError("mock_image_unavailable", "configured mock image cannot be read") from exc
+        if len(payload) > MAX_ARTIFACT_BYTES:
+            raise ProviderAdapterError("mock_image_unavailable", "mock image exceeded artifact size limit")
+        name = hashlib.sha256(payload).hexdigest()[:24] + source.suffix.lower()
+        ref = f"{public_prefix.rstrip('/')}/{name}"
+        return result.model_copy(update={
+            "image_url": ref, "image_urls": [ref], "output_ref": ref,
+            "download_url": ref, "download_urls": [ref],
+            "provider_image_urls": image_urls, "image_id": [name.rsplit(".", 1)[0]],
+        })
     provider_urls = [url for url in image_urls if _is_remote_http_url(url)]
     if not provider_urls:
         return result
@@ -172,12 +197,33 @@ def store_remote_artifact(
     extension = _extension_from_url_or_content_type(url, content_type)
     name = hashlib.sha256(f"{filename_seed}:{url}".encode("utf-8")).hexdigest()[:24]
     path = artifact_dir / f"{name}{extension}"
-    path.write_bytes(payload)
+    _write_artifact(path, payload)
     return StoredArtifact(
         path=path,
         download_url=f"{public_prefix.rstrip('/')}/{path.name}",
         source_url=url,
     )
+
+
+def mock_image_source(result: ImageGenerationResult) -> Path | None:
+    """Return the trusted fixture backing a mock reference, without copying it."""
+    if result.provider == "mock" and result.provider_image_urls:
+        parsed = urlparse(result.provider_image_urls[0])
+        if parsed.scheme == "file":
+            return Path(unquote(parsed.path))
+    return None
+
+
+def _write_artifact(path: Path, payload: bytes) -> None:
+    """Publish complete bytes without following an existing file symlink."""
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            stream.write(payload)
+            stream.close()
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def _is_remote_http_url(value: str) -> bool:
@@ -202,8 +248,8 @@ def create_image_generation_adapter(
 ) -> ImageGenerationAdapter:
     """Create an image generation adapter without initializing real provider clients."""
 
-    if provider_mode != "real":
-        return MockImageGenerationAdapter()
+    if provider_mode != "real" or config.image_generation_provider == "mock":
+        return MockImageGenerationAdapter(config.image_generation_mock_path)
     provider = config.resolved_provider()
     missing = provider.missing_required_env()
     if missing:

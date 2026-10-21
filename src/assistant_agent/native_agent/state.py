@@ -47,7 +47,6 @@ class AssistantAgentState(DeepAgentState):
     memory_context: NotRequired[
         Annotated[tuple[str, ...], OmitFromInput, OmitFromOutput]
     ]
-    memory_extraction_blocked: NotRequired[Annotated[bool, OmitFromInput, OmitFromOutput]]
     async_tasks: NotRequired[AsyncTasks]
 
 

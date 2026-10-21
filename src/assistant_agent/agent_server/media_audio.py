@@ -1,4 +1,4 @@
-"""Connection-scoped Media ↔ Qwen Gateway protocol adapter; never stores audio."""
+"""Connection-scoped audio/video ↔ Qwen Gateway protocol adapter."""
 
 from __future__ import annotations
 
@@ -8,16 +8,34 @@ import binascii
 import json
 import logging
 import os
+from io import BytesIO
+from pathlib import Path
 from collections import deque
 from contextlib import suppress
 from uuid import uuid4
 from urllib.parse import urlsplit
 
 from websockets.asyncio.client import connect
+from PIL import Image
 
 from .media_protocol import MediaProtocolError, envelope
 
 logger = logging.getLogger(__name__)
+
+
+def _realtime_jpeg(path: str) -> str:
+    """Bound a decoded local frame to the Gateway's 256 KiB image contract."""
+    with Image.open(Path(path)) as source:
+        image = source.convert("RGB")
+    image.thumbnail((1280, 720))
+    for quality in (80, 60, 40):
+        output = BytesIO()
+        image.save(output, format="JPEG", quality=quality)
+        encoded = base64.b64encode(output.getvalue()).decode("ascii")
+        if len(encoded) <= 256 * 1024:
+            return encoded
+        image.thumbnail((max(1, image.width // 2), max(1, image.height // 2)))
+    raise MediaProtocolError("realtime video frame exceeds image size limit")
 
 
 def parse_pcm_audio(body: dict) -> bytes:
@@ -162,6 +180,9 @@ class MediaAudioBridge:
         self.reader = None
         self.ready = asyncio.Event()
         self.failed = False
+        self.video_active = False
+        self.last_video_at = None
+        self.video_idle_task = None
 
     async def emit(self, message, body):
         await asyncio.wait_for(self.send(envelope(message=message,
@@ -176,12 +197,17 @@ class MediaAudioBridge:
                                         open_timeout=5, close_timeout=2, max_size=524288, max_queue=8)
             await self.write({"type": "session.hello", "protocol": {"min": "7.0.0", "max": "7.0.0"},
                               "client": {"type": "external-media", "instance_id": self.session.connection_id},
-                              "capabilities": ["input.audio", "playback.receipts"],
+                              "capabilities": ["input.audio", "playback.receipts", *(
+                                  ["input.image_buffer", "client.events"]
+                                  if getattr(self.session, "call_type", None) == "VIDEO" else []
+                              )],
                               "connection": {"provider": "dashscope", "takeover": False}})
             self.reader = asyncio.create_task(self.read())
             await asyncio.wait_for(self.ready.wait(), 30)
             if self.failed:
                 raise MediaProtocolError("Qwen Gateway unavailable or occupied; reconnect after releasing voice")
+            if getattr(self.session, "call_type", None) == "VIDEO":
+                await self._publish_video_state(False)
         except Exception:
             await self.close()
             raise MediaProtocolError("Qwen Gateway audio initialization failed; check Gateway availability/voice ownership") from None
@@ -199,6 +225,60 @@ class MediaAudioBridge:
         if not self.ready.is_set():
             raise MediaProtocolError("Qwen Gateway audio is not ready")
         await self.write({"type": "input_audio_buffer.append", "audio": base64.b64encode(data).decode()})
+
+    async def _publish_video_state(self, active):
+        await self.write({
+            "type": "client.event.publish", "name": "media.visual_input.changed",
+            "delivery_hint": "context",
+            "text": (
+                "客户端正在提供实时画面，仅根据实际收到的最新画面描述当前环境。这是能力状态，无需主动播报。"
+                if active else
+                "客户端当前没有提供实时画面，不能描述当前环境。此前画面仅代表历史。这是能力状态，无需主动播报。"
+            ),
+        })
+
+    async def append_video(self, frame):
+        if getattr(self.session, "call_type", None) != "VIDEO" or not self.ready.is_set():
+            raise MediaProtocolError("realtime video requires a ready VIDEO audioStreamV1 session")
+        now = asyncio.get_running_loop().time()
+        if self.last_video_at is not None and now - self.last_video_at < 1.0:
+            return False
+        try:
+            image = await asyncio.to_thread(_realtime_jpeg, frame.uri)
+        except (OSError, ValueError, Image.DecompressionBombError):
+            raise MediaProtocolError("realtime video JPEG conversion failed") from None
+        await self.write({"type": "input_image_buffer.append", "image": image,
+                          "media_type": "image/jpeg",
+                          **({"occurred_at": frame.timestamp_ms}
+                             if frame.timestamp_ms is not None and frame.timestamp_ms >= 0 else {})})
+        self.last_video_at = asyncio.get_running_loop().time()
+        if not self.video_active:
+            await self._publish_video_state(True)
+            self.video_active = True
+        if self.video_idle_task is not None:
+            self.video_idle_task.cancel()
+            await asyncio.gather(self.video_idle_task, return_exceptions=True)
+        self.video_idle_task = asyncio.create_task(self._expire_video(), name="media-video-idle")
+        return True
+
+    async def _expire_video(self):
+        try:
+            await asyncio.sleep(3)
+            await self.clear_video()
+        except MediaProtocolError:
+            logger.warning("media_video_state_delivery_failed")
+
+    async def clear_video(self, *, notify=True):
+        task, self.video_idle_task = self.video_idle_task, None
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        if self.video_active:
+            self.video_active = False
+            self.last_video_at = None
+            if notify:
+                await self.write({"type": "input_image_buffer.clear"})
+                await self._publish_video_state(False)
 
     async def interrupt(self):
         for message, body in self.downlink.interrupt("MEDIA_INTERRUPT"):
@@ -255,9 +335,26 @@ class MediaAudioBridge:
                 await self.socket.close()
 
     async def close(self):
+        # The owning media transport may already be closed.
+        await self.clear_video(notify=False)
         if self.reader:
             self.reader.cancel()
             await asyncio.gather(self.reader, return_exceptions=True)
         if self.socket:
             await self.socket.close()
         self.downlink.streams.clear()
+
+
+class GatewayVisualBridge(MediaAudioBridge):
+    """Return only decoded visual events to the owning Gateway; no model connection."""
+
+    async def start(self):
+        self.ready.set()
+        await self._publish_video_state(False)
+
+    async def write(self, event):
+        if event.get("type") not in {
+            "input_image_buffer.append", "input_image_buffer.clear", "client.event.publish"
+        }:
+            raise MediaProtocolError("internal visual channel only accepts visual events")
+        await self.emit("gatewayVisualEvent", event)

@@ -46,10 +46,8 @@
   Provider-native 只读联网属于模型生成能力，不投影为本地 Tool，也不进入该执行链。
 - Provider 运行只分 `mock` 和 `real`。mock 模式下主 LLM 与 Provider-backed tools 强制使用 mock；real 模式下主 LLM 必须完整配置，Provider-backed tools 只注册已完整配置的真实实现，禁止静默回退到 mock。
 - Tool exposure 和入口路由不得用关键词、正则、高信号话术或手写请求规则推断用户意图；候选 Tool 由受信静态装配、MCP allowlist、entry/media/env 等结构化事实决定，具体调用与参数由 LLM 判断。
-- 长期 Memory recall 发生在 `before_agent` middleware 并冻结为 `memory_context`；回答后
-  `after_agent` middleware 通过官方 `RemoteReflectionExecutor.submit()` 以 rollback 策略提交独立
-  `assistant-memory-v1`，extract 只在该后台图执行。后端只实现最小 `MemoryBackend` 协议，可接 LangMem、Mem0
-  或第三方服务。
+- Qwen Audio Gateway 文本记忆由 Node 原生 Markdown 模块管理（USER.md / MEMORY.md），编辑与会话结束提取均走上游原生实现；不提交 Python Memory Graph。Gateway 不提供长期视觉召回工具。
+  当前 Python 文本 backend 为 disabled；保留的旧 backend 若显式启用，仍通过 before_agent 冻结 memory_context，具体边界见 Memory authority。业务委派关闭 Memory，由前台携带必要背景。
 - MCP、API、CLI、demo、eval 等交互入口应复用 Agent Server/native graph；不属于对话 run 的 durable task 与后台感知只使用窄业务 service/adapter，不得重建第二套 Agent Runtime。
 - 旧自研 A2A/router/transport/control-plane 已退休；未来如需恢复跨实例 Agent 通信，必须作为 Agent Server 的薄入口并由其 authority 所有。
 - 非 Python 的 Web UI、BFF、vendor adapter 或边缘入口只能做薄适配器；不要把旧 `runTime` agent loop 引入本项目。
@@ -72,9 +70,9 @@
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python
 ```
 
-PyCharm 的本机服务通过 `scripts/run_server.py` 调用官方 `langgraph dev`，默认自动重载。本机多分支部署中，`cqy` 独立 worktree 使用端口 `8089`，当前 `V2` 目录使用 `8088`；默认监听所有 IPv4 网卡，启动时显式传入 `--port`。
+PyCharm 的本机服务通过 `scripts/run_server.py` 调用官方 `langgraph dev`，默认自动重载。本机只运行当前目录的 `8088` 实例，冗余 `cqy:8089` 已停用；默认监听所有 IPv4 网卡，启动时显式传入 `--port`。
 使用官方 in-memory Runtime，状态保存在 `.langgraph_api/`；不装配 Docker/PostgreSQL 或自定义 Runtime 补丁。
-启动脚本只维护工作目录级单实例锁、严格端口检查、env 来源和仓库外日志。Codex 默认作为客户端连接目标分支已有实例，不为同一工作目录另起 Server；多分支部署操作见 `scripts/README.md`。
+启动脚本只维护工作目录级单实例锁、严格端口检查、env 来源和仓库外日志。Codex 默认作为客户端连接目标分支已有实例，不为同一工作目录另起 Server；部署操作见 `scripts/README.md`。
 
 测试与 eval 的职责边界见第 8 节；具体命令和运行约束以 `tests/README.md`、
 `docs/observability-harness.md`、`scripts/README.md` 或对应 `docs/*.md` 为准。历史 runbook

@@ -4,6 +4,14 @@
 
 最后更新：2026-09-08
 
+媒体对外端口为 `8081`，由前台 Gateway 同一 Node 进程的 `media-entry.mjs` 承载 `/agent-service/v1`。
+前台一次启动同时在 `0.0.0.0` 监听 `3101` 和 `8081`，两者均提供 `/agent-service/v1`，
+任一端口绑定失败则关闭整个前台，停止时同时释放。
+音频和字幕协议通过本进程 Gateway 的公开 GCP 会话适配，不经过 Agent Server。
+VIDEO 通过本机专用 `/internal/media-visual/v1` 复用既有解码、归档和并行视觉流水线，
+后台返回有界 JPEG/画面状态事件，前台送入自己的同一实时会话；该内部连接不创建第二条模型会话。
+内部路由仅接受无 Origin 的回环连接，不接收音频或 chat；8081 不暴露业务 REST API。
+
 ## Authority contract
 
 | 字段 | 内容 |
@@ -28,7 +36,7 @@ assistant-memory-v1 -> assistant_agent.agent_server.graph:native_memory_graph
 Studio/SDK 直接运行 `assistant-business-v2` 业务图，使用业务模型与原生 ToolNode/HITL。
 浏览器 Voice 只运行原生 Realtime 会话，通过 `VoiceTasks` 提交独立业务 run。
 业务图保留 Memory lifecycle；语音委派显式关闭业务 Memory，语音记忆使用原生会话接入。
-同步 task 在原 run 内调用 worker，异步 delegation 使用 worker thread/run；延迟记忆提取使用 Memory graph。
+同步 task 在原 run 内调用 worker，异步 delegation 使用 worker thread/run；会话关闭后的记忆提取使用 Memory graph。
 real 装配仍要求 Realtime 配置和受信百炼搜索完整，mock 不打开真实 Realtime 连接。
 Agent Server 拥有业务 assistant/thread/run/checkpoint/interrupt/resume/cancel/Store。
 `assistant-voice-v1`、Graph Realtime ChatModel、跨 run WS 池和 `DELETE /voice/sessions/{thread_id}` 已删除。
@@ -49,32 +57,53 @@ thread 上运行其他 owner 的 custom Assistant。auth 不把 custom Assistant
 
 ## Thread、checkpoint 与迁移
 
+PyCharm `.run` 配置通过 `scripts/run_pycharm.py` 分别启动后台（`Agent Server (Real)`，8088）、前台（`Realtime Server`，3101），或使用 `Assistant (All)` 一键按后台就绪顺序启动。前台启动等待使用同一身份访问 `/qwen-audio/capabilities`，校验 `search_tool` 为百炼 function schema 或 null，不再要求旧 memory 字段；`/ok` 不代表原生 Graph 已初始化。连接失败和初始化期间的 5xx 在有界时间内重试，认证或路由 4xx 明确失败。启动前停止同目录 systemd 实例；启动器默认自动清理（`--clear-ports` 仅保留兼容旧配置），先停止同项目对应角色或 `all` 的旧启动器，再清理目标端口 TCP 监听进程（后台 8088、前台 3101/8081），SIGTERM 超过 5 秒后使用 SIGKILL，仍未释放则失败。旧 `all` 被停止会同时关闭前后台；其他占用目标端口的程序也会被结束。进程交由 IDE 管理；停止时清理子进程，不自动恢复 systemd。环境文件和常驻服务切换说明见 `scripts/README.md`。
+
 ### Qwen Audio Agent 实验入口
 
 V2 媒体连接可通过 `clientCapabilities.audioStreamV1=true` 启用双向音频。
-`media_audio.py` 作为连接级薄客户端使用 Gateway 3101 的公开 GCP 7 WebSocket，
+前台 `media-entry.mjs` 作为连接级薄适配器使用本进程 Gateway 的公开 GCP 7 WebSocket，
 输入明确为 16kHz PCM16，输出为 24kHz PCM16；不使用旧 Python RealtimeSession，也不新建业务 Runtime。
 模型、业务委派和 Memory 继续由既有 Gateway 集成管理；媒体播放回执映射回 Gateway，断线即关闭语音客户端。
 本机 personal Gateway 仅对应 `local-developer`；不支持把任意媒体号码映射成独立 Gateway 用户。
-不抢占现有浏览器语音会话，旧未协商客户端保持 ACK 行为；详细消息合同见媒体 authority 第 5.1 节。
+不抢占现有浏览器语音会话；8081 未协商的客户端明确失败，8088 旧兼容入口仍保持 ACK 行为。
+`media_audio.py` 保留旧兼容桥与新内部视觉通道的 JPEG/画面状态适配；详细合同见媒体 authority 第 5.1 节。
 
 `integrations/qwen_audio_agent/` 锁定 Qwen Audio Agent 2.0.1，通过公开 Gateway 与 BackendPort 扩展接入。
-Gateway 承载上游事件驱动的前台 Realtime Agent（不使用 LangGraph），独立监听回环端口；本项目 Node
+Gateway 承载上游事件驱动的前台 Realtime Agent（不使用 LangGraph），3101 提供 WebUI 和媒体入口，8081 保留媒体专用入口；本项目 Node
 集成层负责装配、任务/Memory 协议适配和观测接入，业务委派复用 V2 的 `8088` Agent Server。
 Gateway 与 Agent Server 分别承载前台和业务 Agent，生命周期能力不等价；默认 mock 拒绝启动真实语音。
+2.0.1 的工具结果回传补丁兼容外部 Tool 省略可选 policy，缺省时沿用上游结果大小限制，避免读取 maxResultBytes 时异常。
 前台通用执行事件与 LangSmith 边界见 [`observability-harness.md`](observability-harness.md)。
+实时 Agent 通过原生目录配置加载项目 `prompts/PROMPT.md`，基于官方版本直接修改记忆个性化规则；默认人设仍使用官方版本。
+项目另保留后台工具描述、时间地点和记忆规则。
+原生 memory feature 注入项目 `MEMORY.md`；快照和会话人设仍走原生 builder。具体维护位置见集成 README。
 Realtime 对话历史由服务端会话维护；Gateway 不从本地对话记录回灌 `recentMessages`，重连建立新上下文。
-本地 UI 历史和 Memory 桥记录不作为模型会话历史。
+本地 UI 历史不作为模型会话历史。文本记忆由 Node 原生 Markdown 模块读写与提取，使用 memory 工具；
+不再通过 Mem0 快照桥或 Python Memory Graph；远端视觉快照由独立窄服务通过 `/qwen-audio/visual-memory/snapshot` 提供给前台，不提供模型召回 Tool；当前 Studio/SDK 文本 backend 为 disabled。
 前台通过 `/qwen-audio/capabilities` 获取已装配的 `mcp_bailian_bailian_web_search` 原始 schema，并通过认证的 `/qwen-audio/search` 薄桥调用同一个 `voice_search_tool`；不依赖 Memory 开关。工具未配置时不暴露，调用返回明确不可用错误。旧 `web_search`、`fetch_url` 从本项目前台工具面移除，搜索 Provider 和 URL fetcher 均不实例化，不保留旧搜索回退。mock 模式仍拒绝启动真实 Gateway。
 真实入口另需 `QWEN_AUDIO_ENABLE_REAL=1` 与完整 key。配置、运行和限制见该目录 README；目前未切换默认入口。
 
 新入口按安装 namespace、受信身份与 Gateway task ID 确定业务 thread；不同任务隔离，采用原生 `reject` 并发策略。
-模型输入只有委派指令，固定 `enable_memory=false`、`require_tool_approval=true`；附件目前明确拒绝。
+网页与媒体入口可并行运行。锁定 2.0.1 的 `frontend-concurrency-patch.mjs` 将客户端和语音租约从 owner
+收窄到 owner + session，保留同会话重复连接与接管治理。媒体内部连接使用随机 session ID；认证用户不变，
+长期记忆仍按用户共享。任务自动通知只领取来源会话，不因其他会话有结果而唤醒；音频和关闭提取均按会话隔离。
+宿主占用机器麦克风的全局 input suspension 保留，不等同于会话租约互斥。
+模型输入只有委派指令，固定 `enable_memory=false`、`require_tool_approval=false`；附件目前明确拒绝。
 Adapter 的 `submit` 等待最终结果，前台由上游 Runtime 管理即时受理；SDK `status` 仅查询活动任务，历史可用集成包 task 查询命令对账。
 提交结果未知时先核对原生记录，不自动重投。取消指向该任务 thread 内当前 run，关闭 Gateway 只停止观测。
 
-发布版前台授权具有任务/会话自动授权语义，因此本接入拒绝前台审批响应，保留 Studio 原生逐次 HITL；
-Studio 恢复后的新 run 被同一个 Gateway task 跟踪。此限制阻塞完整 WebUI 审批验收，不得据离线测试宣布 M1/M2 完成。
+Qwen Audio Gateway 恢复官方前台 runtime 的授权与对话机制；明确请求直接执行，需要确认时由前台交流，
+不为每个后台任务增加审批门槛。业务 run 关闭原生 HITL，不再逐工具暂停；也不保留自定义审批工具、
+同工具授权缓存、自动 resume 或审批纠正补丁。官方 `respond_permission` 仅在真实授权 capability 存在时暴露，
+本 LangGraph adapter 不发布授权请求。输入澄清仍通过原生 input interrupt 与 `respond_agent_input` 续办。
+意外遇到旧 HITL 中断返回明确错误，留给 Studio 处理，不自动批准。此变更不调整 Studio/SDK 或独立媒体入口的审批配置。
+离线验证不能替代真实语音交互验收。
+结果投影只读取本轮成功 ToolMessage 的显式交付声明，校验当前身份/thread 的产物路径与 HTTP 图片类型，
+再转为 Gateway artifacts；不解析模型文字中的链接，不扫描目录猜测输出。任务 accepted、执行 completed
+与 delivery ready/partial/failed 分开报告；产物暂不可读时明确提示交付失败。
+前台不暴露产物重试工具或 `get_current_time`；日期由运行上下文提供。
+产物 URL 使用本机 Agent Server origin，当前仅支持同机浏览器；远程客户端需另行提供受控交付链路。
 已识别的单个 text-input interrupt 可通过原生 resume 回应；未知 interrupt 报告需 Studio 处理。
 `/qwen-audio/*` 为认证本机 Voice 薄桥：Memory 语义由 Memory authority 所有，百炼搜索语义由 Tool authority 所有，不提供通用业务执行入口。
 
@@ -113,7 +142,7 @@ task_id 是稳定的业务 thread_id，run_id 区分各次执行；业务 trace 
 `get_business_task` 每次查询最新 run 与完成结果，`cancel_business_task` 等待原生 interrupt 受理；
 沿用 Deep Agents 异步工具的“受理后不立即轮询、用户询问时查实时状态、明确要求时取消”语义，保留现有工具名称。
 启用 Memory backend 时原生 Voice 额外提供 `recall_memory(request)`，按需读取认证用户的长期背景。
-ASR 用户文本独立提交到既有 delayed Memory Graph；具体策略见 Memory authority。
+ASR 用户文本在会话关闭后独立提交到 Memory Graph；具体策略见 Memory authority。
 业务结果保存在原生 thread/checkpoint；其持久性遵循当前 in-memory Agent Server 的约束。
 Provider 协议异常记录 session_id、响应标识、事件阶段及脱敏错误类别，不记录原始参数、媒体或错误正文。
 事件接收只关联实际消费的回复增量、工具完成与 response.done；字幕/音频片段完成等辅助通知直接忽略。
@@ -161,7 +190,7 @@ thread；失败时不创建 run、不改变 checkpoint。
 
 每个 Agent Server worker 进程只创建一个 `AgentServerExecutionOwner`。其 `compose()` 在装配期局部加载并持有完整、
 冻结的 `AppConfig`，只向下游投影所需的窄配置段；owner 持有业务模型和窄 VoiceConfig（mock 时为 None）、一次发现的业务/MCP Tool inventory、一个
-`MemoryBackend`、一个 `ThreadResourceManager`、线程级 MCP session pool，以及编译后的业务、worker、Memory graph。
+`MemoryBackend`、一个 `GeneratedArtifactStore`、线程级 MCP session pool，以及编译后的业务、worker、Memory graph。
 schema/history/state 请求和 run 都复用该 owner；custom-app lifespan 在进程 shutdown 时关闭一次。
 `load_app_config()` 仅位于 composition/入口；Provider、Tool、Memory、Media 叶子只接收显式窄配置，不读取应用配置
 环境变量。Provider SDK policy 自身的 `from_env()` 不是应用配置 loader。
@@ -176,13 +205,15 @@ Skill。worker 不装配同步或异步 delegation middleware，也不运行主 
 两者的官方 summarization 从同一 composition 投影的 `ChatConfig` 取得 context window、trigger/target ratio 与模型 token counter；
 real DeepSeek/native compactor 缺 tokenizer 时在模型 composition 前启动失败。
 
-生成媒体的 thread 临时资源位于 `~/assistant_agent/threads/<thread_ref>/artifacts/generated/`，供协议交付与 TTL 回收；
-同一图片同时复制到用户 `<cwd>/outputs/` 供本地持续使用。thread 目录不是 Agent filesystem mount、源码、安装副本或默认 cwd。`thread_ref` 由认证 identity 与 Agent Server
-thread ID 的摘要确定，目录按 24 小时 TTL 回收；不存在
+真实生成图片直接写入当前 `<cwd>/outputs/`，只有一份服务端正式产物；本地图片 mock 直接登记并读取已有源文件，不复制。不再创建 `~/assistant_agent/threads/`。
+原生 Agent Server Store 保存产物 owner、thread ID 和文件绝对路径，文件路径不进入模型 observation。
+对外统一使用 `/artifacts/{thread_ref}/generated/{filename}`，下载与媒体 resolver 校验身份、登记记录和文件边界。
+`thread_ref` 由认证 identity 与 thread ID 的摘要确定；它是引用关联值，不对应磁盘目录。
+正式产物不做 thread TTL 删除，MCP/browser 空闲 session 仍独立回收。不存在
 `workspace_id`、`workspace.json`、project registry、仓库副本、Git worktree 或 patch 回灌层。Agent 直接操作
 Agent Server OS identity 有权访问的真实路径；`git` Tool 按调用提供的目标路径识别仓库根，不预注册或启动时
 全盘扫描仓库；通用 `execute` 不执行直接 Git CLI。
-Playwright 的 thread session 只复用浏览器进程状态，不使用上述 thread 目录；其进程 cwd 取当前
+Playwright 的 thread session 只复用浏览器进程状态，不创建 thread 文件目录；其进程 cwd 取当前
 `AssistantRunContext.cwd`，输出固定写入 `<cwd>/.agent/browser`，空闲 session 独立按 TTL 回收。
 
 `start_async_task` 只把父子 thread/run correlation 写入 task handle、child thread metadata 和 worker run metadata。
@@ -213,8 +244,7 @@ Studio 直接提交文字给业务图；浏览器音频只进入原生 Realtime 
 
 公开 `AssistantRunContext` 包含 `persona`、`cwd`、`enable_memory`、`require_tool_approval`，以及可选的
 `context_compaction_trigger_tokens` / `context_compaction_keep_tokens`；Studio 的 `cwd` 默认是
-`~/assistant_cqy/studio`，且只接受 Home 内绝对路径。context coercion 不访问文件系统；工作区目录由异步入口准备。媒体握手的 `context` 复用同一 schema，cwd 默认按握手用户稳定映射到
-`~/assistant_cqy/media/usr_<opaque-id>`。`persona` 保留 `general` / `call_assistant` 兼容字段；Voice 使用固定 Voice 策略，业务委派固定 general，不授予身份或能力。两个压缩值必须同时设置且 `0 < keep < trigger`；都不设置时业务图使用业务模型窗口的 75%/15%。`require_tool_approval` 在受信本机开发环境默认 false，保存为 true 的
+`~/assistant_cqy/`，且只接受 Home 内绝对路径。网页、媒体和 Studio/SDK 共用该个人默认工作目录；显式 cwd 与设备绑定继续生效。context coercion 和 Server 启动不创建工作区；文件能力按需创建目录，不创建空 `ASSISTANT.md`。媒体握手的 `context` 复用同一 schema。`persona` 保留 `general` / `call_assistant` 兼容字段；Voice 使用固定 Voice 策略，业务委派固定 general，不授予身份或能力。两个压缩值必须同时设置且 `0 < keep < trigger`；都不设置时业务图使用业务模型窗口的 75%/15%。`require_tool_approval` 在受信本机开发环境默认 false，保存为 true 的
 Assistant 才让已配置 Tool 进入 HITL。身份、入口和视觉 capability 只在
 服务端签发的 namespaced run metadata 中。认证用户唯一来自 `Runtime.server_info.user.identity`；当前 tokenless
 developer hook 从 `X-Assistant-User` 取得 identity，省略时为 `local-developer`，因此端口不得暴露给不受信网络。
@@ -224,12 +254,16 @@ stream/cancel/join、终态 `AIMessage` 与通用 Tool delivery artifact 投影�
 不按 Tool 名解析业务 artifact，不执行 Tool/Memory，
 不选择 Assistant 模式，也不构造第二套 Runtime。旧 coding behavior attestation route 已删除。
 
-回答后 `MemoryLifecycleMiddleware.after_agent` 直接通过官方 `RemoteReflectionExecutor.submit()` 在确定性 companion
-thread 上提交 `assistant-memory-v1` delayed run，使用官方 rollback 替换冲突的 Memory run。普通 chat 使用 Agent Server 原生 `multitask_strategy="interrupt"`；显式
-checkpoint replay 使用 enqueue。主动投递使用独立 Store，不进入 `AssistantAgent` run。
+前台 Gateway 关闭时通过原生 ConversationSync 的 pendingRecords 消费本批用户记录，覆盖网页文字和语音；媒体入口仅适配协议到同一路径，不维护独立转写缓存。
+前台 Realtime WebSocket 会话关闭后通过官方 `RemoteReflectionExecutor.submit()` 在确定性 companion
+thread 上提交 `assistant-memory-v1` 立即执行的 run，使用官方 rollback 替换冲突的 Memory run。普通 chat 使用 Agent Server 原生 `multitask_strategy="interrupt"`；显式
+checkpoint replay 使用 enqueue。业务图不再注册 Memory after_agent 或提交提取；提交调度不生成独立 trace，后台提取图保留原生 tracing。主动投递使用独立 Store，不进入 `AssistantAgent` run。
 
-media custom-app lifespan 单次加载 `AppConfig` 后，只保留 provider mode、`VisionConfig` 和 `MediaConfig`；进程级
-`VisualPerceptionModule` 由该 lifespan 持有，通过 `asyncio.to_thread` 完成同步装配（含 FastEmbed/Hugging Face
+media custom-app lifespan 单次加载 `AppConfig` 后，只保留 provider mode、`VisionConfig` 和 `MediaConfig`。
+`REALTIME_VISUAL_ENABLED=false` 默认关闭实时视觉，修改后重启 Agent Server 生效；业务 Agent 和上传附件理解可独立运行。
+关闭时不装配实时 embedding/视觉索引、不创建后台感知 observer，也不暴露实时视觉工具。
+媒体前台 `VIDEO + audioStreamV1` 可独立解码并向原生 Realtime 会话发送 JPEG，不受该后台开关影响。
+`VisualPerceptionModule` 由该 lifespan 持有，通过 `asyncio.to_thread` 完成同步装配（开启实时视觉时含 FastEmbed/Hugging Face
 依赖导入和本地模型加载），避免事件循环阻塞检查中断导入并留下不完整模块状态。Graph Tool 只消费其窄接口。媒体接入不得合并、
 串行化或删除视觉 authority 定义的 SigLIP2 latest-wins 和并行关键帧 VLM 流水线。
 
@@ -246,7 +280,7 @@ media custom-app lifespan 单次加载 `AppConfig` 后，只保留 provider mode
 - `data/remote_visual_memory/`：远端视觉记忆上传暂存，待上传内容不能直接删除；`data/run/` 保存服务运行锁。
 
 真实 `.env` 仍在仓库根目录；官方 checkpoint/Store 仍位于 `.langgraph_api/`。
-生成图片的 thread 暂存和用户 `outputs/` 继续遵循上文资源契约，不另建 `data/generated/` 输出入口。
+生成图片只写入用户工作目录 `outputs/`，引用元数据归原生 Store，不另建 `data/generated/` 或 thread 暂存入口。
 
 ### 安装客户端的同机体验
 
@@ -275,10 +309,9 @@ media custom-app lifespan 单次加载 `AppConfig` 后，只保留 provider mode
 PyCharm 的 **Agent Server (Real)** 在 V2 通过 `scripts/run_server.py --port 8088 --env-file .env` 调用官方 CLI，
 直接使用本机 `hello_agent` 环境和源码，默认自动重载；`--no-reload` 可关闭。Real 指 Provider 配置，不表示生产部署。
 wrapper 仅负责 env/config 来源、工作目录级单实例锁、严格端口检查和仓库外日志，不修改官方 watcher 或 Runtime。
-本机多分支部署使用同级独立 worktree：`cqy` 绑定 `8089`，`V2` 绑定 `8088`，由各自用户级
-systemd unit 管理。代码、checkpoint/Store 和仓库相对数据路径独立；宿主用户目录与外部服务不自动隔离。
-本机 unit 已经用户授权运行 real，systemd 共享读取原 `.env`，再加载各目录的非密钥
-`local/deployment.env` 覆盖端口与路径；具备用户登录后自启和故障重启。具体启停及共享边界见 `scripts/README.md`。
+本机只运行当前目录的 Agent Server（8088），前台 Gateway 的网页和媒体共用此后台。
+冗余 `assistant-agent-cqy.service`（8089）停止并禁用自启；旧源码 worktree 保留，不作为运行实例。
+统一个人工作目录是 `~/assistant_cqy/`，名称不表示 cqy 分支归属。具体启停见 `scripts/README.md`。
 使用官方 `langgraph-runtime-inmem==0.33.0`；删除原本地 fork，队列调度和恢复行为跟随上游实现。
 checkpoint/Store 保存在 `.langgraph_api/`，重载会重建服务进程并短暂断开连接，不代表运行中任务无中断更新。
 `langgraph.json` 保留项目依赖入口、Graph、auth、HTTP 和 Store 配置；依赖安装在本机环境，变更后重新安装并重启，

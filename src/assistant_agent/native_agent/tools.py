@@ -14,6 +14,7 @@ from langchain_core.tools import BaseTool
 from assistant_agent.config import MediaConfig, ToolConfig, VisionConfig
 from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.mcp.amap_route_links import amap_route_link_interceptor
+from assistant_agent.mcp.amap_travel import create_amap_travel_tools
 from assistant_agent.mcp.config import (
     MCPServerConfig,
 )
@@ -34,6 +35,8 @@ GENERAL_PURPOSE_BUILTIN_TOOL_NAMES = frozenset(
         "live_view_inspect",
         "lodging_search",
         "shopping_search",
+        "travel_route",
+        "travel_nearby",
         "uploaded_media_inspect",
         "visual_image_search",
         "visual_memory_search",
@@ -67,7 +70,7 @@ class NativeToolResources:
     visual_timeline_context_service: Any | None = None
     visual_history_probe: Any | None = None
     live_view_resolver: Callable[[str, str, str], Any] | None = None
-    thread_resource_manager: Any | None = None
+    artifact_store: Any | None = None
 
 
 def _create_builtin_tools(
@@ -96,7 +99,7 @@ def _create_builtin_tools(
         visual_memory_text_index=resources.visual_memory_text_index,
         visual_timeline_context_service=resources.visual_timeline_context_service,
         live_view_resolver=resources.live_view_resolver,
-        thread_resource_manager=resources.thread_resource_manager,
+        artifact_store=resources.artifact_store,
     )
     concrete_tools: list[BaseTool] = []
     for plugin in _builtin_plugins():
@@ -173,6 +176,13 @@ async def _create_official_mcp_tools(
         for server in server_configs:
             discovered = await client.get_tools(server_name=server.server_name)
             allowed = set(server.allowed_tools)
+            if server.server_name == "amap_maps":
+                assembled.extend(create_amap_travel_tools(
+                    {tool.name: tool for tool in discovered if tool.name in allowed},
+                    interrupt_tools=set(server.interrupt_tools),
+                ))
+                # AMap primitives stay private to the two business tools; weather remains ambient.
+                allowed &= {"maps_weather"}
             for tool in discovered:
                 if tool.name not in allowed:
                     continue

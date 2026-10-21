@@ -152,10 +152,10 @@ class VisualPerceptionToolResources:
 
     video_context_store: Any
     vision_client: VisionUnderstandingClient
-    realtime_video_memory_store: RealtimeVideoMemoryStore
-    visual_semantic_store_pool: SessionVisualSemanticStorePool
-    visual_memory_text_index: VisualMemoryTextIndex
-    visual_history_probe: VisualObservationHistoryProbe
+    realtime_video_memory_store: RealtimeVideoMemoryStore | None
+    visual_semantic_store_pool: SessionVisualSemanticStorePool | None
+    visual_memory_text_index: VisualMemoryTextIndex | None
+    visual_history_probe: VisualObservationHistoryProbe | None
     embedding_coordinator_store: SessionEmbeddingCoordinatorStore | None
     visual_reminder_registry: VisualReminderRegistry | None
 
@@ -315,10 +315,11 @@ class VisualPerceptionModule:
         self.vision_config = vision_config
         self.media_config = media_config
         self.data_root = Path(data_root)
+        self.realtime_enabled = vision_config.realtime_visual_enabled
         self.video_context_store = video_context_store or InMemoryVideoContextStore()
         self.realtime_video_memory_store = (
             realtime_video_memory_store or RealtimeVideoMemoryStore()
-        )
+        ) if self.realtime_enabled else None
         self.embedding_observer = None
         self.embedding_provider = (
             embedding_provider
@@ -326,34 +327,34 @@ class VisualPerceptionModule:
                 self.vision_config,
                 provider_mode=self.provider_mode,
             )
-        )
+        ) if self.realtime_enabled else None
         self.embedding_coordinator_store = SessionEmbeddingCoordinatorStore(
             factory=lambda _user_id, session_id: SessionEmbeddingCoordinator(
                 session_id,
                 self.embedding_provider,
                 observer=self.embedding_observer,
             )
-        )
+        ) if self.realtime_enabled else None
         self.visual_reminder_registry = VisualReminderRegistry(
             delivery_timeout_seconds=(
                 self.media_config.proactive_message_delivery_timeout_seconds
             ),
-        )
+        ) if self.realtime_enabled else None
         self.visual_semantic_store_pool = visual_semantic_store_pool or (
             SessionVisualSemanticStorePool(
                 root=self.data_root / "semantic",
                 observer=self.embedding_observer,
             )
-        )
+        ) if self.realtime_enabled else None
         self.visual_memory_text_index = visual_memory_text_index or (
             create_visual_memory_text_index(
                 self.vision_config,
                 provider_mode=self.provider_mode,
             )
-        )
+        ) if self.realtime_enabled else None
         self.visual_history_probe = PoolVisualObservationHistoryProbe(
             self.visual_semantic_store_pool
-        )
+        ) if self.realtime_enabled else None
         self._vision_client = vision_client or _create_process_vision_client(
             provider_mode=self.provider_mode,
             vision_config=self.vision_config,
@@ -377,6 +378,8 @@ class VisualPerceptionModule:
         session_id: str,
         reminder_sink: ProactiveMessageSink | None = None,
     ) -> VisualPerceptionSession:
+        if not self.realtime_enabled:
+            raise RuntimeError("realtime_visual_disabled")
         if self._closed:
             raise RuntimeError("visual_perception_module_closed")
         if not user_id or not session_id:
@@ -404,6 +407,8 @@ class VisualPerceptionModule:
         return handle
 
     def create_video_ingestion(self) -> H264VideoIngestionService:
+        if not self.realtime_enabled:
+            raise RuntimeError("realtime_visual_disabled")
         if self._closed:
             raise RuntimeError("visual_perception_module_closed")
         return H264VideoIngestionService(store=self.video_context_store)
@@ -418,7 +423,13 @@ class VisualPerceptionModule:
     ) -> str | None:
         """Freeze one run's live-view facts and issue its opaque capability."""
 
-        if self._closed or not user_id or not session_id or not video_ids:
+        if (
+            not self.realtime_enabled
+            or self._closed
+            or not user_id
+            or not session_id
+            or not video_ids
+        ):
             return None
         projection = LiveViewProjection(
             live_video_ids=tuple(video_ids),
@@ -484,9 +495,13 @@ class VisualPerceptionModule:
         )
 
     def tool_resources(self) -> VisualPerceptionToolResources:
-        embedding_readiness = self.embedding_provider.readiness()
+        embedding_readiness = (
+            self.embedding_provider.readiness()
+            if self.embedding_provider is not None else None
+        )
         reminder_ready = (
-            embedding_readiness.image_ready and embedding_readiness.text_ready
+            embedding_readiness is not None
+            and embedding_readiness.image_ready and embedding_readiness.text_ready
         )
         return VisualPerceptionToolResources(
             video_context_store=self.video_context_store,
@@ -515,8 +530,10 @@ class VisualPerceptionModule:
                 *(session.aclose() for session in sessions),
                 return_exceptions=True,
             )
-        self.embedding_coordinator_store.close()
-        self.visual_semantic_store_pool.close()
+        if self.embedding_coordinator_store is not None:
+            self.embedding_coordinator_store.close()
+        if self.visual_semantic_store_pool is not None:
+            self.visual_semantic_store_pool.close()
         close_index = getattr(self.visual_memory_text_index, "close", None)
         if callable(close_index):
             close_index()

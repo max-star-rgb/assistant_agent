@@ -7,7 +7,7 @@ import { loadConfig } from '../src/config.mjs';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 
-test('model snapshots include actual configuration and overrides, never conversation history', async () => {
+test('model snapshots include actual configuration and overrides', async () => {
   const { trace, records, emit } = fixture();
   const configuration = { session: { instructions: 'session system', tools: [{ type: 'function', function: {
     name: 'lookup', parameters: { type: 'object', properties: { token: { type: 'string' } } } } }] },
@@ -30,7 +30,70 @@ test('model snapshots include actual configuration and overrides, never conversa
   assert.ok(!JSON.stringify([...hidden.records.values()]).includes('response override'));
 });
 
+test('cross-turn snapshots preserve dialogue and late ASR without future messages or cross-session history', async () => {
+  const { trace, records, emit } = fixture();
+  emit({ kind: 'session.start', providerSessionId: 'p1' });
+  emit({ kind: 'turn.start', turnId: 't1' });
+  emit({ kind: 'model.start', turnId: 't1', responseId: 'r1' });
+  emit({ kind: 'model.end', turnId: 't1', responseId: 'r1', status: 'completed', text: 'first answer', itemIds: ['a1'] });
+  emit({ kind: 'input', turnId: 't2', text: 'follow-up', itemId: 'u2' });
+  emit({ kind: 'model.start', turnId: 't2', responseId: 'r2' });
+  emit({ kind: 'input', turnId: 't1', text: 'late first question', itemId: 'u1' });
+  emit({ kind: 'model.end', turnId: 't2', responseId: 'r2', status: 'completed', text: 'second answer' });
+  emit({ kind: 'input', turnId: 't3', text: 'future question' });
+  await trace.queue;
+  const model = id => [...records.values()].find(r => r.run_type === 'llm' && r.extra.metadata.response_id === id);
+  assert.deepEqual(model('r1').inputs.messages, [{ role: 'user', content: 'late first question' }]);
+  assert.deepEqual(model('r2').inputs.messages.map(m => m.content), ['late first question', 'first answer', 'follow-up']);
+  assert.equal(model('r2').inputs.observation.representation, 'observed_text_history');
+  const before = structuredClone(model('r2').inputs);
+  emit({ kind: 'session.start', providerSessionId: 'p2' });
+  emit({ kind: 'input', turnId: 't4', text: 'new session' });
+  emit({ kind: 'model.start', turnId: 't4', responseId: 'r4' });
+  await trace.close();
+  assert.deepEqual(model('r4').inputs.messages, [{ role: 'user', content: 'new session' }]);
+  assert.deepEqual(model('r2').inputs, before);
+  assert.equal(model('r4').extra.metadata.provider_session_id, 'p2');
+  assert.equal([...records.values()].find(r => r.name === 'FrontendAgent' && r.extra.metadata.turn_id === 't2').inputs.messages.length, 1);
+});
+
+test('confirmed item removal changes future history only and history limits are visible', async () => {
+  const { trace, records, emit } = fixture();
+  emit({ kind: 'input', turnId: 't1', text: 'question', itemId: 'u1' });
+  emit({ kind: 'model.start', turnId: 't1', responseId: 'r1' });
+  emit({ kind: 'model.end', turnId: 't1', responseId: 'r1', status: 'completed', text: 'deleted answer', itemIds: ['a1'] });
+  emit({ kind: 'history.remove', itemId: 'a1' });
+  emit({ kind: 'history.remove', itemId: 'u1' });
+  emit({ kind: 'input', turnId: 't1', text: 'late deleted question', itemId: 'u1' });
+  for (let i = 0; i < 20; i++) emit({ kind: 'input', turnId: `long${i}`, text: 'x'.repeat(16000) });
+  emit({ kind: 'model.start', turnId: 'long19', responseId: 'last' });
+  await trace.close();
+  const run = [...records.values()].find(r => r.extra.metadata.response_id === 'last');
+  assert.ok(!JSON.stringify(run.inputs).includes('deleted'));
+  assert.equal(run.inputs.observation.history_trimmed, true);
+  assert.ok(JSON.stringify(run.inputs.messages).length < 140000);
+});
+
+test('provider lifecycle and deletion events are projected without response IDs', () => {
+  assert.deepEqual(modelExecutionEvent({ type: 'session.created', session: { id: 'p1' } }), { kind: 'session.start', providerSessionId: 'p1' });
+  for (const type of ['conversation.item.deleted', 'conversation.item.truncated']) {
+    assert.deepEqual(modelExecutionEvent({ type, item_id: 'i1' }), { kind: 'history.remove', itemId: 'i1' });
+  }
+});
+
+test('late ASR backfill also respects the snapshot size limit', async () => {
+  const { trace, records, emit } = fixture();
+  for (let i = 0; i < 20; i++) emit({ kind: 'turn.start', turnId: `t${i}` });
+  emit({ kind: 'model.start', turnId: 't19', responseId: 'r' });
+  for (let i = 0; i < 20; i++) emit({ kind: 'input', turnId: `t${i}`, text: 'x'.repeat(16000) });
+  await trace.close();
+  const run = [...records.values()].find(r => r.run_type === 'llm');
+  assert.ok(JSON.stringify(run.inputs.messages).length < 140000);
+  assert.equal(run.inputs.observation.history_trimmed, true);
+});
+
 test('actual upstream transport captures only accepted configuration, with immutable response snapshot', async () => {
+  await patchFrontendObservation();
   await patchFrontendObservation();
   const { createRealtimeFrontend } = await import(new URL('../voice/realtime-provider.mjs', import.meta.resolve('qwen-audio-agent/gateway-application')));
   const events = [], wire = [];
@@ -39,7 +102,10 @@ test('actual upstream transport captures only accepted configuration, with immut
   assert.equal(frontend.restoreRecentConversation(), undefined);
   assert.equal(wire.length, 0);
   frontend.send({ type: 'session.update', session: { instructions: 'sent system', tools: [], api_key: 'SECRET' } });
+  frontend.send({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: 'c', output: '{"value":1}' } });
   frontend.handleProviderEvent({ type: 'response.created', response: { id: 'r' } });
+  const fact = modelExecutionEvent(events.at(-1), { turnId: 't' });
+  assert.deepEqual(fact.toolResults, [{ call_id: 'c', output: '{"value":1}' }]);
   const configuration = events.at(-1).__executionConfiguration;
   assert.equal(configuration.session.instructions, 'sent system');
   assert.equal(configuration.session.api_key, undefined);
@@ -52,8 +118,10 @@ test('actual upstream transport captures only accepted configuration, with immut
   assert.equal(pending.observedConfiguration.session.instructions, 'later system');
   frontend.pendingResponses = [];
   frontend.ws.readyState = 3;
+  frontend.send({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: 'rejected', output: 'not sent' } });
   frontend.send({ type: 'session.update', session: { instructions: 'not sent' } });
   assert.equal(frontend.observedSessionConfiguration.instructions, 'later system');
+  assert.deepEqual(frontend.observedToolResults, [{ call_id: 'c', output: '{"value":1}' }]);
 });
 
 function fixture(options = {}) {
@@ -90,6 +158,52 @@ test('one turn contains tool continuation; late ASR patches its own completed ro
   assert.ok([...records.values()].every(r => r.end_time));
 });
 
+test('continuation shows the call and sent result, without changing root input', async () => {
+  const { trace, records, emit } = fixture();
+  emit({ kind: 'input', turnId: 't', text: 'request' });
+  emit({ kind: 'model.start', turnId: 't', responseId: 'r1' });
+  emit({ kind: 'tool.start', turnId: 't', responseId: 'r1', callId: 'c', name: 'lookup', input: { query: 'x' } });
+  emit({ kind: 'tool.end', turnId: 't', callId: 'c', output: { value: 'raw result' } });
+  emit({ kind: 'model.end', turnId: 't', responseId: 'r1', status: 'completed', hasTools: true });
+  emit({ kind: 'model.start', turnId: 't', responseId: 'r2', toolResults: [{ call_id: 'c', output: '{"value":"sent result"}' }] });
+  emit({ kind: 'model.end', turnId: 't', responseId: 'r2', status: 'completed', text: 'answer' });
+  emit({ kind: 'input', turnId: 't', text: 'late request' });
+  emit({ kind: 'input', turnId: 'next', text: 'follow-up' });
+  emit({ kind: 'model.start', turnId: 'next', responseId: 'r3' });
+  await trace.close();
+  const root = [...records.values()].find(r => !r.parent_run_id);
+  const models = [...records.values()].filter(r => r.run_type === 'llm');
+  assert.deepEqual(models[0].outputs.message.tool_calls, [{ id: 'c', type: 'function', function: { name: 'lookup', arguments: '{"query":"x"}' } }]);
+  assert.deepEqual(models[1].inputs.messages.map(m => m.role), ['user', 'assistant', 'tool']);
+  assert.equal(models[1].inputs.messages[2].content, '{"value":"sent result"}');
+  assert.equal(models[1].inputs.messages[2].tool_call_id, 'c');
+  assert.equal(models[0].inputs.messages.length, 1);
+  assert.deepEqual(models[2].inputs.messages.map(m => m.role), ['user', 'assistant', 'tool', 'assistant', 'user']);
+  assert.equal(models[2].inputs.messages[2].content, '{"value":"sent result"}');
+  assert.equal(root.inputs.messages[0].content, 'late request');
+  assert.equal(root.outputs.messages[0].content, 'answer');
+  assert.ok(root.end_time >= models[1].end_time);
+});
+
+test('unsent results and hidden tool payloads never appear in continuation inputs', async () => {
+  for (const options of [{}, { hideInputs: true }, { hideOutputs: true }]) {
+    const { trace, records, emit } = fixture(options);
+    emit({ kind: 'input', turnId: 't', text: 'request' });
+    emit({ kind: 'model.start', turnId: 't', responseId: 'r1' });
+    emit({ kind: 'tool.start', turnId: 't', responseId: 'r1', callId: 'c', name: 'lookup', input: {} });
+    emit({ kind: 'tool.end', turnId: 't', callId: 'c', output: { value: 'raw' } });
+    emit({ kind: 'model.end', turnId: 't', responseId: 'r1', status: 'completed', hasTools: true });
+    emit({ kind: 'model.start', turnId: 't', responseId: 'r2', toolResults: [
+      { call_id: Object.keys(options).length ? 'c' : 'another-turn', output: '{"value":"PRIVATE","api_key":"SECRET"}' },
+    ] });
+    await trace.close();
+    const continuation = [...records.values()].find(r => r.extra.metadata.response_id === 'r2');
+    assert.ok(!JSON.stringify(continuation.inputs).includes('PRIVATE'));
+    assert.ok(!JSON.stringify(continuation.inputs).includes('SECRET'));
+    assert.ok(!continuation.inputs.messages?.some(m => m.role === 'tool'));
+  }
+});
+
 test('interrupt closes active children; duplicate end and close do not reopen traces', async () => {
   const { trace, records, emit } = fixture();
   emit({ kind: 'model.start', turnId: 't1', responseId: 'r1' });
@@ -110,6 +224,20 @@ test('privacy flags hide text and tool payloads, exporter failures stay observat
   const failed = new FrontendTrace({ client: { createRun: async () => { throw Error('secret'); }, updateRun: async () => { throw Error('secret'); } } });
   failed.onExecution({ sessionId: 's', event: { kind: 'input', turnId: 't', text: 'x', time: Date.now() } });
   await failed.close();
+});
+
+test('export diagnostics identify operation and safe HTTP or network failure without payloads', async () => {
+  const warnings = [];
+  const trace = new FrontendTrace({ warn: (event, fields) => warnings.push({ event, ...fields }),
+    client: {
+      createRun: async () => { throw Object.assign(Error('PRIVATE key and payload'), { status: 403 }); },
+      updateRun: async () => { throw Object.assign(Error('PRIVATE URL'), { cause: { code: 'ECONNRESET' } }); },
+    } });
+  trace.onExecution({ sessionId: 's', event: { kind: 'input', turnId: 't', text: 'PRIVATE', time: Date.now() } });
+  await trace.close();
+  assert.ok(warnings.some(w => w.status === 'createRun:http_403'));
+  assert.ok(warnings.some(w => w.status === 'updateRun:ECONNRESET'));
+  assert.ok(!JSON.stringify(warnings).includes('PRIVATE'));
 });
 
 test('tool-only completion waits for actual tool end; usage and final transcript survive', async () => {
@@ -170,5 +298,8 @@ test('official SDK delivers run tree to local HTTP fixture without any Provider'
   assert.equal(child.parent_run_id, root.id);
   assert.equal(child.trace_id, root.id);
   assert.equal(root.session_name, 'offline-wire');
+  const patches = requests.filter(r => r.method === 'PATCH' && r.path.endsWith(root.id));
+  assert.equal(patches[0].body.end_time, null, 'live input patch must explicitly keep the run open');
+  assert.equal(patches.at(-1).body.outputs.messages[0].content, 'hi');
   assert.ok(requests.some(r => r.method === 'PATCH' && r.path.endsWith(root.id) && r.body.end_time));
 });

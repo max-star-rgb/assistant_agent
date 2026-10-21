@@ -257,7 +257,7 @@ def main() -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Client for assistant_agent Agent Server.")
     parser.add_argument("text", nargs="*")
-    parser.add_argument("--server", default="http://127.0.0.1:8089")
+    parser.add_argument("--server", default="http://127.0.0.1:8088")
     parser.add_argument("--identity", default="local-cli")
     parser.add_argument("--thread-id")
     parser.add_argument("--cwd", type=Path, default=Path.home())

@@ -20,6 +20,17 @@ Agent Server 资源装配和标准 Tool 执行分别由相邻 authority 负责�
 
 ## Visual Perception Module 边界
 
+`REALTIME_VISUAL_ENABLED` 是 Agent Server 实时视觉的启动开关，默认 `false`，修改后重启进程生效。
+关闭时不装配 embedding、语义 Store、视觉检索索引与提醒资源，不创建后台感知 session 或其 H.264 decoder，
+不运行选帧、窗口 VLM，也不注册 `live_view_inspect`、`visual_memory_search`、`visual_reminder_manage`。
+主动上传附件的 `uploaded_media_inspect` 继续复用独立可用的进程级 VLM client；业务 Agent 无需实时视觉资源即可运行。
+显式开启后恢复下文原有并行流水线和条件 Tool 暴露。远端视频归档/长期 Memory 由其独立配置控制，不属于此开关。
+这是启动装配配置，不支持进程内热切换。
+
+前台原生 Realtime 音视频是独立消费方：媒体 `VIDEO + audioStreamV1` 仍可进行传输解码，把 JPEG
+直接发送到语音模型的同一个会话，不依赖本模块选帧或 VLM 文本化。后台开启时复用同一次解码的帧，
+原有 SigLIP2 和并行窗口 VLM 流水线仍按原契约运行。前台桥不生成后台视觉记忆或工具投影；协议见媒体 authority。
+
 `VisualPerceptionModule` 是进程级视觉能力 owner；当前由 Agent Server lifespan 挂载，但公开契约不依赖
 Agent Server 或 LangGraph，也不是第二套 Agent Runtime。它统一拥有 `VisionUnderstandingClient`/Provider adapter、`RealtimeVideoObserver`、
 embedding coordinator、`SessionVisualSemanticStorePool`、视觉检索派生索引和连接级 session handle。
@@ -64,8 +75,8 @@ Tool artifact、contract 与 trace，不进入模型可见 ToolMessage。
 `visual_reminder_manage` 要求连接已收到视频帧。这些条件均不依赖用户消息中的实时视频 block。
 
 `visual_memory_search` 的模型可见描述明确它是当前 VIDEO 会话/thread 内的短期视觉记忆检索，不用于
-跨会话历史。远端长期视觉记忆属于 Memory backend，由主 Agent 的 Memory middleware 根据当前请求自动召回，
-不添加来源标签地进入 `memory_context`；它不是视觉 Tool，具体契约由 Memory authority 所有。
+跨会话历史。Gateway 不提供跨会话远端视觉召回工具，但会在初始化和每成功处理完成 10 个视频段时异步刷新远端视觉快照并注入前台提示词；该独立路径由 Memory authority 所有，不改变并行视觉流水线。
+保留的旧 Python hybrid backend 若显式启用，仍可将远端结果冻结到 memory_context；具体契约由 Memory authority 所有。
 
 VLM 推理层复用 Provider-neutral `VisionUnderstandingClient` 与 adapter：视觉 Tool 负责受信输入绑定、
 Tool 治理和结构化结果，client/adapter 负责具体模型协议。同步 `uploaded_media_inspect` 调用在当前

@@ -1,121 +1,55 @@
-"""Thread-scoped generated artifact directories."""
+"""Native Store references to generated files; no thread directories or copies."""
 
 from __future__ import annotations
 
 import hashlib
-import os
-import shutil
-import time
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from langgraph.store.base import BaseStore
 
 
-class ThreadResourceError(RuntimeError):
-    def __init__(self, code: str) -> None:
-        self.code = code
-        super().__init__(code)
+class GeneratedArtifactError(RuntimeError):
+    pass
 
 
-class ThreadResourceConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    root: Path
-    ttl_seconds: int = Field(default=86_400, ge=300, le=604_800)
-
-    @field_validator("root")
-    @classmethod
-    def _absolute_root(cls, value: Path) -> Path:
-        if not value.is_absolute():
-            raise ValueError("thread resource root must be absolute")
-        return value.resolve()
-
-
-class ThreadResources(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    thread_ref: str = Field(pattern=r"^[0-9a-f]{32}$")
-    root: Path
-    artifact_root: Path
-
-
-class ThreadResourceManager:
-    def __init__(self, config: ThreadResourceConfig) -> None:
-        self.config = config
-
-    def resolve(self, identity: str, thread_id: str) -> ThreadResources:
-        if not identity.strip() or not thread_id.strip():
-            raise ThreadResourceError("thread_resource_identity_invalid")
-        self.config.root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        thread_ref = hashlib.sha256(
-            f"{identity}\0{thread_id}".encode("utf-8")
-        ).hexdigest()[:32]
-        root = self.config.root / thread_ref
-        artifact_root = root / "artifacts"
-        artifact_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.utime(root)
-        return ThreadResources(
-            thread_ref=thread_ref,
-            root=root,
-            artifact_root=artifact_root,
-        )
-
-    def resolve_artifact_root(self, thread_ref: str) -> Path:
-        if not self._valid_ref(thread_ref):
-            raise ThreadResourceError("thread_artifact_not_found")
-        root = self.config.root / thread_ref
-        try:
-            artifact_root = (root / "artifacts").resolve(strict=True)
-        except OSError as exc:
-            raise ThreadResourceError("thread_artifact_not_found") from exc
-        if (
-            artifact_root != (root / "artifacts").absolute()
-            or not artifact_root.is_dir()
-        ):
-            raise ThreadResourceError("thread_artifact_not_found")
-        os.utime(root)
-        return artifact_root
-
-    def expired_thread_refs(self) -> tuple[str, ...]:
-        if not self.config.root.is_dir():
-            return ()
-        cutoff = time.time() - self.config.ttl_seconds
-        return tuple(
-            sorted(
-                directory.name
-                for directory in self.config.root.iterdir()
-                if directory.is_dir()
-                and self._valid_ref(directory.name)
-                and directory.stat().st_mtime <= cutoff
-            )
-        )
-
-    def remove_expired(self, thread_ref: str) -> bool:
-        if not self._valid_ref(thread_ref):
-            return False
-        directory = self.config.root / thread_ref
-        try:
-            expired = (
-                directory.is_dir()
-                and directory.stat().st_mtime <= time.time() - self.config.ttl_seconds
-            )
-        except OSError:
-            return False
-        if not expired:
-            return False
-        shutil.rmtree(directory)
-        return True
+class GeneratedArtifactStore:
+    def __init__(self, store: BaseStore | None) -> None:
+        self.store = store
 
     @staticmethod
-    def _valid_ref(value: str) -> bool:
-        return len(value) == 32 and all(
-            character in "0123456789abcdef" for character in value
+    def thread_ref(identity: str, thread_id: str) -> str:
+        if not identity.strip() or not thread_id.strip():
+            raise GeneratedArtifactError("artifact_identity_invalid")
+        return hashlib.sha256(f"{identity}\0{thread_id}".encode()).hexdigest()[:32]
+
+    def register(self, identity: str, thread_id: str, path: Path, *, filename: str | None = None) -> None:
+        if self.store is None:
+            raise GeneratedArtifactError("artifact_store_unavailable")
+        path = path.resolve(strict=True)
+        if not path.is_file():
+            raise GeneratedArtifactError("artifact_not_found")
+        filename = filename or path.name
+        if Path(filename).name != filename:
+            raise GeneratedArtifactError("artifact_name_invalid")
+        self.store.put(
+            ("assistant_generated_artifacts", self.thread_ref(identity, thread_id)),
+            filename,
+            {"owner": identity, "thread_id": thread_id, "path": str(path)},
+            index=False,
         )
 
-
-__all__ = [
-    "ThreadResourceConfig",
-    "ThreadResourceError",
-    "ThreadResourceManager",
-    "ThreadResources",
-]
+    def resolve(self, thread_ref: str, filename: str, *, identity: str) -> Path:
+        if (self.store is None or len(thread_ref) != 32
+                or any(c not in "0123456789abcdef" for c in thread_ref)
+                or not filename or Path(filename).name != filename):
+            raise GeneratedArtifactError("artifact_not_found")
+        item = self.store.get(("assistant_generated_artifacts", thread_ref), filename)
+        if item is None or item.value.get("owner") != identity:
+            raise GeneratedArtifactError("artifact_not_found")
+        path = Path(item.value["path"])
+        try:
+            if path.resolve(strict=True) != path or not path.is_file():
+                raise GeneratedArtifactError("artifact_not_found")
+        except OSError as exc:
+            raise GeneratedArtifactError("artifact_not_found") from exc
+        return path

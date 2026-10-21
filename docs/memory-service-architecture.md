@@ -1,29 +1,76 @@
-# LangGraph-native 长期记忆架构
+# 文本与视觉长期记忆架构
 
-最后更新：2026-09-08
+最后更新：2026-10-20
 
 ## Authority contract
 
 | 字段 | 内容 |
 | --- | --- |
-| 定位 | 主 Agent Memory lifecycle middleware、冻结快照与后端协议的当前权威 |
-| Owns | `MemoryBackend`、`MemoryLifecycleMiddleware`、`memory_extract`、`memory_context`、Mem0/LangMem/第三方装配 |
+| 定位 | Node 原生 Markdown 记忆与保留的 Python Memory backend 权威 |
+| Owns | Gateway 文本记忆所有权、Markdown 生命周期、视觉召回边界；Python `MemoryBackend` 与冻结快照 |
 | Does not own | Mem0 HTTP wire、prompt 渲染、Agent Server Store 实现、旧 Memory bundle/ledger |
-| 源码与 schema 入口 | `src/assistant_agent/native_agent/memory.py`、`src/assistant_agent/memory/mem0/` |
+| 源码与 schema 入口 | `integrations/qwen_audio_agent/src/gateway.mjs`、`integrations/qwen_audio_agent/src/config.mjs`、`src/assistant_agent/native_agent/memory.py` |
 | 验证入口 | `docs/authority.toml` 中 `graph-memory.verification` |
 | 相邻 authority | Mem0 wire 见 [`memory_server_api_spec.md`](memory_server_api_spec.md)；Context 见 [`context_engineering_status.md`](context_engineering_status.md) |
 
-## Read hot path 与 write cold path
+## 当前 Gateway：Node 原生 Markdown
+
+Qwen Audio Gateway 直接使用 qwen-audio-agent 2.0.1 的 MarkdownMemoryProvider、FrontendMemoryRuntime、
+原生 `memory` Tool 和 MemorySessionObserver，不再使用 Mem0、Python 文本记忆桥或独立 Memory Graph。
+业务仍交给 Agent Server；Node 记忆模块不执行后台业务。
+
+文件位于 `QWEN_AUDIO_STATE_DIR/memory/<SHA-256(ASSISTANT_AGENT_USER)>/USER.md` 与 `MEMORY.md`，
+默认状态根为 `~/.local/state/assistant_agent/qwen_audio`。可信部署 identity 决定目录，模型不能指定身份或文件路径。
+USER.md 保存长期交互偏好，MEMORY.md 保存长期事实；不迁入旧 Mem0 数据或联调样例，不删除旧数据库。
+Gateway 启动时创建尚不存在的空文档（目录权限 0700、文件权限 0600），使用独占创建避免覆盖已有记忆。
+空文档不注入模型；内容读写仍由上游原生 Markdown 模块负责，旧 data 目录不会自动迁入。
+
+文本读取直接加载有界文档，不做向量检索。上游 provider 注入预算分别为 6,000 / 8,000 字符，
+写入硬上限为对应预算的四倍；超过注入预算时保留完整文件并给出截断提示。上游 runtime 仍施加其规范化预算。
+`memory(action=read|append|replace, document=user|memory|all)` 使用原生 schema，all 只用于 read。
+精确替换要求 old_text 在已有文档中只出现一次；空 new_text 删除。版本校验、用户写入串行化与原子文件替换
+复用上游实现。成功编辑通过原生订阅刷新会话上下文，不委派 `memory_edit` 业务任务。
+
+会话结束后的自动提取复用原生 ConversationSync 新记录和 Markdown patch extractor：至少四条新用户记录，
+不设置时间冷却，每个满足条件的新会话批次均可立即提取；同一批记录仍只消费一次，不把恢复的旧历史当新材料。提取失败不阻塞关闭，记录原生失败事件。
+显式编辑废弃之前的学习材料与执行中的旧快照。进程崩溃可能丢失尚未提取的记录，不保证 exactly-once。
+`QWEN_AUDIO_MEMORY_AUTO=on` 由集成装配；推测偏好学习保持 off。文本模型默认 qwen-flash，可用
+`QWEN_AUDIO_MEMORY_MODEL/BASE_URL/API_KEY` 显式配置；默认百炼兼容地址，未单独指定 key 时复用已授权的
+DASHSCOPE_API_KEY。mock 不传真实凭据且不启动真实 Gateway；real 仍要求 operator 开关。
+
+主提示词中 `<user_preferences>` 对应 USER.md，明确偏好可覆盖默认人设；观察推断不等同于用户要求。
+`<user_memory>` 对应 MEMORY.md，仅作为可能过时的事实背景。两者都不赋予权限，当前请求优先；渲染归 Context authority。
+
+当前本机 `MEMORY_BACKEND=disabled`。Studio/SDK 不读取 Node 文档；业务委派固定 enable_memory=false，
+所需背景由前台写入委派请求。保留的旧 Python backend 不参与 Gateway 文本记忆。
+
+## 视觉能力边界
+
+Gateway 在会话初始化时先召回远端视觉快照，此后每成功处理完成 10 个视频段刷新一次。视频沿用独立归档 lane，默认每 30 秒提交一段，断线补交尾段；失败提交不计数，同一进程内最近 4096 个 file_id 去重，进程重启重新计数。
+上传复用 Python 窄服务，不经过业务 Agent run。`VisualMemorySnapshots` 通过远端 query 接口以固定查询
+“用户近期看到的场景、物品及其位置、活动和重要事件”获取背景，使用可信用户身份跨会话查询；不是全量历史枚举。
+每条最多 4000 字、合计最多 12000 字，只保留文本。初始化在连接模型前等待有界召回；后续刷新不阻塞语音，失败保留上一快照，成功空结果清空。
+前台通过 `/qwen-audio/visual-memory/snapshot` POST 触发初始化，GET 每 2 秒读取本地快照（不调用远端）；内容变化通过订阅更新原生 Realtime 上下文的 `<visual_memory>`。
+快照为进程内用户级状态，不写 Markdown，不提供模型可调用的视觉召回工具，不进入文本提取。
+已装配的会话始终保留 `<visual_memory>` 区域，JSON 中的 `texts` 可为空；`status` 区分 pending、empty、refreshing、ready、ready_empty、disabled、unavailable。状态变化也刷新上下文，失败保留旧文本，空数组不代表已召回到记忆。
+计数以远端任务 completed 为准，避免受理后尚未完成处理就提前召回。当前 VIDEO thread 的短期视觉能力与旧 Python hybrid adapter 保持独立。
+
+## 保留的 Python backend（非 Gateway 当前路径）
+
+以下仅适用于显式启用旧 backend 的独立 Python 入口，不是当前 Gateway 记忆方案。
+
+### Read hot path 与 write cold path
 
 Memory 是领域和 backend protocol 边界，不是必须整体嵌入主图的 compiled subgraph。实际编译拓扑拆成：
 
 ```text
-assistant-business-v2: MemoryLifecycleMiddleware.before_agent -> business loop -> after_agent
+assistant-business-v2: MemoryLifecycleMiddleware.before_agent -> business loop
+Realtime 会话关闭 -> 原生本批用户记录 -> submit_memory_extraction -> assistant-memory-v1
 assistant-memory-v1: memory_extract -> END
 ```
 
 `AssistantRunContext.enable_memory` 是 Studio Assistant 可持久保存且可被单次 run 同名覆盖的统一开关，默认 true。
-设为 false 时，middleware 将 recall 冻结为空并跳过 delayed extraction 调度；设为 true 仍要求部署侧已配置并启用 Memory
+设为 false 时，middleware 将 recall 冻结为空；业务图不再调度记忆提取。设为 true 仍要求部署侧已配置并启用 Memory
 backend，不能用运行配置绕过 backend 的 mock/real 与凭据边界。
 
 每个文本 chat run 都通过业务图上单个 `MemoryLifecycleMiddleware.before_agent` hook 重新 recall 一次，并把结果冻结在当前 checkpoint。
@@ -33,63 +80,41 @@ LangChain 原生 `Runnable.with_retry(stop_after_attempt=3)`；三次耗尽后�
 从已完成 recall 之后的 checkpoint resume 时沿用冻结快照；从更早 checkpoint replay 并重新执行 recall 时允许
 重新读取最新记忆，不建立跨 replay 的额外冻结层。日期与用户地区由 Context authority 管理，不由 Memory 采集或保存。
 
-最终回答产生后，`MemoryLifecycleMiddleware.after_agent` 从 chat thread ID 确定性派生并按需创建 graph identity 为 `assistant-memory-v1` 的
+前台 Realtime WebSocket 会话关闭后，从身份绑定的源 session ID 确定性派生并按需创建 graph identity 为 `assistant-memory-v1` 的
 companion Memory thread，然后直接使用 LangMem 官方 `RemoteReflectionExecutor.submit()`，显式传入该
-Memory thread ID、完整 messages 快照及 `after_seconds=1800`（30 分钟）。官方 executor 使用
+Memory thread ID、原生待消费用户记录及 `after_seconds=0`（立即执行）。官方 executor 使用
 `multitask_strategy="rollback"` 提交 `assistant-memory-v1`；旧 pending 或正在执行的冲突 Memory run 由
 Agent Server 处理，项目不再分页查询、筛选、逐个取消，也不使用 enqueue。已经完成的 run 不受影响；
 run/checkpoint rollback 不会撤销已写入长期 Store 的记忆。
-companion thread 以 `assistant_agent_source_thread_id` 记录来源；chat thread 不保留后台 pending run，因此
-Studio 在回答完成后恢复 idle，普通 chat 的 `interrupt` 并发语义不变。
+companion thread 以 `assistant_agent_source_thread_id` 记录来源；业务 thread 不提交后台 pending run，
+Studio/SDK 文本业务请求不再自动提取长期记忆，普通 chat 的 `interrupt` 并发语义不变。
 官方 executor 的同步提交与资源关闭放在 `asyncio.to_thread` 中，只等待提交 Future 完成，即 Server 接受请求，
-不等待延迟提取；线程只负责 SDK 请求，30 分钟调度仍由 Agent Server 持久化管理。
-创建 companion thread 与同步提交使用同一个本机 Server 地址（`ASSISTANT_AGENT_SERVER_PORT`，默认 `8089`），
-并通过 `X-Assistant-User` 透传 Runtime 的认证身份。两种 SDK client 均显式设置 `api_key=None`；
+不等待提取完成；线程只负责 SDK 请求，后台执行仍由 Agent Server 管理。已移除 `MEMORY_EXTRACTION_DELAY_SECONDS` 配置，旧环境值不再生效。
+创建 companion thread 与同步提交使用同一个本机 Server 地址（`ASSISTANT_AGENT_SERVER_PORT`，默认 `8088`），
+并通过 `X-Assistant-User` 透传前台会话的认证身份。两种 SDK client 均显式设置 `api_key=None`；
 不能混用异步默认的进程内 `/noauth` 与同步默认的 `localhost:8123`，也不能把 LangSmith key 用作本机 API 凭据。
-refresh 同样使用 LangChain 原生 Runnable 三次重试，耗尽后 chat run
-明确终结为 error。
+refresh 使用 LangChain 原生 Runnable 三次重试，耗尽后由前台报告 memory.error，不终止语音。
+提交调度局部使用 `tracing_context(enabled=False)`，不生成独立 `refresh_memory_extraction` trace；
+实际执行的后台 Memory Graph 仍使用原生 tracing。
 
-静默窗口到期后，独立 Memory Graph 调用 backend 写入；其异常只结束后台 run，第三方原始错误不进入
+会话关闭提交后，独立 Memory Graph 立即调度并调用 backend 写入；其异常只结束后台 run，第三方原始错误不进入
 Assistant state。节点使用 LangGraph 原生 `RetryPolicy(max_attempts=3)`；三次耗尽后不设置 error handler，
-由 Agent Server 将独立 Memory run 明确终结为 error，避免静默伪装成 success。此时 chat run 早已完成，
-不会回滚或中断用户回答。recall、refresh 与 extract 均不使用 error handler 吞错。
+由 Agent Server 将独立 Memory run 明确终结为 error，避免静默伪装成 success。
+不会回滚或中断前台回答。recall、refresh 与 extract 均不使用 error handler 吞错。
 
 ## 最小 backend 协议
 
-### Realtime 启动快照与显式编辑
+### 独立 Python Realtime 兼容路径
 
-Mem0 后端额外提供有界列表、结构化检索和显式编辑能力；不要求旧 LangMem 或自定义后端实现编辑。
-Qwen 前台连接前通过认证 `/qwen-audio/memory/read` 获取启动快照，经版本受限的上游上下文 hook
-注入原有 `session.update.instructions`。它是可能过时的背景数据，不授予权限。列表最多 32 项、
-单项 4,000 字、总计 12,000 字，截断记录不可编辑。失败在 health 与日志可见，不当作成功空结果。
-
-`recall_memory` 使用 `action=read|append|replace`；旧 `request` 仅兼容查询。read 无 query 读取列表，
-有 query 检索；append/replace 提交原生业务任务，由 `memory_edit` BaseTool 与原生 HITL 执行。
-受理不表示保存完成。replace 必须携带 read 返回的可编辑 ID、完整 old_text 和明确 new_text；
-空 new_text 删除。旧值或身份不匹配明确拒绝。worker 不暴露编辑工具。
-
-Mem0 sidecar 在持久化 edits.sqlite 中维护用户修订、操作回执和提取快照引用。显式编辑与提取在
-同一单进程临界区串行；旧修订快照不再提取。编辑前已登记的历史正文哈希不进入新修订提取；
-未知旧会话首次快照保守作为基线。新语音会话在收音前登记空基线，文本 run 在 before_agent 登记
-既有历史，随后新用户正文才进入提取。重复原文哈希不会跨修订再次提取，这是防止旧事实复活的保守限制。
-提取仍使用官方 delayed Memory Graph，公开输入只传 opaque 引用，执行时复核认证用户归属。
-无法确定是否完成的操作不自动重放；协调器仅支持当前单进程 sidecar，不能直接扩为多 worker。
-
-Mem0 与长期视觉查询可按显式配置并行组合。视觉服务没有列表或文本编辑接口，因此不作为开场全量
-快照，也不接受 append/replace；查询结果标记 source=visual、editable=false。上游独立学习器继续关闭。
-
-Qwen Audio Agent 实验入口通过认证本机 `/qwen-audio/recall` 与 `/qwen-audio/transcripts` 复用下面的 Voice
-召回和提取实现。Node 仅观察完成的 `voice-user` record，按 ID 去重后提交完整有界快照；每会话最多 128 项、
-64,000 字，超过时明确失败而不截断。身份只从 Agent Server 认证上下文取得，源会话标识按身份与前台 session 确定性派生。
-上游独立 Memory、偏好学习与会话摘要关闭；Memory disabled 时不暴露召回工具、不提交提取。桥接失败在 Node
-工具源 health 和 `memory.error` 日志可见，不终止语音。该路径仍未通过真实 Provider 验收，不替代旧入口。
+Mem0 的 HTTP 列表、显式编辑和修订保护实现仍保留，wire 见 Memory API authority。
+旧 `/qwen-audio/memory/*`、`/qwen-audio/recall`、`/qwen-audio/transcripts` 已删除。
 
 浏览器原生 Realtime 不伪造 Graph before_agent：启用后端后通过 `recall_memory` 原生工具按需召回，
 复用同一 MemoryBackend、认证用户身份、Store、三次 Runnable 重试与 32 项/12,000 字预算。
 返回内容明确为可能过时的背景数据，不授予权限。未启用后端时不暴露工具、不提交提取。
-ASR 完成后收集按 item_id 去重的真实用户文本快照，异步调用共享 `submit_memory_extraction()`；
-Graph middleware 也调用这一函数，二者使用完全相同的官方 RemoteReflectionExecutor、companion thread、
-30 分钟延迟与 rollback。提取不包含音频、模型回复、搜索结果、记忆工具结果、任务通知或 idle 主动回复。
+ASR 完成后仅收集按 item_id 去重的真实用户文本快照，会话关闭时调用共享 `submit_memory_extraction()`；
+只有 Realtime 入口调用这一函数，使用官方 RemoteReflectionExecutor、companion thread、
+立即执行与 rollback。提取不包含音频、模型回复、搜索结果、记忆工具结果、任务通知或 idle 主动回复。
 该接入不等待召回再开启每轮原生自动回复；需要用户背景时由模型调用召回工具。
 提交失败在三次重试后发送 memory.error，不静默声称保存成功，也不停止语音连接。
 
@@ -101,7 +126,7 @@ Graph middleware 也调用这一函数，二者使用完全相同的官方 Remot
 当前装配：
 
 - `disabled`：离线默认，召回为空、提取跳过；
-- `mem0`：当前维护的真实部署后端，复用薄 `Mem0Client`。召回以最新用户正文调用 `/search`，按 opaque
+- `mem0`：保留的旧部署后端，复用薄 `Mem0Client`。召回以最新用户正文调用 `/search`，按 opaque
   `user_id + agent_id` 跨会话检索，最多 32 条；没有用户正文时不请求服务。提取提交快照中全部非空用户正文，
   排除 System、AI、Tool 和媒体载荷，不只截最后一轮。`source_turn` 优先使用后台 Agent Server
   `run_id`，本地 Graph 无 run ID 时使用 thread ID；来源字段不是幂等键。重复快照由 Mem0 原生整合，
@@ -128,7 +153,7 @@ mock mode 只能使用 disabled；远端 backend 要求 real mode 和完整显�
 ## Store 与语义索引
 
 当前默认 `langgraph.json` 不配置 `store.index`；Mem0 不依赖 Agent Server Store 的语义索引。
-本机 `.env` 使用 `MEMORY_BACKEND=mem0`、`MEM0_BASE_URL=http://127.0.0.1:8890`，视觉远端分支保持关闭。
+本机 `.env` 使用 `MEMORY_BACKEND=disabled`；Mem0 地址可能作为旧配置保留，但不被当前部署调用。
 离线默认仍为 `disabled`，不得因为检测到凭据而自动启用真实后端。
 Mem0 服务由 `docker/mem0/compose.yaml` 提供，记忆向量在其 Qdrant 中，历史在其 SQLite 中。
 现有 LangMem Store、checkpoints 和旧 PostgreSQL 数据均保留，不自动复制到 Mem0 或删除。

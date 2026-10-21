@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import urlparse
 
 from assistant_agent.runtime.thread_resources import (
-    ThreadResourceError,
-    ThreadResourceManager,
+    GeneratedArtifactError,
+    GeneratedArtifactStore,
 )
 
 
@@ -40,12 +40,12 @@ def generated_artifact_prefix(thread_ref: str) -> str:
 
     if not _valid_thread_ref(thread_ref):
         raise ValueError("invalid generated artifact thread reference")
-    return f"artifact://{GENERATED_ARTIFACT_URI_AUTHORITY}/{thread_ref}/generated"
+    return f"/artifacts/{thread_ref}/generated"
 
 
 def generated_artifact_payload_for_thread(
     output_ref: str,
-    manager: ThreadResourceManager,
+    manager: GeneratedArtifactStore,
     *,
     identity: str,
     thread_id: str,
@@ -57,16 +57,18 @@ def generated_artifact_payload_for_thread(
         return None
     thread_ref, filename = parsed
     try:
-        resources = manager.resolve(identity, thread_id)
-    except ThreadResourceError:
+        if thread_ref != manager.thread_ref(identity, thread_id):
+            return None
+        path = manager.resolve(thread_ref, filename, identity=identity)
+    except GeneratedArtifactError:
         return None
-    if thread_ref != resources.thread_ref:
-        return None
-    return generated_artifact_payload(
-        output_ref,
-        artifact_dir=resources.artifact_root / "generated",
-        public_prefix=output_ref[: -(len(filename) + 1)],
+    prefix = output_ref[: -(len(filename) + 1)]
+    payload = generated_artifact_payload(
+        f"{prefix}/{path.name}",
+        artifact_dir=path.parent,
+        public_prefix=prefix,
     )
+    return replace(payload, image_id=filename) if payload is not None else None
 
 
 def generated_artifact_data_url(

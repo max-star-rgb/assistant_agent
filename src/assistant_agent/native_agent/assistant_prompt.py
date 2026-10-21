@@ -165,6 +165,12 @@ def render_working_directory_section(cwd: Path) -> str:
     instructions = load_project_instructions(cwd)
     rendered = "\n\n".join(f"### {path}\n\n{content}" for path, content in instructions)
     section = f"## 当前工作目录\n\n`{cwd}`"
+    section += (
+        "\n\n未指定保存位置时，文件操作和 Shell 命令以当前工作目录为基准。"
+        "普通下载保存到当前工作目录下的 `.agent/downloads/`，正式交付文件保存到 `outputs/`；"
+        "需要时创建对应目录。浏览器下载与截图使用其配置的 `.agent/browser/` 输出位置。"
+        "不要默认保存到源码仓库、系统 Downloads 或临时目录；用户显式指定其他路径时遵循用户要求。"
+    )
     if rendered:
         section += (
             "\n\n## 项目指令\n\n"

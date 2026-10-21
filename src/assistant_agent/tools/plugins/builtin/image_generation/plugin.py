@@ -13,7 +13,7 @@ from assistant_agent.tools.plugins.builtin.image_generation.tool import (
 
 class ImageGenerationToolPlugin:
     def build_tools(self, context: ToolPluginContext) -> list[BaseTool]:
-        if context.thread_resource_manager is None:
+        if context.artifact_store is None:
             return []
         if not context.mock_mode and not image_generation_provider_ready(
             context.config.image_generation
@@ -25,13 +25,13 @@ class ImageGenerationToolPlugin:
                     context.config.image_generation,
                     provider_mode=context.provider_mode,
                 ),
-                thread_resource_manager=context.thread_resource_manager,
+                artifact_store=context.artifact_store,
             )
         ]
 
 
 def image_generation_provider_ready(config: ImageGenerationConfig) -> bool:
     return (
-        config.image_generation_provider != "mock"
-        and not config.resolved_provider().missing_required_env()
+        config.image_generation_provider == "mock"
+        or not config.resolved_provider().missing_required_env()
     )

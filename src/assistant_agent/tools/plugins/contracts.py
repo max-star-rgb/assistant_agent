@@ -10,7 +10,7 @@ from assistant_agent.config import MediaConfig, ToolConfig, VisionConfig
 from assistant_agent.provider_mode import ProviderMode
 
 if TYPE_CHECKING:
-    from assistant_agent.runtime.thread_resources import ThreadResourceManager
+    from assistant_agent.runtime.thread_resources import GeneratedArtifactStore
     from assistant_agent.automation.durable_tasks.service import DurableTaskService
     from assistant_agent.media.video.realtime_video_memory import (
         RealtimeVideoMemoryStore,
@@ -52,7 +52,7 @@ class ToolPluginContext:
     visual_memory_text_index: VisualMemoryTextIndex | None = None
     visual_timeline_context_service: VisualTimelineContextService | None = None
     live_view_resolver: Callable[[str, str, str], Any] | None = None
-    thread_resource_manager: ThreadResourceManager | None = None
+    artifact_store: GeneratedArtifactStore | None = None
 
     @property
     def mock_mode(self) -> bool:

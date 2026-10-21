@@ -59,7 +59,6 @@ from assistant_agent.native_agent.conditional_tool_exposure import (
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.native_agent.memory import DisabledMemoryBackend, MemoryBackend
 from assistant_agent.native_agent.memory_middleware import (
-    DEFAULT_EXTRACTION_DELAY_SECONDS,
     MemoryLifecycleMiddleware,
 )
 from assistant_agent.native_agent.state import (
@@ -517,7 +516,6 @@ def build_assistant_agent(
     live_view_resolver: Callable[[str, str, str], Any] | None = None,
     current_location: str | None = None,
     memory_backend: MemoryBackend | None = None,
-    memory_extraction_delay_seconds: int = DEFAULT_EXTRACTION_DELAY_SECONDS,
     checkpointer=None,
 ):
     """Compile the single planning and execution loop."""
@@ -627,7 +625,6 @@ def build_assistant_agent(
             ),
             MemoryLifecycleMiddleware(
                 memory_backend or DisabledMemoryBackend(),
-                extraction_delay_seconds=memory_extraction_delay_seconds,
             ),
             MemoryContextMiddleware(),
             RecursionFinalSynthesisMiddleware(),

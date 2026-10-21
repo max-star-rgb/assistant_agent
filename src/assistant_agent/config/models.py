@@ -104,6 +104,7 @@ class ChatConfig:
 
 @dataclass(frozen=True)
 class VisionConfig:
+    realtime_visual_enabled: bool = False
     qwen_realtime_vision_api_key: str | None = None
     vision_provider: str = "mock"
     vision_api_key: str | None = None
@@ -212,7 +213,6 @@ class MemoryConfig:
     mem0_timeout_seconds: float = 5.0
     mem0_identity_namespace: str = "assistant-agent"
     memory_backend: MemoryBackendName = "disabled"
-    memory_extraction_delay_seconds: int = 1800
     langmem_model: str | None = None
     embedding_api_key: str | None = None
     embedding_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -224,8 +224,6 @@ class MemoryConfig:
             raise ValueError("Mem0 timeout must be positive")
         if not self.mem0_identity_namespace.strip():
             raise ValueError("Mem0 identity namespace must be non-empty")
-        if self.memory_extraction_delay_seconds <= 0:
-            raise ValueError("memory extraction delay must be positive")
 
 
 @dataclass(frozen=True)
@@ -292,6 +290,7 @@ class ImageGenerationConfig:
     image_generation_base_url: str | None = None
     image_generation_model: str | None = None
     image_generation_adapter_kind: str = "mock"
+    image_generation_mock_path: str | None = None
     qwen_image_default_size: str = "1024*1024"
     ark_image_default_size: str = "2K"
     ark_image_output_format: str = "png"
@@ -402,7 +401,5 @@ class AppConfig:
         if self.media.remote_visual_memory_enabled:
             if self.provider_mode != "real":
                 raise ValueError("remote visual memory requires provider mode real")
-            if self.memory.memory_backend not in {"langmem", "mem0"}:
-                raise ValueError("remote visual memory requires MEMORY_BACKEND=langmem or mem0")
             if not (self.media.remote_visual_memory_base_url or "").strip():
                 raise ValueError("remote visual memory requires a base URL")

@@ -6,6 +6,7 @@ export async function serverFixture({ hold = false, interrupt = null, dropSubmit
   const threads = new Map();
   const requests = [];
   let accepted;
+  let visualTexts = ['离线视觉快照'];
   const started = new Promise(resolve => { accepted = resolve; });
   const server = createServer(async (req, res) => {
     let raw = '';
@@ -20,6 +21,8 @@ export async function serverFixture({ hold = false, interrupt = null, dropSubmit
         parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } },
     } : null });
     if (parts[0] === 'qwen-audio' && parts[1] === 'transcripts') return json({ status: 'submitted' });
+    if (parts[0] === 'qwen-audio' && parts[1] === 'visual-memory') return json({ enabled: true, texts: visualTexts });
+    if (parts[0] === 'qwen-audio' && parts[1] === 'search') return json({ result: '离线搜索结果' });
     if (parts.length === 1 && parts[0] === 'threads' && req.method === 'POST') {
       if (!threads.has(body.thread_id)) threads.set(body.thread_id, {
         thread_id: body.thread_id, metadata: { ...body.metadata, owner: req.headers['x-assistant-user'] }, runs: [], interrupt,
@@ -53,6 +56,8 @@ export async function serverFixture({ hold = false, interrupt = null, dropSubmit
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   return { url: `http://127.0.0.1:${server.address().port}`, threads, requests, started,
+    setInterrupt: value => { interrupt = value; },
+    setVisualMemory: value => { visualTexts = value; },
     close: async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); } };
 }
 

@@ -1,4 +1,4 @@
-"""Independent native graph for delayed long-term memory extraction."""
+"""Independent native graph for session-end long-term memory extraction."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from assistant_agent.native_agent.state import (
 
 
 def build_memory_extraction_graph(*, backend: MemoryBackend):
-    """Build the cold-path graph executed by an Agent Server delayed run."""
+    """Build the cold-path graph executed immediately after a Realtime session closes."""
 
     builder = StateGraph(
         MemoryExtractionState,

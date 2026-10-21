@@ -17,6 +17,7 @@ from typing import Any
 from urllib.parse import urlsplit
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
+from anyio import CancelScope
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from httpx import AsyncClient
@@ -48,7 +49,7 @@ from assistant_agent.agent_server.media_protocol import (
     artifact_completed_response,
 )
 from assistant_agent.agent_server.media_session import MediaConnectionSession
-from assistant_agent.agent_server.media_audio import MediaAudioBridge
+from assistant_agent.agent_server.media_audio import MediaAudioBridge, GatewayVisualBridge
 from assistant_agent.agent_server.turn_delivery import turn_delivery
 from assistant_agent.agent_server.proactive_delivery import (
     MediaProactiveDeliveryPump,
@@ -70,6 +71,7 @@ from assistant_agent.media.video.remote_archive import (
     VideoArchiveManifest,
 )
 from assistant_agent.memory.remote_service import RemoteMemoryServiceClient
+from assistant_agent.memory.visual_snapshot import VisualMemorySnapshots
 from assistant_agent.media.video.video_context import InMemoryVideoContextStore
 from assistant_agent.media.video.video_context import VideoFrame
 from assistant_agent.media.visual_perception import get_visual_perception_module
@@ -77,7 +79,6 @@ from assistant_agent.native_agent.context import (
     AssistantRuntimeFacts,
     assistant_runtime_metadata,
     ensure_working_directory,
-    studio_working_directory,
 )
 from assistant_agent.media.artifact_delivery import get_media_artifact_delivery_hub
 from assistant_agent.proactive_delivery import (
@@ -91,8 +92,8 @@ from assistant_agent.media.generated_artifacts import (
     generated_artifact_payload_for_thread,
 )
 from assistant_agent.runtime.thread_resources import (
-    ThreadResourceError,
-    ThreadResourceManager,
+    GeneratedArtifactError,
+    GeneratedArtifactStore,
 )
 
 
@@ -103,7 +104,6 @@ logger = logging.getLogger(__name__)
 async def agent_server_lifespan(application: FastAPI):
     """Own the process-wide visual module for this Agent Server process."""
 
-    await asyncio.to_thread(ensure_working_directory, studio_working_directory())
     loaded_config = load_app_config()
     provider_mode = loaded_config.provider_mode
     vision_config = loaded_config.vision
@@ -123,6 +123,13 @@ async def agent_server_lifespan(application: FastAPI):
         provider_mode=provider_mode,
     )
     application.state.remote_video_archive_service = video_archive
+    visual_snapshots = VisualMemorySnapshots(
+        client=video_archive.uploader.client,
+        top_k=media_config.remote_visual_memory_query_top_k,
+    ) if video_archive is not None else None
+    application.state.visual_memory_snapshots = visual_snapshots
+    if visual_snapshots is not None:
+        video_archive.uploader.on_completed = visual_snapshots.completed
     application.state.memory_media_download_registry = (
         video_archive.uploader.registry if video_archive is not None else None
     )
@@ -142,6 +149,8 @@ async def agent_server_lifespan(application: FastAPI):
         await close_native_assistant_graph()
         if video_archive is not None:
             await video_archive.aclose()
+        if visual_snapshots is not None:
+            await visual_snapshots.aclose()
         await visual_module.aclose()
         if (
             getattr(application.state, "visual_perception_module", None)
@@ -466,11 +475,12 @@ async def generated_artifact(
     try:
         artifact = await asyncio.to_thread(
             _resolve_generated_artifact,
-            current_native_execution_owner().thread_resource_manager,
+            current_native_execution_owner().artifact_store,
             thread_ref,
             filename,
+            _agent_server_identity(request),
         )
-    except ThreadResourceError:
+    except GeneratedArtifactError:
         raise HTTPException(
             status_code=404,
             detail="generated artifact not found",
@@ -485,12 +495,13 @@ async def generated_artifact(
 
 
 def _resolve_generated_artifact(
-    manager: ThreadResourceManager,
+    manager: GeneratedArtifactStore,
     thread_ref: str,
     filename: str,
+    identity: str,
 ) -> GeneratedArtifactFile | None:
-    artifact_dir = manager.resolve_artifact_root(thread_ref) / "generated"
-    return generated_artifact_file(filename, artifact_dir=artifact_dir)
+    path = manager.resolve(thread_ref, filename, identity=identity)
+    return generated_artifact_file(path.name, artifact_dir=path.parent)
 
 
 async def _build_success_chat_response(**kwargs: Any) -> dict[str, Any]:
@@ -498,12 +509,21 @@ async def _build_success_chat_response(**kwargs: Any) -> dict[str, Any]:
 
 
 @app.websocket("/agent-service/{version}")
+@app.websocket("/internal/media-visual/{version}")
 async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
+    internal_visual = websocket.url.path.startswith("/internal/media-visual/")
+    if internal_visual and (
+        websocket.client is None
+        or websocket.client.host not in {"127.0.0.1", "::1"}
+        or websocket.headers.get("origin") is not None
+    ):
+        await websocket.close(code=1008)
+        return
     await _await_native_graph_warmup(websocket.app)
     await websocket.accept()
     session = MediaConnectionSession(connection_id=f"media-{uuid4()}")
     send_lock = asyncio.Lock()
-    audio_bridge = MediaAudioBridge(
+    audio_bridge = (GatewayVisualBridge if internal_visual else MediaAudioBridge)(
         session=session, send=lambda value: _send_json(websocket, send_lock, value)
     )
     chat_tasks: dict[str, asyncio.Task[None]] = {}
@@ -520,9 +540,11 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
         raise RuntimeError("visual perception module is unavailable")
     ingestion_factory = getattr(app.state, "video_ingestion_factory", None)
     video_ingestion = (
-        ingestion_factory()
-        if callable(ingestion_factory)
-        else await asyncio.to_thread(visual_module.create_video_ingestion)
+        (
+            ingestion_factory()
+            if callable(ingestion_factory)
+            else await asyncio.to_thread(visual_module.create_video_ingestion)
+        ) if visual_module.realtime_enabled else None
     )
     factory = getattr(app.state, "agent_server_client_factory", None)
     client = factory() if callable(factory) else _default_agent_server_client(websocket)
@@ -545,6 +567,14 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
             received_ns = perf_counter_ns()
             try:
                 frame = parse_envelope(raw)
+                if internal_visual:
+                    if frame.message not in {"assistantControl", "assistantControlStart", "video", "videoClear", "chatResponseAck"}:
+                        raise MediaProtocolError("internal visual channel does not accept audio or chat")
+                    if frame.message in {"assistantControl", "assistantControlStart"} and (
+                        frame.body.get("callType") != "VIDEO"
+                        or not _client_capabilities(frame.body).get("audioStreamV1")
+                    ):
+                        raise MediaProtocolError("internal visual channel requires VIDEO audioStreamV1")
                 if frame.message == "chat":
                     logger.info(
                         "media_chat_received connection=%s",
@@ -567,6 +597,18 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
                     received_ns=received_ns,
                     audio_bridge=audio_bridge,
                 )
+                if (
+                    video_ingestion is None
+                    and session.call_type == "VIDEO"
+                    and session.client_capabilities.get("audioStreamV1")
+                    and audio_bridge.ready.is_set()
+                    and not audio_bridge.failed
+                ):
+                    # Transport decoding is independent of background perception.
+                    video_ingestion = (
+                        ingestion_factory() if callable(ingestion_factory)
+                        else _create_video_ingestion()
+                    )
             except (MediaProtocolError, ValueError) as exc:
                 await _send_json(
                     websocket,
@@ -580,37 +622,39 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
     except WebSocketDisconnect:
         pass
     finally:
-        await audio_bridge.close()
-        if proactive_delivery.task is not None:
-            proactive_delivery.task.cancel()
-        await _cancel_active_runs(session=session, client=client)
-        for task in chat_tasks.values():
-            task.cancel()
-        if chat_tasks:
-            await asyncio.gather(*chat_tasks.values(), return_exceptions=True)
-        await visual_perception.aclose_video_tasks()
-        if video_archive is not None:
-            try:
-                await video_archive.close_session(session.connection_id)
-            except Exception as exc:  # noqa: BLE001 - optional archive cleanup.
-                logger.warning(
-                    "remote_visual_memory_close_failed connection=%s error_type=%s",
-                    session.connection_id,
-                    type(exc).__name__,
+        # Transport cancellation must not interrupt connection-owned resource cleanup.
+        with CancelScope(shield=True):
+            if proactive_delivery.task is not None:
+                proactive_delivery.task.cancel()
+            await _cancel_active_runs(session=session, client=client)
+            for task in chat_tasks.values():
+                task.cancel()
+            if chat_tasks:
+                await asyncio.gather(*chat_tasks.values(), return_exceptions=True)
+            await visual_perception.aclose_video_tasks()
+            await audio_bridge.close()
+            if video_archive is not None:
+                try:
+                    await video_archive.close_session(session.connection_id)
+                except Exception as exc:  # noqa: BLE001 - optional archive cleanup.
+                    logger.warning(
+                        "remote_visual_memory_close_failed connection=%s error_type=%s",
+                        session.connection_id,
+                        type(exc).__name__,
+                    )
+            if visual_perception.session is not None:
+                await visual_perception.session.aclose()
+            for video_id in session.video_ids:
+                await asyncio.to_thread(video_ingestion.cleanup, video_id)
+            if session.thread_id is not None:
+                await artifact_hub.unregister(
+                    session_id=session.thread_id,
+                    subscriber_id=session.connection_id,
                 )
-        if visual_perception.session is not None:
-            await visual_perception.session.aclose()
-        for video_id in session.video_ids:
-            await asyncio.to_thread(video_ingestion.cleanup, video_id)
-        if session.thread_id is not None:
-            await artifact_hub.unregister(
-                session_id=session.thread_id,
-                subscriber_id=session.connection_id,
-            )
-        if proactive_delivery.task is not None:
-            await asyncio.gather(proactive_delivery.task, return_exceptions=True)
-        if proactive_delivery.pump is not None:
-            await proactive_delivery.pump.aclose()
+            if proactive_delivery.task is not None:
+                await asyncio.gather(proactive_delivery.task, return_exceptions=True)
+            if proactive_delivery.pump is not None:
+                await proactive_delivery.pump.aclose()
 
 
 async def _handle_frame(
@@ -631,6 +675,15 @@ async def _handle_frame(
     received_ns: int | None = None,
     audio_bridge=None,
 ) -> None:
+    if frame.message == "videoClear":
+        if session.call_type != "VIDEO" or not session.client_capabilities.get("audioStreamV1"):
+            raise MediaProtocolError("videoClear requires VIDEO audioStreamV1 handshake")
+        await audio_bridge.clear_video()
+        await _send_json(websocket, send_lock, envelope(
+            message="videoResponse", session_id=session.protocol_session_id,
+            body={"code": 0, "message": "video cleared"},
+        ))
+        return
     if frame.message == "chat":
         if session is not None and session.client_capabilities.get("audioStreamV1"):
             # Upstream ASR accompanies the audio; do not submit a second model turn.
@@ -688,7 +741,7 @@ async def _handle_frame(
         session.context = context
         if session.client_capabilities.get("audioStreamV1"):
             await audio_bridge.start()
-        if call_type == "VIDEO":
+        if call_type == "VIDEO" and visual_module.realtime_enabled:
             visual_perception.session = visual_module.open_session(
                 user_id=authenticated_identity,
                 session_id=thread_id,
@@ -698,17 +751,17 @@ async def _handle_frame(
                     protocol_session_id=frame.session_id,
                 ),
             )
-            if video_archive is not None:
-                archive_enabled = video_archive.open_session(
-                    connection_id=session.connection_id,
-                    user_id=authenticated_identity,
-                    session_id=thread_id,
+        if call_type == "VIDEO" and video_archive is not None:
+            archive_enabled = video_archive.open_session(
+                connection_id=session.connection_id,
+                user_id=authenticated_identity,
+                session_id=thread_id,
+            )
+            if not archive_enabled:
+                logger.warning(
+                    "remote_visual_memory_connection_capacity connection=%s",
+                    session.connection_id,
                 )
-                if not archive_enabled:
-                    logger.warning(
-                        "remote_visual_memory_connection_capacity connection=%s",
-                        session.connection_id,
-                    )
         await artifact_hub.register(
             session_id=thread_id,
             subscriber_id=session.connection_id,
@@ -977,6 +1030,17 @@ async def _handle_frame(
                     session.connection_id,
                     len(archive_frames),
                 )
+        if video_ingestion is None:
+            await _send_json(
+                websocket,
+                send_lock,
+                envelope(
+                    message="videoResponse",
+                    session_id=frame.session_id,
+                    body={"code": 0, "message": "realtime visual disabled"},
+                ),
+            )
+            return
         accepted = visual_perception.enqueue_video(
             lambda: _ingest_video_packets(
                 websocket,
@@ -987,6 +1051,10 @@ async def _handle_frame(
                 visual_perception=visual_perception,
                 packets=packets,
                 received_ns=video_received_ns,
+                audio_bridge=(
+                    audio_bridge if session.call_type == "VIDEO"
+                    and session.client_capabilities.get("audioStreamV1") else None
+                ),
             ),
             on_replaced=lambda: _send_json(
                 websocket,
@@ -1165,7 +1233,7 @@ async def _run_chat(
                 artifact_payload_resolver=lambda output_ref: (
                     generated_artifact_payload_for_thread(
                         output_ref,
-                        current_native_execution_owner().thread_resource_manager,
+                        current_native_execution_owner().artifact_store,
                         identity=str(session.user_id or ""),
                         thread_id=str(session.thread_id or ""),
                     )
@@ -1256,6 +1324,7 @@ async def _ingest_video_packets(
     visual_perception: _VisualPerceptionConnection,
     packets: list[tuple[str, str, dict[str, Any], str]],
     received_ns: int | None = None,
+    audio_bridge: MediaAudioBridge | None = None,
 ) -> bool:
     """Decode one wire video message after it has left the receive hot path."""
 
@@ -1305,6 +1374,8 @@ async def _ingest_video_packets(
                     _elapsed_ms(received_ns, semantic_admitted_ns),
                     getattr(admission, "semantic_admission", None),
                 )
+            if audio_bridge is not None:
+                await audio_bridge.append_video(frame_result)
         await _send_json(
             websocket,
             send_lock,

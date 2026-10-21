@@ -22,6 +22,16 @@ class MediaInspectionPlugin:
         tools: list[BaseTool] = []
         vision_ready = context.mock_mode or vision_provider_ready(context.vision_config)
         vision_client = context.vision_client
+        if vision_ready and vision_client is not None:
+            tools.append(
+                create_uploaded_media_inspect_tool(
+                    vision_client,
+                    max_video_bytes=context.media_config.max_video_bytes,
+                    max_video_seconds=context.media_config.max_video_seconds,
+                )
+            )
+        if not context.vision_config.realtime_visual_enabled:
+            return tools
         if (
             context.embedding_coordinator_store is not None
             and context.visual_reminder_registry is not None
@@ -33,21 +43,14 @@ class MediaInspectionPlugin:
                 )
             )
         if vision_ready and vision_client is not None:
-            tools.extend(
-                [
-                    create_uploaded_media_inspect_tool(
-                        vision_client,
-                        max_video_bytes=context.media_config.max_video_bytes,
-                        max_video_seconds=context.media_config.max_video_seconds,
-                    ),
-                    create_live_view_inspect_tool(
-                        vision_client,
-                        context_store=context.video_context_store,
-                        memory_store=context.realtime_video_memory_store,
-                        semantic_store_pool=context.visual_semantic_store_pool,
-                        live_view_resolver=context.live_view_resolver,
-                    ),
-                ]
+            tools.append(
+                create_live_view_inspect_tool(
+                    vision_client,
+                    context_store=context.video_context_store,
+                    memory_store=context.realtime_video_memory_store,
+                    semantic_store_pool=context.visual_semantic_store_pool,
+                    live_view_resolver=context.live_view_resolver,
+                )
             )
         if (
             context.visual_semantic_store_pool is not None

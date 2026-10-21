@@ -24,7 +24,7 @@ class ImageTo3DToolPlugin:
         )
         if not all(required):
             return []
-        if context.thread_resource_manager is None:
+        if context.artifact_store is None:
             return []
         settings = ImageTo3DSettings(
             td_gen_url=(
@@ -41,7 +41,7 @@ class ImageTo3DToolPlugin:
                     artifact_payload_resolver=lambda user_id, thread_id, ref: (
                         generated_artifact_payload_for_thread(
                             ref,
-                            context.thread_resource_manager,
+                            context.artifact_store,
                             identity=user_id,
                             thread_id=thread_id,
                         )

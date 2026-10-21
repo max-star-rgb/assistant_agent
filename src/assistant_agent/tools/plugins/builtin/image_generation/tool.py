@@ -1,18 +1,18 @@
 """Image generation Tool backed by a Plugin-private adapter."""
 
 import asyncio
-import shutil
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any
 
-from langchain_core.tools import BaseTool, ToolException, tool
+from langchain_core.tools import BaseTool, tool
 from langgraph.prebuilt import ToolRuntime
 from pydantic import Field
 
 from assistant_agent.native_agent.context import (
     AssistantRunContext,
     authenticated_user_identity,
+    default_working_directory,
 )
 from assistant_agent.tools.plugins.builtin.image_generation.models import (
     GeneratedImageArtifact,
@@ -26,6 +26,7 @@ from assistant_agent.tools.capability_output import (
 from assistant_agent.tools.plugins.builtin.image_generation.backend import (
     ImageGenerationAdapter,
     MockImageGenerationAdapter,
+    mock_image_source,
     materialize_image_generation_result as _materialize_image_generation_result,
 )
 from assistant_agent.media.generated_artifacts import (
@@ -40,16 +41,15 @@ from assistant_agent.tools.ids import (
 from assistant_agent.tools.native_boundary import (
     configure_builtin_tool,
     native_content_and_artifact,
-    native_tool_exception,
 )
-from assistant_agent.runtime.thread_resources import ThreadResourceManager
+from assistant_agent.runtime.thread_resources import GeneratedArtifactStore
 from assistant_agent.tools.delivery import with_tool_delivery
 
 
 def create_image_generation_tool(
     adapter: ImageGenerationAdapter | None = None,
     *,
-    thread_resource_manager: ThreadResourceManager,
+    artifact_store: GeneratedArtifactStore,
 ) -> BaseTool:
     """Create the native image generation Tool."""
 
@@ -73,32 +73,37 @@ def create_image_generation_tool(
         """
 
         try:
-            resources = thread_resource_manager.resolve(
-                authenticated_user_identity(runtime),
-                str(runtime.execution_info.thread_id or ""),
-            )
+            identity = authenticated_user_identity(runtime)
+            thread_ref = artifact_store.thread_ref(identity, str(runtime.execution_info.thread_id or ""))
             result = await asyncio.to_thread(
                 _execute_image_generation_from_runtime, image_adapter,
                 prompt,
                 runtime,
-                thread_resource_manager=thread_resource_manager,
+                artifact_store=artifact_store,
             )
             if result.status == "failed":
                 raise RuntimeError(result.error or "image_generation_failed")
             artifact = _image_generation_output_contract(
                 result,
-                public_prefix=generated_artifact_prefix(resources.thread_ref),
+                public_prefix=generated_artifact_prefix(thread_ref),
             )
             if runtime.context.device_id is not None:
                 from assistant_agent.runtime.device_backend import device_backend_for_runtime
-                backend = device_backend_for_runtime(runtime)
                 for image in artifact.get("images", []):
-                    filename = PurePosixPath(image["output_ref"]).name
-                    payload = await asyncio.to_thread((resources.artifact_root / "generated" / filename).read_bytes)
-                    delivered = await backend.upload(str(runtime.context.cwd / "outputs" / filename), payload)
-                    if delivered.error:
-                        raise RuntimeError(f"device_media_delivery_failed: {delivered.error}")
-                    image["local_path"] = delivered.path
+                    try:
+                        backend = device_backend_for_runtime(runtime)
+                        filename = PurePosixPath(image["output_ref"]).name
+                        path = await asyncio.to_thread(artifact_store.resolve, thread_ref, filename, identity=identity)
+                        payload = await asyncio.to_thread(path.read_bytes)
+                        delivered = await backend.upload(str(runtime.context.cwd / "outputs" / filename), payload)
+                        if delivered.error:
+                            raise RuntimeError("device_media_delivery_failed")
+                        image["local_path"] = delivered.path
+                    except Exception:
+                        # Generation has succeeded; retain the server artifact for delivery.
+                        artifact["errors"].append({"code": "device_media_delivery_failed",
+                                                  "message": "图片已生成，设备交付失败；不要重新生成。"})
+                artifact["contract"]["errors"] = artifact["errors"]
             output_refs = [
                 image["output_ref"]
                 for image in artifact.get("images", [])
@@ -110,12 +115,10 @@ def create_image_generation_tool(
                 _image_generation_model_observation(artifact), artifact
             )
             return content, artifact
-        except ToolException:
-            raise
         except Exception as exc:
-            raise native_tool_exception(
-                exc, tool_name=IMAGE_GENERATION_TOOL_NAME
-            ) from exc
+            # A paid operation with an unknown outcome must not become a recoverable
+            # ToolMessage that invites the model to invoke generation again.
+            raise RuntimeError("image_generation_execution_failed") from exc
 
     return configure_builtin_tool(
         image_generation,
@@ -128,7 +131,7 @@ def _execute_image_generation_from_runtime(
     prompt: str,
     runtime: ToolRuntime[AssistantRunContext],
     *,
-    thread_resource_manager: ThreadResourceManager,
+    artifact_store: GeneratedArtifactStore,
 ) -> ImageGenerationResult:
     state = runtime.state if isinstance(runtime.state, Mapping) else {}
     request = ImageGenerationRequest(
@@ -137,18 +140,21 @@ def _execute_image_generation_from_runtime(
         session_id=runtime.execution_info.thread_id,
         memory_context=list(state.get("memory_context", ())),
     )
-    resources = thread_resource_manager.resolve(
-        request.user_id,
-        str(request.session_id or ""),
-    )
-    public_prefix = generated_artifact_prefix(resources.thread_ref)
-    return _execute_image_generation(
+    thread_id = str(request.session_id or "")
+    public_prefix = generated_artifact_prefix(artifact_store.thread_ref(request.user_id, thread_id))
+    cwd = default_working_directory() if runtime.context.device_id else Path(runtime.context.cwd)
+    output_dir = cwd / "outputs"
+    result = _execute_image_generation(
         adapter,
         request,
-        artifact_dir=resources.artifact_root / "generated",
-        output_dir=None if runtime.context.device_id is not None else Path(runtime.context.cwd) / "outputs",
+        artifact_dir=output_dir,
         public_prefix=public_prefix,
     )
+    for image in _generated_image_artifacts(result, public_prefix=public_prefix):
+        filename = PurePosixPath(image.output_ref).name
+        artifact_store.register(request.user_id, thread_id,
+            mock_image_source(result) or output_dir / filename, filename=filename)
+    return result
 
 
 def _execute_image_generation(
@@ -156,9 +162,10 @@ def _execute_image_generation(
     input: ImageGenerationRequest,
     *,
     artifact_dir: Path,
-    output_dir: Path | None,
     public_prefix: str,
 ) -> ImageGenerationResult:
+    if artifact_dir.resolve() != artifact_dir.absolute():
+        raise ValueError("generated output directory must not contain symlinks")
     result = adapter.generate(input)
     if result.status != "succeeded":
         return result
@@ -171,12 +178,6 @@ def _execute_image_generation(
         artifact_dir=artifact_dir,
         public_prefix=public_prefix,
     )
-    images = _generated_image_artifacts(result, public_prefix=public_prefix)
-    if images and output_dir is not None:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        for image in images:
-            filename = PurePosixPath(image.output_ref).name
-            shutil.copy2(artifact_dir / filename, output_dir / filename)
     return result
 
 
@@ -304,6 +305,8 @@ def _publish_image_ids(
     artifact_dir: Path,
     public_prefix: str,
 ) -> ImageGenerationResult:
+    if mock_image_source(result) is not None:
+        return result
     refs = result.download_urls or (
         [result.download_url] if result.download_url else []
     )
