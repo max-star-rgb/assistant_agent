@@ -52,7 +52,7 @@ Gateway 在会话初始化时先召回远端视觉快照，此后每成功处理
 每条最多 4000 字、合计最多 12000 字，只保留文本。初始化在连接模型前等待有界召回；后续刷新不阻塞语音，失败保留上一快照，成功空结果清空。
 前台通过 `/qwen-audio/visual-memory/snapshot` POST 触发初始化，GET 每 2 秒读取本地快照（不调用远端）；内容变化通过订阅更新原生 Realtime 上下文的 `<visual_memory>`。
 快照为进程内用户级状态，不写 Markdown，不提供模型可调用的视觉召回工具，不进入文本提取。
-已装配的会话始终保留 `<visual_memory>` 区域，JSON 中的 `texts` 可为空；`status` 区分 pending、empty、refreshing、ready、ready_empty、disabled、unavailable。状态变化也刷新上下文，失败保留旧文本，空数组不代表已召回到记忆。
+已装配的会话始终保留 `<visual_memory>` 区域，其中仅输出按原顺序以空行分隔的文本，不显示 JSON、字段名、状态或说明文案。内部快照的 `texts` 可为空；`status` 区分 pending、empty、refreshing、ready、ready_empty、disabled、unavailable。状态变化也刷新上下文，失败保留旧文本，空数组不代表已召回到记忆。
 计数以远端任务 completed 为准，避免受理后尚未完成处理就提前召回。当前 VIDEO thread 的短期视觉能力与旧 Python hybrid adapter 保持独立。
 
 ## 保留的 Python backend（非 Gateway 当前路径）

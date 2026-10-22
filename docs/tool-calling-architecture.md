@@ -79,8 +79,12 @@ filesystem 与 `execute`；`browser-operator` 只接收 Playwright Tool。角色
 `MULTIMODAL_AGENT_IMAGE_MOCK_PATH` 可指定本机图片：mock 直接读取该文件，不创建目录或复制图片；原生 Store 将不含宿主路径的产物引用关联到源文件，复用同一交付流程，
 不向模型暴露源文件路径；文件不可读或超限则明确失败。留空保留无实体的离线占位结果。
 真实服务凭据配好后只改 `MULTIMODAL_AGENT_IMAGE_PROVIDER` 即可切换，fixture 路径无需删除。
-`image_to_3d` 未收到显式引用时，可从 checkpoint 的历史成功 `image_generation` ToolMessage 中选择最近引用，
-因此支持跨对话轮次联动；显式引用始终优先，实体删除或登记缺失时由 resolver 拒绝。
+`image_to_3d(src_image=None)` 默认使用当前前台会话最近成功生成的图片。Gateway 任务仍各用独立 thread，
+图片登记时按认证用户与 `qwen_artifact_session` 在原生 Store 保存最近引用；3D 调用时读取一次并固定，
+不会因随后其他图片完成而改用新图。显式引用始终优先；跨 thread 仅允许同一认证用户、同一会话登记的图片，
+实际实体仍由来源 thread 的 resolver 校验，3D job/callback 仍归当前任务 thread。
+无 Gateway 会话关联的 Studio/SDK 保持从当前 checkpoint 历史成功 `image_generation` ToolMessage 中选择最近引用。
+没有图片、实体删除或登记缺失时明确失败，不跨会话寻找或退回更旧的图片；失败生成不更新最近成功图片。
 高德路线 MCP interceptor 在保留模型可见导航 Markdown 的同时，把同一受校验 URL 写入 namespaced
 `structuredContent`；终端入口只从转换后的标准 ToolMessage artifact 确定性交付，不解析模型正文。
 
@@ -89,10 +93,20 @@ filesystem 与 `execute`；`browser-operator` 只接收 Playwright Tool。角色
 全局 MCP interceptor 先删除外部结果中的同名保留字段，仅在成功校验 AMap 路线后重建并写入
 `structuredContent`。这是 `ToolMessage.artifact` 的应用数据，不是自定义
 message/state 协议。传输层只通用读取该 key 和标准 `type=file` block，不依赖模型复述，也不按 Tool 名解析业务 artifact。
+`travel_route` 将实际起终点名称、出行方式和 `<link>` 导航地址封装为 `<detail>` 文本，
+通过同一交付声明进入 Gateway 原生任务产物，再由媒体适配器原样转发；地点展示名移除尖括号、
+合并空白并限长，结构化地点与 `navigation_url` 保持原值。不依赖模型复述或新增导航专用传输协议。
 只读 Tool 使用官方 `ToolRetryMiddleware` 有界重试；`live_view_inspect` 为避免重复
 当前画面推理不进入自动 retry 清单。
+主 Agent 与通用 worker 通过薄子类 `ReadToolRetryMiddleware` 复用官方重试循环，
+首次失败后只重试 1 次（最多执行 2 次）。耗尽后返回固定失败事实，移除默认的继续重试建议；
+下一轮模型调用临时追加 `HumanMessage(name="tool_recovery")`，建议结合联网搜索与已有信息回答，
+不要重复调用或改用同一服务的其他入口。该消息不写入历史，不包含原始异常，且只针对紧邻的工具结果批次。
+这是模型恢复建议，不是强制联网路由或跨轮调用禁令；不得把搜索结果描述成操作已成功。
 `lodging_search` 仅让超时、Provider 不可用等瞬时失败进入该重试链；FlyAI
 `CITY_CODE_CHECK_PARAM_ERROR` 会直接返回针对 `destination` / `nearby_poi` 的可操作错误，其他明确拒绝和响应错误也不重复提交。
+FlyAI adapter 每次启动 CLI 时在子进程 `NODE_OPTIONS` 末尾追加 `--dns-result-order=ipv4first`，
+保留其余 Node 选项且不修改父进程环境；该行为固化在源码中，服务或机器重启后仍有效。
 
 `ToolContext`、`invoke_native_tool` 和以 `ToolResult` 为中心的生产兼容执行链均已删除，
 `runtime/state.py` 的平行 Tool catalog/call/result ledger 也已删除。公开兼容 response 的同名字段属于
@@ -113,15 +127,25 @@ Skill、Todo、worker 文本和 artifact 都不能声明 profile 或授权 Tool�
 `@amap/amap-maps-mcp-server@0.0.8`，凭据仅引用环境变量 `AMAP_MAPS_API_KEY`，不得写入 JSON。
 该版本的只读工具先经显式 allowlist 过滤；`mcp_amap_maps_maps_weather` 不归属任何 Profile，
 成功注册后默认暴露。其余高德原始 Tool 不进入模型 inventory，只作为薄业务组合的内部依赖。
-`travel` 只包含 `travel_route(origin, destination, mode)` 和 `travel_nearby(place, keywords="", radius=1000)`；
-`lodging_search` 移到独立 `lodging` Profile，保留酒店查询能力。
-两个业务 Tool 复用官方 MCP adapter 和 interceptor，不绕过 allowlist、不直连高德 HTTP API、也不增加 Agent loop。
+`travel` 包含 `travel_route(origin, destination, mode)`、`travel_nearby(place, keywords="", radius=1000)`
+和 `travel_hotel_nearby(place, hotel_keyword, check_in=None, check_out=None, adults=1, rooms=1)`；
+`lodging_search` 保留在独立 `lodging` Profile，支持直接酒店查询与更多筛选条件。
+组合 Tool 复用官方 MCP adapter 和 interceptor，不绕过 allowlist、不直连高德 HTTP API、也不增加 Agent loop。
 各地点先以完整名称搜索，固定选择第一个 POI，再查详情取得坐标；公交另取详情中的城市。
 路线方式仅支持驾车、公交、步行、骑行；周边半径单位米，范围 1–50000，默认 1000，关键词为空时不限类别。
 返回实际选中的地点名称、地址和结果；路线仍产生经本地校验的导航链接和统一交付声明。
 无候选、无效坐标、缺少公交城市、MCP 错误或无路线时明确失败，不换候选、不换方式、不伪造坐标。
 依赖未完整注册时不暴露对应组合 Tool；依赖配置了审批时拒绝组合，避免内部调用绕过 HITL。
 新工具加入官方只读 retry 名单；原始工具不会因移出 Profile 而变成常驻工具。
+酒店组合先用 `maps_text_search -> maps_search_detail` 解析首个地标候选，再调用受信装配的原生
+`lodging_search` BaseTool，传入 `destination=city`、`nearby_poi=name` 与 `keywords=hotel_keyword`，
+透传隐藏 `ToolRuntime`、人数和房间数，不重新创建 Provider 或 mock fallback。
+入住日期省略时在每次调用时按 `Asia/Shanghai` 取当天，退房日期省略时为入住次日；显式日期优先，
+退房不晚于入住时在外部调用前拒绝。缺少地标城市时明确失败。
+只有高德地点依赖与 `lodging_search` 均可用时才暴露酒店组合；酒店服务的 real/mock readiness 仍归原插件所有。
+返回实际地标和查询日期，保留酒店工具的有界 observation、结构化报价与统一交付声明；
+领域拒绝保持 error ToolMessage，瞬时酒店错误交给组合 Tool 的官方 retry middleware。
+该组合不使用 `maps_around_search`，没有半径保证，也不下单、占房或付款。
 本机高德命令使用 `npx --offline`，避免每次 MCP 会话启动都访问 npm registry；新机器须先缓存固定包版本，
 例如 `npm exec --yes --package=@amap/amap-maps-mcp-server@0.0.8 -- node --version`。
 

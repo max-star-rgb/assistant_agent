@@ -14,7 +14,7 @@ from assistant_agent.tools.plugins.contracts import ToolPluginContext
 class ImageTo3DToolPlugin:
     def build_tools(self, context: ToolPluginContext) -> list[BaseTool]:
         if context.mock_mode:
-            return [create_image_to_3d_tool()]
+            return [create_image_to_3d_tool(artifact_store=context.artifact_store)]
         config = context.media_config
         required = (
             config.td_gen_ip,
@@ -36,6 +36,7 @@ class ImageTo3DToolPlugin:
         )
         return [
             create_image_to_3d_tool(
+                artifact_store=context.artifact_store,
                 adapter=ImageTo3DAdapter(
                     settings,
                     artifact_payload_resolver=lambda user_id, thread_id, ref: (

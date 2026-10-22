@@ -195,7 +195,7 @@ export async function startMediaServer({ port = 8081, host = '0.0.0.0', gatewayP
   wss.on('connection', (media, request) => {
     let gcp, visual, sessionId, user, control, ready = false, disposed = false;
     const gatewaySessionId = `media-${randomUUID()}`;
-    const artifactDeliveries = new Set(), imageAbort = new AbortController();
+    const imageDeliveries = new Set(), imageAbort = new AbortController();
     const queryNumber = new URL(request.url, 'http://localhost').searchParams.get('number');
     let initialization;
     let audioPackets = 0, outputChunks = 0, uplinkChunks = 0;
@@ -247,23 +247,20 @@ export async function startMediaServer({ port = 8081, host = '0.0.0.0', gatewayP
     };
     sessions.add(dispose);
     media.on('close', dispose);
-    async function deliverText(task) {
+    async function deliverDetail(task) {
       const texts = new Set();
-      let size = 0;
       for (const artifact of task.artifacts) for (const part of artifact.parts || []) {
-        if (part.mediaType !== 'text/plain' || typeof part.text !== 'string' || !part.text.trim() || texts.has(part.text)) continue;
-        if (size + part.text.length > 16000) {
-          logger.warn('media.text_delivery_failed', { taskId: task.id });
-          return;
-        }
-        texts.add(part.text); size += part.text.length;
+        if (part.mediaType === 'text/plain' && typeof part.text === 'string'
+            && part.text.startsWith('<detail>') && part.text.endsWith('</detail>')) texts.add(part.text);
       }
-      if (!texts.size || disposed) return;
-      await emit('chatResponse', { number: user, taskId: task.id, deliveryId: `text:${task.id}`,
-        message: { type: 'BRIEF', chatIndex: `text:${task.id}`, content: { intentResult: {
-          status: 'SUCCESS', description: [...texts].join('\n'),
+      const description = [...texts].join('\n');
+      if (!description || disposed) return;
+      if (description.length > 16000) throw Error('detail_delivery_too_large');
+      await emit('chatResponse', { number: user, taskId: task.id, deliveryId: `detail:${task.id}`,
+        message: { type: 'BRIEF', chatIndex: `detail:${task.id}`, content: { intentResult: {
+          status: 'SUCCESS', description,
         } } }, displayOnly: true, display_only: true, sequence: 1, final: true });
-      logger.info('media.text_delivery', { taskId: task.id, status: 'sent' });
+      logger.info('media.detail_delivery', { taskId: task.id, status: 'sent' });
     }
     async function deliverImages(task) {
       const details = []; let failed = false;
@@ -288,9 +285,9 @@ export async function startMediaServer({ port = 8081, host = '0.0.0.0', gatewayP
         if (event.type === 'session.ping') return gateway({ type: 'session.pong', request_event_id: event.event_id });
         if (['task.completed', 'task.updated'].includes(event.type) && event.task?.status === 'completed'
             && event.task.sessionId === gatewaySessionId && typeof event.task.id === 'string'
-            && Array.isArray(event.task.artifacts) && event.task.artifacts.length && !artifactDeliveries.has(event.task.id)) {
-          artifactDeliveries.add(event.task.id);
-          void deliverText(event.task).catch(() => logger.warn('media.text_delivery_failed'));
+            && Array.isArray(event.task.artifacts) && event.task.artifacts.length && !imageDeliveries.has(event.task.id)) {
+          imageDeliveries.add(event.task.id);
+          void deliverDetail(event.task).catch(() => logger.warn('media.detail_delivery_failed'));
           // Image retrieval must not hold up audio or playback receipts.
           void deliverImages(event.task).catch(() => logger.warn('media.image_delivery_failed'));
         }
@@ -334,6 +331,11 @@ export async function startMediaServer({ port = 8081, host = '0.0.0.0', gatewayP
           if (p.message === 'audioStart') logger.info('media.audio_output', { status: 'started' });
           if (p.message === 'audioChunk') outputChunks++;
           await emit(p.message, p.body);
+        }
+        if (event.type === 'transcript.final' && event.role === 'user'
+          && typeof event.turnId === 'string' && event.turnId.trim()
+          && typeof event.content === 'string' && event.content.trim()) {
+          await emit('asrResult', { turnId: event.turnId, text: event.content, final: true });
         }
         if (event.type === 'transcript.final' && event.role === 'assistant' && typeof event.responseId === 'string' && event.content) {
           const links = ids(event.responseId);

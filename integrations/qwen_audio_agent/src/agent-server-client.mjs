@@ -77,6 +77,10 @@ export class AgentServerClient {
 
   async submit(task) {
     const id = threadId(this.namespace, this.identity, task.id);
+    // BackendPort omits session context; composition resolves it from the native task record.
+    const sessionId = task.continuity === 'isolated' ? null : this.resolveSessionId?.(task.id);
+    const imageScope = typeof sessionId === 'string' && sessionId.length > 0 && sessionId.length <= 160
+      ? createHash('sha256').update(JSON.stringify([this.namespace, this.identity, sessionId])).digest('hex') : null;
     const fingerprint = createHash('sha256').update(task.instruction).digest('hex');
     let exists = true;
     try { await this.verifyThread(id, task.id); }
@@ -84,7 +88,8 @@ export class AgentServerClient {
     if (!exists) {
       try {
         await this.request('/threads', { method: 'POST', body: { thread_id: id, if_exists: 'raise',
-          metadata: { graph_id: BUSINESS_GRAPH, qwen_task_id: task.id, qwen_namespace: this.namespace, qwen_input_hash: fingerprint } } });
+          metadata: { graph_id: BUSINESS_GRAPH, qwen_task_id: task.id, qwen_namespace: this.namespace, qwen_input_hash: fingerprint,
+            ...(imageScope ? { qwen_artifact_session: imageScope } : {}) } } });
       } catch (error) { if (error.status === 409) exists = true; else throw error; }
     }
     const thread = await this.verifyThread(id, task.id);
@@ -101,12 +106,15 @@ export class AgentServerClient {
   }
 
   async createRun(id, taskId, payload) {
+    const thread = await this.verifyThread(id, taskId);
+    const imageScope = thread.metadata.qwen_artifact_session;
     const submissionId = randomUUID();
     try {
       const run = await this.request(`${this.path(id)}/runs`, { method: 'POST', body: {
         ...payload, assistant_id: BUSINESS_GRAPH, multitask_strategy: 'reject',
         context: { enable_memory: false, require_tool_approval: false },
-        metadata: { qwen_task_id: taskId, qwen_submission_id: submissionId },
+        metadata: { qwen_task_id: taskId, qwen_submission_id: submissionId,
+          ...(imageScope ? { qwen_artifact_session: imageScope } : {}) },
       } });
       return { threadId: id, runId: run.run_id };
     } catch (error) {

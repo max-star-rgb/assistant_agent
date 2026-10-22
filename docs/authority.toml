@@ -125,6 +125,7 @@ source_globs = [
   "src/assistant_agent/native_agent/providers.py",
   "src/assistant_agent/native_agent/tool_profiles.py",
   "src/assistant_agent/native_agent/unknown_tool_feedback.py",
+  "src/assistant_agent/native_agent/read_tool_retry.py",
   "src/assistant_agent/native_agent/tools.py",
   "src/assistant_agent/runtime/local_backend.py",
   "src/assistant_agent/runtime/thread_resources.py",

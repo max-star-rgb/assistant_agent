@@ -37,6 +37,7 @@ GENERAL_PURPOSE_BUILTIN_TOOL_NAMES = frozenset(
         "shopping_search",
         "travel_route",
         "travel_nearby",
+        "travel_hotel_nearby",
         "uploaded_media_inspect",
         "visual_image_search",
         "visual_memory_search",
@@ -139,6 +140,7 @@ async def _create_official_mcp_tools(
     *,
     client_factory: Callable[..., Any] | None = None,
     mcp_session_pool: ThreadMcpSessionPool | None = None,
+    lodging_tool: BaseTool | None = None,
 ) -> list[BaseTool]:
     """Load allowlisted MCP tools through MultiServerMCPClient."""
 
@@ -180,8 +182,9 @@ async def _create_official_mcp_tools(
                 assembled.extend(create_amap_travel_tools(
                     {tool.name: tool for tool in discovered if tool.name in allowed},
                     interrupt_tools=set(server.interrupt_tools),
+                    lodging_tool=lodging_tool,
                 ))
-                # AMap primitives stay private to the two business tools; weather remains ambient.
+                # AMap primitives stay private to the business tools; weather remains ambient.
                 allowed &= {"maps_weather"}
             for tool in discovered:
                 if tool.name not in allowed:
@@ -251,6 +254,7 @@ async def create_native_tool_inventory(
         mcp_server_configs,
         client_factory=mcp_client_factory,
         mcp_session_pool=mcp_session_pool,
+        lodging_tool=next((tool for tool in builtins if tool.name == "lodging_search"), None),
     )
     tools = [*builtins, *mcp_tools]
     names = [tool.name for tool in tools]

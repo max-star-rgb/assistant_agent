@@ -1,6 +1,6 @@
 # Media-Agent WebSocket 接口权威文档
 
-Last updated: 2026-10-16
+Last updated: 2026-10-22
 
 ## Authority contract
 
@@ -33,15 +33,13 @@ Last updated: 2026-10-16
 - 外层是 JSON object，`body` 必须是序列化后的 JSON string。
 
 Gateway 媒体适配器只负责连接身份、消息转换、Realtime 事件转发及连接资源释放，不创建业务 run。
-后台 Tool 的文本附加产物通过既有任务通道交付：`task-results.mjs` 从当前用户轮次最后一条同名
-ToolMessage 的 `assistant_agent_delivery_v1.text`（含 MCP `structured_content` 包装）投影为原生
-`artifacts[].parts[].text`，媒体类型为 `text/plain`。失败的最新 Tool 不回退旧结果；不从模型正文推断产物。
-文本去重、累计上限 16000 字符，超限报告交付失败，不截断 `<detail>` 标签。
-当前 GCP session 的完成事件由前台原样转发为 `chatResponse.message.content.intentResult.description`，
-保留购物 `<detail>...</detail>`、`<link>` 和 `<pic>`，不要求前台模型复述，也不下载卡片中的链接或图片。
-文本包使用 `chatIndex=deliveryId=text:<taskId>`、`displayOnly/display_only=true`、`final=true`，
-只展示附加产物，语音解说仍由 Realtime 模型负责。同连接同任务仅发送一次；文本与图片独立交付，
-文本不等待图片下载。`media.text_delivery` 仅记录任务 ID 和写出状态；断线重投及端侧展示 ACK 尚未实现。
+后台 Tool 声明的 `<detail>...</detail>` 附加文本通过原生任务 `artifacts[].parts[].text`
+（`mediaType=text/plain`）传到前台。只取当前用户轮次同名 Tool 的最新成功声明；最新失败不回退旧卡片，
+不从模型正文提取，不影响原有图片收集。卡片去重，总长最多 16000 字符，超限不截断标签。
+当前会话任务完成后，前台独立发送一个 `chatResponse`，将原文放入
+`message.content.intentResult.description`（不是图片 `detail[]`），`chatIndex/deliveryId=detail:<taskId>`，
+`displayOnly/display_only=true`、`final=true`。同连接同任务仅发送一次；普通回答和音视频包保持既有行为。
+`media.detail_delivery` 表示 socket 写出成功，不代表端侧展示确认；尚不支持断线重投。
 后台任务完成后的图片也由此适配器交付：接收当前 GCP session 的 `task.completed` / 已完成 `task.updated`，
 只消费显式 `artifacts[].parts` 的图片引用，通过身份 header 读取同一 Agent Server 的 `/artifacts/...`，
 转换为 `chatResponse.message.content.intentResult.detail[]` 中的 `IMAGE`、`imageId` 与 Base64 `image`。
@@ -372,6 +370,7 @@ VIDEO 握手还建立本机 `/internal/media-visual/v1` 连接，在复用既有
 
 | message | body 字段 | 语义 |
 | --- | --- | --- |
+| `asrResult` | `turnId`, `text`, `final:true` | 模型侧用户输入音频的最终 ASR，仅用于用户字幕展示 |
 | `audioStart` | `taskId`, `streamId`, `codec:"pcm_s16le"`, `sampleRate:24000`, `channels:1`, `encoding:"base64"` | 首个分片前声明格式 |
 | `audioChunk` | `taskId`, `streamId`, `sequence`, `audioContent` | Base64 原始 PCM；sequence 从 0 连续递增；每片最多 4800 bytes / 100ms |
 | `audioEnd` | `taskId`, `streamId`, `lastSequence` | 发送结束，不代表 APP 播放完成 |
@@ -400,6 +399,18 @@ VIDEO 握手还建立本机 `/internal/media-visual/v1` 连接，在复用既有
 终态回执可重复，未知 streamId 或 taskId 不匹配返回协议错误。媒体收到 interrupt 后不得再报告 completed。
 `interrupt` 上行沿用原名，既取消实时回复也发出 `audioInterrupt`，随后仍返回原 interrupt ACK。
 断线时媒体必须自行清空全部音频队列；Agent 关闭对应 Gateway 会话，不保存或重放音频。
+
+**用户 ASR：** Gateway 媒体适配器（3101/8081）将当前连接收到的
+`transcript.final(role=user)` 转为 `asrResult`，沿用外层 `sessionId` 和 JSON-string `body`：
+
+```json
+{"message":"asrResult","sessionId":"call-1","body":"{\"turnId\":\"turn-1\",\"text\":\"帮我查一下天气\",\"final\":true}"}
+```
+
+`turnId` 原样使用 Gateway 用户轮次 ID，不使用 assistant 的 responseId/taskId。
+仅转发具有非空字符串 `turnId` 和非空文本的最终结果，文本原样保留；不转发增量或失败事件。
+媒体端按当前连接与 `turnId` 展示或更新用户字幕，不触发 TTS，也不将其作为新的 `chat` 输入回传模型。
+不新增 ACK 或断线重投；用户 ASR 不依赖助手音频播放回执。旧 8088 入口不提供此下行扩展。
 
 **文本与重复 TTS：** 模型最终字幕仍使用 `chatResponse`，`message.chatIndex=taskId`，同时附带顶层
 `taskId`、`streamId`、`audioSource:"model"`、`displayOnly:true`、`display_only:true`、`final:true`。

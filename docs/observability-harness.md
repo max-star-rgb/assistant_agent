@@ -36,7 +36,17 @@ Qwen Audio Agent 前台使用上游事件驱动 Realtime Runtime，不使用 Lan
 可重复应用；依赖升级或锚点变化必须复核。`frontend-trace.mjs` 通过官方 JS SDK 创建
 `FrontendAgent` root、`QwenRealtime` LLM 与 tool children，按上游 turn/response/call ID 关联。
 模型响应结束不等于含工具交互结束；使用上游 `awaitsToolFollowUp` 判断是否等待续答。
-迟到 ASR 按轮次回补 root Inputs 与已经预留该输入位置的模型快照，不追加后续消息；广播通知使用独立 root。
+迟到 ASR 按轮次回补 root Inputs 与已经预留该输入位置的模型快照，不追加后续消息。
+每轮前台 run 使用独立 root，同一 Gateway 会话通过 `thread_id` 关联。前台工具及其即时续答结束后
+本轮即结束，不等待后台任务，不按 `taskId` 合并不同轮次。进展、结果和合并播报各自形成新的前台 run，
+沿用同一 Provider 会话的已观测历史；后台业务 trace 独立，通过任务 metadata 关联，不创建伪父子关系。
+root 的 `Inputs.messages` 冻结为本轮首次模型调用时的 system 与完整有界消息快照；
+`Outputs.messages` 保存本轮完成时的消息快照，包含此前历史、本轮工具调用、已发送的工具结果与模型回复。
+迟到 ASR 只回补已经预留的位置，包括 root Inputs/Outputs 和模型 Inputs；后续轮次不改写旧快照。
+首次模型调用之前 root 暂存当前历史；发生中断或关闭时仍保存已有消息。
+后台通知、进展、权限及其他 context-only 文本从上游实际接受的 `conversation.item.create` 采集，
+保留真实 role 和 item ID，去重后按发送顺序进入历史，不从任务存储重建或虚构用户输入。
+该观测事件不记录音频、图片，不改变 Provider 会话内容，不重放消息；发送失败的内容不进入历史。
 LLM Inputs 的 `messages` 包含有效 system instructions 与当前 Provider 会话的跨轮文本观测历史；
 `session_configuration/response_configuration` 保存实际发送的配置及响应覆盖项，
 `extra.invocation_params` 保存 tools schema、tool_choice 等调用参数。配置只在 WS 发送路径接受消息后采集，
@@ -49,10 +59,14 @@ LLM Inputs 的 `messages` 包含有效 system instructions 与当前 Provider �
 `observation.representation=observed_text_history` 明确其为可读文本历史，而非完整模型内部上下文。
 每次响应创建独立快照，后续消息不改变旧快照；仅迟到 ASR 可以回补关联的预留位置，并标记 `asr_backfilled`。
 历史最多保留 256 条消息、128 KiB 序列化字符，超限按消息组淘汰最早内容并标记 `history_trimmed`。
-收到新 `session.created` 或连接丢失后清空观测历史，`provider_session_id` 区分 Provider 会话；旧 trace 保留。
+首次 `session.created` 接管握手前已收到的输入与轮次，补齐 `provider_session_id`，不重建 root；
+重复的同 ID 握手不改变历史。已绑定 Provider 会话后收到不同 ID 的 `session.created`，或连接丢失后，
+清空观测历史；旧 trace 保留。
 已确认的 item 删除/截断只改变未来快照；没有文本与音频对齐时保守移除对应消息组，不推断用户实际听到的文本。
-输入/输出隐藏开关均阻止工具结果通过续答 Inputs 泄露。根 Inputs 保留用户请求，根 Outputs 保存最终回答。
-运行中输入 PATCH 显式传 `end_time=null`，避免输入回补被 ingestion 视为结束；终结 PATCH 携带真实结束时间和输出。
+输入/输出隐藏开关均阻止工具结果或后台通知通过历史快照泄露；隐藏 Inputs 时 Outputs 不复制用户历史或 system。
+run 创建后，运行中的输入更新只维护内存快照，不发送非终结 PATCH，避免依赖 ingestion 对空结束时间的解释。
+终结 PATCH 一并提交冻结 Inputs、完整 Outputs 和真实结束时间；迟到 ASR 更新已结束 run 时保留原结束时间。
+因此运行中的 root Inputs 可能仍是创建时快照，完整上下文在终结后可见，模型节点创建时仍携带其输入快照。
 实际上下文由 Realtime 服务侧维护，LangSmith 文本投影不用于会话恢复、模型回灌或精确重放；标记
 `conversation_history=provider_managed`。当前 Gateway 禁止把本地 UI/Memory 记录经 `recentMessages` 回灌，
 因此重连建立新的模型上下文，界面旧记录不代表新连接的模型记忆。Outputs 为最终转写或实际增量。
@@ -75,9 +89,7 @@ Python `/qwen-audio/search` 仅在该次 `BaseTool.ainvoke` 周围使用 `tracin
 
 Gateway 显式读取 `LANGSMITH_TRACING/API_KEY/ENDPOINT/PROJECT/HIDE_INPUTS/HIDE_OUTPUTS`，配置仅传给适配层；
 mock 始终不创建远端 client。适配层异步排队、有界保留内容，过滤媒体和敏感字段，隐藏开关在入队前生效。
-上报失败记录固定事件 `frontend_trace_export_failed`，`status` 只包含失败阶段
-（`createRun/updateRun/projection/flush`）和 HTTP 状态码或白名单网络/异常类型；未知原因记为 `unknown`。
-不记录错误正文、URL、响应体或凭据。关闭时限时排空，超时停止剩余上报。追踪为 best-effort，不阻塞语音。
+上报失败只记录固定错误码；关闭时限时排空，超时停止剩余上报。追踪为 best-effort，不阻塞语音。
 已通过离线上游 Runtime 和本机 HTTP SDK fixture 验证。2026-10-16 已启用本机 Gateway 观测并重启，
 通过现有 WebUI 文字输入触发真实 Qwen Realtime 响应，在 LangSmith 确认完成的
 `FrontendAgent → QwenRealtime` 父子 trace、无错误与实际 token 用量。此验证未覆盖麦克风采集、

@@ -2,15 +2,6 @@ import { Client } from 'langsmith';
 import { RunTree } from 'langsmith/run_trees';
 import { configurationFields } from './frontend-execution-events.mjs';
 
-function exportFailure(error, operation) {
-  const status = error?.status ?? error?.response?.status;
-  const code = error?.cause?.code ?? error?.code;
-  const reason = Number.isInteger(status) && status >= 400 && status <= 599 ? `http_${status}`
-    : ['ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT'].includes(code) ? code
-      : ['TimeoutError', 'AbortError', 'TypeError', 'RangeError'].includes(error?.name) ? error.name : 'unknown';
-  return { status: `${operation}:${reason}` };
-}
-
 function safeValue(value, depth = 0, budget = { chars: 32000, nodes: 1024 }) {
   if (depth > 8 || --budget.nodes < 0 || budget.chars <= 0) return '[truncated]';
   if (typeof value === 'string') {
@@ -36,6 +27,33 @@ function trimHistory(session) {
   }
 }
 
+function snapshot(session, instructions) {
+  const messages = typeof instructions === 'string' ? [{ role: 'system', content: instructions }] : [];
+  const keys = messages.map(() => null);
+  for (const item of session.history) {
+    messages.push(...structuredClone(item.messages));
+    keys.push(...item.messages.map(() => item.key));
+  }
+  return { data: { messages, observation: { representation: 'observed_text_history', history_trimmed: session.trimmed } }, keys };
+}
+
+function backfill(data, keys, key, message) {
+  const index = keys?.indexOf(key) ?? -1;
+  if (index < 0) return false;
+  data.messages[index] = structuredClone(message);
+  const offset = keys[0] === null ? 1 : 0;
+  const bounded = { history: [], trimmed: data.observation.history_trimmed };
+  for (let i = offset; i < keys.length; i++) {
+    if (bounded.history.at(-1)?.key !== keys[i]) bounded.history.push({ key: keys[i], messages: [] });
+    bounded.history.at(-1).messages.push(data.messages[i]);
+  }
+  trimHistory(bounded);
+  data.messages = [...data.messages.slice(0, offset), ...bounded.history.flatMap(item => item.messages)];
+  keys.splice(offset, keys.length, ...bounded.history.flatMap(item => item.messages.map(() => item.key)));
+  data.observation.history_trimmed = bounded.trimmed;
+  return true;
+}
+
 /** Consumes execution facts only. Never drives the frontend or its tools. */
 export class FrontendTrace {
   constructor({ client, project = 'default', model, namespace, hideInputs = false, hideOutputs = false, warn = () => {} } = {}) {
@@ -44,10 +62,9 @@ export class FrontendTrace {
     this.exporter = Object.fromEntries(['createRun', 'updateRun'].map(method => [method,
       async (...args) => {
         if (this.stoppingExports) return;
-        // A PATCH without end_time may be finalized by the ingestion API.
-        if (method === 'updateRun' && args[1].end_time === undefined) args[1].end_time = null;
-        try { await client[method](...args); }
-        catch (error) { warn('frontend_trace_export_failed', exportFailure(error, method)); }
+        // Publish mutable snapshots only with a terminal timestamp and outputs.
+        if (method === 'updateRun' && args[1].end_time == null) return;
+        try { await client[method](...args); } catch { warn('frontend_trace_export_failed'); }
       }]));
     this.sessions = new Map();
     this.queue = Promise.resolve();
@@ -69,11 +86,11 @@ export class FrontendTrace {
       const filtered = safeValue(output);
       return { call_id: item.call_id, output: typeof filtered === 'string' ? filtered : JSON.stringify(filtered) };
     }) : undefined;
-    if (this.hideInputs) { delete event.input; if (event.kind === 'input') delete event.text; }
+    if (this.hideInputs) { delete event.input; if (['input', 'history.message'].includes(event.kind)) delete event.text; }
     if (this.hideOutputs) { delete event.output; if (event.kind !== 'input') delete event.text; }
     this.pending++;
     this.queue = this.queue.then(() => this.accept(sessionId, event))
-      .catch(error => this.warn('frontend_trace_export_failed', exportFailure(error, 'projection')))
+      .catch(() => this.warn('frontend_trace_export_failed'))
       .finally(() => this.pending--);
   }
 
@@ -88,13 +105,31 @@ export class FrontendTrace {
     for (const run of [...turn.models.values(), ...turn.tools.values()]) {
       await this.finish(run, status, time);
     }
-    await this.finish(turn.root, status, time, { messages: turn.answer ? [{ role: 'assistant', content: turn.answer }] : [] });
+    await this.finish(turn.root, status, time, turn.outputSnapshot);
+  }
+
+  async finishReadyTurn(turn, time) {
+    if (turn.finalResponse
+      && [...turn.models.values(), ...turn.tools.values()].every(run => run.end_time)) {
+      await this.finishTurn(turn, 'completed', time);
+    }
   }
 
   async accept(sessionId, e) {
     let session = this.sessions.get(sessionId);
     if (e.kind === 'session.start' && session) {
       if (e.providerSessionId && session.providerSessionId === e.providerSessionId) return;
+      // User input can arrive before the first provider handshake.
+      if (!session.providerSessionId) {
+        session.providerSessionId = e.providerSessionId;
+        for (const turn of session.turns.values()) {
+          for (const run of [turn.root, ...turn.models.values(), ...turn.tools.values()]) {
+            run.extra.metadata.provider_session_id = e.providerSessionId;
+            if (run.end_time) await run.patchRun({ excludeInputs: false });
+          }
+        }
+        return;
+      }
       for (const turn of session.turns.values()) await this.finishTurn(turn, 'closed', e.time);
       this.sessions.delete(sessionId);
       session = undefined;
@@ -106,6 +141,14 @@ export class FrontendTrace {
     }
     const turns = session.turns;
     if (e.kind === 'session.start') return;
+    if (e.kind === 'history.message') {
+      if (!this.hideInputs && !this.hideOutputs && e.text && ['user', 'system', 'assistant'].includes(e.role)
+        && !session.history.some(item => item.itemIds.includes(e.itemId))) {
+        session.history.push({ key: `context:${e.itemId}`, itemIds: [e.itemId], messages: [{ role: e.role, content: e.text }] });
+        trimHistory(session);
+      }
+      return;
+    }
     if (e.kind === 'history.remove') {
       // Without text/audio alignment, omit the affected item from future snapshots.
       session.history = session.history.filter(item => !item.itemIds.includes(e.itemId));
@@ -119,9 +162,12 @@ export class FrontendTrace {
     }
     if (!e.turnId) return;
     if (e.kind === 'turn.start') {
-      for (const [id, turn] of turns) if (id !== e.turnId) await this.finishTurn(turn, 'interrupted', e.time);
+      for (const [id, turn] of turns) if (id !== e.turnId) {
+        await this.finishTurn(turn, 'interrupted', e.time);
+      }
     }
     let turn = turns.get(e.turnId);
+    const taskIds = e.taskId ? [e.taskId] : e.taskIds || [];
     if (!turn) {
       if (turns.size >= 128) {
         const [id, oldest] = turns.entries().next().value;
@@ -134,44 +180,44 @@ export class FrontendTrace {
           source: 'qwen_audio_frontend', context_representation: 'observed_text' } } });
       root.extra.metadata.qwen_namespace = this.namespace;
       root.extra.metadata.provider_session_id = session.providerSessionId;
-      turn = { root, models: new Map(), tools: new Map(), answer: '' };
+      turn = { root, models: new Map(), tools: new Map(), outputSnapshot: { messages: [] } };
       turns.set(e.turnId, turn);
-      if (!this.hideInputs && e.origin !== 'announcement' && !e.turnId.startsWith('announcement:')) {
+      if (!this.hideInputs && !['announcement', 'progress', 'permission', 'gateway'].includes(e.origin) && !e.turnId.startsWith('announcement:')) {
         // Reserve the input position so late ASR never moves behind its answer.
         session.history.push({ key: `user:${e.turnId}`, itemIds: [], messages: [{ role: 'user', content: '' }] });
         trimHistory(session);
       }
+      if (!this.hideInputs) {
+        const initial = snapshot(session, session.instructions);
+        root.inputs = initial.data;
+        root.observedInputKeys = initial.keys;
+        turn.outputSnapshot = structuredClone(initial.data);
+        root.observedOutputKeys = [...initial.keys];
+      }
       await root.postRun();
     }
     if (e.kind === 'input') {
-      turn.root.inputs = this.hideInputs ? {} : { messages: [{ role: 'user', content: e.text }] };
-      await turn.root.patchRun({ excludeInputs: false });
       if (!this.hideInputs) {
+        const message = { role: 'user', content: e.text };
         const key = `user:${e.turnId}`;
         const entry = session.history.find(item => item.key === key);
         if (entry) {
-          entry.messages = structuredClone(turn.root.inputs.messages);
+          entry.messages = [message];
           if (e.itemId && !entry.itemIds.includes(e.itemId)) entry.itemIds.push(e.itemId);
           trimHistory(session);
         }
         // Only replace reserved slots; never append later events to an old snapshot.
-        for (const observedTurn of turns.values()) for (const model of observedTurn.models.values()) {
-          const index = model.observedInputKeys?.indexOf(key) ?? -1;
-          if (index < 0) continue;
-          model.inputs.messages[index] = structuredClone(turn.root.inputs.messages[0]);
-          const offset = model.observedInputKeys[0] === null ? 1 : 0;
-          const snapshot = { history: [], trimmed: model.inputs.observation.history_trimmed };
-          for (let i = offset; i < model.inputs.messages.length; i++) {
-            const key = model.observedInputKeys[i];
-            if (snapshot.history.at(-1)?.key !== key) snapshot.history.push({ key, messages: [] });
-            snapshot.history.at(-1).messages.push(model.inputs.messages[i]);
+        for (const observedTurn of turns.values()) {
+          for (const model of [observedTurn.root, ...observedTurn.models.values()]) {
+            let changed = backfill(model.inputs, model.observedInputKeys, key, message);
+            if (model === observedTurn.root && !this.hideOutputs) {
+              const output = model.end_time ? model.outputs : observedTurn.outputSnapshot;
+              changed = backfill(output, model.observedOutputKeys, key, message) || changed;
+            }
+            if (!changed) continue;
+            model.extra.metadata.asr_backfilled = true;
+            await model.patchRun({ excludeInputs: false });
           }
-          trimHistory(snapshot);
-          model.inputs.messages = [...model.inputs.messages.slice(0, offset), ...snapshot.history.flatMap(item => item.messages)];
-          model.observedInputKeys = [...model.observedInputKeys.slice(0, offset), ...snapshot.history.flatMap(item => item.messages.map(() => item.key))];
-          model.inputs.observation.history_trimmed = snapshot.trimmed;
-          model.extra.metadata.asr_backfilled = true;
-          await model.patchRun({ excludeInputs: false });
         }
       }
       return;
@@ -187,10 +233,12 @@ export class FrontendTrace {
       const metadata = isTool ? { call_id: id, response_id: e.responseId } : {
         response_id: id, ls_provider: 'dashscope', ls_model_name: this.model,
         // response.created is observable; it is not the generation request time.
-        ttft_origin: 'unavailable', origin: e.origin, task_id: e.taskId,
+        ttft_origin: 'unavailable', origin: e.origin, task_id: e.taskId, task_ids: taskIds,
       };
       const configuration = e.configuration;
+      if (!isTool && typeof configuration?.session?.instructions === 'string') session.instructions = configuration.session.instructions;
       const parameters = configuration ? { ...configuration.session, ...configuration.response } : {};
+      if (parameters.instructions === undefined && session.instructions !== undefined) parameters.instructions = session.instructions;
       const messages = [
         ...(typeof parameters.instructions === 'string' ? [{ role: 'system', content: parameters.instructions }] : []),
       ];
@@ -211,6 +259,11 @@ export class FrontendTrace {
         }
       }
       const { instructions: _instructions, ...invocationParams } = parameters;
+      if (!isTool && !this.hideInputs && turn.models.size === 0) {
+        turn.root.inputs = { messages: structuredClone(messages), observation: { representation: 'observed_text_history', history_trimmed: session.trimmed } };
+        turn.root.observedInputKeys = [...inputKeys];
+        await turn.root.patchRun({ excludeInputs: false });
+      }
       run = turn.root.createChild({ name: isTool ? e.name || 'frontend_tool' : 'QwenRealtime',
         run_type: isTool ? 'tool' : 'llm', start_time: e.time,
         inputs: this.hideInputs ? {} : isTool ? { arguments: e.input } : { messages,
@@ -231,12 +284,9 @@ export class FrontendTrace {
     if (e.kind === 'tool.end') {
       run.extra.metadata.qwen_task_id = e.taskId;
       await this.finish(run, e.failed ? 'failed' : 'completed', e.time, { result: e.output });
-      if (turn.finalResponse && [...turn.tools.values()].every(t => t.end_time)) {
-        await this.finishTurn(turn, 'completed', e.time);
-      }
+      await this.finishReadyTurn(turn, e.time);
     } else if (e.kind === 'model.end') {
       const text = e.text || run.observedText || '';
-      turn.answer = text || turn.answer;
       if (e.usage) run.extra.metadata.usage_metadata = e.usage;
       const calls = [...turn.tools.entries()].filter(([, tool]) => tool.extra.metadata.response_id === e.responseId)
         .map(([id, tool]) => ({ id, type: 'function', function: { name: tool.name, arguments: JSON.stringify(tool.inputs.arguments || {}) } }));
@@ -248,9 +298,15 @@ export class FrontendTrace {
         session.history.push({ key: `model:${id}`, itemIds: e.itemIds || [], messages: [structuredClone(run.outputs.message)] });
         trimHistory(session);
       }
-      if (status !== 'completed' || (!e.hasTools && [...turn.tools.values()].every(t => t.end_time))) {
-        await this.finishTurn(turn, status, e.time);
+      if (!this.hideOutputs) {
+        const output = snapshot(session, run.inputs.messages?.[0]?.role === 'system' ? run.inputs.messages[0].content : undefined);
+        if (this.hideInputs) output.data.messages = [structuredClone(run.outputs.message)];
+        turn.outputSnapshot = output.data;
+        turn.root.observedOutputKeys = output.keys;
       }
+      if (status !== 'completed') {
+        await this.finishTurn(turn, status, e.time);
+      } else await this.finishReadyTurn(turn, e.time);
     }
   }
 
@@ -265,8 +321,7 @@ export class FrontendTrace {
     })]);
     clearTimeout(timer);
     await this.queue;
-    try { await this.client.awaitPendingTraceBatches?.(); }
-    catch (error) { this.warn('frontend_trace_export_failed', exportFailure(error, 'flush')); }
+    try { await this.client.awaitPendingTraceBatches?.(); } catch { this.warn('frontend_trace_export_failed'); }
   }
 }
 

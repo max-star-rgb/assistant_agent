@@ -50,6 +50,7 @@ export async function patchFrontendObservation() {
       ['      tool?.policy.maxResultBytes,', '      tool?.policy?.maxResultBytes,'],
     ]],
     ['server/src/voice/realtime-provider.mjs', [
+      ['        item,\n        resolve,', '        item,\n        contextOnly,\n        resolve,'],
       ["import WebSocket from 'ws'", "import { configurationFields, recordSentConfiguration } from './frontend-execution-events.mjs'\nimport WebSocket from 'ws'"],
       ['    this.agentContext = agentContext\n', '    this.agentContext = agentContext\n    this.observedSessionConfiguration = {}\n'],
       ['    this.agentContext = agentContext\n    this.observedSessionConfiguration = {}\n', '    this.agentContext = agentContext\n    this.observedSessionConfiguration = {}\n    this.observedToolResults = []\n'],

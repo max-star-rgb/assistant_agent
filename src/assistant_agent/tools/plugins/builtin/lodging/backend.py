@@ -52,7 +52,15 @@ class FlyAILodgingSearchAdapter:
                 shell=False,
                 capture_output=True,
                 text=True,
-                env={**os.environ, "FLYAI_API_KEY": self.api_key},
+                env={
+                    **os.environ,
+                    "FLYAI_API_KEY": self.api_key,
+                    # Node 18 otherwise stalls on this host's unreachable IPv6 route.
+                    "NODE_OPTIONS": (
+                        os.environ.get("NODE_OPTIONS", "")
+                        + " --dns-result-order=ipv4first"
+                    ).strip(),
+                },
                 timeout=self.timeout_seconds,
                 check=False,
             )

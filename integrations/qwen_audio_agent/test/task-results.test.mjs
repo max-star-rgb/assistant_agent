@@ -15,33 +15,41 @@ const state = refs => ({ values: { messages: [
   { type: 'ai', content: 'done' },
 ] } });
 
-const detail = '<detail>\n1. 商品 99元 <link>https://example.com/item</link>\n</detail>';
-const textTool = (text = detail, extra = {}) => ({ type: 'tool', name: 'shopping_search',
-  artifact: { assistant_agent_delivery_v1: { text, output_refs: [] } }, ...extra });
-
-test('declared text is a separate artifact even without an assistant summary', async () => {
-  const result = await finalResult({ values: { messages: [{ type: 'human' }, textTool()] } }, client, { threadId });
-  assert.equal(result.artifacts[0].parts[0].text, detail);
-  assert.equal(result.artifacts[0].parts[0].mediaType, 'text/plain');
-  assert.equal(result.delivery_status, 'ready');
+test('detail is delivered separately from the unchanged answer and existing images', async () => {
+  const detail = '<detail>\n商品 <link>https://example.com/item</link>\n</detail>';
+  const input = state([ref]);
+  input.values.messages.splice(2, 0,
+    { type: 'tool', name: 'shopping_search', artifact: { assistant_agent_delivery_v1: { text: detail, output_refs: [] } } },
+    { type: 'tool', name: 'image_generation', artifact: { assistant_agent_delivery_v1: { output_refs: [`${prefix}second.png`] } } });
+  input.values.messages[1].name = 'image_generation';
+  const result = await finalResult(input, client, { threadId });
+  assert.equal(result.content, 'done');
+  assert.deepEqual(result.artifacts.slice(0, 2).map(a => a.parts[0].url), [client.url + ref, `${client.url}${prefix}second.png`]);
+  assert.deepEqual(result.artifacts[2].parts, [{ text: detail, mediaType: 'text/plain' }]);
 });
 
-test('text delivery uses latest tool result, current turn and ignores model prose', async () => {
-  const messages = [textTool('old'), { type: 'human' }, textTool('superseded'), textTool(),
-    textTool(detail, { name: 'another_tool' }), { type: 'ai', content: '<detail>invented</detail>' }];
-  const result = await finalResult({ values: { messages } }, client, { threadId });
-  assert.deepEqual(result.artifacts.flatMap(a => a.parts.map(p => p.text)), [detail]);
-  messages.splice(-1, 0, textTool('failed', { status: 'error' }),
-    textTool('failed', { name: 'another_tool', status: 'error' }));
+test('detail ignores old turns, superseded results, failed tools and other text', async () => {
+  const tool = (text, status = 'success', name = 'shopping_search') => ({ type: 'tool', name, status,
+    artifact: { assistant_agent_delivery_v1: { text, output_refs: [] } } });
+  const messages = [tool('<detail>old</detail>'), { type: 'human' }, tool('<detail>superseded</detail>'),
+    tool('<detail>failed</detail>', 'error'), tool('ordinary tool text', 'success', 'other'),
+    { type: 'ai', content: '<detail>model prose</detail>' }];
   assert.deepEqual((await finalResult({ values: { messages } }, client, { threadId })).artifacts, []);
+  messages.splice(-1, 0, tool('<detail>current</detail>'));
+  assert.deepEqual((await finalResult({ values: { messages } }, client, { threadId })).artifacts[0].parts,
+    [{ text: '<detail>current</detail>', mediaType: 'text/plain' }]);
 });
 
-test('malformed delivery text is rejected without truncating detail markup', async () => {
-  for (const text of [123, 'x'.repeat(16001)]) {
-    const result = await finalResult({ values: { messages: [textTool(text), { type: 'ai', content: 'done' }] } }, client, { threadId });
-    assert.deepEqual(result.artifacts, []);
-    assert.equal(result.delivery_status, 'failed');
-  }
+test('detail alone works through MCP wrapping and oversized cards are not truncated', async () => {
+  const delivery = { text: '<detail>card</detail>', output_refs: [] };
+  const input = { values: { messages: [{ type: 'human' }, { type: 'tool', name: 'shopping_search',
+    artifact: { structured_content: { assistant_agent_delivery_v1: delivery } } }] } };
+  const result = await finalResult(input, client, { threadId });
+  assert.equal(result.artifacts[0].parts[0].text, delivery.text);
+  delivery.text = `<detail>${'x'.repeat(16000)}</detail>`;
+  const oversized = await finalResult(input, client, { threadId });
+  assert.deepEqual(oversized.artifacts, []);
+  assert.equal(oversized.delivery_status, 'failed');
 });
 
 test('legacy artifact URI is normalized to the same authenticated download path', async () => {

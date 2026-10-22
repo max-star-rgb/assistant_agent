@@ -19,7 +19,6 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import (
     HumanInTheLoopMiddleware,
     TodoListMiddleware,
-    ToolRetryMiddleware,
 )
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -43,6 +42,7 @@ from httpx import TransportError
 from langgraph.errors import GraphBubbleUp
 from langgraph.managed.is_last_step import RemainingStepsManager
 from langgraph.types import Command
+from assistant_agent.native_agent.read_tool_retry import ReadToolRetryMiddleware
 
 from assistant_agent.media.visual_perception.history_probe import (
     VisualObservationHistoryProbe,
@@ -630,12 +630,8 @@ def build_assistant_agent(
             RecursionFinalSynthesisMiddleware(),
             create_assistant_runtime_prompt(current_location),
             ToolProgressMiddleware(),
-            ToolRetryMiddleware(
-                max_retries=2,
+            ReadToolRetryMiddleware(
                 tools=retryable_tool_names,
-                initial_delay=0,
-                backoff_factor=0,
-                jitter=False,
             ),
             ContinuousModelRetryMiddleware(),
             UnknownToolFeedbackMiddleware(),
@@ -782,12 +778,8 @@ def build_general_purpose_worker(
             RecursionFinalSynthesisMiddleware(step_reserve=8),
             create_assistant_runtime_prompt(current_location),
             ToolProgressMiddleware(),
-            ToolRetryMiddleware(
-                max_retries=2,
+            ReadToolRetryMiddleware(
                 tools=retryable_tools,
-                initial_delay=0,
-                backoff_factor=0,
-                jitter=False,
             ),
             HumanInTheLoopMiddleware(
                 interrupt_on=_interrupt_on(set(interrupt_tool_names))

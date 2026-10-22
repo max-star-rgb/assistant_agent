@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import json
+from datetime import date, datetime, timedelta
 from typing import Annotated, Any, Literal
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, ToolException, tool
+from langgraph.prebuilt import ToolRuntime
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from assistant_agent.mcp.amap_route_links import _build_route_url, _normalize_coordinate
+from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.tools.delivery import with_tool_delivery
 from assistant_agent.tools.native_boundary import configure_builtin_tool, native_content_and_artifact
 
@@ -37,6 +41,7 @@ class ResolvedPlace(BaseModel):
 
 def create_amap_travel_tools(
     tools: dict[str, BaseTool], *, interrupt_tools: set[str],
+    lodging_tool: BaseTool | None = None,
 ) -> list[BaseTool]:
     """Keep low-level tools private; expose only complete, read-only workflows."""
     modes = {
@@ -52,6 +57,8 @@ def create_amap_travel_tools(
     nearby_dependencies = place_dependencies | {"maps_around_search"}
     if interrupt_tools & (route_dependencies | nearby_dependencies) & tools.keys():
         raise ValueError("AMap travel dependencies must not require approval")
+    if lodging_tool is not None and lodging_tool.name in interrupt_tools:
+        raise ValueError("Travel lodging dependency must not require approval")
 
     async def call(name: str, args: dict[str, Any]) -> dict[str, Any]:
         result = await tools[name].ainvoke({
@@ -113,7 +120,14 @@ def create_amap_travel_tools(
             "origin": start.model_dump(), "destination": end.model_dump(),
             "mode": mode, "route": body, "navigation_url": url,
         }
-        artifact = with_tool_delivery(artifact, text=f"[打开高德地图导航]({url})")
+        start_name, end_name = (
+            " ".join(place.name.replace("<", "").replace(">", "").split())[:240]
+            for place in (start, end)
+        )
+        artifact = with_tool_delivery(artifact, text=(
+            f"<detail>\n{mode}：{start_name} → {end_name}\n"
+            f"打开高德地图导航 <link>{url}</link>\n</detail>"
+        ))
         return native_content_and_artifact(artifact, artifact)
 
     @tool("travel_nearby", response_format="content_and_artifact")
@@ -137,8 +151,58 @@ def create_amap_travel_tools(
                     "places": data["pois"]}
         return native_content_and_artifact(artifact, artifact)
 
+    @tool("travel_hotel_nearby", response_format="content_and_artifact")
+    async def travel_hotel_nearby(
+        place: PlaceName,
+        hotel_keyword: Annotated[str, Field(min_length=1, max_length=120, pattern=r"\S", description="酒店名称或品牌。")],
+        runtime: ToolRuntime[AssistantRunContext],
+        check_in: Annotated[date | None, Field(description="入住日期 YYYY-MM-DD；省略时使用调用当天的北京时间日期。")] = None,
+        check_out: Annotated[date | None, Field(description="退房日期 YYYY-MM-DD；省略时为入住日期次日。")] = None,
+        adults: Annotated[int, Field(ge=1, le=16)] = 1,
+        rooms: Annotated[int, Field(ge=1, le=8)] = 1,
+    ):
+        """查询指定地点附近的指定品牌或名称酒店，返回报价和预订链接。
+
+        先用高德首个候选解析地标和城市，再用已配置的酒店服务查询。
+        默认今天入住、明天退房（北京时间）；不承诺固定半径，只读，不下单。
+        """
+        arrival = check_in or datetime.now(ZoneInfo("Asia/Shanghai")).date()
+        departure = check_out or arrival + timedelta(days=1)
+        if departure <= arrival:
+            raise ToolException("invalid_stay_dates: 退房日期必须晚于入住日期")
+        center = await resolve(place)
+        if not center.city:
+            raise ToolException("place_city_missing: 酒店查询需要地标所在城市")
+        if lodging_tool is None:
+            raise ToolException("lodging_unavailable: 酒店查询服务未配置")
+        response = await lodging_tool.ainvoke({
+            "type": "tool_call", "id": str(uuid4()), "name": lodging_tool.name,
+            "args": {
+                "destination": center.city, "nearby_poi": center.name,
+                "keywords": hotel_keyword, "check_in": arrival, "check_out": departure,
+                "adults": adults, "rooms": rooms, "runtime": runtime,
+            },
+        })
+        if not isinstance(response, ToolMessage):
+            raise ToolException("lodging_response_invalid: 酒店查询未返回工具结果")
+        if response.status == "error":
+            raise ToolException(str(response.content))
+        if not isinstance(response.artifact, dict):
+            raise ToolException("lodging_response_invalid: 酒店查询缺少结构化结果")
+        query = {
+            "center": center.model_dump(), "hotel_keyword": hotel_keyword,
+            "check_in": arrival.isoformat(), "check_out": departure.isoformat(),
+        }
+        context_content, _ = native_content_and_artifact(query, {})
+        hotel_content = response.content if isinstance(response.content, list) else [
+            {"type": "text", "text": response.content},
+        ]
+        return [*context_content, *hotel_content], {**response.artifact, **query}
+
     result = []
     for dependencies, wrapper in ((route_dependencies, travel_route), (nearby_dependencies, travel_nearby)):
         if dependencies <= tools.keys():
             result.append(configure_builtin_tool(wrapper, bounded_expected_errors=True))
+    if lodging_tool is not None and place_dependencies <= tools.keys():
+        result.append(configure_builtin_tool(travel_hotel_nearby, bounded_expected_errors=True))
     return result

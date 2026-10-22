@@ -24,7 +24,7 @@ V2 媒体音频接入：`8081/agent-service/v1?number=<号码>` 自动初始化�
 
 ## 已实现与边界
 
-- 锁定 `qwen-audio-agent@2.0.1`，通过公开 `backend-adapter-sdk`、`gateway-application` 组合。启动时应用版本受限的 WebUI 视觉状态文案补丁及前台通用 observer 补丁。补丁可重复执行，重装依赖后自动应用；版本或目标变化时明确失败，升级时必须复核。观测补丁不改变模型、工具与任务执行决策。
+- 锁定 `qwen-audio-agent@2.0.1`，通过公开 `backend-adapter-sdk`、`gateway-application` 组合。WebUI 视觉状态文案使用上游原文。启动时应用版本受限的前台通用 observer 补丁。补丁可重复执行，重装依赖后自动应用；版本或目标变化时明确失败，升级时必须复核。观测补丁不改变模型、工具与任务执行决策。
 - 一个 Gateway task 对应一个 `assistant-business-v2` thread，不 rollback 其他任务；Gateway 自身仍控制排队与并发。
 - 业务只接收规范化委派文字，固定关闭业务 Memory 和原生 HITL。暂不接收附件，明确返回 unsupported，不静默丢弃。
 - 查询、取消和原生输入恢复；失败、提交未知、观测超时分别报错，不重投不确定的副作用请求。

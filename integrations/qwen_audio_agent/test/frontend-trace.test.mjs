@@ -7,6 +7,22 @@ import { loadConfig } from '../src/config.mjs';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 
+test('initial provider handshake adopts the pending user turn without losing its history', async () => {
+  const { trace, records, emit } = fixture();
+  emit({ kind: 'turn.start', turnId: 'hello' });
+  emit({ kind: 'input', turnId: 'hello', text: 'hi' });
+  emit({ kind: 'session.start', providerSessionId: 'first-provider' });
+  emit({ kind: 'session.start', providerSessionId: 'first-provider' });
+  emit({ kind: 'model.start', turnId: 'hello', responseId: 'r' });
+  emit({ kind: 'model.end', turnId: 'hello', responseId: 'r', status: 'completed', text: 'hello back' });
+  await trace.close();
+  const roots = [...records.values()].filter(r => r.name === 'FrontendAgent');
+  assert.equal(roots.length, 1);
+  assert.equal(roots[0].extra.metadata.provider_session_id, 'first-provider');
+  assert.deepEqual(roots[0].inputs.messages.map(m => m.content), ['hi']);
+  assert.deepEqual(roots[0].outputs.messages.map(m => m.content), ['hi', 'hello back']);
+});
+
 test('model snapshots include actual configuration and overrides', async () => {
   const { trace, records, emit } = fixture();
   const configuration = { session: { instructions: 'session system', tools: [{ type: 'function', function: {
@@ -54,7 +70,9 @@ test('cross-turn snapshots preserve dialogue and late ASR without future message
   assert.deepEqual(model('r4').inputs.messages, [{ role: 'user', content: 'new session' }]);
   assert.deepEqual(model('r2').inputs, before);
   assert.equal(model('r4').extra.metadata.provider_session_id, 'p2');
-  assert.equal([...records.values()].find(r => r.name === 'FrontendAgent' && r.extra.metadata.turn_id === 't2').inputs.messages.length, 1);
+  const root = [...records.values()].find(r => r.name === 'FrontendAgent' && r.extra.metadata.turn_id === 't2');
+  assert.deepEqual(root.inputs.messages.map(m => m.content), ['late first question', 'first answer', 'follow-up']);
+  assert.deepEqual(root.outputs.messages.map(m => m.content), ['late first question', 'first answer', 'follow-up', 'second answer']);
 });
 
 test('confirmed item removal changes future history only and history limits are visible', async () => {
@@ -101,6 +119,11 @@ test('actual upstream transport captures only accepted configuration, with immut
   frontend.ws = { readyState: 1, bufferedAmount: 0, send: text => wire.push(JSON.parse(text)), terminate() {} };
   assert.equal(frontend.restoreRecentConversation(), undefined);
   assert.equal(wire.length, 0);
+  const injected = frontend.createConversationItem({ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'task result' }] });
+  const item = wire.at(-1).item;
+  frontend.handleProviderEvent({ type: 'conversation.item.created', item });
+  await injected;
+  assert.ok(events.some(e => e.type === 'observation.context.sent' && e.text === 'task result'));
   frontend.send({ type: 'session.update', session: { instructions: 'sent system', tools: [], api_key: 'SECRET' } });
   frontend.send({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: 'c', output: '{"value":1}' } });
   frontend.handleProviderEvent({ type: 'response.created', response: { id: 'r' } });
@@ -118,6 +141,9 @@ test('actual upstream transport captures only accepted configuration, with immut
   assert.equal(pending.observedConfiguration.session.instructions, 'later system');
   frontend.pendingResponses = [];
   frontend.ws.readyState = 3;
+  frontend.conversationItemWaiters.set('rejected-context', { contextOnly: true });
+  frontend.send({ type: 'conversation.item.create', item: { id: 'rejected-context', type: 'message', role: 'user', content: [{ type: 'input_text', text: 'not sent context' }] } });
+  assert.ok(!JSON.stringify(events).includes('not sent context'));
   frontend.send({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: 'rejected', output: 'not sent' } });
   frontend.send({ type: 'session.update', session: { instructions: 'not sent' } });
   assert.equal(frontend.observedSessionConfiguration.instructions, 'later system');
@@ -135,6 +161,50 @@ function fixture(options = {}) {
   const emit = event => trace.onExecution({ sessionId: 's1', event: { time: time++, ...event } });
   return { trace, records, emit };
 }
+
+test('each root has immutable full input and output snapshots across delegation and notification', async () => {
+  const { trace, records, emit } = fixture();
+  emit({ kind: 'input', turnId: 't1', text: 'request' });
+  emit({ kind: 'model.start', turnId: 't1', responseId: 'r1', configuration: { session: { instructions: 'system' }, response: {} } });
+  emit({ kind: 'tool.start', turnId: 't1', responseId: 'r1', callId: 'c', name: 'spawn_thinking', input: {} });
+  emit({ kind: 'tool.end', turnId: 't1', callId: 'c', taskId: 'task' });
+  emit({ kind: 'model.end', turnId: 't1', responseId: 'r1', status: 'completed', hasTools: true });
+  emit({ kind: 'model.start', turnId: 't1', responseId: 'r2', toolResults: [{ call_id: 'c', output: 'accepted' }] });
+  emit({ kind: 'model.end', turnId: 't1', responseId: 'r2', status: 'completed', text: 'working' });
+  await trace.queue;
+  const first = [...records.values()].find(r => !r.parent_run_id);
+  assert.ok(first.end_time, 'frontend run completes independently of background work');
+  assert.deepEqual(first.inputs.messages.map(m => m.content), ['system', 'request']);
+  assert.deepEqual(first.outputs.messages.map(m => m.role), ['system', 'user', 'assistant', 'tool', 'assistant']);
+  const before = structuredClone(first);
+  emit({ kind: 'history.message', itemId: 'notification', role: 'user', text: 'backend result' });
+  emit({ kind: 'history.message', itemId: 'notification', role: 'user', text: 'backend result' });
+  emit({ kind: 'model.start', turnId: 'announcement:a', responseId: 'a', origin: 'announcement', taskId: 'task' });
+  emit({ kind: 'model.end', turnId: 'announcement:a', responseId: 'a', origin: 'announcement', taskId: 'task', status: 'completed', text: 'result summary' });
+  emit({ kind: 'input', turnId: 't2', text: 'follow up' });
+  emit({ kind: 'model.start', turnId: 't2', responseId: 'r3' });
+  emit({ kind: 'model.end', turnId: 't2', responseId: 'r3', status: 'completed', text: 'final' });
+  await trace.close();
+  const roots = [...records.values()].filter(r => !r.parent_run_id);
+  assert.equal(roots.length, 3);
+  assert.deepEqual(first, before);
+  assert.ok(roots.every(r => r.extra.metadata.thread_id === 's1'));
+  assert.deepEqual(roots[1].inputs.messages.map(m => m.content), ['system', 'request', '', 'accepted', 'working', 'backend result']);
+  assert.deepEqual(roots[2].outputs.messages.slice(-4).map(m => m.content), ['backend result', 'result summary', 'follow up', 'final']);
+});
+
+test('accepted context injection is observed without recording media or rejected sends', () => {
+  const events = [];
+  const frontend = { onEvent: e => events.push(e), conversationItemWaiters: new Map([['n', { contextOnly: true }]]) };
+  recordSentConfiguration(frontend, { type: 'conversation.item.create', item: { id: 'n', type: 'message', role: 'user', content: [
+    { type: 'input_text', text: 'backend notification' }, { type: 'input_audio', audio: 'PRIVATE_MEDIA' },
+  ] } });
+  assert.equal(events.length, 1);
+  const fact = modelExecutionEvent(events[0]);
+  assert.deepEqual(fact, { kind: 'history.message', itemId: 'n', role: 'user', text: 'backend notification' });
+  assert.ok(!JSON.stringify(events).includes('PRIVATE_MEDIA'));
+});
+
 
 test('one turn contains tool continuation; late ASR patches its own completed root', async () => {
   const { trace, records, emit } = fixture();
@@ -157,6 +227,7 @@ test('one turn contains tool continuation; late ASR patches its own completed ro
   assert.equal([...records.values()].filter(r => r.parent_run_id === root.id).length, 3);
   assert.ok([...records.values()].every(r => r.end_time));
 });
+
 
 test('continuation shows the call and sent result, without changing root input', async () => {
   const { trace, records, emit } = fixture();
@@ -181,7 +252,7 @@ test('continuation shows the call and sent result, without changing root input',
   assert.deepEqual(models[2].inputs.messages.map(m => m.role), ['user', 'assistant', 'tool', 'assistant', 'user']);
   assert.equal(models[2].inputs.messages[2].content, '{"value":"sent result"}');
   assert.equal(root.inputs.messages[0].content, 'late request');
-  assert.equal(root.outputs.messages[0].content, 'answer');
+  assert.equal(root.outputs.messages.at(-1).content, 'answer');
   assert.ok(root.end_time >= models[1].end_time);
 });
 
@@ -193,6 +264,7 @@ test('unsent results and hidden tool payloads never appear in continuation input
     emit({ kind: 'tool.start', turnId: 't', responseId: 'r1', callId: 'c', name: 'lookup', input: {} });
     emit({ kind: 'tool.end', turnId: 't', callId: 'c', output: { value: 'raw' } });
     emit({ kind: 'model.end', turnId: 't', responseId: 'r1', status: 'completed', hasTools: true });
+    if (Object.keys(options).length) emit({ kind: 'history.message', itemId: 'n', role: 'user', text: 'PRIVATE notification' });
     emit({ kind: 'model.start', turnId: 't', responseId: 'r2', toolResults: [
       { call_id: Object.keys(options).length ? 'c' : 'another-turn', output: '{"value":"PRIVATE","api_key":"SECRET"}' },
     ] });
@@ -201,6 +273,7 @@ test('unsent results and hidden tool payloads never appear in continuation input
     assert.ok(!JSON.stringify(continuation.inputs).includes('PRIVATE'));
     assert.ok(!JSON.stringify(continuation.inputs).includes('SECRET'));
     assert.ok(!continuation.inputs.messages?.some(m => m.role === 'tool'));
+    if (Object.keys(options).length) assert.ok(!JSON.stringify([...records.values()]).includes('PRIVATE notification'));
   }
 });
 
@@ -224,20 +297,6 @@ test('privacy flags hide text and tool payloads, exporter failures stay observat
   const failed = new FrontendTrace({ client: { createRun: async () => { throw Error('secret'); }, updateRun: async () => { throw Error('secret'); } } });
   failed.onExecution({ sessionId: 's', event: { kind: 'input', turnId: 't', text: 'x', time: Date.now() } });
   await failed.close();
-});
-
-test('export diagnostics identify operation and safe HTTP or network failure without payloads', async () => {
-  const warnings = [];
-  const trace = new FrontendTrace({ warn: (event, fields) => warnings.push({ event, ...fields }),
-    client: {
-      createRun: async () => { throw Object.assign(Error('PRIVATE key and payload'), { status: 403 }); },
-      updateRun: async () => { throw Object.assign(Error('PRIVATE URL'), { cause: { code: 'ECONNRESET' } }); },
-    } });
-  trace.onExecution({ sessionId: 's', event: { kind: 'input', turnId: 't', text: 'PRIVATE', time: Date.now() } });
-  await trace.close();
-  assert.ok(warnings.some(w => w.status === 'createRun:http_403'));
-  assert.ok(warnings.some(w => w.status === 'updateRun:ECONNRESET'));
-  assert.ok(!JSON.stringify(warnings).includes('PRIVATE'));
 });
 
 test('tool-only completion waits for actual tool end; usage and final transcript survive', async () => {
@@ -299,7 +358,9 @@ test('official SDK delivers run tree to local HTTP fixture without any Provider'
   assert.equal(child.trace_id, root.id);
   assert.equal(root.session_name, 'offline-wire');
   const patches = requests.filter(r => r.method === 'PATCH' && r.path.endsWith(root.id));
-  assert.equal(patches[0].body.end_time, null, 'live input patch must explicitly keep the run open');
-  assert.equal(patches.at(-1).body.outputs.messages[0].content, 'hi');
+  assert.equal(patches.length, 1, 'only the terminal snapshot is patched to ingestion');
+  assert.ok(requests.filter(r => r.method === 'PATCH').every(r => r.body.end_time && r.body.outputs),
+    'every update carries its actual terminal timestamp and outputs');
+  assert.deepEqual(patches.at(-1).body.outputs.messages.map(m => m.content), ['hello', 'hi']);
   assert.ok(requests.some(r => r.method === 'PATCH' && r.path.endsWith(root.id) && r.body.end_time));
 });

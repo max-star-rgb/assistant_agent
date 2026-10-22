@@ -441,8 +441,8 @@ def project_tool_profiles() -> tuple[ToolProfile, ...]:
         ),
         ToolProfile(
             profile_id="travel",
-            description="按地点名称查询驾车、公交、步行、骑行路线，以及地点周边的商家和设施。",
-            tool_names=("travel_route", "travel_nearby"),
+            description="按地点名称查询路线、周边商家设施，以及附近指定品牌或名称酒店的报价和预订链接。",
+            tool_names=("travel_route", "travel_nearby", "travel_hotel_nearby"),
         ),
         ToolProfile(
             profile_id="lodging",

@@ -85,6 +85,10 @@ Realtime 对话历史由服务端会话维护；Gateway 不从本地对话记录
 真实入口另需 `QWEN_AUDIO_ENABLE_REAL=1` 与完整 key。配置、运行和限制见该目录 README；目前未切换默认入口。
 
 新入口按安装 namespace、受信身份与 Gateway task ID 确定业务 thread；不同任务隔离，采用原生 `reject` 并发策略。
+Gateway 集成层按 task ID 从原生 TaskManager 读取来源 session ID，将安装 namespace、认证身份和 session ID
+的摘要作为 `qwen_artifact_session` 写入 thread/run metadata，恢复 run 时沿用 thread 上的值。
+该字段只关联会话图片产物，不是身份凭据或模型参数；读写仍按认证用户隔离。缺少来源会话或 isolated utility
+任务不建立会话产物关联。图片登记与默认图生 3D 规则见 Tool authority，不复用任务 thread 或复制对话历史。
 网页与媒体入口可并行运行。锁定 2.0.1 的 `frontend-concurrency-patch.mjs` 将客户端和语音租约从 owner
 收窄到 owner + session，保留同会话重复连接与接管治理。媒体内部连接使用随机 session ID；认证用户不变，
 长期记忆仍按用户共享。任务自动通知只领取来源会话，不因其他会话有结果而唤醒；音频和关闭提取均按会话隔离。

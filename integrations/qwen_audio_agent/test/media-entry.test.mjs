@@ -7,8 +7,8 @@ import { startMediaServer, AudioDownlink, AudioUplink, parseAudio, MediaWriter }
 import { finalResult } from '../src/task-results.mjs';
 import { artifactsFromOutcome } from '../node_modules/qwen-audio-agent/server/src/task/task-artifact.mjs';
 
-test('backend detail survives native task artifacts and reaches only its media session once', async () => {
-  const detail = '<detail>\n1. 商品 99元 <link>https://example.com/item</link><pic>https://example.com/a.jpg</pic>\n</detail>';
+test('detail uses an extra chatResponse without changing voice or normal answer packets', async () => {
+  const detail = '<detail>\n商品 <link>https://example.com/item</link><pic>https://example.com/a.jpg</pic>\n</detail>';
   const result = await finalResult({ values: { messages: [{ type: 'human' },
     { type: 'tool', name: 'shopping_search', artifact: { assistant_agent_delivery_v1: { text: detail, output_refs: [] } } },
     { type: 'ai', content: '找到商品了' }] } }, { identity: 'user' }, { threadId: 'thread' });
@@ -36,15 +36,24 @@ test('backend detail survives native task artifacts and reaches only its media s
       { type: 'task.completed', task: { ...task, sessionId: 'other' } },
       { type: 'task.updated', task: { ...task, status: 'working' } },
       { type: 'task.completed', task }, { type: 'task.updated', task },
-      { type: 'audio.delta', responseId: 'after', sampleRate: 24000, audio: 'AAA=' },
+      { type: 'task.completed', task: { ...task, id: 'ordinary', artifacts: [{ artifactId: 'note', parts: [{ text: 'not a card', mediaType: 'text/plain' }] }] } },
+      { type: 'audio.delta', responseId: 'answer', sampleRate: 24000, audio: 'AAA=' },
+      { type: 'transcript.final', role: 'assistant', responseId: 'answer', content: '找到商品了' },
+      { type: 'audio.done', responseId: 'answer' },
     ]) peer.send(JSON.stringify(event));
-    await wait(() => packets.some(p => p.message === 'audioChunk'));
+    await wait(() => packets.some(p => p.message === 'audioEnd'));
     const replies = packets.filter(p => p.message === 'chatResponse');
-    assert.equal(replies.length, 1);
-    assert.equal(replies[0].body.message.content.intentResult.description, detail);
-    assert.equal(replies[0].body.number, 'u');
-    assert.equal(replies[0].body.displayOnly, true);
-    assert.equal(replies[0].body.display_only, true);
+    assert.equal(replies.length, 2);
+    const card = replies.find(p => p.body.deliveryId === 'detail:shopping');
+    assert.equal(card.body.message.content.intentResult.description, detail);
+    assert.equal(card.body.message.content.intentResult.detail, undefined);
+    assert.equal(card.body.displayOnly, true);
+    assert.equal(card.body.display_only, true);
+    const answer = replies.find(p => p.body.audioSource === 'model');
+    assert.equal(answer.body.message.content.intentResult.description, '找到商品了');
+    assert.equal(answer.body.message.chatIndex, 'voice:answer');
+    assert.deepEqual(packets.filter(p => ['audioStart', 'audioChunk', 'audioEnd'].includes(p.message)).map(p => p.message),
+      ['audioStart', 'audioChunk', 'audioEnd']);
   } finally {
     await entry.close();
     for (const c of gcp.clients) c.terminate();
@@ -225,6 +234,13 @@ test('media listener negotiates, forwards audio directly to GCP, and owns shutdo
     const event = JSON.parse(raw); received.push(event);
     if (event.type === 'session.hello') ws.send(JSON.stringify({ type: 'voice.ready', provider: 'dashscope', inputSampleRate: 16000 }));
     if (event.type === 'input_audio_buffer.append') {
+      for (const transcript of [
+        { type: 'transcript.delta', role: 'user', turnId: 't1', content: '帮我' },
+        { type: 'transcript.final', role: 'user', turnId: 't1', content: '' },
+        { type: 'transcript.final', role: 'user', content: '缺少轮次' },
+        { type: 'transcript.final', role: 'user', turnId: 't1', content: { text: '非法文本' } },
+        { type: 'transcript.final', role: 'user', turnId: 't1', content: '帮我查一下天气' },
+      ]) ws.send(JSON.stringify(transcript));
       for (const e of [{ type: 'audio.delta', responseId: 'r2', sampleRate: 24000, audio: 'AAA=' }, { type: 'audio.done', responseId: 'r2' }]) ws.send(JSON.stringify(e));
     }
   }));
@@ -245,6 +261,11 @@ test('media listener negotiates, forwards audio directly to GCP, and owns shutdo
     assert.deepEqual(packets.slice(0, 3).map(p => p.message), ['audioConnecting', 'assistantControl', 'audioReady']);
     send('audio', { userNumber: 'u', audioConfig: { codec: 'pcm_s16le', sampleRate: 16000, channels: 1 }, contents: [{ audioContent: '0000' }] });
     await wait(() => packets.some(p => p.message === 'audioEnd'));
+    assert.deepEqual(packets.filter(p => p.message === 'asrResult'), [{
+      message: 'asrResult', sessionId: 's', body: { turnId: 't1', text: '帮我查一下天气', final: true },
+    }]);
+    assert.equal(packets.filter(p => p.message === 'chatResponse').length, 0);
+    assert.deepEqual(received.map(e => e.type), ['session.hello', 'input_audio_buffer.append']);
     assert.ok(received.some(e => e.type === 'input_audio_buffer.append' && e.audio === 'AAA='));
     assert.ok(packets.some(p => p.message === 'audioResponse' && p.body.message === 'audio forwarded'));
     send('audioStatus', { taskId: 'voice:r2', streamId: 'audio:r2', status: 'completed' });

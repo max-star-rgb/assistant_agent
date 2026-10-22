@@ -13,7 +13,7 @@ description: 提供旅行规划功能，包括导航规划、酒店预定、景�
 - 使用 `mcp_amap_maps_maps_weather`查询天气，使用以下功能必须结合天气
 
 ## 导航规划
-- 使用 `activate_tool_profile(profile_id="travel")`，该分类只包含 `travel_route` 和 `travel_nearby`。
+- 使用 `activate_tool_profile(profile_id="travel")`，该分类包含已配置可用的 `travel_route`、`travel_nearby` 和 `travel_hotel_nearby`。
 - 使用 `travel_route(origin, destination, mode)` 查询路线；起终点直接填写地点名称，尽量保留用户给出的城市。
 - mode 只支持“驾车”“公交”“步行”“骑行”。工具内部自动搜索并选取各自第一个候选、解析坐标和城市，再查询路线；模型无需查询 POI 或传经纬度。
 - 回答注明工具实际选中的起终点名称和地址。工具找不到地点或路线时说明失败，不自行编造坐标或声称成功。
@@ -23,11 +23,12 @@ description: 提供旅行规划功能，包括导航规划、酒店预定、景�
 - 在回答中使用路线工具返回的导航跳转链接。如果路线是多种方式的组合，可以给出多条链接。
 
 ## 酒店查询
-- 使用 `activate_tool_profile(profile_id="lodging")` 激活酒店查询分类，直接根据用户提供的目的地和附近地标填写酒店查询条件。
-- 确定入住和退房日期，向用户询问“品牌、价格、距离”
-- 使用`lodging_search`查询地点附近的酒店
-- 查询房型、住宿价格和订房信息使用 `lodging_search`，不以周边地点搜索代替酒店库存查询。
-- 在回答中使用`lodging_search`返回的酒店链接
+- 查询指定地点附近的指定酒店名称或品牌时，激活 `travel`，调用 `travel_hotel_nearby(place, hotel_keyword, check_in?, check_out?, adults=1, rooms=1)`。place 尽量包含城市。
+- 该工具先用高德首个搜索候选解析地标和城市，再调用现有酒店查询服务；不使用高德周边 POI 代替酒店库存查询。
+- 未提供日期时默认按调用时北京时间今天入住、明天退房；用户给出日期时显式传入。仅提供入住日期时，默认次日退房。不要仅因缺少日期而追问，回答说明实际查询日期。
+- 返回实际选中的地标、酒店报价与预订链接；附近由酒店服务检索，不承诺固定半径，不把结果描述为已预订成功。
+- 其他酒店查询、房型及价格偏好筛选，使用 `activate_tool_profile(profile_id="lodging")` 后调用 `lodging_search`。该独立工具仍要求明确传入入住和退房日期，用户未给出时按北京时间今天和明天填写。
+- 在回答中使用酒店工具返回的预订链接；品牌或预算等信息只在影响检索且尚不明确时询问。
 
 ## 景点攻略
 - 提供目的地附近的景点攻略，包括购票攻略、景点游玩路线

@@ -12,28 +12,12 @@ export async function finalResult(state, client, handle) {
   const threadRef = createHash('sha256').update(`${client.identity}\0${handle.threadId}`).digest('hex').slice(0, 32);
   const prefix = `/artifacts/${threadRef}/generated/`;
   const artifacts = [], seen = new Set();
-  const latestTools = new Map();
-  for (const m of messages) if ((m.type || m.role) === 'tool' && m.name) latestTools.set(m.name, m);
-  const seenTexts = new Set();
-  let textChars = 0;
   let failed = false;
   for (const m of messages) {
     if ((m.type || m.role) !== 'tool' || m.status === 'error') continue;
-    if (m.name && latestTools.get(m.name) !== m) continue;
     const delivery = m.artifact?.assistant_agent_delivery_v1 ?? m.artifact?.structured_content?.assistant_agent_delivery_v1;
     if (!delivery) continue;
     if (!Array.isArray(delivery.output_refs) || delivery.output_refs.length > 4) { failed = true; continue; }
-    const deliveryText = delivery.text ?? '';
-    if (typeof deliveryText !== 'string' || deliveryText.length > 16000) { failed = true; continue; }
-    if (deliveryText.trim() && !seenTexts.has(deliveryText)) {
-      if (textChars + deliveryText.length > 16000 || artifacts.length >= 32) failed = true;
-      else {
-        seenTexts.add(deliveryText);
-        textChars += deliveryText.length;
-        artifacts.push({ artifactId: `text:${createHash('sha256').update(deliveryText).digest('hex')}`,
-          parts: [{ text: deliveryText, mediaType: 'text/plain' }] });
-      }
-    }
     for (const outputRef of delivery.output_refs) {
       const ref = typeof outputRef === 'string' && outputRef.startsWith('artifact://v1/')
         ? outputRef.replace('artifact://v1/', '/artifacts/') : outputRef;
@@ -47,6 +31,25 @@ export async function finalResult(state, client, handle) {
           parts: [{ url: `${client.url}${ref}`, mediaType, filename }] });
       } catch { failed = true; }
     }
+  }
+  // Detail cards are additive; preserve the existing image and answer projection.
+  const latestTools = new Map();
+  for (const m of messages) if ((m.type || m.role) === 'tool' && m.name) latestTools.set(m.name, m);
+  const details = new Set();
+  let detailSize = 0;
+  for (const m of latestTools.values()) {
+    if (m.status === 'error') continue;
+    const delivery = m.artifact?.assistant_agent_delivery_v1 ?? m.artifact?.structured_content?.assistant_agent_delivery_v1;
+    const value = delivery?.text;
+    if (typeof value !== 'string' || !value.startsWith('<detail>') || !value.endsWith('</detail>') || details.has(value)) continue;
+    if (detailSize + value.length + details.size > 16000) { failed = true; continue; }
+    details.add(value); detailSize += value.length;
+  }
+  if (details.size) {
+    const value = [...details].join('\n');
+    if (artifacts.length >= 32) failed = true;
+    else artifacts.push({ artifactId: `detail:${createHash('sha256').update(value).digest('hex')}`,
+      parts: [{ text: value, mediaType: 'text/plain' }] });
   }
   if (!text.trim() && !artifacts.length && !failed) throw Error('business_result_missing');
   return { content: failed ? '业务运行已结束，但部分产物暂时无法交付。不要自动重新生成。'

@@ -168,6 +168,9 @@ test('actual Gateway startup, occupied port and shutdown with a local HTTP backe
   for (let n = 0; n < 100 && app.services.runtimeCommands.getTask(task.id, { ownerId: work.ownerId }).status !== 'completed'; n++) await delay(10);
   const completed = app.services.runtimeCommands.getTask(task.id, { ownerId: work.ownerId });
   assert.equal(completed.status, 'completed');
+  assert.equal(backend.client.resolveSessionId(task.id), completed.sessionId);
+  assert.match(server.requests.find(r => r.path.endsWith('/runs') && r.body?.context)
+    .body.metadata.qwen_artifact_session, /^[a-f0-9]{64}$/);
   assert.equal(server.requests.find(r => r.path.endsWith('/runs') && r.body?.context).body.context.require_tool_approval, false);
   assert.equal(deliveries.some(d => d.origin === 'permission'), false);
   assert.equal(server.requests.filter(r => r.method === 'POST' && r.path.endsWith('/runs')).length, 1);

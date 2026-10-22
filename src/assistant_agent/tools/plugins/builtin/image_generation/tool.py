@@ -42,7 +42,7 @@ from assistant_agent.tools.native_boundary import (
     configure_builtin_tool,
     native_content_and_artifact,
 )
-from assistant_agent.runtime.thread_resources import GeneratedArtifactStore
+from assistant_agent.runtime.thread_resources import GeneratedArtifactStore, artifact_session_scope
 from assistant_agent.tools.delivery import with_tool_delivery
 
 
@@ -153,7 +153,8 @@ def _execute_image_generation_from_runtime(
     for image in _generated_image_artifacts(result, public_prefix=public_prefix):
         filename = PurePosixPath(image.output_ref).name
         artifact_store.register(request.user_id, thread_id,
-            mock_image_source(result) or output_dir / filename, filename=filename)
+            mock_image_source(result) or output_dir / filename, filename=filename,
+            session_scope=artifact_session_scope(getattr(runtime, "config", {})))
     return result
 
 

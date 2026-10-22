@@ -8,7 +8,6 @@ import { SessionBridge } from './session-bridge.mjs';
 import { VisualMemoryBridge } from './visual-memory-bridge.mjs';
 import { patchFrontendMemoryContext } from './frontend-memory-context.mjs';
 import { patchFrontendConcurrency } from './frontend-concurrency-patch.mjs';
-import { patchWebuiVisualState } from './webui-visual-state-patch.mjs';
 import { patchFrontendObservation } from './frontend-observation-patch.mjs';
 import { createFrontendTrace } from './frontend-trace.mjs';
 import { startMediaServer } from './media-entry.mjs';
@@ -29,7 +28,6 @@ logger.child = () => logger;
 /** Process entrypoint: use one Gateway per process; upstream reads env at import. */
 export async function startGateway(config, { backend, traceObserver } = {}) {
   if (config.mode !== 'real') throw new Error('mock mode: use npm test; live Gateway is disabled');
-  await patchWebuiVisualState();
   await patchFrontendObservation();
   await patchFrontendMemoryContext();
   await patchFrontendConcurrency();
@@ -50,7 +48,7 @@ export async function startGateway(config, { backend, traceObserver } = {}) {
   const bridge = new SessionBridge({ client: backend.client, ownerId: config.ownerId });
   await bridge.initialize();
   const visualMemory = new VisualMemoryBridge({ client: backend.client, ownerId: config.ownerId });
-  const trace = traceObserver ?? createFrontendTrace({ ...config.tracing, namespace: backend.client.namespace }, (event, fields) => logger.warn(event, fields));
+  const trace = traceObserver ?? createFrontendTrace({ ...config.tracing, namespace: backend.client.namespace }, event => logger.warn(event));
   const application = createGatewayApplication({
     config: { ...upstreamConfig, frontendDisabledTools: [...upstreamConfig.frontendDisabledTools, 'get_current_time'] },
     agent: createBackendAgentHost(backend), autoStart: false, logger,
@@ -61,6 +59,8 @@ export async function startGateway(config, { backend, traceObserver } = {}) {
     spawnThinkingDescription,
     sessionObservers: trace ? [trace] : [],
   });
+  backend.client.resolveSessionId = taskId => application.services.taskManager
+    .getByTaskId(taskId, { ownerId: config.ownerId })?.sessionId;
   application.services.conversationSync.setRecordObserver((message, context) => {
     application.services.conversationHistory.append(message, context);
     if (message.role === 'user' && message.turnId) trace?.onExecution({ sessionId: context.sessionId,

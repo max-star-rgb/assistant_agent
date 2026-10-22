@@ -23,6 +23,7 @@ from assistant_agent.tools.native_boundary import (
     native_tool_exception,
 )
 from assistant_agent.tools.plugins.builtin.image_to_3d.models import ImageTo3DRequest
+from assistant_agent.runtime.thread_resources import GeneratedArtifactStore, artifact_session_scope
 
 
 IMAGE_TO_3D_TOOL_NAME = "image_to_3d"
@@ -36,6 +37,7 @@ class ImageTo3DStarter(Protocol):
         session_id: str,
         src_image: str,
         output_format: str,
+        source_thread_id: str | None = None,
     ) -> ImageTo3DSubmission: ...
 
 
@@ -47,6 +49,7 @@ class MockImageTo3DAdapter:
         session_id: str,
         src_image: str,
         output_format: str,
+        source_thread_id: str | None = None,
     ) -> ImageTo3DSubmission:
         _ = (user_id, session_id, output_format)
         return ImageTo3DSubmission(
@@ -58,6 +61,7 @@ class MockImageTo3DAdapter:
 
 def create_image_to_3d_tool(
     adapter: ImageTo3DStarter | None = None,
+    *, artifact_store: GeneratedArtifactStore | None = None,
 ) -> BaseTool:
     """Create the native asynchronous image-to-3D submission Tool."""
 
@@ -71,13 +75,13 @@ def create_image_to_3d_tool(
             Field(
                 min_length=1,
                 description=(
-                    "image_generation 返回的 artifact:// 图片引用；同一轮已调用 image_generation "
-                    "时应省略。"
+                    "image_generation 返回的 /artifacts/... 图片引用。默认省略：使用当前前台会话"
+                    "最近成功生成的图片；用户指定其他图片时传其引用。"
                 ),
             ),
         ] = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """把本轮最近生成的图片或指定的本地生成图片 ID 提交为异步 3D 生成任务。
+        """把当前会话最近成功生成的图片或指定的生成图片引用提交为异步 3D 生成任务。
 
         返回接收状态、源图片 ID 和 job_id。只负责提交任务，不等待或伪造最终
         3D 成品。
@@ -88,6 +92,7 @@ def create_image_to_3d_tool(
                 image_to_3d_adapter,
                 src_image,
                 runtime,
+                artifact_store=artifact_store,
             )
             data = {
                 "status": submission.status,
@@ -119,14 +124,27 @@ def _execute_image_to_3d_from_runtime(
     adapter: ImageTo3DStarter,
     src_image: str | None,
     runtime: ToolRuntime[AssistantRunContext],
+    *, artifact_store: GeneratedArtifactStore | None = None,
 ) -> ImageTo3DSubmission:
     state = runtime.state if isinstance(runtime.state, Mapping) else {}
+    identity = authenticated_user_identity(runtime)
+    thread_id = runtime.execution_info.thread_id
+    scope = artifact_session_scope(getattr(runtime, "config", {}))
+    latest = None if src_image else (
+        artifact_store.latest_image(identity, scope) if artifact_store and scope
+        else _latest_generated_image_ref(state))
+    selected = src_image or latest
+    source_thread_id = None
+    if artifact_store and selected:
+        source_thread_id = artifact_store.image_source_thread(
+            identity, thread_id, selected, session_scope=scope)
     return _execute_image_to_3d(
         adapter,
         ImageTo3DRequest(src_image=src_image),
-        user_id=authenticated_user_identity(runtime),
-        session_id=runtime.execution_info.thread_id,
-        latest_image_ref=_latest_generated_image_ref(state),
+        user_id=identity,
+        session_id=thread_id,
+        latest_image_ref=latest,
+        source_thread_id=source_thread_id,
     )
 
 
@@ -137,6 +155,7 @@ def _execute_image_to_3d(
     user_id: str,
     session_id: str | None,
     latest_image_ref: str | None,
+    source_thread_id: str | None = None,
 ) -> ImageTo3DSubmission:
     if not session_id:
         raise ValueError("image_to_3d requires runtime session identity")
@@ -148,6 +167,7 @@ def _execute_image_to_3d(
         session_id=session_id,
         src_image=src_image,
         output_format="mp4",
+        **({"source_thread_id": source_thread_id} if source_thread_id else {}),
     )
 
 

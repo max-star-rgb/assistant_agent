@@ -10,6 +10,13 @@ export function configurationFields(value = {}) {
 
 // Called only after the transport accepts a message; bounded observation, never replayed.
 export function recordSentConfiguration(frontend, body) {
+  if (body.type === 'conversation.item.create' && body.item?.type === 'message'
+    && frontend.conversationItemWaiters?.get(body.item.id)?.contextOnly) {
+    const text = (body.item.content || []).filter(part => ['input_text', 'text'].includes(part.type))
+      .map(part => part.text || '').join('\n');
+    if (text) frontend.onEvent?.({ type: 'observation.context.sent', itemId: body.item.id,
+      role: body.item.role, text: text.slice(0, 16000) });
+  }
   if (body.type === 'conversation.item.create' && body.item?.type === 'function_call_output') {
     const { call_id, output } = body.item;
     frontend.observedToolResults = [...(frontend.observedToolResults || []).filter(item => item.call_id !== call_id),
@@ -39,6 +46,7 @@ export function publicExecutionEvent(event) {
 
 export function modelExecutionEvent(event, context) {
   const type = event.type;
+  if (type === 'observation.context.sent') return { kind: 'history.message', itemId: event.itemId, role: event.role, text: event.text };
   if (type === 'session.created') return { kind: 'session.start', providerSessionId: event.session?.id };
   if (type === 'conversation.item.deleted' || type === 'conversation.item.truncated') {
     return { kind: 'history.remove', itemId: event.item_id };
@@ -47,7 +55,8 @@ export function modelExecutionEvent(event, context) {
   if (!responseId) return null;
   const common = { responseId, turnId: context?.origin === 'announcement'
     ? `announcement:${responseId}` : context?.turnId || `response:${responseId}`,
-    origin: context?.origin, taskId: context?.taskId };
+    origin: context?.origin, taskId: context?.taskId,
+    ...(Array.isArray(context?.taskIds) ? { taskIds: context.taskIds.slice(0, 8) } : {}) };
   if (type === 'response.created') return { ...common, kind: 'model.start', configuration: event.__executionConfiguration,
     toolResults: event.__executionToolResults };
   if (['response.text.delta', 'response.audio_transcript.delta', 'response.output_audio_transcript.delta'].includes(type)) {

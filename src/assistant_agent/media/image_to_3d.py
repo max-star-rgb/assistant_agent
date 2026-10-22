@@ -60,13 +60,14 @@ class ImageTo3DAdapter:
         session_id: str,
         src_image: str,
         output_format: str = "mp4",
+        source_thread_id: str | None = None,
     ) -> ImageTo3DSubmission:
         output_ref = src_image.strip()
         if not output_ref:
             raise ImageTo3DError(f"图片不存在：{src_image}")
         artifact = self._artifact_payload_resolver(
             user_id or session_id,
-            session_id,
+            source_thread_id or session_id,
             output_ref,
         )
         if artifact is None:

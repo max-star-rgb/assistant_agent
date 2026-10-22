@@ -15,6 +15,10 @@
 
 ## 当前主链
 
+只读工具自动重试耗尽后，`ReadToolRetryMiddleware` 仅在下一轮模型请求的消息投影中追加
+`HumanMessage(name="tool_recovery")`，说明失败并建议结合联网搜索直接回答。该消息明确标注为运行反馈，
+不代表用户新请求，不写入 checkpoint/history，不复制外部异常原文；重试策略由 Tool authority 所有。
+
 Qwen Audio Gateway 前台通过原生目录配置加载项目 `integrations/qwen_audio_agent/prompts/PROMPT.md`，
 以 qwen-audio-agent 2.0.1 官方正文为基础，仅直接修改记忆个性化规则；默认人设继续加载官方 `ASSISTANT.md`。
 复用原生 `buildFrontendInstructions`、`resolveAssistantProfile`、`buildMemoryContext`。
@@ -23,8 +27,8 @@ Qwen Audio Gateway 前台通过原生目录配置加载项目 `integrations/qwen
 时间地点以 `current_date`、`location` 字段合并进原生 `runtime_context`，不再生成独立的“时间与地点”段落。
 记忆规则通过原生 memory feature 注入；文本数据由原生 Markdown provider 和订阅直接提供，不再注入外部 Mem0 快照。
 `USER.md` 使用原生 `<user_preferences>`，`MEMORY.md` 使用 `<user_memory>`，保留版本与空内容省略机制。
-远端视觉快照单独作为 `<visual_memory>` 注入前台提示词，按 JSON 编码并转义标签边界，明确是可能过时的背景数据而非指令。
-会话初始化先读取快照，此后每处理完成 10 个视频段异步刷新；更新期间使用旧快照，成功空结果清空文本但保留该段及状态，不进入 Markdown 或会话提取。生命周期见 Memory authority。
+远端视觉快照单独作为 `<visual_memory>` 注入前台提示词，区域内仅按原顺序输出文本，条目间空一行，不显示 JSON、字段名、状态或说明文案；保留标签边界转义，不改写、合并或去重文本。
+会话初始化先读取快照，此后每处理完成 10 个视频段异步刷新；更新期间使用旧快照，成功空结果清空文本但保留该区域，状态仅留在内部快照，不进入 Markdown 或会话提取。生命周期见 Memory authority。
 主 `PROMPT.md` 的个性化顺序为当前明确要求、用户明确表达的长期偏好、默认人设；系统推测不提升为用户要求。
 历史事实与视觉观察只是可能过时的背景，不授予权限。文本外部快照补丁已撤销，视觉快照保持独立。
 语音前台沿用官方交互和授权机制，明确请求直接执行，需要确认时在对话中澄清。
