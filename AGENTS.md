@@ -46,8 +46,8 @@
 - Provider 运行只分 `mock` 和 `real`。mock 模式下主 LLM 与 Provider-backed tools 强制使用 mock；real 模式下主 LLM 必须完整配置，Provider-backed tools 只注册已完整配置的真实实现，禁止静默回退到 mock。
 - Tool exposure 和入口路由不得用关键词、正则、高信号话术或手写请求规则推断用户意图；候选 Tool 由受信静态装配、MCP allowlist、entry/media/env 等结构化事实决定，具体调用与参数由 LLM 判断。
 - 长期 Memory recall 发生在 `before_agent` middleware 并冻结为 `memory_context`；回答后
-  `after_agent` middleware 通过官方 `RemoteReflectionExecutor.submit()` 以 rollback 策略提交独立
-  `assistant-memory-v1`，extract 只在该后台图执行。后端只实现最小 `MemoryBackend` 协议，可接 LangMem、Mem0
+  `after_agent` middleware 通过官方 LangGraph SDK `client.runs.create()` 以 rollback 策略提交独立
+  `assistant-memory-v1`，extract 只在该后台图执行。后端只实现最小 `MemoryBackend` 协议，可接 Mem0
   或第三方服务。
 - MCP、API、CLI、demo、eval 等交互入口应复用 Agent Server/native graph；不属于对话 run 的 durable task 与后台感知只使用窄业务 service/adapter，不得重建第二套 Agent Runtime。
 - 旧自研 A2A/router/transport/control-plane 已退休；未来如需恢复跨实例 Agent 通信，必须作为 Agent Server 的薄入口并由其 authority 所有。
@@ -71,9 +71,9 @@
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python
 ```
 
-PyCharm 的本机服务通过 `scripts/run_server.py` 调用官方 `langgraph dev`，固定回环端口 `8089`，默认自动重载。
+PyCharm 的本机服务通过 `scripts/run_server.py` 调用官方 `langgraph dev`，固定端口 `8089`，默认监听所有 IPv4 网卡、自动重载。
 使用官方 in-memory Runtime，状态保存在 `.langgraph_api/`；不装配 Docker/PostgreSQL 或自定义 Runtime 补丁。
-启动脚本只维护单实例锁、严格端口检查、env 来源和仓库外日志。Codex 默认作为客户端连接现有 `8089`，不另起并行 Server。
+启动脚本只维护启动前目标端口释放、单实例锁、严格端口检查、env 来源和仓库外日志。Codex 默认作为客户端连接现有 `8089`，不另起并行 Server。
 
 测试与 eval 的职责边界见第 8 节；具体命令和运行约束以 `tests/README.md`、
 `docs/observability-harness.md`、`scripts/README.md` 或对应 `docs/*.md` 为准。历史 runbook

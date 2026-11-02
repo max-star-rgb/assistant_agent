@@ -67,6 +67,7 @@ class ToolProfile(BaseModel):
     )
     description: str = Field(min_length=1, max_length=500)
     tool_names: tuple[str, ...] = Field(min_length=1)
+    activation_summary: str = "Tool Profile 已激活。"
 
     @field_validator("tool_names")
     @classmethod
@@ -278,11 +279,7 @@ class ToolProfileMiddleware(AgentMiddleware[ToolProfileState, Any]):
                 raise ToolException("tool_profile_not_found")
             observation = {
                 "status": "succeeded",
-                "summary": (
-                    "Tool Profile 已激活。建议配合 travel skill 使用。"
-                    if profile.profile_id == "travel"
-                    else "Tool Profile 已激活。"
-                ),
+                "summary": profile.activation_summary,
                 "profile_id": profile.profile_id,
                 "activated_tool_names": list(profile.tool_names),
             }
@@ -387,9 +384,24 @@ class ToolProfileMiddleware(AgentMiddleware[ToolProfileState, Any]):
         return deactivate_tool_profile
 
 
-def project_tool_profiles() -> tuple[ToolProfile, ...]:
+def project_tool_profiles(*, image_mock_mode: bool = True) -> tuple[ToolProfile, ...]:
     """Return the repository-owned business Tool Profile catalog."""
 
+    visual_summary = (
+        "Tool Profile 已激活。当前图片生成与编辑使用 mock 固定样例：\n"
+        '1. 生成：image_generation(prompt="生成一个白色的台灯", operation="generate")。\n'
+        '2. 编辑：image_generation(prompt="编辑这个白色的台灯", operation="edit")，'
+        "自动使用本线程最近图片，返回固定编辑样例，不按其他要求修改像素。\n"
+        if image_mock_mode else
+        "Tool Profile 已激活。当前图片生成与编辑调用真实图像服务。"
+        "使用 image_generation 按用户要求创作图片；operation=generate 生成新图片，"
+        "operation=edit 根据修改要求编辑本线程最近成功生成或编辑的图片，无需传入图片地址。\n"
+    )
+    visual_summary += (
+        "用户需要 3D 时调用 image_to_3d()，自动提交本线程最近一次成功生成或编辑的图片。"
+        "仅调用 activated_tool_names 中已开放的工具；前一步失败则停止后续提交。"
+        "3D 工具返回已接收只表示异步任务开始，不代表 3D 成品已完成。"
+    )
     return (
         ToolProfile(
             profile_id="filesystem",
@@ -441,6 +453,7 @@ def project_tool_profiles() -> tuple[ToolProfile, ...]:
         ),
         ToolProfile(
             profile_id="travel",
+            activation_summary="Tool Profile 已激活。建议配合 travel skill 使用。",
             description="酒店、地点发现、周边搜索以及步行、骑行、公交、高铁和驾车路线规划。",
             tool_names=(
                 "lodging_search",
@@ -459,7 +472,8 @@ def project_tool_profiles() -> tuple[ToolProfile, ...]:
         ),
         ToolProfile(
             profile_id="visual-creation",
-            description="图片生成，以及把本轮生成图片和已知的本地生成图片 ID 转换为 3D 模型。",
+            activation_summary=visual_summary,
+            description="图片生成、图片编辑，以及将最近生成或编辑的图片转换为 3D 模型。",
             tool_names=("image_generation", "image_to_3d"),
         ),
         ToolProfile(

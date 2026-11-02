@@ -40,8 +40,8 @@ filesystem 与 `execute`；`browser-operator` 只接收 Playwright Tool。角色
 
 ## Tool schema、可见性与结果
 
-15 个内建业务 Tool（calendar/contacts、email、lodging 与价格订阅、shopping、图片搜索、图片生成、
-图生 3D 和四个媒体 Tool）均由官方 `@tool` factory 返回标准 `BaseTool`。handler 直接接收
+内建业务 Tool（calendar/contacts、email、lodging 与价格订阅、shopping、图片搜索、图片生成、图片编辑、
+图生 3D、记忆写入和两个媒体 Tool）均由官方 `@tool` factory 返回标准 `BaseTool`。handler 直接接收
 `ToolRuntime[AssistantRunContext]`，它是框架注入的隐藏参数，不进入模型可见 schema；认证 identity 只从
 `server_info.user.identity` 读取。handler 成功直接返回 `content_and_artifact` 的 `(content, artifact)`，预期或
 清洗后的领域失败抛出 `ToolException`。Tool metadata 只保存 `source=builtin|deepagents|mcp`、availability 等观测或
@@ -49,18 +49,36 @@ filesystem 与 `execute`；`browser-operator` 只接收 Playwright Tool。角色
 
 成功结果使用标准 `ToolMessage(content, artifact)`：`content` 是有界模型投影，`artifact` 保存结构化业务结果；
 失败由 `ToolException` 或 `handle_tool_error` 转为可解释 error `ToolMessage`。Provider 原始响应、secret 和宿主路径
-不进入模型上下文或 artifact。`image_generation` 成功后只把
-`artifact://v1/{thread_ref}/generated/{filename}` 短引用写入文本 observation 和 artifact，不在
-`ToolMessage` 中写入 Base64 或 `image` content block；主模型默认不读取生成物。需要图片实体的媒体投影、
+不进入模型上下文或 artifact。`image_generation`（生成或编辑）成功后只把
+`artifact://v1/{thread_ref}/generated/{filename}` 短引用写入非模型通道 artifact；模型 observation 只包含状态、
+摘要与图片数量，不含图片 ID、URL 或本地路径，不写入 Base64 或 `image` content block。需要图片实体的媒体投影、
 `image_to_3d` 等消费者在自身边界按需通过统一 resolver 读取同一引用，并复核线程归属、大小、路径和媒体类型。
 生成成功后还将同名图片复制到当前用户 `<cwd>/outputs/`；该用户副本不参与协议解析或 thread TTL 回收。
-`image_to_3d` 未收到显式引用时，可从 checkpoint 的历史成功 `image_generation` ToolMessage 中选择最近引用，
-因此支持跨对话轮次联动；显式引用始终优先，实体过期仍由 thread TTL 和 resolver 拒绝。
+`visual-creation` Profile 包含 `image_generation` 和 `image_to_3d`，支持生成后直接提交或编辑后提交。
+`image_generation(prompt, operation="generate"|"edit")` 统一生成与编辑，不再注册独立 `image_editing`。
+Qwen 图片生成与编辑共用部署参数：`QWEN_IMAGE_DEFAULT_SIZE`、`QWEN_IMAGE_PROMPT_EXTEND`、
+`QWEN_IMAGE_ENABLE_THINKING`。当前快速出图配置为 `512*512`、`false`、`false`，不新增模型可见参数。
+未配置时兼容原行为：尺寸 1024×1024、提示词增强开启、思考参数省略并遵循 Provider 默认；
+内部请求显式传入 `prompt_extend` 时优先于部署默认。512×512 用于快速预览，精细内容应提高尺寸。
+Qwen 适配器不再自动添加通用反向提示词；仅在内部请求显式提供非空 `negative_prompt` 且模型支持时发送，
+生成与编辑遵循同一规则。Qwen 2.1 不发送该字段。
+同一 DashScope 接入支持按显式 `operation` 分派模型：`QWEN_IMAGE_MODEL=z-image-turbo` 负责生成，
+`QWEN_IMAGE_EDIT_MODEL=qwen-image-2.1-turbo` 负责编辑；编辑模型留空时沿用生成模型，不隐式切换模型。
+Z-Image 仅支持文生图、每次一张，不发送 Qwen 专属参数；组装后的提示词超过 800 字符时显式拒绝，避免服务端静默截断。
+编辑仍读取本线程最近成功图片，生成/编辑产物与 3D 消费契约不变。全局 mock 时两种操作均保持 mock。
+编辑与 3D 工具不向模型暴露 `src_image` 参数。编辑从 checkpoint 的历史成功生成或编辑 ToolMessage
+artifact 中选择最近图片；`image_to_3d` 同样按消息顺序选择最近一次成功生成或编辑的图片，跳过失败工具结果。
+内部引用通过统一 resolver 校验归属、格式、大小和实体存在性。没有图片则提示先生成或编辑；支持跨对话轮次联动，实体过期仍由 thread TTL 和 resolver 拒绝，错误文案不回显内部引用。
+既有 checkpoint 中旧版本已写入 content 的地址不自动迁移；验证新的模型不可见边界应使用新会话。
+图片编辑与生成、3D 提交一样进入原生 HITL，不进入只读 retry 清单。
+工具产物展示通过 `native_content_and_artifact(..., artifact_resolver=...)` 统一接到原 Tool run 的 LangSmith
+附件；resolver 是受信装配提供的 MIME/bytes 解析器，图片仍复用线程归属校验。模型 content、artifact 和 checkpoint
+不新增二进制。采样、脱敏、上传边界见 [`observability-harness.md`](observability-harness.md) 的“工具产物附件”。
 高德路线 MCP interceptor 在保留模型可见导航 Markdown 的同时，把同一受校验 URL 写入 namespaced
 `structuredContent`；终端入口只从转换后的标准 ToolMessage artifact 确定性交付，不解析模型正文。
 
 需要确定性交付时，Tool 在自身 artifact 中写入严格、有界的
-`assistant_agent_delivery_v1={text, output_refs}`。购物、酒店和图片生成只在领域结果完成校验后写入；
+`assistant_agent_delivery_v1={text, output_refs}`。购物、酒店、图片生成和编辑只在领域结果完成校验后写入；
 全局 MCP interceptor 先删除外部结果中的同名保留字段，仅在成功校验 AMap 路线后重建并写入
 `structuredContent`。这是 `ToolMessage.artifact` 的应用数据，不是自定义
 message/state 协议。传输层只通用读取该 key 和标准 `type=file` block，不依赖模型复述，也不按 Tool 名解析业务 artifact。
@@ -77,6 +95,10 @@ message/state 协议。传输层只通用读取该 key 和标准 `type=file` blo
 实际注册的 Tool；没有可用 Profile 时不暴露 `activate_tool_profile`。模型调用
 `activate_tool_profile` 后，middleware 从私有 `active_tool_profile_ids` 缩小后续 `ModelRequest.tools`，并在执行
 边界复核历史消息中的 ToolCall；激活结果的 `activated_tool_names` 返回该运行角色实际注册并开放的 Tool 名称。
+激活 `visual-creation` 时，结果 `summary` 使用装配期按实际图像模式选定的 `ToolProfile.activation_summary`：
+全局 mock 或图像 provider=mock 返回固定生成/编辑样例说明；真实图像 Provider 返回专属真实调用简介，
+不混入 mock 指引。不新增配置开关，模型 observation 和 artifact 使用同一摘要。用户需要 3D 时提交最近生成或编辑结果；
+不指导模型读取或传递 URL，前一步失败停止后续提交，异步接收不等于成品完成。
 `read_file` 常驻暴露，以便模型直接读取已发现的 Skill 正文；其余 filesystem Tool 仍需先激活 `filesystem` Profile。
 至少一个 Profile 激活后，模型可自主调用 `deactivate_tool_profile` 精确隐藏指定 Profile 的实际 Tool 集；重复取消
 幂等成功，其他 Profile 和常驻 Tool 不受影响，取消后的历史 ToolCall 仍在执行边界被拒绝。没有激活 Profile 时不向模型
@@ -105,10 +127,10 @@ coder 共用该 middleware；`execute` 的可见描述要求优先使用 `git` T
 Git CLI，返回 `use_git_tool` 错误，不启动 shell。
 
 媒体 Tool 的条件暴露与 Skill/Profile 正交：`uploaded_media_inspect` 依赖最新用户消息中的标准上传媒体 block；
-`live_view_inspect` 依赖本轮冻结 target；`visual_memory_search` 还要求当前 thread 有可检索文本；
-`visual_reminder_manage` 要求连接已经收到并绑定有效视频帧。条件来自入口签发的 capability 与服务端事实，不读取
+`live_view_inspect` 依赖本轮冻结视频投影；`visual_memory_search` 与 `visual_reminder_manage` 已删除。
+条件来自入口签发的 capability 与服务端事实，不读取
 用户关键词；Tool handler 会再次校验身份、thread 和冻结边界。当前 media custom route 不注入
-`source=live_camera` message block，因此不会满足这三个实时 Tool 的条件；详见视觉 authority。
+`source=live_camera` message block，实时 Tool 通过服务端 capability 暴露；详见视觉 authority。
 
 Studio/LangChain 标准 `image|video` block 可直接携带 `base64 + mime_type`，图片也可使用 HTTP(S) URL；缺少 `source` 时视为
 用户主动上传；兼容入口显式标记的 `source=uploaded + id`。条件 middleware 只从主模型可见 messages 中移除上传
@@ -118,6 +140,10 @@ Studio/LangChain 标准 `image|video` block 可直接携带 `base64 + mime_type`
 该静态抽帧不进入实时 H.264 ingestion、SigLIP2 selector、视觉时间线或 `live_view_inspect`。
 
 ## 统一 HITL 与 LocalShell 边界
+
+`memory_add(content)` 在 real Mem0 后端启用时注册为主 Agent 常驻工具，身份由 Runtime 注入，
+显式向 Mem0 提交用户希望记住的内容。它遵守会话记忆开关，进入副作用 HITL，不进入只读重试或 worker 清单；
+后台提取调度仍由 Memory lifecycle 所有。
 
 所有显式列入 `interrupt_on` 的操作在 handler 前统一经过 Deep Agents `HumanInTheLoopMiddleware`：
 
@@ -228,5 +254,24 @@ python scripts/setup_local.py check
 python -m compileall -q src/assistant_agent/tools src/assistant_agent/mcp
 ```
 
-新电脑环境安装见 [WSL 安装说明](wsl-installation.md)。图片生成已移除旧电脑硬编码 fixture 支路，
-统一由配置对应的真实或 mock adapter 处理，不依赖被删除的 `local/generated` 文件。
+图片生成由配置对应的真实或 mock adapter 处理，
+不依赖硬编码图片路径或 `local/generated` 文件。显式设置 `MULTIMODAL_AGENT_IMAGE_PROVIDER=mock` 和
+`IMAGE_GENERATION_MOCK_FILE=<本地图片路径>` 时，即使全局为 real，图像生成也只使用指定文件，不调用生成 API。
+mock 工具的 `prompt` schema 接受两个固定示例：生成使用 `生成一个白色的台灯`，编辑使用 `编辑这个白色的台灯`。
+对应 mock adapter 的 `prompt` / `prompt_used` 固定为各自示例，成功 observation 返回固定摘要、状态与图片数量。
+真实 adapter 接受自由提示词。
+这是操作者显式选择的本地 mock，不是真实 Provider 失败后的回退；未配置文件时，real 模式仍不注册 mock 图像工具。
+`IMAGE_EDITING_MOCK_FILE=<本地图片路径>` 指定 mock 编辑样例；未配置时编辑返回可解释错误。
+mock 编辑校验源图后输出固定文件，不实际按 prompt 修改像素。
+全局 `MULTIMODAL_AGENT_PROVIDER_MODE=real` 下，设置 `MULTIMODAL_AGENT_IMAGE_PROVIDER=qwen`、有效的
+`QWEN_API_KEY`（兼容既有 alias）、同地域 `QWEN_IMAGE_BASE_URL` 和 `QWEN_IMAGE_MODEL=qwen-image-3.0`
+即可切换真实生成与编辑，两个 mock 文件设置不再参与执行。切回图像 provider=mock 不改变 3D 配置；全局 mock
+仍强制使用 mock。真实 Provider 缺配置时不注册，失败不回退 mock。
+百炼 [Qwen-Image API](https://help.aliyun.com/zh/model-studio/qwen-image-generation-and-editing-api-reference)
+确认 `qwen-image-3.0` 支持生成和编辑。当前 Qwen adapter 的编辑支持明确限定为 3.0/3.0-pro/2.1-pro/2.1-turbo，
+使用同一个 DashScope 同步接口，参考图以内部 Base64 image block 传给 Provider，客户端超时为 600 秒。
+源图来自本线程最近成功图片（兼容历史 `image_editing` artifact），经 resolver 校验并限制为 10 MiB；
+不向模型开放源图参数，也不将源图 Base64 写入工具结果。其他模型/Provider 的编辑返回不支持错误。
+图片经格式及大小校验后复制到当前 thread 的 managed artifact 目录，并沿用展示、用户 `outputs/` 和图生 3D 引用链路；
+缺失、无效或超限文件返回错误，原文件路径不进入模型结果。
+异步图像 Tool 的 thread 目录初始化、图片生成和本地文件处理在线程中执行，避免阻塞 Agent Server 事件循环。

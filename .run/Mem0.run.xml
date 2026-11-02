@@ -1,6 +1,6 @@
 <component name="ProjectRunConfigurationManager">
   <configuration default="false" name="Mem0" type="PythonConfigurationType" factoryName="Python">
-    <module name="hello_agent" />
+    <module name="assistant_agent_cqy" />
     <option name="ENV_FILES" value="" />
     <option name="INTERPRETER_OPTIONS" value="" />
     <option name="PARENT_ENVS" value="true" />

@@ -16,13 +16,9 @@ if TYPE_CHECKING:
         RealtimeVideoMemoryStore,
     )
     from assistant_agent.media.video.video_context import VideoContextStore
-    from assistant_agent.media.embedding.coordinator_store import (
-        SessionEmbeddingCoordinatorStore,
-    )
     from assistant_agent.media.video.semantic_store_pool import (
         SessionVisualSemanticStorePool,
     )
-    from assistant_agent.media.video.visual_reminder import VisualReminderRegistry
     from assistant_agent.media.video.visual_memory_index import VisualMemoryTextIndex
     from assistant_agent.media.video.visual_timeline_context import (
         VisualTimelineContextService,
@@ -46,13 +42,12 @@ class ToolPluginContext:
     realtime_video_memory_store: RealtimeVideoMemoryStore | None = None
     durable_task_service: DurableTaskService | None = None
     calendar_adapter: CalendarAdapter | None = None
-    embedding_coordinator_store: SessionEmbeddingCoordinatorStore | None = None
     visual_semantic_store_pool: SessionVisualSemanticStorePool | None = None
-    visual_reminder_registry: VisualReminderRegistry | None = None
     visual_memory_text_index: VisualMemoryTextIndex | None = None
     visual_timeline_context_service: VisualTimelineContextService | None = None
     live_view_resolver: Callable[[str, str, str], Any] | None = None
     thread_resource_manager: ThreadResourceManager | None = None
+    memory_backend: Any | None = None
 
     @property
     def mock_mode(self) -> bool:

@@ -15,9 +15,6 @@ from assistant_agent.media.runtime_media import (
     latest_runtime_media,
     without_uploaded_media_messages,
 )
-from assistant_agent.media.visual_perception.history_probe import (
-    VisualObservationHistoryProbe,
-)
 from assistant_agent.native_agent.context import (
     assistant_runtime_facts,
     authenticated_user_identity,
@@ -33,11 +30,9 @@ class ConditionalToolExposureMiddleware(AgentMiddleware):
 
     def __init__(
         self,
-        history_probe: VisualObservationHistoryProbe | None = None,
         live_view_resolver: Callable[[str, str, str], Any] | None = None,
     ) -> None:
         super().__init__()
-        self._history_probe = history_probe
         self._live_view_resolver = live_view_resolver
 
     def wrap_model_call(
@@ -73,15 +68,6 @@ class ConditionalToolExposureMiddleware(AgentMiddleware):
         live = self._trusted_live_view(runtime)
         if availability is ToolAvailability.VIDEO_FRAME_RECEIVED:
             return live is not None and bool(live.live_video_ids)
-        if availability is ToolAvailability.VISUAL_HISTORY_AVAILABLE:
-            return (
-                live is not None
-                and live.target_sequence is not None
-                and self._has_visual_history(
-                    runtime,
-                    as_of_sequence=live.target_sequence,
-                )
-            )
         return False
 
     def _trusted_live_view(self, runtime: Any) -> Any | None:
@@ -104,28 +90,6 @@ class ConditionalToolExposureMiddleware(AgentMiddleware):
             )
         except Exception:  # noqa: BLE001 - availability must fail closed.
             return None
-
-    def _has_visual_history(
-        self,
-        runtime: Any,
-        *,
-        as_of_sequence: int | None,
-    ) -> bool:
-        if self._history_probe is None:
-            return False
-        execution = getattr(runtime, "execution_info", None)
-        session_id = getattr(execution, "thread_id", None)
-        if not isinstance(session_id, str) or not session_id:
-            return False
-        try:
-            user_id = authenticated_user_identity(runtime)
-            return self._history_probe.has_searchable_observations(
-                user_id=user_id,
-                session_id=session_id,
-                as_of_sequence=as_of_sequence,
-            )
-        except Exception:  # noqa: BLE001 - availability must fail closed.
-            return False
 
 
 __all__ = ["ConditionalToolExposureMiddleware"]

@@ -21,7 +21,7 @@ class MediaConnectionSession:
     last_event_id: str | None = None
     client_capabilities: dict[str, bool] = field(default_factory=dict)
     media_capabilities: tuple[str, ...] = ()
-    call_type: Literal["AUDIO", "VIDEO"] | None = None
+    call_type: Literal["AUDIO", "VIDEO", "AR"] | None = None
     video_ids: list[str] = field(default_factory=list)
     submitted_chat_indexes: set[str] = field(default_factory=set)
 
@@ -33,7 +33,7 @@ class MediaConnectionSession:
         thread_id: str,
         control_message: Literal["assistantControl", "assistantControlStart"]
         | None = "assistantControl",
-        call_type: Literal["AUDIO", "VIDEO"] = "AUDIO",
+        call_type: Literal["AUDIO", "VIDEO", "AR"] = "AUDIO",
         client_capabilities: dict[str, bool] | None = None,
         media_capabilities: tuple[str, ...] = (),
     ) -> None:

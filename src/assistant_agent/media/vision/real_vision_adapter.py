@@ -96,7 +96,7 @@ class DashScopeVisionProviderAdapter:
     def __init__(
         self,
         config: RealVisionProviderConfig,
-        timeout_seconds: float = 10.0,
+        timeout_seconds: float = 20.0,
         chat_model: BaseChatModel | None = None,
     ) -> None:
         self.config = config
@@ -200,11 +200,14 @@ def map_vision_result(parsed: dict[str, Any]) -> VisualUnderstandingResult:
 
     if not parsed:
         raise ValueError("response JSON is empty")
+    scene = parsed.get("scene")
+    if isinstance(scene, list):
+        scene = "；".join(_string_list(scene, "scene"))
     normalized = {
         "objects": _string_list(parsed.get("objects"), "objects"),
         "colors": _string_list(parsed.get("colors"), "colors"),
         "materials": _string_list(parsed.get("materials"), "materials"),
-        "scene": _optional_string(parsed.get("scene"), "scene"),
+        "scene": _optional_string(scene, "scene"),
         "style_tags": _string_list(parsed.get("style_tags"), "style_tags"),
         "text_in_media": _string_list(parsed.get("text_in_media"), "text_in_media"),
         "summary": _summary(parsed.get("summary"), parsed),
@@ -227,7 +230,14 @@ def image_to_data_url(image_ref: str) -> str:
 
 
 def vision_prompt(question: str | None) -> str:
-    return question or "请描述图片中的主要物体、颜色、材质和场景。"
+    task = question or "请描述图片中的主要物体、颜色、材质和场景。"
+    return (
+        task
+        + '\n只返回 JSON 对象，不要 Markdown 或额外解释。'
+        'summary 必须为非空字符串，回答上述问题；scene 为字符串；'
+        'objects、colors、materials、style_tags、text_in_media 均为字符串数组，'
+        '无对应信息时返回空数组。只描述可见证据，不确定的信息不要编造。'
+    )
 
 
 def _image_content_block(image_ref: str) -> dict[str, Any]:

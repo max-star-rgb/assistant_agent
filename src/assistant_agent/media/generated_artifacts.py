@@ -69,6 +69,22 @@ def generated_artifact_payload_for_thread(
     )
 
 
+def generated_artifact_attachment_for_thread(
+    output_ref: str,
+    manager: ThreadResourceManager,
+    *,
+    identity: str,
+    thread_id: str,
+) -> tuple[str, bytes] | None:
+    """Resolve image bytes for an application consumer with the same ownership checks."""
+    payload = generated_artifact_payload_for_thread(
+        output_ref, manager, identity=identity, thread_id=thread_id,
+    )
+    if payload is None:
+        return None
+    return payload.media_type, base64.b64decode(payload.base64_data, validate=True)
+
+
 def generated_artifact_data_url(
     output_ref: str,
     *,

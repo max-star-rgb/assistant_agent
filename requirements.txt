@@ -105,7 +105,6 @@ langgraph-cli==0.4.31
 langgraph-prebuilt==1.1.0
 langgraph-runtime-inmem==0.33.0
 langgraph-sdk==0.4.2
-langmem==0.0.30
 langsmith==0.11.1
 loguru==0.7.3
 markdown-it-py==4.2.0

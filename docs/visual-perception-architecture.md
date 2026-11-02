@@ -33,7 +33,7 @@ Tool 调用内用 ffmpeg 均匀抽取最多 5 张临时 JPEG，再交给现有�
 关键帧窗口、视觉时间线或提醒状态。`live_view_inspect` 是实时视觉文本的
 薄消费入口，不再为用户 query 二次调用 VLM。主 Agent LLM 根据模块已经发布的结构化文本回答 query。
 实时读取分为两种语义：没有冻结目标窗口时读取 latest 已完成结果；受信 video block 携带
-`window_id + window_start_sequence + target_sequence` 时，最多 4 秒等待 exact target。当前 Agent-Service media custom route 不生成该 block，
+`window_id + window_start_sequence + target_sequence` 时，最多 20 秒等待 exact target。当前 Agent-Service media custom route 不生成该 block，
 而是通过服务端签发的 capability 和冻结 `LiveViewProjection` 进入 exact target 语义；Tool 暴露不依赖
 用户消息中的实时视频 block。strict 未命中
 exact sequence 时旧记录只能用于状态诊断，Tool 内部结果记录 `usable_visual_text=false`，主模型不得把旧文本当作当前画面。
@@ -51,20 +51,18 @@ Tool artifact、contract 与 trace，不进入模型可见 ToolMessage。
   使用本地 Qdrant 的 multilingual BM25 与 `BAAI/bge-small-zh-v1.5` dense vector 做 Weighted RRF，
   BM25:dense 权重为 `3:1`、两路各 prefetch 32 条、返回最多 12 条。Tool 不在查询阶段再次调用 VLM，
   也不替主 LLM 做最终事实判定。
-- 连接级视觉提醒：把用户提交的视觉条件计算一次 text embedding，与每个成功完成共享 image embedding
-  的 semantic 准入帧匹配，首次命中后通过当前 Agent-Service VIDEO 连接即时通知。
+- 连接级视觉提醒：保留内部 manager、共享 image embedding 匹配与通知基础设施；不提供 Agent Tool 创建、列出或取消提醒。
 
-静态 Tool inventory 中给主 LLM 的视觉语义 Tool 包括 `live_view_inspect`、`visual_memory_search` 和
-`visual_reminder_manage`。后者只管理当前
-可信 VIDEO 连接中的 `create/list/cancel`，不是 embedding Tool。`live_view_inspect` 继续回答当前实时画面，内部
+静态 Tool inventory 中给主 LLM 的实时视觉 Tool 为 `live_view_inspect`。
+`visual_reminder_manage` 的实现、注册、HITL 名单与专用 Tool 资源注入已删除。
+`live_view_inspect` 继续回答当前实时画面，内部
 后台 observation service 继续生成 rolling VLM snapshot。`siglip2_embed*`、`find_object`、
 `visual_attention_manage` 都不是注册 Tool。连接级 reminder manager 是独立的一次性状态机。media custom route
-通过服务端 capability 与冻结投影暴露这三个 Tool：
-`live_view_inspect` 要求冻结投影已包含视频 ID，`visual_memory_search` 要求目标序号与可检索历史，
-`visual_reminder_manage` 要求连接已收到视频帧。这些条件均不依赖用户消息中的实时视频 block。
+通过服务端 capability 与冻结投影暴露 `live_view_inspect`，要求冻结投影已包含视频 ID，
+不依赖用户消息中的实时视频 block。
 
-`visual_memory_search` 的模型可见描述明确它是当前 VIDEO 会话/thread 内的短期视觉记忆检索，不用于
-跨会话历史。远端长期视觉记忆属于 Memory backend，由主 Agent 的 Memory middleware 根据当前请求自动召回，
+`visual_memory_search` 工具已删除，不再注册、暴露或由主模型调用。底层会话视觉时间线、
+Qdrant 派生索引与内部检索服务保留；下文检索参数仅描述内部组件，不代表可调用 Tool。远端长期视觉记忆属于 Memory backend，由主 Agent 的 Memory middleware 根据当前请求自动召回，
 不添加来源标签地进入 `memory_context`；它不是视觉 Tool，具体契约由 Memory authority 所有。
 
 VLM 推理层复用 Provider-neutral `VisionUnderstandingClient` 与 adapter：视觉 Tool 负责受信输入绑定、
@@ -99,7 +97,7 @@ Realtime frame
                          -> VisualSemanticRecord + bounded timeline + Qdrant derived index
         -> SessionVisualSemanticStore
              ├─ live_view_inspect（只读取本轮冻结窗口的 exact target）
-             └─ visual_memory_search（最多 256 条可信候选）
+             └─ 内部视觉历史检索（最多 256 条可信候选，无 Agent Tool）
                     -> Qdrant BM25 + BGE Weighted RRF（3:1，最多 12 条）
                     -> VisualTimelineContextService（必要时执行 target / trigger / hard）
                     -> bounded Tool model_observation
@@ -126,8 +124,8 @@ dimension/finite 并 L2 normalize。ONNX Runtime 只允许 CUDA 为首个 execut
 schema v1 image-only manifest 仍可读取，但 readiness 必须是 `image_ready=true、text_ready=false`。
 DashScope adapter 同样只声明 image readiness；没有共同空间证据时禁止拼接本地 SigLIP2 text。
 mock 模式使用确定性离线共同空间，不加载真实模型。real 模式未显式选择并完整配置共同空间 Provider 时
-必须返回结构化 unavailable，禁止回退 mock；只有 image/text readiness 同时成功才向生产 Tool composition
-注入视觉提醒资源。local SigLIP2 readiness 除校验 manifest 外还必须成功初始化 CUDA-only image/text ONNX
+必须返回结构化 unavailable，禁止回退 mock；生产 Tool composition 不再注入视觉提醒资源。
+local SigLIP2 readiness 除校验 manifest 外还必须成功初始化 CUDA-only image/text ONNX
 backend，不能只凭资产文件存在宣称 ready。
 
 新配置名是 `MULTIMODAL_AGENT_EMBEDDING_PROVIDER`、`SIGLIP2_MODEL_DIR` 和
@@ -181,7 +179,11 @@ reminder comparison 成功。
 的半固定窗口；窗口满 5 帧或任意用户输入到达时立即关闭并发起一次多图 VLM。用户输入即使最终不触发视觉
 Tool，也仍作为短期视觉记忆的分段边界。Qwen 图片理解通过 multimodal `BaseChatModel`；同一个
 `HumanMessage.content` 按关键帧 sequence 放入 1～5 张 JPEG，再在末尾放入最终完整提示文本，请求固定
-`enable_thinking=false`。`memory_context` 固定为空。提示词明确最后一张是当前目标画面，前序图片只用于理解变化，
+`enable_thinking=false`，并显式设置 `response_format={"type":"json_object"}`；最终提示词要求非空字符串 `summary`
+及视觉字段的 JSON 对象，与 adapter 的结构化解析契约一致。非 JSON 正文返回不含原文的明确格式错误。
+百炼视觉 adapter 的 HTTP 请求默认超时与实时 Tool 的 exact target 等待上限均为 20 秒，两者独立计时。
+Provider 将 `scene` 返回为字符串数组时，adapter 按原顺序连接为场景文本；对象或混合类型数组仍拒绝，不伪造视觉事实。
+`memory_context` 固定为空。提示词明确最后一张是当前目标画面，前序图片只用于理解变化，
 `summary` 必须优先描述最后一张。每个窗口只有一次无状态请求，因此连续性不依赖 Provider 会话或音频时间线。
 
 不同已关闭窗口各自创建独立 asyncio task、窄
@@ -200,20 +202,13 @@ exact k 结果；Tool 不读取或理解选帧内部状态，也不回退到更�
 `source_vision_run_id` 和 `source_vlm_span_id`。例如 K1 在第 3 帧到达、K2 在第 7 帧到达，随后继续选帧，时间线
 依次得到 `[1,2,3]`、`[4,5,6,7]`、`[8,9,10,11,12]`，不会再生成 `[1,2,3,4,5]` 或 `[4,5,6,7,8]`。
 较早窗口晚完成只补入历史，不修改已结束的 Graph run。Store retention 继续提供更大的有界历史；
-`visual_memory_search` 在可信 as-of/time window 内取最后最多 256 条窗口文本。主 turn 的
+内部视觉历史检索在可信 as-of/time window 内取最后最多 256 条窗口文本。主 turn 的
 `live_view_inspect` trace metadata 只关联本次 exact target record 的来源 trace/span，不能从并发 observation
 完成顺序反推；领域结果不生成平台 URL。
 
 未接入生产链的旧 `VisualContextService`、revisioned summary model/compactor、semantic store summary 状态、
-专属 reserve 配置和 `visual_context.*` 观测事件已经删除。`visual_memory_search` 的
-`VisualTimelineContextService` 仍保留 Tool 尾部 target/trigger/hard gate；它只压缩本次模型可见投影，
-不把 summary 反写 Store，也不把旧 summary 或 record 文本送入后台 VLM。
-生产 composition 在 `real + REALTIME_VISUAL_CONTEXT_COMPACTOR=llm` 时使用主 Agent 的原生
-`BaseChatModel` 和同一个模型 context token counter 构造该 service，再经静态 Tool resources 注入
-`visual_memory_search`；执行仍是 `BaseTool -> ToolNode -> ToolRuntime -> ToolMessage`，不增加 Graph node、
-middleware 或平行 Runtime。未配置 compactor 时不构造 service；启用时若主模型 ID 无法自动解析 tokenizer，且没有
-`MULTIMODAL_AGENT_CONTEXT_TOKENIZER_PATH` 覆盖，必须启动失败；不再维护独立视觉 tokenizer 配置。
-内部压缩调用固定关闭 Provider-native search，只能根据本次传入的可信边界内视觉文本生成摘要。
+专属 reserve 配置和 `visual_context.*` 观测事件已经删除。底层 `VisualTimelineContextService`
+保留为内部组件；删除历史检索 Tool 后，不再向主模型提供该 Tool 的 observation。
 
 ## 视觉观测与 trace 契约
 
@@ -246,12 +241,12 @@ created/matched/delivery/cleared 使用带相同 `thread_id` 的 content-free La
 
 平台不直接处理语音。音频在上游转为稳定文本后，与键盘输入一样成为 `TextObservation`；`source`
 只说明来源。文本 embedding 由视觉提醒等明确调用方按需请求，不写入视觉语义存储或 Mem0。成功 VLM 结果的窗口文本直接进入 session
-视觉时间线；`visual_memory_search` 只召回成功写入 Qdrant 派生索引的记录，并显式报告候选总数、
+视觉时间线；内部视觉历史检索只召回成功写入 Qdrant 派生索引的记录，并显式报告候选总数、
 可检索数、实际返回数和 index coverage 是否完整。Qdrant 或本地 BGE 不可用时返回结构化
 `unavailable`，禁止回退到 SigLIP2 text-text cosine。
 
-创建提醒时，`visual_reminder_manage` 只把模型提交的视觉条件 `target` 编码一次；通知文案 `message`
-不参与相似度计算。Manager 通过统一 `EmbeddingComparator` 校验图文 space、dimension、normalization、
+保留的内部 Manager 接收已编码的视觉条件 `target_embedding`；通知文案 `message`
+不参与相似度计算。Agent 不再提供提醒创建入口。Manager 通过统一 `EmbeddingComparator` 校验图文 space、dimension、normalization、
 有限值和非零 norm。一个关键帧可同时命中多条提醒，每条通过 `pending -> reserved -> triggered` 状态机
 最多通知一次。命中后 Runtime registry 立即 dispatch 包含已保存 message 的 `ProactiveMessage`，后台
 delivery task 负责 sink、超时和 confirm/release，不再次调用 LLM，也不阻塞后续 VLM 队列；
@@ -278,13 +273,12 @@ lease 条目，避免长连接在持续处理期间被关闭。observer close �
 
 视觉提醒与上述 session retention 不同：它在成功 `assistantControl.callType=VIDEO` 后按内部
 `runtime_session_id` 创建连接级 manager，但只有首个视频包成功解码并绑定 `video_id` 后才注册到 Runtime
-registry；握手成功但尚无有效帧时 Tool 不暴露且 registry 查询不可用。切换同一连接的 `video_id` 时保留，
+registry；握手成功但尚无有效帧时 registry 查询不可用。切换同一连接的 `video_id` 时保留，
 WebSocket close 时立即关闭、清空和注销。
 同一连接不允许重复 `assistantControl`，视频帧 `userNumber` 必须与握手 owner 一致。提醒创建还要求
 SigLIP2 image/text 双模态 readiness 和 text event 的 model/revision/space/dimension 契约一致；不可用、
 非归一化、非有限或零范数向量不会登记为 pending。提醒状态不写 `SessionVisualSemanticStore`、长期记忆 backend、
-durable task 或 notification outbox，不能跨连接恢复。仅执行 `visual_reminder_manage` 的纯连接级 turn
-不会被独立 Memory Graph 的 `memory_extract` 当作跨 session 事实；混合其他工具的 turn 仍按正常提取策略处理。
+durable task 或 notification outbox，不能跨连接恢复。
 成功 server send 会在同一 runtime session 保存有界的 proactive session event，供下一轮主 LLM 理解
 “知道了”等指代；该事件在连接关闭时清除，不进入 ConversationStore、长期记忆 backend 或跨连接恢复。
 
@@ -303,20 +297,15 @@ evidence、不再次调用 VLM，也不输出路径、向量或坐标。未来�
 查询投影中生成，不写回 Store，不进入 VLM 窗口文本、Qdrant 文档或排序。未来时间戳只显示绝对时间，
 避免产生负数相对时间。
 
-`visual_memory_search` 只读取原始 `VisualSemanticRecord`。Tool 尾部压缩结果只进入本次
+内部视觉历史检索只读取原始 `VisualSemanticRecord`。Tool 尾部压缩结果只进入本次
 `model_observation`，不反写 Store、conversation、Mem0 或后台 VLM 请求。主 `llm.context` tokenizer
 preflight 仍对 conversation、memory、tools 与该 observation 合成后的完整 Provider request 执行第二级
 hard gate。
 
 ## Tool 暴露与安全
 
-`visual_memory_search` 是 read Tool，但只在当前视频投影存在且可信
-`user/session/as-of sequence` 已有可检索视觉文本时对模型可见；视频断线后不会继续暴露。生产 composition
-在进程级视觉资源可用时静态构造该 `BaseTool`，再由统一条件 middleware 缩小每轮可见集合，不按请求关键词
-建立动态 catalog。`live_view_inspect` 在本轮冻结投影已包含视频 ID 时可见；尚无已完成 VLM 文本时，
-Tool 直接返回有界不可用结果，不再用额外 availability 层隐藏。
-`visual_memory_search` 的可检索历史判定以 backend-neutral 的 `index_status=ready` 为准；Qdrant 持有文本向量时，
-不得再要求进程内 `VisualSemanticRecord.search_embedding` 非空。
+`live_view_inspect` 在本轮冻结投影已包含视频 ID 时可见；尚无已完成 VLM 文本时，
+Tool 等待目标结果，超时后返回有界不可用说明，不以结果是否就绪隐藏工具。
 媒体入口在创建 run 时冻结当前视觉投影，并把 server-issued opaque capability token 放入 namespaced run metadata；
 公开 `AssistantRunContext` 仍只有 `enable_memory`。
 条件 Tool 暴露和 Tool 执行必须以身份、thread、token 解析同一份投影，不得信任客户端提交的 video ID/sequence，
@@ -331,17 +320,13 @@ Tool 直接返回有界不可用结果，不再用额外 availability 层隐藏�
 如果工具暴露后因连接关闭或 capability 失效发生竞态，预期的 `ToolException` 必须由标准
 `BaseTool.handle_tool_error` 转为有界 error `ToolMessage`，不得终止 Graph。
 `uploaded_media_inspect` 只在最新用户消息含标准上传图片或视频块时可见；无 `source` 的 LangChain 标准块按
-主动上传处理，`source=live_camera` 明确排除。这三条条件与 Skill
+主动上传处理，`source=live_camera` 明确排除。这些条件与 Skill
 渐进加载正交。执行经过标准
 `BaseTool -> ToolNode` 路径，owner、session 与 as-of 边界由 `ToolRuntime` 注入，模型不可提交。
 媒体连接登记 live-view projection 时使用与 Agent Server run 相同的认证 identity 和 thread ID；vendor
 `userNumber` 只用于 wire 关联，不能作为 ToolRuntime 视觉资源 owner。
 
-`visual_reminder_manage` 是 `category=write`。只有显式注入连接级 reminder resources 的受信 composition
-才构造该 Tool；session 与身份由 `ToolRuntime` 绑定，模型不能提交 owner、manager、embedding 或阈值。
-其 `availability=video_frame_received` 只读取服务端冻结 live-view projection 中非空的 `live_video_ids`，
-不读取用户话术。create/list/cancel 经过同一 `BaseTool -> ToolNode` 路径，并作为副作用由统一原生 HITL
-在执行前审批。
+视觉提醒 manager 保留在内部感知模块，不注册为 Agent Tool，也不注入 Tool composition。
 
 向量、owned evidence 路径和原始 VLM payload 不进入模型 schema、Tool data、trace、日志或 system eval artifact。
 session evidence 不是长期记忆，不写 Mem0，也不跨 user/session 搜索。
@@ -357,7 +342,6 @@ python scripts/check_documentation_authority.py --repo-root .
 GPU 检查只进行本地 CUDA 图文推理；不调用真实 Chat/Judge 或发布 trace。
 已删除 evals 对应的旧 run_system 包装脚本，不再宣称它们可执行。
 新电脑准备 BGE/FastEmbed 与 SigLIP2；视觉历史文本检索还需可用的 Qdrant。
-模型下载和导出步骤见 [安装说明](wsl-installation.md)，不改变 SigLIP2 与并行窗口 VLM 流水线。
 
 ## 非目标
 

@@ -9,7 +9,7 @@
 | 定位 | 生产 Graph 原生 tracing 与脱敏边界的当前权威 |
 | Owns | LangSmith native tracing、callback/parent 传播、thread 关联与脱敏边界、原生 Graph evaluation target 及当前评测边界 |
 | Does not own | Graph 路由、Agent Server/media wire、Provider 语义、评测 Dataset 与发布决策 |
-| 源码与 schema 入口 | `native_agent/assistant_agent.py`、`agent_server/services.py`、`media/vision/observability.py`、`evaluation/native_graph_target.py` |
+| 源码与 schema 入口 | `native_agent/assistant_agent.py`、`agent_server/services.py`、`tools/artifact_tracing.py`、`media/vision/observability.py`、`evaluation/native_graph_target.py` |
 | 验证入口 | `docs/authority.toml` 中 `runtime-observability.verification`；evaluation target 使用 `python -m compileall -q src/assistant_agent/evaluation` |
 | 相邻 authority | [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md)、[`visual-perception-architecture.md`](visual-perception-architecture.md)、[`observability-diagnosis-runbook.md`](observability-diagnosis-runbook.md) |
 
@@ -27,6 +27,32 @@ Agent Server 的原生 LangChain/LangGraph callback tracing 由标准 `LANGSMITH
 `LANGSMITH_API_KEY` 与 `LANGSMITH_PROJECT` 控制。项目不再维护第二套 LangSmith helper/client 开关。
 未显式启用时，mock pytest 不得创建远端 client 或发出网络请求。Provider 原始 payload、Authorization、Memory 正文和媒体正文不得进入 metadata；
 Tool artifact 和 message content 是否记录遵循 LangSmith/部署脱敏配置。
+
+### 工具产物附件
+
+业务 Tool 继续返回标准 `content_and_artifact`。`native_content_and_artifact` 可接收受信的
+`artifact_resolver(ref) -> (mime_type, bytes) | None`；统一 `tools/artifact_tracing.py` 只消费
+`assistant_agent_delivery_v1.output_refs`，不解析模型正文，不按 Tool 名猜测字段。
+解析后的文件以原生 `Attachment` 加到当前 `run_type=tool` 的 RunTree，由 LangChain 的
+`on_tool_end` 上传到同一个 Tool run，不增加 child span，不手工创建/更新第二套 run tree。
+图片可在 LangSmith 附件中查看；其他格式是否能预览由 LangSmith UI 决定，不能预览时作为附件下载。
+
+目前图像生成/编辑已接入。图片 resolver 复用现有身份和线程归属校验；每次最多 4 个文件、每文件最多
+25 MiB，空文件或非法 MIME 不上传。名称为内部引用摘要，不含路径或扩展名，类型由 MIME 表示。
+解析在图像工具现有异步线程边界中执行。附件字节不写入模型 observation、ToolMessage artifact 或 checkpoint；
+原有内部引用及用户交付不变。关闭 tracing、local-only tracing、未采样或禁用/过滤输出时不读取文件。
+
+LangSmith 当前没有公开的采样结果/输出脱敏判定 API；兼容读取集中在 `artifact_tracing.py`，由临时测试核验
+langsmith 0.11.1 与 langchain-core 1.6.0 的原生 ToolNode 行为。字段变化时默认不上传；配置自定义 anonymizer、
+buffered run 过滤器或多项目 replicas 时也保守跳过附件，避免二进制绕过脱敏策略。
+resolver 失败只记录不含媒体、路径或异常正文的警告；上传由官方 tracer 负责，失败不重试业务工具。
+标准 tracing 启用后，允许展示的产物字节会上传到当前 LangSmith 项目，保存期限按项目策略；不自动回填历史 trace。
+其他音视频/文档工具可复用同一 MIME/bytes 接口，但须先提供自身受信 resolver；3D 异步提交不代表成品已存在。
+
+3D 回调使用本机结构化日志记录 `image_to_3d_callback_received`（媒体类型、URL 是否存在），
+`media_artifact_dispatch`（线程及连接的摘要标识）和 `media_artifact_sender_completed`；没有订阅者时记录
+`media_artifact_no_subscriber`。`chat` 使用与 WebSocket 发送日志相同的摘要，可跨回调和连接关联。
+这些日志不记录媒体 URL、图片或消息正文。`sender_completed` 仅证明发送函数返回，不证明媒体端接收、解析或渲染成功。
 
 ### 统一 Agent 与视觉 trace 定位
 

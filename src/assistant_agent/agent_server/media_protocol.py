@@ -101,7 +101,7 @@ def parse_chat(envelope: MediaEnvelope) -> MediaChat:
         chat_index=chat_index,
         user_id=user_id,
         text=latest_speech,
-        stream=body.get("stream", True) is True,
+        stream=False,
     )
 
 
@@ -341,7 +341,7 @@ def artifact_completed_response(
                 "chatIndex": f"artifact:{event.artifact_id}",
                 "content": {
                     "intentResult": {
-                        "description": "异步媒体已生成，请查看。",
+                        "description": "正在生成中，请稍候",
                         "status": "SUCCESS",
                         "detail": [detail],
                     }

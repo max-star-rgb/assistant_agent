@@ -12,12 +12,17 @@ from pydantic import ValidationError
 
 from assistant_agent.native_agent.context import AssistantRunContext
 from assistant_agent.providers.provider_errors import sanitize_error_message
+from assistant_agent.tools.artifact_tracing import ArtifactResolver, attach_tool_artifacts
 
 
 def native_content_and_artifact(
     model_observation: Mapping[str, Any],
     artifact: Mapping[str, Any],
+    *,
+    artifact_resolver: ArtifactResolver | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if artifact_resolver is not None:
+        attach_tool_artifacts(artifact, artifact_resolver)
     return (
         [{"type": "text", "text": json.dumps(dict(model_observation), ensure_ascii=False, sort_keys=True, indent=2)}],
         dict(artifact),

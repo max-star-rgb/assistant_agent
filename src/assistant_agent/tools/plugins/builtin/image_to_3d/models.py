@@ -8,8 +8,7 @@ class ImageTo3DRequest(BaseModel):
         default=None,
         min_length=1,
         description=(
-            "image_generation 返回的 artifact:// 图片引用。"
-            "同一轮已调用 image_generation 时应省略，运行时会自动使用最近生成的图片。"
+            "内部图片引用，省略时自动使用本线程最近成功生成或编辑的图片；没有图片时返回错误。"
         ),
     )
 

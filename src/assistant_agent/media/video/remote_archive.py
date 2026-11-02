@@ -719,6 +719,7 @@ class RemoteVideoArchiveService:
         *,
         connection: _ArchiveConnection,
     ) -> None:
+        logger.info("remote_visual_memory_upload_scheduled file=%s", segment.file_id)
         preserve = getattr(self.uploader, "preserve", None)
         if callable(preserve):
             await preserve(

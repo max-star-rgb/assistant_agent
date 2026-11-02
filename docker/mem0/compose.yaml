@@ -32,6 +32,7 @@ services:
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=60)"]
       interval: 15s
+      start_period: 600s
       timeout: 65s
       retries: 12
 

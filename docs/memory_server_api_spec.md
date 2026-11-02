@@ -8,7 +8,7 @@
 | --- | --- |
 | 定位 | Mem0 与远端视觉 Memory Service 私有 HTTP adapter 子集的当前权威 |
 | Owns | Mem0 recall/turn capture，以及远端视觉记忆 upload/task/query 请求和响应消费边界 |
-| Does not own | 通用 Memory Server 协议、Graph memory 节点/快照、LangMem、Media-Agent WebSocket wire |
+| Does not own | 通用 Memory Server 协议、Graph memory 节点/快照、Media-Agent WebSocket wire |
 | 源码与 schema 入口 | `src/assistant_agent/memory/mem0/`、`src/assistant_agent/memory/remote_service.py` |
 | 验证入口 | `docs/authority.toml` 中 `memory-server-api.verification` |
 | 相邻 authority | Graph memory 架构见 [`memory-service-architecture.md`](memory-service-architecture.md) |
@@ -18,7 +18,7 @@
 
 ## 远端视觉 Memory Service
 
-该能力只在 `provider_mode=real`、`MEMORY_BACKEND=langmem`、
+该能力只在 `provider_mode=real`、`MEMORY_BACKEND=mem0`、
 `REMOTE_VISUAL_MEMORY_ENABLED=true` 且地址完整时启用。部署 URL 只来自本机未跟踪配置，不硬编码进源码。
 
 ### 视频段摄入
@@ -60,7 +60,7 @@ Server lifespan 重启后以同一稳定 `file_id` 重新提交。归档、容�
 
 ### 视觉记忆召回
 
-当前 `memory_recall` 内部并行执行 LangMem 文本召回和：
+当前 `memory_recall` 内部并行执行 Mem0 文本召回和：
 
 ```http
 POST /v1/memories/query
@@ -75,8 +75,8 @@ Content-Type: application/json
 ```
 
 adapter 只消费 `results[]` 中 `type=text` 的非空 `content`。图片、Base64、URL、direct answer、远端身份字段
-和原始响应都不进入 Graph state。视觉分支具有独立 timeout，任何失败规范化为空结果；LangMem 和当前 turn
-继续。远端文本不添加来源标签，直接与 LangMem 结果合并，仍受 `memory_context` 既有预算约束。
+和原始响应都不进入 Graph state。视觉分支具有独立 timeout，任何失败规范化为空结果；Mem0 和当前 turn
+继续。远端文本不添加来源标签，直接与 Mem0 结果合并，仍受 `memory_context` 既有预算约束。
 
 ### 远端视觉服务身份
 
@@ -86,6 +86,12 @@ adapter 只消费 `results[]` 中 `type=text` 的非空 `content`。图片、Bas
 developer auth 只适用于受信内网，不能当作公网认证机制。
 
 ## Mem0 身份
+
+写入 `/memories` 失败时，客户端以 `mem0_ingestion_failed` 记录 HTTP 状态、受控原因代码和异常类型，
+不记录请求正文、用户身份、URL、密钥或原始响应。服务端返回 `409 / snapshot_reference_required`
+表示连接到了带记忆编辑版本保护的服务端；它不是连接故障。当前部署明确使用本仓库旧式 sidecar，
+不要求快照引用、不包含该 409 拦截；PyCharm Mem0 启动入口必须指向本仓库，不能指向相邻新版仓库。
+未知 HTTP 响应正文统一归类为 `http_error`，不进入日志。
 
 召回节点从可信 Runtime 身份生成不透明 `user_id` 和 `agent_id`；写入请求还必须
 携带由 `user_id + agent_id + session_id` 稳定生成的不透明 `run_id`。用户输入不能直接覆盖这些字段。

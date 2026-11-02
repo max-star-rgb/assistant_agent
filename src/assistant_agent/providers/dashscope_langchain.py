@@ -384,6 +384,8 @@ class DashScopeNativeChatModel(BaseChatModel):
                 raise ValueError("DashScope max_tokens must be a positive integer")
             parameters["max_tokens"] = max_tokens
         response_format = kwargs.get("response_format")
+        if response_format is None and self.structured_vision_output:
+            response_format = {"type": "json_object"}
         if response_format is not None:
             if response_format != {"type": "json_object"}:
                 raise ValueError("DashScope response_format must request json_object")
@@ -457,7 +459,13 @@ class DashScopeNativeChatModel(BaseChatModel):
             output.get("search_info", data.get("search_info"))
         )
         if self.structured_vision_output:
-            structured_output = _json_object_from_text(content)
+            try:
+                structured_output = _json_object_from_text(content)
+            except ValueError:
+                raise DashScopeProviderError(
+                    "DashScope structured vision output contains invalid JSON "
+                    f"(content_length={len(content)})."
+                ) from None
             summary = structured_output.get("summary")
             if not isinstance(summary, str) or not summary.strip():
                 raise DashScopeProviderError(

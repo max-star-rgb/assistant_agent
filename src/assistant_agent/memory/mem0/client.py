@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
@@ -20,6 +21,9 @@ from assistant_agent.memory.mem0.models import (
     Mem0MemoryChange,
     Mem0RecallMemory,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class UnavailableMem0Client:
@@ -108,10 +112,17 @@ class Mem0Client:
                 },
                 timeout_seconds=self.ingestion_timeout_seconds,
             )
-        except Exception:
+        except Exception as exc:
+            http_status = exc.http_status if isinstance(exc, Mem0OperationError) else None
+            reason_code = exc.reason_code if isinstance(exc, Mem0OperationError) else "request_failed"
+            logger.warning(
+                "mem0_ingestion_failed operation=POST_memories http_status=%s reason_code=%s error_type=%s",
+                http_status, reason_code, type(exc).__name__,
+            )
             return Mem0IngestionResult(
                 accepted=False,
-                errors=[{"code": "mem0_ingestion_failed"}],
+                errors=[{"code": "mem0_ingestion_failed", "http_status": http_status,
+                         "reason_code": reason_code}],
             )
         changes = [
             change

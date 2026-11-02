@@ -15,7 +15,7 @@ from assistant_agent.providers.specs import (
 
 
 ContextCompactorMode = Literal["off", "llm"]
-MemoryBackendName = Literal["disabled", "mem0", "langmem"]
+MemoryBackendName = Literal["disabled", "mem0"]
 VisionEmbeddingProviderName = Literal["mock", "dashscope", "local_siglip2"]
 EmbeddingProviderName = Literal["mock", "dashscope", "local_siglip2"]
 ShoppingSearchProviderName = Literal["mock", "http", "haodanku"]
@@ -213,13 +213,12 @@ class MemoryConfig:
     mem0_identity_namespace: str = "assistant-agent"
     memory_backend: MemoryBackendName = "disabled"
     memory_extraction_delay_seconds: int = 1800
-    langmem_model: str | None = None
     embedding_api_key: str | None = None
     embedding_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
     def __post_init__(self) -> None:
-        if self.memory_backend not in {"disabled", "mem0", "langmem"}:
-            raise ValueError("memory backend must be disabled, mem0, or langmem")
+        if self.memory_backend not in {"disabled", "mem0"}:
+            raise ValueError("memory backend must be disabled or mem0")
         if self.mem0_timeout_seconds <= 0:
             raise ValueError("Mem0 timeout must be positive")
         if not self.mem0_identity_namespace.strip():
@@ -292,7 +291,12 @@ class ImageGenerationConfig:
     image_generation_base_url: str | None = None
     image_generation_model: str | None = None
     image_generation_adapter_kind: str = "mock"
+    image_generation_mock_file: str | None = None
+    image_editing_mock_file: str | None = None
     qwen_image_default_size: str = "1024*1024"
+    qwen_image_edit_model: str | None = None
+    qwen_image_prompt_extend: bool = True
+    qwen_image_enable_thinking: bool | None = None
     ark_image_default_size: str = "2K"
     ark_image_output_format: str = "png"
 
@@ -379,7 +383,7 @@ class AppConfig:
         if self.media.remote_visual_memory_enabled:
             if self.provider_mode != "real":
                 raise ValueError("remote visual memory requires provider mode real")
-            if self.memory.memory_backend != "langmem":
-                raise ValueError("remote visual memory requires MEMORY_BACKEND=langmem")
+            if self.memory.memory_backend != "mem0":
+                raise ValueError("remote visual memory requires MEMORY_BACKEND=mem0")
             if not (self.media.remote_visual_memory_base_url or "").strip():
                 raise ValueError("remote visual memory requires a base URL")

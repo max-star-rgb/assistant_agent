@@ -18,7 +18,6 @@ from assistant_agent.tools.plugins.builtin.image_generation.prompting import (
 DEFAULT_QWEN_IMAGE_BASE_URL = "https://dashscope.aliyuncs.com/api/v1"
 DEFAULT_QWEN_IMAGE_MODEL = "qwen-image-2.0-pro"
 DEFAULT_QWEN_IMAGE_SIZE = "1024*1024"
-DEFAULT_NEGATIVE_PROMPT = "低分辨率，低画质，肢体畸形，手指畸形，文字模糊，构图混乱"
 
 
 @dataclass(frozen=True)
@@ -29,7 +28,9 @@ class QwenImageGenerationConfig:
     base_url: str = DEFAULT_QWEN_IMAGE_BASE_URL
     model: str = DEFAULT_QWEN_IMAGE_MODEL
     default_size: str = DEFAULT_QWEN_IMAGE_SIZE
-    timeout_seconds: float = 60.0
+    timeout_seconds: float = 600.0
+    prompt_extend: bool = True
+    enable_thinking: bool | None = None
 
 
 class QwenImageGenerationAdapter:
@@ -39,6 +40,13 @@ class QwenImageGenerationAdapter:
 
     def __init__(self, config: QwenImageGenerationConfig) -> None:
         self.config = config
+
+    @property
+    def supports_editing(self) -> bool:
+        return self.config.model in {
+            "qwen-image-3.0", "qwen-image-3.0-pro",
+            "qwen-image-2.1-pro", "qwen-image-2.1-turbo",
+        }
 
     def generate(self, input: ImageGenerationRequest) -> ImageGenerationResult:
         """Generate images through DashScope and return the stable generation schema."""
@@ -50,7 +58,16 @@ class QwenImageGenerationAdapter:
                 "(legacy QWEN_IMAGE_API_KEY or DASHSCOPE_API_KEY is also accepted).",
             )
 
-        prompt = build_image_prompt(input)
+        if input.source_image and not self.supports_editing:
+            raise ProviderAdapterError("provider_unsupported", "configured image model does not support editing")
+        prompt = input.prompt if input.source_image else build_image_prompt(input)
+        if self.config.model == "z-image-turbo":
+            if input.n != 1:
+                raise ProviderAdapterError("provider_unsupported", "z-image-turbo supports one image per request")
+            if len(prompt) > 800:
+                raise ProviderAdapterError("provider_bad_request", "z-image-turbo requires a prompt of at most 800 characters; shorten the description")
+            if input.negative_prompt:
+                raise ProviderAdapterError("provider_unsupported", "z-image-turbo does not support negative prompts")
         payload = build_qwen_image_payload(
             prompt=prompt,
             model=self.config.model,
@@ -62,9 +79,11 @@ class QwenImageGenerationAdapter:
             ),
             n=input.n,
             negative_prompt=input.negative_prompt,
-            prompt_extend=input.prompt_extend,
+            prompt_extend=(self.config.prompt_extend if input.prompt_extend is None else input.prompt_extend),
+            enable_thinking=self.config.enable_thinking,
             watermark=input.watermark,
             seed=input.seed,
+            source_image=input.source_image,
         )
         request = urllib.request.Request(
             qwen_image_generation_url(self.config.base_url),
@@ -117,8 +136,10 @@ def build_qwen_image_payload(
     n: int = 1,
     negative_prompt: str | None = None,
     prompt_extend: bool = True,
+    enable_thinking: bool | None = None,
     watermark: bool = False,
     seed: int | None = None,
+    source_image: str | None = None,
 ) -> dict[str, Any]:
     """Build DashScope multimodal-generation request payload."""
 
@@ -127,17 +148,28 @@ def build_qwen_image_payload(
         "n": n,
         "prompt_extend": prompt_extend,
         "watermark": watermark,
-        "negative_prompt": negative_prompt or DEFAULT_NEGATIVE_PROMPT,
     }
+    if negative_prompt:
+        parameters["negative_prompt"] = negative_prompt
     if seed is not None:
         parameters["seed"] = seed
+    if enable_thinking is not None:
+        parameters["enable_thinking"] = enable_thinking
+    if model.startswith("qwen-image-2.1"):
+        parameters.pop("negative_prompt", None)
+    if model == "z-image-turbo":
+        parameters = {key: value for key, value in parameters.items()
+                      if key in {"size", "prompt_extend", "seed"}}
+    content = [{"text": prompt}]
+    if source_image:
+        content.insert(0, {"image": source_image})
     return {
         "model": model,
         "input": {
             "messages": [
                 {
                     "role": "user",
-                    "content": [{"text": prompt}],
+                    "content": content,
                 }
             ]
         },

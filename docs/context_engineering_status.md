@@ -52,7 +52,7 @@ browser 用于网页交互，也可在搜索工具不可用时搜索；curl 经�
 运行位置，不是隐藏身份或授权事实。
 
 实时 VIDEO 的当前画面是瞬时事实；若受信入口暴露 `live_view_inspect`，每个新的指示性视觉问题都必须重新调用，不能把历史视觉
-Tool observation 当作本轮证据。`visual_memory_search` 只查当前 VIDEO thread 的短期视觉时间线；Memory middleware 自动召回的
+Tool observation 当作本轮证据。`visual_memory_search` 已删除；Memory middleware 自动召回的
 跨会话长期视觉文本不添加来源标签，直接合并进临时背景参考消息。
 
 ## Skill、filesystem 与 task state

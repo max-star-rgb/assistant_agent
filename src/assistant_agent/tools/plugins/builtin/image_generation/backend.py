@@ -10,7 +10,7 @@ from typing import Protocol
 from urllib.parse import urlparse
 
 from assistant_agent.config import ImageGenerationConfig
-from assistant_agent.media.generated_artifacts import MAX_ARTIFACT_BYTES
+from assistant_agent.media.generated_artifacts import MAX_ARTIFACT_BYTES, generated_artifact_file
 from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.providers.provider_errors import (
     ProviderAdapterError,
@@ -45,9 +45,36 @@ class MockImageGenerationAdapter:
 
     provider = "mock"
     model = "mock-image-generation"
+    fixed_prompt = "生成一个白色的台灯"
+
+    def __init__(self, image_file: str | None = None) -> None:
+        self.image_file = image_file
+
+    def materialize(
+        self, result: ImageGenerationResult, *, artifact_dir: Path, public_prefix: str,
+    ) -> ImageGenerationResult:
+        if not self.image_file:
+            return result
+        source = Path(self.image_file).expanduser().resolve()
+        image = generated_artifact_file(source.name, artifact_dir=source.parent)
+        if image is None:
+            raise ValueError("mock image file is missing, invalid, or exceeds the size limit")
+        with source.open("rb") as stream:
+            payload = stream.read(MAX_ARTIFACT_BYTES + 1)
+        if not payload or len(payload) > MAX_ARTIFACT_BYTES:
+            raise ValueError("mock image file is empty or exceeds the size limit")
+        extension = mimetypes.guess_extension(image.media_type) or ".png"
+        filename = hashlib.sha256(payload).hexdigest()[:24] + extension
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        (artifact_dir / filename).write_bytes(payload)
+        ref = f"{public_prefix.rstrip('/')}/{filename}"
+        return result.model_copy(update={
+            "image_url": ref, "image_urls": [ref], "output_ref": ref,
+            "download_url": ref, "download_urls": [ref],
+        })
 
     def generate(self, input: ImageGenerationRequest) -> ImageGenerationResult:
-        prompt = build_image_prompt(input)
+        prompt = self.fixed_prompt or build_image_prompt(input)
         return ImageGenerationResult(
             task_id="mock_image_task_1",
             status="succeeded",
@@ -203,7 +230,9 @@ def create_image_generation_adapter(
     """Create an image generation adapter without initializing real provider clients."""
 
     if provider_mode != "real":
-        return MockImageGenerationAdapter()
+        return MockImageGenerationAdapter(config.image_generation_mock_file)
+    if config.image_generation_provider == "mock" and config.image_generation_mock_file:
+        return MockImageGenerationAdapter(config.image_generation_mock_file)
     provider = config.resolved_provider()
     missing = provider.missing_required_env()
     if missing:
@@ -220,6 +249,8 @@ def create_image_generation_adapter(
                 base_url=provider.base_url or "",
                 model=provider.model or "",
                 default_size=config.qwen_image_default_size,
+                prompt_extend=config.qwen_image_prompt_extend,
+                enable_thinking=config.qwen_image_enable_thinking,
             )
         )
     if provider.adapter_kind == "ark_image":

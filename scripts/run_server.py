@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import fcntl
 import json
 import os
+import signal
 import socket
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -25,7 +28,7 @@ LANGGRAPH_CONFIG = REPO_ROOT / "langgraph.json"
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Start the native Agent Server.")
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8089)
     parser.add_argument(
         "--config",
@@ -91,20 +94,98 @@ def require_available_port(host: str, port: int) -> None:
         raise SystemExit(f"port {port} is already in use on {host}") from exc
 
 
+def release_port(host: str, port: int, *, timeout: float = 5.0) -> None:
+    """Stop TCP listeners on the requested port before starting the dev server."""
+
+    try:
+        with socket.create_server((host, port)):
+            return
+    except OSError as exc:
+        if exc.errno != errno.EADDRINUSE:
+            raise SystemExit(f"cannot bind {host}:{port}: {exc}") from exc
+
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            result = subprocess.run(
+                ["lsof", "-t", "-a", f"-iTCP:{port}", "-sTCP:LISTEN"],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise SystemExit(f"cannot inspect port {port}; lsof is required: {exc}") from exc
+        if result.returncode not in (0, 1):
+            raise SystemExit(f"cannot inspect port {port}: {result.stderr.strip()}")
+        for pid in sorted({int(value) for value in result.stdout.split()}):
+            if pid == os.getpid():
+                raise SystemExit(f"refusing to terminate this launcher on port {port}")
+            print(f"Releasing port {port}: {sig.name} -> PID {pid}", flush=True)
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                pass
+            except PermissionError as exc:
+                raise SystemExit(f"cannot terminate PID {pid} on port {port}: {exc}") from exc
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                require_available_port(host, port)
+                return
+            except SystemExit:
+                time.sleep(0.1)
+    require_available_port(host, port)
+
+
+def stop_verified_lock_owner(lock_path: Path) -> None:
+    """Interrupt only the launcher that owns this working tree's kernel lock."""
+    result = subprocess.run(
+        ["lslocks", "--json", "--notruncate", "--output", "PID,PATH"],
+        capture_output=True, text=True, check=True, timeout=5,
+    )
+    owners = [item["pid"] for item in json.loads(result.stdout).get("locks", [])
+              if item.get("path") == str(lock_path.resolve())]
+    if len(owners) != 1:
+        raise SystemExit("cannot safely stop lock owner: no unique kernel lock holder")
+    pid = int(owners[0])
+    try:
+        cwd = Path(f"/proc/{pid}/cwd").resolve(strict=True)
+        args = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+        script = (cwd / os.fsdecode(args[1])).resolve() if len(args) > 1 else None
+        if pid == os.getpid() or cwd != REPO_ROOT.resolve() or script != (REPO_ROOT / "scripts/run_server.py").resolve():
+            raise SystemExit("cannot safely stop lock owner: not this working tree's launcher")
+        print(f"Stopping previous Agent Server launcher: SIGINT -> PID {pid}", flush=True)
+        # The launcher's KeyboardInterrupt handler terminates and waits for its child.
+        os.kill(pid, signal.SIGINT)
+    except (FileNotFoundError, ProcessLookupError):
+        return
+
+
 @contextmanager
-def hold_dev_server_lock(lock_path: Path = DEV_SERVER_LOCK) -> Iterator[None]:
+def hold_dev_server_lock(
+    lock_path: Path = DEV_SERVER_LOCK, *, grace_seconds: float = 5.0,
+) -> Iterator[None]:
     """Allow only one Agent Server launcher per working tree."""
 
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_file = lock_path.open("a+", encoding="utf-8")
     try:
-        try:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise SystemExit(
-                "another Agent Server launcher is already running for this working tree; "
-                "stop the existing run_server.py process before starting from PyCharm"
-            ) from exc
+        deadline = time.monotonic() + grace_seconds
+        interrupted_owner = False
+        while True:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError as exc:
+                if time.monotonic() >= deadline:
+                    if not interrupted_owner:
+                        stop_verified_lock_owner(lock_path)
+                        interrupted_owner = True
+                        deadline = time.monotonic() + 25
+                        continue
+                    raise SystemExit(
+                        "another Agent Server launcher is still running for this working tree; "
+                        "stop the existing run_server.py process before starting from PyCharm"
+                    ) from exc
+                # The old wrapper releases its lock after its child's output closes.
+                time.sleep(0.1)
         yield
     finally:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
@@ -232,6 +313,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.no_reload:
             command.append("--no-reload")
         with hold_dev_server_lock():
+            release_port(args.host, args.port)
             require_available_port(args.host, args.port)
             return run_command_with_log(
                 command,

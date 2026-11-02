@@ -96,8 +96,8 @@ def _prevalidate_environment(source: Mapping[str, str], mode: ProviderMode) -> N
         )
 
     memory_backend = source.get("MEMORY_BACKEND", "disabled")
-    if memory_backend not in {"disabled", "mem0", "langmem"}:
-        raise ValueError("memory backend must be disabled, mem0, or langmem")
+    if memory_backend not in {"disabled", "mem0"}:
+        raise ValueError("memory backend must be disabled or mem0")
     if _float(source.get("MEM0_TIMEOUT_SECONDS"), 5.0) <= 0:
         raise ValueError("Mem0 timeout must be positive")
     if not (source.get("MEM0_IDENTITY_NAMESPACE") or "assistant-agent").strip():
@@ -109,8 +109,8 @@ def _prevalidate_environment(source: Mapping[str, str], mode: ProviderMode) -> N
     if remote_enabled:
         if mode != "real":
             raise ValueError("remote visual memory requires provider mode real")
-        if memory_backend != "langmem":
-            raise ValueError("remote visual memory requires MEMORY_BACKEND=langmem")
+        if memory_backend != "mem0":
+            raise ValueError("remote visual memory requires MEMORY_BACKEND=mem0")
         if not (source.get("REMOTE_VISUAL_MEMORY_BASE_URL") or "").strip():
             raise ValueError("remote visual memory requires a base URL")
     if _float(source.get("REMOTE_VISUAL_MEMORY_QUERY_TIMEOUT_SECONDS"), 5.0) <= 0:
@@ -402,7 +402,6 @@ def _load_memory_config(source: Mapping[str, str]) -> MemoryConfig:
         memory_extraction_delay_seconds=_int(
             source.get("MEMORY_EXTRACTION_DELAY_SECONDS"), 1800
         ),
-        langmem_model=source.get("LANGMEM_MODEL"),
         embedding_api_key=source.get("QWEN_EMBEDDING_API_KEY") or source.get("QWEN_API_KEY"),
         embedding_base_url=source.get("QWEN_EMBEDDING_BASE_URL")
         or source.get("QWEN_CHAT_BASE_URL")
@@ -524,7 +523,15 @@ def _load_tool_config(source: Mapping[str, str], mode: ProviderMode) -> ToolConf
             image_generation_base_url=resolved.base_url,
             image_generation_model=resolved.model,
             image_generation_adapter_kind=resolved.adapter_kind,
+            image_generation_mock_file=source.get("IMAGE_GENERATION_MOCK_FILE") or None,
+            image_editing_mock_file=source.get("IMAGE_EDITING_MOCK_FILE") or None,
             qwen_image_default_size=source.get("QWEN_IMAGE_DEFAULT_SIZE", "1024*1024"),
+            qwen_image_edit_model=source.get("QWEN_IMAGE_EDIT_MODEL") or None,
+            qwen_image_prompt_extend=_bool(source.get("QWEN_IMAGE_PROMPT_EXTEND"), True),
+            qwen_image_enable_thinking=(
+                _bool(source.get("QWEN_IMAGE_ENABLE_THINKING"), True)
+                if source.get("QWEN_IMAGE_ENABLE_THINKING") else None
+            ),
         ),
         search=SearchConfig(
             visual_image_search_provider="qwen"

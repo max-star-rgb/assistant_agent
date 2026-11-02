@@ -143,7 +143,7 @@ class ShoppingEvidence(BaseModel):
 
     source_tool: str = Field(
         min_length=1,
-        description="产生证据的前序工具名，例如 visual_memory_search。",
+        description="产生证据的前序工具名，例如 live_view_inspect。",
     )
     output_ref: str | None = Field(
         default=None,

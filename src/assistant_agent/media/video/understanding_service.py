@@ -47,7 +47,7 @@ from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.providers.provider_errors import sanitize_error_message
 
 
-LIVE_VIEW_SNAPSHOT_WAIT_SECONDS = 4.0
+LIVE_VIEW_SNAPSHOT_WAIT_SECONDS = 20.0
 LIVE_VIEW_TEXT_TIMELINE_LIMIT = 8
 
 

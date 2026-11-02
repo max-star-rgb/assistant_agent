@@ -81,6 +81,8 @@ class AgentServerClient(Protocol):
 
     async def cancel_run(self, *, thread_id: str, run_id: str) -> None: ...
 
+    async def submit_memory_on_disconnect(self, *, thread_id: str) -> None: ...
+
     def join_thread(
         self, *, thread_id: str, last_event_id: str | None
     ) -> AsyncIterator[Mapping[str, Any]]: ...
@@ -162,6 +164,18 @@ class SdkAgentServerClient:
 
     async def cancel_run(self, *, thread_id: str, run_id: str) -> None:
         await self._client.runs.cancel(thread_id, run_id, wait=True)
+
+    async def submit_memory_on_disconnect(self, *, thread_id: str) -> None:
+        from langchain_core.messages import HumanMessage, convert_to_messages
+        from assistant_agent.native_agent.memory_middleware import submit_memory_extraction
+
+        state = await self._client.threads.get_state(thread_id)
+        messages = convert_to_messages(state.get("values", {}).get("messages", []))
+        if not any(isinstance(message, HumanMessage) for message in messages):
+            return
+        await submit_memory_extraction(
+            self._client, source_thread_id=thread_id, messages=messages, delay_seconds=0,
+        )
 
     async def join_thread(self, *, thread_id: str, last_event_id: str | None):
         stream = await self._client.threads.join_stream(

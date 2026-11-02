@@ -17,7 +17,6 @@ dependencies = [
     "langgraph-checkpoint-sqlite>=3.1.1,<4",
     "langgraph-sdk>=0.4.2,<0.5",
     "langsmith>=0.9.8,<1",
-    "langmem>=0.0.30,<0.1",
     "openai>=2.0",
     "volcengine-python-sdk[ark]>=5.0.35,<6",
     "pydantic>=2.0",
@@ -41,10 +40,6 @@ local-vision-embedding = [
 ]
 visual-memory-search = [
     "fastembed>=0.8,<1",
-]
-memory-langmem = [
-    "langmem>=0.0.30,<0.1",
-    "httpx[socks]>=0.28,<0.29",
 ]
 agent-server-dev = [
     "langgraph-cli[inmem]>=0.4.30,<0.5",

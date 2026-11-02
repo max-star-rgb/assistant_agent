@@ -1,5 +1,7 @@
 # LangGraph Agent Server 部署架构
 
+本地启动脚本默认监听 `0.0.0.0`（所有 IPv4 网卡），systemd 与 PyCharm 启动配置保持一致。局域网客户端使用宿主机 IP 连接；仅需本机访问时显式传入 `--host 127.0.0.1`。
+
 最后更新：2026-09-08
 
 ## Authority contract
@@ -131,15 +133,16 @@ Assistant 才让已配置 Tool 进入 HITL。身份、入口和视觉 capability
 developer hook 从 `X-Assistant-User` 取得 identity，省略时为 `local-developer`，因此端口不得暴露给不受信网络。
 
 `/agent-service/v1` custom route 只做 vendor frame 校验、connection/session/thread/run/delivery 关联、公开 SDK
-stream/cancel/join、终态 `AIMessage` 与通用 Tool delivery artifact 投影、视觉引用接入和 callback。它不读取 checkpoint，
+stream/cancel/join、终态 `AIMessage` 与通用 Tool delivery artifact 投影、视觉引用接入和 callback。仅在 WS 关闭时经 SDK 读取 checkpoint 并提交独立 Memory run，
 不按 Tool 名解析业务 artifact，不执行 Tool/Memory，
 不选择 Assistant 模式，也不构造第二套 Runtime。旧 coding behavior attestation route 已删除。
 
-回答后 `MemoryLifecycleMiddleware.after_agent` 直接通过官方 `RemoteReflectionExecutor.submit()` 在确定性 companion
+普通入口回答后 `MemoryLifecycleMiddleware.after_agent` 直接通过官方 LangGraph SDK `client.runs.create()` 在确定性 companion
 thread 上提交 `assistant-memory-v1` delayed run，使用官方 rollback 替换冲突的 Memory run。普通 chat 使用 Agent Server 原生 `multitask_strategy="interrupt"`；显式
 checkpoint replay 使用 enqueue。主动投递使用独立 Store，不进入 `AssistantAgent` run。
+媒体入口跳过每轮 delayed run，WS 关闭时以 `after_seconds=0` 提交同一 Memory Graph。
 
-media custom-app lifespan 单次加载 `AppConfig` 后，只保留 provider mode、`VisionConfig` 和 `MediaConfig`；进程级
+media custom-app lifespan 单次加载 `AppConfig` 后，只保留 provider mode、`VisionConfig`、`MediaConfig` 和记忆后端是否启用的布尔值；进程级
 `VisualPerceptionModule` 由该 lifespan 持有，通过 `asyncio.to_thread` 完成同步装配（含 FastEmbed/Hugging Face
 依赖导入和本地模型加载），避免事件循环阻塞检查中断导入并留下不完整模块状态。Graph Tool 只消费其窄接口。媒体接入不得合并、
 串行化或删除视觉 authority 定义的 SigLIP2 latest-wins 和并行关键帧 VLM 流水线。
@@ -183,13 +186,19 @@ media custom-app lifespan 单次加载 `AppConfig` 后，只保留 provider mode
 拥有当前 OS 用户权限而非沙箱。完整启动与安装命令见 `scripts/README.md`。
 
 日常开发遵循 [官方本地开发指南](https://docs.langchain.com/langsmith/local-dev-testing)，使用 `langgraph dev`。
-PyCharm 的 **Agent Server (Real)** 通过 `scripts/run_server.py --port 8089 --env-file .env` 调用官方 CLI，
-直接使用本机 `hello_agent` 环境和源码，默认自动重载；`--no-reload` 可关闭。Real 指 Provider 配置，不表示生产部署。
-wrapper 仅负责 env/config 来源、工作目录级单实例锁、严格端口检查和仓库外日志，不修改官方 watcher 或 Runtime。
+PyCharm 唯一的 Agent Server 启动配置 **Agent Server (Real)** 通过 `scripts/run_server.py --port 8089 --no-env-file --no-reload` 调用官方 CLI，
+由 IDE 依次读取相邻 `assistant_agent/.env` 和本目录 `local/deployment.env`，后者覆盖前者。
+直接使用本机 `hello_agent` 环境和旧版源码；该 IDE 配置关闭自动重载，脚本直接运行时默认开启。Real 指 Provider 配置，不表示生产部署。
+wrapper 仅负责 env/config 来源、启动前释放目标端口、工作目录级单实例锁、严格端口检查和仓库外日志，不修改官方 watcher 或 Runtime。
+启动前通过本机 `lsof` 查询目标 TCP 端口的监听进程，先发送 SIGTERM，等待 5 秒仍占用则发送 SIGKILL；
+这会结束该端口上的服务，即使它不属于本项目。启动时先获取工作目录锁；等待 5 秒仍占用时，通过 `lslocks` 与
+`/proc` 核实持锁者是本仓库的 `scripts/run_server.py`，发送 SIGINT 让其清理子进程，最多等待 25 秒。
+无法核实身份则拒绝接管。获得锁后再释放目标端口、检查端口并启动，覆盖旧实例尚未监听或停止监听却仍持锁的情况。
+权限不足、无法查询或端口仍占用时明确失败，不回退到随机端口；无需停止其他端口上的 Mem0/Qdrant。
 使用官方 `langgraph-runtime-inmem==0.33.0`；删除原本地 fork，队列调度和恢复行为跟随上游实现。
 checkpoint/Store 保存在 `.langgraph_api/`，重载会重建服务进程并短暂断开连接，不代表运行中任务无中断更新。
 `langgraph.json` 保留项目依赖入口、Graph、auth、HTTP 和 Store 配置；依赖安装在本机环境，变更后重新安装并重启，
-不需要构建 Agent 镜像。当前 Mem0 后端不使用 Server Store embedding；旧 LangMem 部署配置已删除，
+不需要构建 Agent 镜像。当前 Mem0 后端不使用 Server Store embedding；LangMem 后端与依赖已删除，
 具体后端规则见 Memory authority。
 不再提供项目自定义 PostgreSQL/Docker/watch 部署入口；旧 PostgreSQL 数据卷保留但不由 dev 使用，也不自动迁移。
 真实 `.env` 保持未跟踪。未来需要部署验证时再按官方 `langgraph up` 流程独立配置，不混入日常开发入口。
@@ -198,7 +207,6 @@ checkpoint/Store 保存在 `.langgraph_api/`，重载会重建服务进程并短
 
 Windows 新电脑使用 WSL2 Ubuntu 24.04，Git clone 后在虚拟环境内执行 `pip install -r requirements.txt`。
 下载 BGE、导出 SigLIP2，再手动复制旧电脑 `.env`，核对模型路径和本机服务地址。
-详细前置条件、启动、目录迁移和验收见 [WSL 安装说明](wsl-installation.md)。
 
 ```bash
 python scripts/setup_local.py check

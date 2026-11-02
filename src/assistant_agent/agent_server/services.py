@@ -153,7 +153,12 @@ class AgentServerExecutionOwner:
             if tool.name in general_purpose_names
             and tool.name not in browser_tool_names
         ]
-        business_tool_profiles = project_tool_profiles()
+        business_tool_profiles = project_tool_profiles(
+            image_mock_mode=(
+                config.provider_mode == "mock"
+                or config.tools.image_generation.image_generation_provider == "mock"
+            ),
+        )
         async_tool_profile = async_task_tool_profile()
         context_options = {
             "context_window_tokens": config.chat.context_input_token_limit,
@@ -181,7 +186,6 @@ class AgentServerExecutionOwner:
             tool_profiles=business_tool_profiles,
             general_purpose_tool_names={tool.name for tool in general_purpose_tools},
             interrupt_tool_names=interrupt_names,
-            visual_history_probe=tool_resources.visual_history_probe,
             live_view_resolver=tool_resources.live_view_resolver,
             current_location=config.runtime.current_location,
         )
@@ -202,7 +206,6 @@ class AgentServerExecutionOwner:
             },
             browser_tools=browser_tools,
             additional_middleware=(async_middleware,),
-            visual_history_probe=tool_resources.visual_history_probe,
             live_view_resolver=tool_resources.live_view_resolver,
             current_location=config.runtime.current_location,
             memory_backend=memory_backend,
@@ -274,17 +277,14 @@ def _compose_sync(
         visual_semantic_store_pool=(visual_resources.visual_semantic_store_pool),
         visual_memory_text_index=visual_resources.visual_memory_text_index,
         visual_history_probe=visual_resources.visual_history_probe,
-        embedding_coordinator_store=(visual_resources.embedding_coordinator_store),
-        visual_reminder_registry=visual_resources.visual_reminder_registry,
         live_view_resolver=visual_perception.resolve_frozen_live_view,
     )
     memory_backend = create_memory_backend(
         config.memory,
         provider_mode=config.provider_mode,
-        chat_config=config.chat,
         media_config=config.media,
-        langmem_store=store,
     )
+    tool_resources = replace(tool_resources, memory_backend=memory_backend)
     project_root = Path(__file__).resolve().parents[3]
     thread_resource_config = ThreadResourceConfig(
         root=Path.home() / "assistant_agent" / "threads",

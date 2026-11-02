@@ -36,7 +36,6 @@ GENERAL_PURPOSE_BUILTIN_TOOL_NAMES = frozenset(
         "shopping_search",
         "uploaded_media_inspect",
         "visual_image_search",
-        "visual_memory_search",
     }
 )
 INTERRUPT_BUILTIN_TOOL_NAMES = frozenset(
@@ -44,8 +43,9 @@ INTERRUPT_BUILTIN_TOOL_NAMES = frozenset(
         "calendar_create",
         "hotel_price_watch_create",
         "image_generation",
+        "image_editing",
         "image_to_3d",
-        "visual_reminder_manage",
+        "memory_add",
     }
 )
 
@@ -59,14 +59,13 @@ class NativeToolResources:
     realtime_video_memory_store: Any | None = None
     durable_task_service: Any | None = None
     calendar_adapter: Any | None = None
-    embedding_coordinator_store: Any | None = None
     visual_semantic_store_pool: Any | None = None
-    visual_reminder_registry: Any | None = None
     visual_memory_text_index: Any | None = None
     visual_timeline_context_service: Any | None = None
     visual_history_probe: Any | None = None
     live_view_resolver: Callable[[str, str, str], Any] | None = None
     thread_resource_manager: Any | None = None
+    memory_backend: Any | None = None
 
 
 def _create_builtin_tools(
@@ -89,13 +88,12 @@ def _create_builtin_tools(
         realtime_video_memory_store=resources.realtime_video_memory_store,
         durable_task_service=resources.durable_task_service,
         calendar_adapter=resources.calendar_adapter,
-        embedding_coordinator_store=resources.embedding_coordinator_store,
         visual_semantic_store_pool=resources.visual_semantic_store_pool,
-        visual_reminder_registry=resources.visual_reminder_registry,
         visual_memory_text_index=resources.visual_memory_text_index,
         visual_timeline_context_service=resources.visual_timeline_context_service,
         live_view_resolver=resources.live_view_resolver,
         thread_resource_manager=resources.thread_resource_manager,
+        memory_backend=resources.memory_backend,
     )
     concrete_tools: list[BaseTool] = []
     for plugin in _builtin_plugins():
@@ -294,6 +292,7 @@ def _builtin_plugins() -> tuple[Any, ...]:
         ImageTo3DToolPlugin,
     )
     from assistant_agent.tools.plugins.builtin.lodging.plugin import LodgingToolPlugin
+    from assistant_agent.tools.plugins.builtin.memory.plugin import MemoryToolPlugin
     from assistant_agent.tools.plugins.builtin.media_inspection.plugin import (
         MediaInspectionPlugin,
     )
@@ -311,6 +310,7 @@ def _builtin_plugins() -> tuple[Any, ...]:
         CalendarContactsPlugin(),
         ImageGenerationToolPlugin(),
         ImageTo3DToolPlugin(),
+        MemoryToolPlugin(),
     )
 
 

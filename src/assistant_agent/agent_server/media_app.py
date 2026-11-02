@@ -105,6 +105,7 @@ async def agent_server_lifespan(application: FastAPI):
     provider_mode = loaded_config.provider_mode
     vision_config = loaded_config.vision
     media_config = loaded_config.media
+    application.state.memory_enabled = loaded_config.memory.memory_backend != "disabled"
     del loaded_config
     visual_module = await asyncio.to_thread(
         get_visual_perception_module,
@@ -500,6 +501,7 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
     send_lock = asyncio.Lock()
     chat_tasks: dict[str, asyncio.Task[None]] = {}
     interrupted_chats: set[str] = set()
+    observed_message_types: set[str] = set()
     proactive_delivery = _ProactiveDeliveryConnection()
     visual_perception = _VisualPerceptionConnection()
     video_archive = getattr(
@@ -537,6 +539,16 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
             received_ns = perf_counter_ns()
             try:
                 frame = parse_envelope(raw)
+                message_type = frame.message if frame.message in {
+                    "assistantControl", "assistantControlStart", "chat",
+                    "video", "audio", "interrupt", "chatResponseAck",
+                } else "unknown"
+                if message_type not in observed_message_types:
+                    observed_message_types.add(message_type)
+                    logger.info(
+                        "media_frame_received connection=%s message=%s",
+                        session.connection_id, message_type,
+                    )
                 if frame.message == "chat":
                     logger.info(
                         "media_chat_received connection=%s",
@@ -559,6 +571,17 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
                     received_ns=received_ns,
                 )
             except (MediaProtocolError, ValueError) as exc:
+                logger.warning(
+                    "media_frame_rejected connection=%s error_type=%s reason=%s",
+                    session.connection_id,
+                    type(exc).__name__,
+                    str(exc) if isinstance(exc, MediaProtocolError)
+                    and str(exc).startswith((
+                        "missing ", "video requires ", "video userNumber ",
+                        "callType must ", "body must ",
+                        "assistantControl user does not match ",
+                    )) else "protocol_validation_failed",
+                )
                 await _send_json(
                     websocket,
                     send_lock,
@@ -578,6 +601,20 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
             task.cancel()
         if chat_tasks:
             await asyncio.gather(*chat_tasks.values(), return_exceptions=True)
+        if (
+            session.thread_id is not None
+            and session.submitted_chat_indexes
+            and getattr(websocket.app.state, "memory_enabled", False)
+            and (session.context is None or session.context.enable_memory)
+        ):
+            try:
+                await client.submit_memory_on_disconnect(thread_id=session.thread_id)
+                logger.info("media_memory_disconnect_submitted connection=%s", session.connection_id)
+            except Exception as exc:
+                logger.warning(
+                    "media_memory_disconnect_failed connection=%s error_type=%s",
+                    session.connection_id, type(exc).__name__,
+                )
         await visual_perception.aclose_video_tasks()
         if video_archive is not None:
             try:
@@ -634,8 +671,8 @@ async def _handle_frame(
                     "assistantControl user does not match authenticated identity"
                 )
         call_type = str(frame.body.get("callType") or "AUDIO").upper()
-        if call_type not in {"AUDIO", "VIDEO"}:
-            raise MediaProtocolError("callType must be AUDIO or VIDEO")
+        if call_type not in {"AUDIO", "VIDEO", "AR"}:
+            raise MediaProtocolError("callType must be AUDIO, VIDEO or AR")
         context = parse_media_context(frame.body, user_id=user_id)
         thread_id = await client.create_thread(
             metadata={"protocol": "agent-service-v1"},
@@ -657,11 +694,15 @@ async def _handle_frame(
             call_type=call_type,
             client_capabilities=_client_capabilities(frame.body),
             media_capabilities=("audio", "video")
-            if call_type == "VIDEO"
+            if call_type in {"VIDEO", "AR"}
             else ("audio",),
         )
         session.context = context
-        if call_type == "VIDEO":
+        logger.info(
+            "media_control_bound connection=%s call_type=%s archive_available=%s",
+            session.connection_id, call_type, video_archive is not None,
+        )
+        if call_type in {"VIDEO", "AR"}:
             visual_perception.session = visual_module.open_session(
                 user_id=authenticated_identity,
                 session_id=thread_id,
@@ -1121,7 +1162,7 @@ async def _run_chat(
                     generated_artifact_payload_for_thread(
                         output_ref,
                         current_native_execution_owner().thread_resource_manager,
-                        identity=str(session.user_id or ""),
+                        identity=_agent_server_identity(websocket),
                         thread_id=str(session.thread_id or ""),
                     )
                 ),

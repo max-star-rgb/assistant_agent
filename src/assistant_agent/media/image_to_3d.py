@@ -63,14 +63,14 @@ class ImageTo3DAdapter:
     ) -> ImageTo3DSubmission:
         output_ref = src_image.strip()
         if not output_ref:
-            raise ImageTo3DError(f"图片不存在：{src_image}")
+            raise ImageTo3DError("图片不存在或已过期，请重新生成并编辑图片")
         artifact = self._artifact_payload_resolver(
             user_id or session_id,
             session_id,
             output_ref,
         )
         if artifact is None:
-            raise ImageTo3DError(f"图片不存在：{src_image}")
+            raise ImageTo3DError("图片不存在或已过期，请重新生成并编辑图片")
         image_id = Path(artifact.image_id).stem
         job = self._job_registry.register(
             user_id=user_id or session_id,

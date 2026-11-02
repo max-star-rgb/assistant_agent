@@ -136,11 +136,16 @@ def _compose_command(*args: str) -> list[str]:
 def _wait_until_healthy(container_id: str) -> str:
     deadline = time.monotonic() + STARTUP_TIMEOUT_SECONDS
     status = "unknown"
+    print(
+        f"Waiting for Mem0 readiness (up to {STARTUP_TIMEOUT_SECONDS:g} seconds)...",
+        flush=True,
+    )
     while time.monotonic() < deadline:
         status = _container_status(container_id)
         if status == "healthy":
             return status
-        if status in {"dead", "exited", "unhealthy"}:
+        # A slow cold start can recover after Docker marks it unhealthy.
+        if status in {"dead", "exited"}:
             return status
         time.sleep(POLL_INTERVAL_SECONDS)
     return status

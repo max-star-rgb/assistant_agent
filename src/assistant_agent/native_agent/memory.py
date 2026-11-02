@@ -4,18 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
-import hashlib
-import importlib
 import logging
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.runtime import Runtime
 from langgraph.store.base import BaseStore
-from pydantic import BaseModel, ConfigDict, Field
 
-from assistant_agent.config import ChatConfig, MediaConfig, MemoryConfig
+from assistant_agent.config import MediaConfig, MemoryConfig
 from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.identity import RequestIdentity
 from assistant_agent.memory.mem0.client import Mem0Client
@@ -25,7 +21,6 @@ from assistant_agent.native_agent.context import (
     AssistantRunContext,
     authenticated_user_identity,
 )
-from assistant_agent.native_agent.providers import create_chat_model
 from assistant_agent.native_agent.state import (
     AssistantAgentState,
     MemoryExtractionState,
@@ -37,49 +32,6 @@ logger = logging.getLogger(__name__)
 
 class MemoryBackendConfigurationError(RuntimeError):
     """The selected native memory backend cannot be constructed safely."""
-
-
-class DurableMemory(BaseModel):
-    """Long-lived user knowledge accepted by the LangMem store manager."""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    content: str = Field(min_length=1, max_length=4_000)
-    kind: Literal[
-        "stable_fact",
-        "preference",
-        "long_term_goal",
-        "reusable_procedure",
-    ]
-
-
-# Faithful translation of langmem 0.0.30 knowledge.extraction._MEMORY_INSTRUCTIONS.
-_LANGMEM_MEMORY_INSTRUCTIONS = """\
-你是一个长期记忆管理器，维护 semantic、procedural 和 episodic memory 的核心存储。
-这些记忆支撑一个终身学习 Agent 的核心预测模型。
-
-Agent 应从这次交互中学到哪些关于用户、自身或其行为方式的信息？请反思输入 trajectory 和已有记忆（如果有）。
-
-1. **提取并补充上下文（Extract & Contextualize）**
-   - 识别关键事实、关系、偏好、推理流程和上下文。
-   - 为不确定或假设性信息注明置信度 p(x) 和推理依据。
-   - 必要时引用支持信息。
-
-2. **比较并更新（Compare & Update）**
-   - 关注偏离已有记忆和预期的新信息。
-   - 整合并压缩冗余记忆以保持信息密度；根据可靠性和时效性强化记忆；避免空话，最大化 SNR。
-   - 删除错误或冗余记忆，同时保持内部一致性。
-
-3. **综合并推理（Synthesize & Reason）**
-   - 通过 deduction、induction 和 abduction，可以对用户、Agent（“我”）或环境得出什么结论？
-   - 关于最佳响应方式，浮现出哪些模式、关系和原则？
-   - 可以作出哪些概括？
-   - 用概率置信度和依据限定结论。
-
-作为 Agent，请按照你在预测如何行动或回应时希望回忆到的确切形式记录记忆内容。
-优先保留出乎意料（偏离模式）和持久（被频繁强化）的信息，确保值得记住的信息不被遗忘，
-错误信息不被记住。优先选择信息密集、完整的记忆，而不是相互重叠的记忆。
-"""
 
 
 @runtime_checkable
@@ -208,66 +160,6 @@ class Mem0MemoryBackend:
         )
 
 
-class LangMemMemoryBackend:
-    backend_id = "langmem"
-
-    def __init__(self, *, manager: Any) -> None:
-        self._manager = manager
-
-    async def recall(
-        self,
-        *,
-        identity: str,
-        thread_id: str | None,
-        run_id: str | None,
-        messages: Sequence[AnyMessage],
-        store: BaseStore | None,
-    ) -> tuple[str, ...]:
-        del thread_id, run_id
-        if store is None:
-            raise MemoryBackendConfigurationError(
-                "LangMem requires the BaseStore compiled into the graph."
-            )
-        values = await store.asearch(
-            _langmem_namespace(identity),
-            query=_last_human_text(messages) or None,
-            limit=32,
-        )
-        return _bounded_texts(_store_item_text(value) for value in values)
-
-    async def commit(
-        self,
-        *,
-        identity: str,
-        thread_id: str | None,
-        run_id: str | None,
-        messages: Sequence[AnyMessage],
-        store: BaseStore | None,
-    ) -> None:
-        del thread_id, run_id
-        if store is None:
-            raise MemoryBackendConfigurationError(
-                "LangMem requires the BaseStore compiled into the graph."
-            )
-        user_messages = [
-            HumanMessage(content=text)
-            for message in messages
-            if isinstance(message, HumanMessage) and (text := _message_text(message))
-        ]
-        if not user_messages:
-            return
-        value = {"messages": user_messages}
-        config = {
-            "configurable": {
-                "langgraph_user_id": _langmem_namespace(identity)[-1],
-            }
-        }
-        if hasattr(self._manager, "ainvoke"):
-            await self._manager.ainvoke(value, config=config)
-        else:
-            await asyncio.to_thread(self._manager.invoke, value, config=config)
-
-
 class HybridMemoryBackend:
     """Recall text and remote visual memories concurrently; commit text only."""
 
@@ -349,12 +241,9 @@ def create_memory_backend(
     config: MemoryConfig,
     *,
     provider_mode: ProviderMode,
-    chat_config: ChatConfig,
     media_config: MediaConfig,
     custom_backend: MemoryBackend | None = None,
     mem0_client: Any | None = None,
-    langmem_manager: Any | None = None,
-    langmem_store: BaseStore | None = None,
     visual_memory_client: Any | None = None,
 ) -> MemoryBackend:
     """Construct one backend without probing or silent fallback."""
@@ -378,18 +267,10 @@ def create_memory_backend(
             api_key=config.mem0_api_key,
             timeout_seconds=config.mem0_timeout_seconds,
         )
-        return Mem0MemoryBackend(
+        backend: MemoryBackend = Mem0MemoryBackend(
             client=client,
             identity_namespace=config.mem0_identity_namespace,
         )
-    if config.memory_backend == "langmem":
-        manager = langmem_manager or _create_langmem_manager(
-            config,
-            provider_mode=provider_mode,
-            chat_config=chat_config,
-            store=langmem_store,
-        )
-        backend: MemoryBackend = LangMemMemoryBackend(manager=manager)
         if media_config.remote_visual_memory_enabled:
             if visual_memory_client is None:
                 from assistant_agent.memory.remote_service import (
@@ -455,49 +336,6 @@ async def memory_extract_node(
     return {}
 
 
-def _create_langmem_manager(
-    config: MemoryConfig,
-    *,
-    provider_mode: ProviderMode,
-    chat_config: ChatConfig,
-    store: BaseStore | None,
-):
-    if store is None:
-        raise MemoryBackendConfigurationError(
-            "Memory backend 'langmem' requires an explicit LangGraph BaseStore."
-        )
-    if not config.langmem_model:
-        raise MemoryBackendConfigurationError(
-            "Memory backend 'langmem' requires LANGMEM_MODEL."
-        )
-    try:
-        create_manager = getattr(
-            importlib.import_module("langmem"),
-            "create_memory_store_manager",
-        )
-        model = create_chat_model(
-            replace(chat_config, chat_model=config.langmem_model),
-            provider_mode=provider_mode,
-        )
-        return create_manager(
-            model,
-            instructions=_LANGMEM_MEMORY_INSTRUCTIONS,
-            schemas=[DurableMemory],
-            namespace=("assistant_agent", "{langgraph_user_id}"),
-            store=store,
-        )
-    except (ImportError, AttributeError) as exc:
-        raise MemoryBackendConfigurationError(
-            "LangMem optional dependency is required for backend 'langmem'."
-        ) from exc
-    except MemoryBackendConfigurationError:
-        raise
-    except Exception as exc:
-        raise MemoryBackendConfigurationError(
-            "LangMem manager configuration is invalid."
-        ) from exc
-
-
 def _validate_backend(backend: MemoryBackend) -> None:
     if not isinstance(getattr(backend, "backend_id", None), str):
         raise MemoryBackendConfigurationError("custom memory backend needs backend_id")
@@ -529,24 +367,6 @@ def _bounded_texts(values) -> tuple[str, ...]:
         result.append(text)
         total += len(text)
     return tuple(result)
-
-
-def _langmem_namespace(identity: str) -> tuple[str, str]:
-    identity = hashlib.sha256(
-        f"assistant_agent:native_memory\0{identity}".encode()
-    ).hexdigest()[:40]
-    return ("assistant_agent", f"memory_subject_{identity}")
-
-
-def _store_item_text(item: Any) -> str:
-    value = getattr(item, "value", None)
-    for _ in range(3):
-        if isinstance(value, str):
-            return value
-        if not isinstance(value, Mapping):
-            return "" if value is None else str(value)
-        value = value.get("content", value.get("memory", value))
-    return str(value) if not isinstance(value, Mapping) else ""
 
 
 def _last_human_text(messages: Sequence[AnyMessage]) -> str:

@@ -24,6 +24,7 @@ class ImageGenerationRequest(BaseModel):
         min_length=1,
         description="图片内容、构图、风格和关键视觉要求。",
     )
+    source_image: str | None = Field(default=None, exclude=True, repr=False)
     size: str | None = Field(
         default=None,
         description=(
@@ -37,7 +38,7 @@ class ImageGenerationRequest(BaseModel):
         le=4,
         description="用户明确要求生成的图片数量；未指定时省略。",
     )
-    prompt_extend: bool = True
+    prompt_extend: bool | None = None
     watermark: bool = False
     style: str | None = Field(
         default=None,

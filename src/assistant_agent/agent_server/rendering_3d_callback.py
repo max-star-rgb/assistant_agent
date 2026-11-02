@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+from uuid import NAMESPACE_URL, uuid5
+
 from fastapi import APIRouter
 from pydantic import BaseModel
 
@@ -18,6 +21,7 @@ from assistant_agent.media.image_to_3d_jobs import (
 
 
 DELIVERABLE_MEDIA_TYPES = frozenset({"mp4", "glb", "ply", "image"})
+logger = logging.getLogger(__name__)
 
 
 class Rendering3DCallback(BaseModel):
@@ -48,6 +52,13 @@ def create_rendering_3d_callback_router(
         callback: Rendering3DCallback,
     ) -> dict[str, str]:
         _ = chat_index
+        correlation = str(uuid5(NAMESPACE_URL, f"artifact:{job_or_session_id}"))[:12]
+        logger.info(
+            "image_to_3d_callback_received chat=%s media_type=%s url_present=%s",
+            correlation,
+            callback.mediaType if callback.mediaType in DELIVERABLE_MEDIA_TYPES else "unsupported",
+            bool(callback.mediaUrl),
+        )
         job = jobs.complete(
             job_or_session_id,
             artifact=ImageTo3DArtifact(
@@ -68,6 +79,10 @@ def create_rendering_3d_callback_router(
             inline_data=callback.image,
         )
         delivered = await hub.publish(event)
+        logger.info(
+            "image_to_3d_callback_dispatched chat=%s job_found=%s sender_completed=%s",
+            correlation, job is not None, delivered,
+        )
         if job is None and not delivered:
             # 老请求没有 job 可供轮询，必须让上游重试，不能虚假确认成功。
             raise ArtifactDeliveryUnavailable(event.session_id)

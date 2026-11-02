@@ -40,7 +40,9 @@ Last updated: 2026-09-04
 {"number":"user-1","callType":"AUDIO","clientCapabilities":{"chatResponseAck":true}}
 ```
 
-`number` 必填；`callType` 只允许 `AUDIO|VIDEO`。成功响应仍为 `assistantControl`：
+`number` 必填；两种 control 握手的 `callType` 均允许 `AUDIO|VIDEO|AR`（大小写不敏感）。
+`AR` 与 `VIDEO` 一样启用音视频能力、实时视觉处理，以及显式配置启用的远端视觉记忆归档。
+成功响应仍为 `assistantControl`：
 
 ```json
 {"code":0,"message":"success","phoneNumber":"user-1"}
@@ -82,7 +84,7 @@ Last updated: 2026-09-04
 Agent Server `user.identity` 一致。
 
 “完成 VIDEO 握手”的结构化定义是：服务端已成功校验并绑定首个 control 消息、创建该连接对应的 native
-`thread_id`，且绑定的 `callType` 等于 `VIDEO`。它不要求已经收到第一帧。后续 chat run 不把握手模式写成
+`thread_id`，且绑定的 `callType` 为 `VIDEO` 或 `AR`。它不要求已经收到第一帧。后续 chat run 不把握手模式写成
 Studio Assistant context。
 每次 chat 开始时，媒体入口还会在进程视觉模块中冻结当时的 video IDs 与严格窗口，并只把服务端签发的 opaque
 capability token 放入 namespaced run metadata；token 按认证身份与 thread 校验，run 结束即撤销。当前
@@ -101,7 +103,7 @@ capability token 放入 namespaced run metadata；token 按认证身份与 threa
   "contents": [
     {"speakerNumber":"user-1","time":"1","speechContent":"你好"}
   ],
-  "stream": true
+  "stream": false
 }
 ```
 
@@ -124,21 +126,13 @@ capability token 放入 namespaced run metadata；token 按认证身份与 threa
 }
 ```
 
-`stream=true` 时，Graph 原生 `messages/partial` 中新增的 assistant 文本会沿用媒体既有的
-`chatResponse` 增量结构发送。模型发生可重试瞬时故障时，Graph 原生 `custom` 流中的 `model_retry` 事件另行投影为
-`chatProgress(status=RETRYING)`，携带 attempt、下一次等待秒数和固定提示；它不进入 assistant 正文或 checkpoint：
-
-```json
-{
-  "message": "chatResponse",
-  "body": "{\"message\":{\"chatIndex\":\"chat-1\",\"content\":{\"intentResult\":{\"description\":\"我先查一下。\",\"status\":\"PROCESSING\"}}},\"displayOnly\":false,\"display_only\":false,\"sequence\":1,\"final\":false}"
-}
-```
+媒体入口统一关闭文本流式返回；兼容接收 `stream` 字段，但即使客户端传 `true` 也按非流式处理。
+模型发生可重试瞬时故障时，Graph 原生 `custom` 流中的 `model_retry` 事件仍投影为
+`chatProgress(status=RETRYING)`，携带 attempt、下一次等待秒数和固定提示；它不进入 assistant 正文或 checkpoint。
 
 媒体入口创建原生 run 时继续开启 `stream_subgraphs=true`，用于接收并过滤同步 task worker 的内部流；统一
 `AssistantAgent` 已是顶层 graph，主模型 token 不依赖子图流。模型在 ToolCall 前生成的普通文本按上述结构
-原样增量发送；若模型直接产生 ToolCall 而没有任何前导正文，媒体适配器不合成提示语，等待模型后续正文或
-终态。ToolCall name/arguments、ToolMessage、原生 updates 与 custom Tool 生命周期均不进入媒体正文。
+不再增量发送；媒体适配器等待 Graph 终态。ToolCall name/arguments、ToolMessage、原生 updates 与 custom Tool 生命周期均不进入媒体正文。
 
 Graph 完成后发送成功终包：
 
@@ -151,22 +145,21 @@ Graph 完成后发送成功终包：
 
 当前 wire 不发送或接受 `assistantMode`；请求 body 出现该字段时直接返回协议错误。媒体适配器只把 chat 文本机械转换为
 标准 `HumanMessage` content，并把入口、视觉 capability 等受信运行事实放入服务端签发的 namespaced metadata；
-公开 run context 提交经过同一 schema 校验的会话配置。`stream=true` 只投影
+公开 run context 提交经过同一 schema 校验的会话配置。内部保留的文本流投影组件只处理
 `AIMessageChunk` 的 string content 或 `text|output_text` block；当 `messages/metadata` 存在时，明确标记为
 非 `model` 节点的 chunk 会被排除；metadata 缺失时按标准 assistant chunk 降级投影，避免原生流存在但媒体侧
 只能收到终包。同步/异步 worker 等已标记的内部子图文本、tool-call name/arguments、ToolMessage 和 updates 不进入媒体正文。
 Agent Server 的 `messages/partial` 是同一 message 的累计快照，适配器按 message ID
 计算 append-only delta；模型生成的 Tool 前导文本与工具后的下一条 assistant message 之间若均无换行，适配器在新消息首包
-补一个换行。中间包按 `sequence` 递增且 `final=false`，不携带 `deliveryId`；`stream=false` 不发送中间包。
+补一个换行。当前媒体入口不启用该增量投影，不发送文本中间包。
 
 统一 Agent 顶层主循环的原生 dynamic prompt middleware 根据 `context.persona` 选择策略。通话助理要求工具前导最多一句、
 最终回复通常一到三句且保持口语化；同一 model-call 边界设置 `max_tokens=128`。通用助理使用通用提示词与默认输出上限，
 两个入口均可选择任一角色。内部角色不产生媒体正文，固定使用通用策略；媒体 custom route 不持有或拼接任何提示词。
 
-最终正文仍来自 terminal values 中的最新标准 `AIMessage`，适配器不把 delta 拼接成业务终态。成功终包发送该
-最新消息中尚未流出的后缀，使用最后一个 `sequence`、`final=true`，并独占 `deliveryId`；若最终文本与已流出的
-最新 assistant message 不一致，则完整发送权威终态，避免丢失正文。已发送中间包且终包不含媒体 detail 时，
-终包的 `displayOnly/display_only=true`；citation 的 `fullDescription` 始终保留完整权威终态。
+最终正文来自 terminal values 中的最新标准 `AIMessage`。成功终包一次性发送完整正文和图片 detail，
+使用 `sequence=1`、`final=true`、`displayOnly/display_only=false`，并携带 `deliveryId`；
+citation 的 `fullDescription` 保留完整权威终态。
 
 若当前用户轮次存在成功 Tool 的标准 `ToolMessage`，媒体终态会从其 artifact 内严格校验的
 `assistant_agent_delivery_v1` 确定性追加用户可见文本或受管生成物引用，而不是要求模型复述。例如购物 Tool
@@ -183,11 +176,10 @@ Tool 负责从已校验的领域结果构造卡片、导航链接或 `output_ref
 保留最后一条；如果该条失败，不回退同名旧结果。标准 `type=file` block 可通用交付安全 HTTP(S)
 下载链接。所有文本、URL 和 refs 均有界、去重；Graph 拓扑、ToolNode 和 checkpoint 生命周期不变。
 
-Memory debounce 是所有入口共享的
-主图规则：生成回答后通过官方 `RemoteReflectionExecutor.submit()`，在由 chat thread 确定性派生的 companion
-Memory thread 上以 rollback 策略提交新的 30 分钟 delayed Memory run；chat thread 不保留后台
-pending run。该 orchestration 不扩展媒体 wire，
-WebSocket 挂断也不承担 Memory 语义。
+媒体 run 不安排每轮 30 分钟 Memory debounce。WebSocket 关闭后，取消并等待本连接活动 run，读取线程
+checkpoint，通过官方 LangGraph SDK 在确定性 companion Memory thread 上以 rollback、零延迟提交
+`assistant-memory-v1`。普通入口仍保留 30 分钟延迟。记忆关闭或连接未提交 chat 时跳过；提交失败只记录
+脱敏错误，继续资源清理。该 orchestration 不扩展媒体 wire，也不在入口执行记忆提取。
 
 当客户端声明 `clientCapabilities.urlCitationAnnotationsV1=true`，媒体入口只读取最新终态 `AIMessage` 自身的
 `provider_search_sources`，把正文中实际存在的 `[n]` 角标投影为 `intentResult.annotations`，并保持
@@ -256,7 +248,7 @@ pending，旧消息仍收到正常 `videoResponse`，但不再解码、提交 VL
 窗口和 namespaced capability facts，也会继续运行
 selector、并行 VLM 和 reminder manager；但当前 custom route 不向标准 message 注入 `source=live_camera` block。
 统一条件 middleware 只解析服务端签发的 capability 和冻结投影：有视频 ID 时暴露
-`live_view_inspect` 与 `visual_reminder_manage`，同时存在目标序号和可检索历史时暴露 `visual_memory_search`。
+`live_view_inspect`；`visual_memory_search` 与 `visual_reminder_manage` 已删除。
 
 媒体 wire 只负责把每个成功解码帧提交给连接级视觉句柄。chat 到达 A 时刻后，入口在任何异步发送或其他
 `await` 之前同步冻结 selector 已经登记的当前半固定关键帧窗口（1～5 帧），随后立即发送 `chatProgress`，
@@ -278,7 +270,7 @@ POST /calling-agent-service/v1/{job_or_session_id}/{chat_index}/3d-gen-back
 ```
 
 它记录中性 3D job artifact；不执行 Assistant Graph。在线连接以 native `thread_id` 订阅完成事件，并机械
-投影为带 `TD_MODEL/VIDEO/IMAGE` detail 的 `chatResponse`。当前 hub 是进程内在线交付，不是 Agent Server
+投影为带 `TD_MODEL/VIDEO/IMAGE` detail 的 `chatResponse`，保留固定提示 `description="正在生成中，请稍候"`，兼容媒体端文本处理。当前 hub 是进程内在线交付，不是 Agent Server
 run/checkpoint，也不宣称跨进程、离线或 exactly-once 投递；没有 job 且没有在线 subscriber 时 callback
 返回失败，让上游决定是否重试。
 
@@ -313,10 +305,12 @@ producer。citation、生成图片 detail、H.264 显式
 视觉引用和在线 3D artifact 投影已支持。
 
 生成图片使用标准 `ToolMessage(content, artifact)` 双通道，公共 Graph 不改写最终 `AIMessage`。媒体入口从
-当前用户轮次成功的 `image_generation` ToolMessage 中优先读取 `artifact.images[].output_ref`；对旧 checkpoint
+当前用户轮次成功的图片生成或编辑 ToolMessage 中读取标准 `assistant_agent_delivery_v1.output_refs`；对旧 checkpoint
 兼容读取 `download_urls` / `output_ref`。新写入 checkpoint 的唯一稳定引用为
 `artifact://v1/{thread_ref}/generated/{filename}`；随后由媒体 resolver 按需读取有界本地图片，并继续按本协议投影为
 `intentResult.detail[].type=IMAGE` 的 Base64 正文。生成文件位于当前 thread 的非 Git
+目录；resolver 使用 WebSocket 的认证身份，与内部 Graph 请求一致，不使用协议用户号作为图片 owner。
+开发身份与协议用户号可以不同，但仍必须通过认证 owner 与 thread 的归属校验。生成文件保存在
 `artifacts/generated/`；旧 `/artifacts/{thread_ref}/generated/{filename}` 引用仍可解析。文件与引用默认随
 thread 的 24 小时 TTL 回收，Base64 只存在于最终媒体 wire，不写回 Graph State。
 Studio 当前只显示最终文本，不承诺渲染 Tool artifact。

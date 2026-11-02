@@ -149,7 +149,7 @@ id = "graph-memory"
 authority = "docs/memory-service-architecture.md"
 read_when = [
   "LangGraph 长期记忆节点、memory_context、冻结快照或 commit ledger",
-  "记忆读取、写入、time-travel、Mem0/LangMem/disabled 后端装配",
+  "记忆读取、写入、time-travel、Mem0/disabled 后端装配",
 ]
 source_globs = [
   "src/assistant_agent/native_agent/memory.py",
@@ -249,6 +249,7 @@ source_globs = [
   "src/assistant_agent/agent_server/services.py",
   "src/assistant_agent/native_agent/assistant_agent.py",
   "src/assistant_agent/media/vision/observability.py",
+  "src/assistant_agent/tools/artifact_tracing.py",
 ]
 thin_references = ["scripts/README.md"]
 verification = [
@@ -290,15 +291,5 @@ thin_references = ["AGENTS.md"]
 verification = [
   "python scripts/check_documentation_authority.py --repo-root .",
 ]
-exclusive_literals = []
-exclusive_allowlist = []
-
-[[domains]]
-id = "local-installation"
-authority = "docs/wsl-installation.md"
-read_when = ["新电脑安装、WSL、依赖约束、模型准备或本地数据迁移"]
-source_globs = ["requirements.txt", "scripts/setup_local.py", "config/**", ".gitignore", ".gitattributes"]
-thin_references = ["README.md", "scripts/README.md", "docs/agent-server-architecture.md"]
-verification = ["python scripts/setup_local.py check"]
 exclusive_literals = []
 exclusive_allowlist = []

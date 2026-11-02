@@ -156,8 +156,6 @@ class VisualPerceptionToolResources:
     visual_semantic_store_pool: SessionVisualSemanticStorePool
     visual_memory_text_index: VisualMemoryTextIndex
     visual_history_probe: VisualObservationHistoryProbe
-    embedding_coordinator_store: SessionEmbeddingCoordinatorStore | None
-    visual_reminder_registry: VisualReminderRegistry | None
 
 
 class VisualPerceptionSession:
@@ -484,10 +482,6 @@ class VisualPerceptionModule:
         )
 
     def tool_resources(self) -> VisualPerceptionToolResources:
-        embedding_readiness = self.embedding_provider.readiness()
-        reminder_ready = (
-            embedding_readiness.image_ready and embedding_readiness.text_ready
-        )
         return VisualPerceptionToolResources(
             video_context_store=self.video_context_store,
             vision_client=self,
@@ -495,12 +489,6 @@ class VisualPerceptionModule:
             visual_semantic_store_pool=self.visual_semantic_store_pool,
             visual_memory_text_index=self.visual_memory_text_index,
             visual_history_probe=self.visual_history_probe,
-            embedding_coordinator_store=(
-                self.embedding_coordinator_store if reminder_ready else None
-            ),
-            visual_reminder_registry=(
-                self.visual_reminder_registry if reminder_ready else None
-            ),
         )
 
     async def aclose(self) -> None:

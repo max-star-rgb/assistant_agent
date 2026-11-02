@@ -7,7 +7,7 @@
 | 字段 | 内容 |
 | --- | --- |
 | 定位 | 主 Agent Memory lifecycle middleware、冻结快照与后端协议的当前权威 |
-| Owns | `MemoryBackend`、`MemoryLifecycleMiddleware`、`memory_extract`、`memory_context`、Mem0/LangMem/第三方装配 |
+| Owns | `MemoryBackend`、`MemoryLifecycleMiddleware`、`memory_extract`、`memory_context`、Mem0/第三方装配 |
 | Does not own | Mem0 HTTP wire、prompt 渲染、Agent Server Store 实现、旧 Memory bundle/ledger |
 | 源码与 schema 入口 | `src/assistant_agent/native_agent/memory.py`、`src/assistant_agent/memory/mem0/` |
 | 验证入口 | `docs/authority.toml` 中 `graph-memory.verification` |
@@ -33,19 +33,17 @@ LangChain 原生 `Runnable.with_retry(stop_after_attempt=3)`；三次耗尽后�
 从已完成 recall 之后的 checkpoint resume 时沿用冻结快照；从更早 checkpoint replay 并重新执行 recall 时允许
 重新读取最新记忆，不建立跨 replay 的额外冻结层。日期与用户地区由 Context authority 管理，不由 Memory 采集或保存。
 
-最终回答产生后，`MemoryLifecycleMiddleware.after_agent` 从 chat thread ID 确定性派生并按需创建 graph identity 为 `assistant-memory-v1` 的
-companion Memory thread，然后直接使用 LangMem 官方 `RemoteReflectionExecutor.submit()`，显式传入该
-Memory thread ID、完整 messages 快照及 `after_seconds=1800`（30 分钟）。官方 executor 使用
+普通入口最终回答产生后，`MemoryLifecycleMiddleware.after_agent` 从 chat thread ID 确定性派生并按需创建 graph identity 为 `assistant-memory-v1` 的
+companion Memory thread，然后直接使用官方 LangGraph SDK `client.runs.create()`，显式传入该
+Memory thread ID、完整 messages 快照及 `after_seconds=1800`（30 分钟）。SDK 使用
 `multitask_strategy="rollback"` 提交 `assistant-memory-v1`；旧 pending 或正在执行的冲突 Memory run 由
 Agent Server 处理，项目不再分页查询、筛选、逐个取消，也不使用 enqueue。已经完成的 run 不受影响；
 run/checkpoint rollback 不会撤销已写入长期 Store 的记忆。
 companion thread 以 `assistant_agent_source_thread_id` 记录来源；chat thread 不保留后台 pending run，因此
 Studio 在回答完成后恢复 idle，普通 chat 的 `interrupt` 并发语义不变。
-官方 executor 的同步提交与资源关闭放在 `asyncio.to_thread` 中，只等待提交 Future 完成，即 Server 接受请求，
-不等待延迟提取；线程只负责 SDK 请求，30 分钟调度仍由 Agent Server 持久化管理。
-创建 companion thread 与同步提交使用同一个本机 Server 地址（`ASSISTANT_AGENT_SERVER_PORT`，默认 `8089`），
-并通过 `X-Assistant-User` 透传 Runtime 的认证身份。两种 SDK client 均显式设置 `api_key=None`；
-不能混用异步默认的进程内 `/noauth` 与同步默认的 `localhost:8123`，也不能把 LangSmith key 用作本机 API 凭据。
+SDK 异步提交只等待 Server 接受请求，不等待延迟提取；30 分钟调度仍由 Agent Server 持久化管理。
+创建 companion thread 与提交使用同一个本机 Server 地址（`ASSISTANT_AGENT_SERVER_PORT`，默认 `8089`），
+并通过 `X-Assistant-User` 透传 Runtime 的认证身份。client 显式设置 `api_key=None`，不能把 LangSmith key 用作本机 API 凭据。
 refresh 同样使用 LangChain 原生 Runnable 三次重试，耗尽后 chat run
 明确终结为 error。
 
@@ -55,6 +53,16 @@ Assistant state。节点使用 LangGraph 原生 `RetryPolicy(max_attempts=3)`；
 不会回滚或中断用户回答。recall、refresh 与 extract 均不使用 error handler 吞错。
 
 ## 最小 backend 协议
+
+媒体入口由受信 `entry_profile=agent_service` 标识，after_agent 不安排 30 分钟任务。
+WS 关闭后，入口先取消并等待本连接活动 run，再读取线程 checkpoint，通过同一个 SDK 提交函数以
+`after_seconds=0` 向 companion Memory thread 提交 `assistant-memory-v1`。禁用记忆或未提交 chat 的连接不触发；
+提交失败记录无正文错误，不阻止连接资源清理。零延迟表示立即排队，不承诺 Mem0 同步完成；进程崩溃时无法保证执行关闭回调。
+
+`memory_add(content)` 是主模型可显式调用的副作用 Tool，只提交本次明确指定的用户事实，沿用
+`MemoryBackend.commit` 和旧式 Mem0 `/memories`，不等待 30 分钟。仅 real 模式的 mem0/hybrid 后端注册，
+身份从 ToolRuntime 注入，遵守 `enable_memory` 和原生 HITL，不授予只读 worker、不自动重试。
+成功表示 Mem0 接受提取处理，不保证固定记忆条数；旧式写入不提供快照版本保护。
 
 `MemoryBackend` 只有异步 `recall` 与后端写入方法 `commit`；Graph 对外将后者表达为 `memory_extract`。
 两者接收 Agent Server 原生 authenticated
@@ -70,18 +78,10 @@ Assistant state。节点使用 LangGraph 原生 `RetryPolicy(max_attempts=3)`；
   `run_id`，本地 Graph 无 run ID 时使用 thread ID；来源字段不是幂等键。重复快照由 Mem0 原生整合，
   不提供 exactly-once 保证、不维护增量游标或本地 commit ledger；模型窗口不足时明确失败，不静默截断。
   embedding、向量存储、记忆更新均由 Mem0 服务负责，backend 忽略 `runtime.store`；
-- `langmem`：仅保留的旧实现，不再主动维护或扩展。使用官方 manager，召回访问 runtime Store。后台 run 接收调度时的完整 messages 快照，
-  manager 接收其中全部非空用户正文，不截取最后一轮；System、AI、Tool 和媒体载荷
-  不进入提取输入。主 Agent 的 Deep Agents summarization 保留 messages 日志，摘要只投影到模型请求。
-  采用 LangMem 0.0.30 默认 `_MEMORY_INSTRUCTIONS` 的忠实中文翻译，保留核心英文术语；不追加项目自定义的
-  排除话术。保留 `DurableMemory` 的 content/kind schema 和官方默认操作配置（delete 默认关闭）。
-  没有额外的增量游标或 exactly-once 保证；重复快照通过官方 manager 检索已有记忆并整合，重复记录与成本需要实测。
-  全部用户文本超过提取模型窗口时明确失败，不静默截成最后一轮；
-- `langmem + remote visual`：显式启用后由组合 backend 在同一个 `before_agent` hook 内并行召回 LangMem
-  与远端视觉文本记忆；远端分支使用可信用户身份和最新一条用户文本检索，查询请求有意不发送
-  `session_id`，从而召回该用户跨会话的长期视觉记忆。结果不添加来源标签，直接合并进冻结
-  `memory_context`。这条用户级召回不是 `visual_memory_search` Tool；后者只检索当前 VIDEO 会话/thread
-  的短期视觉时间线。视觉分支 fail-open，`commit` 仍只委托 LangMem，视频段摄入不进入 Memory Graph；
+- `mem0 + remote visual`：显式启用后由组合 backend 在同一个 `before_agent` hook 内并行召回 Mem0
+  与远端视觉文本记忆；远端分支使用可信用户身份和最新一条用户文本检索，不发送 `session_id`，
+  从而召回该用户跨会话的长期视觉记忆。结果直接合并进冻结的 `memory_context`。
+  视觉分支 fail-open，`commit` 只委托 Mem0，视频段摄入不进入 Memory Graph。
 - custom：composition 可注入任何满足 `MemoryBackend` 的第三方 adapter。
 
 mock mode 只能使用 disabled；远端 backend 要求 real mode 和完整显式配置，不能探测 key 后启用，也不能静默
@@ -93,16 +93,14 @@ mock mode 只能使用 disabled；远端 backend 要求 real mode 和完整显�
 本机 `.env` 使用 `MEMORY_BACKEND=mem0`、`MEM0_BASE_URL=http://127.0.0.1:8890`，视觉远端分支保持关闭。
 离线默认仍为 `disabled`，不得因为检测到凭据而自动启用真实后端。
 Mem0 服务由 `docker/mem0/compose.yaml` 提供，记忆向量在其 Qdrant 中，历史在其 SQLite 中。
+本机 `scripts/run_mem0.py` 等待容器健康后再验证 `/ready`，成功后才输出 `Mem0 ready`。
+冷启动会加载依赖并初始化 Qdrant 过滤索引；Docker 健康检查设 600 秒启动宽限期，
+启动器也允许在 600 秒内从暂时 `unhealthy` 恢复，容器退出或超时仍报错。不能把端口监听当作 Memory 已就绪。
 现有 LangMem Store、checkpoints 和旧 PostgreSQL 数据均保留，不自动复制到 Mem0 或删除。
 
-旧 LangMem 启动配置已在目录清理时删除，当前没有可直接启动的 LangMem 配置文件。
-旧 backend 和 embedding adapter 仍保留在源码；如需重新启用，应先显式配置官方 `store.index`，
-并验证索引维度与已有数据兼容。日常开发使用官方 `langgraph dev` 的本地持久化，状态位于
-`.langgraph_api/`，不依赖 PostgreSQL。旧索引使用百炼 `text-embedding-v4`，维度为 1024。
-`agent_server.embeddings` 是 Server embedding 配置入口，复用官方 `OpenAIEmbeddings`；一次最多 10 条，显式
-float 编码，不使用 OpenAI tokenizer 自动切片。凭据优先 `QWEN_EMBEDDING_API_KEY`，其次 `QWEN_API_KEY`；
-地址优先 `QWEN_EMBEDDING_BASE_URL`，其次 `QWEN_CHAT_BASE_URL`，最后为百炼标准兼容地址。
-mock 下不调用 embedding API；real 下未配置凭据明确失败。模型与维度变更需要重新建索引，不能混用旧向量。
+LangMem 后端、提取模型配置和 Python 依赖已移除；`MEMORY_BACKEND=langmem` 会明确报错。
+本机 IDE 启动通过 `local/deployment.env` 覆盖共享配置，需设置 `MEMORY_BACKEND=mem0`。
+旧 Store 数据不自动迁移到 Mem0；历史 embedding adapter 不再用于长期记忆主链。
 
 原 PostgreSQL 数据与当前 `.langgraph_api/` 独立，不自动迁移。删除旧长期记忆只针对 `assistant_agent` 的
 `memory_subject_*` 命名空间及其向量，不删除 thread、run 或 checkpoint；操作文件前必须停止 dev Server。

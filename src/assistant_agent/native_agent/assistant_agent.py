@@ -44,9 +44,6 @@ from langgraph.errors import GraphBubbleUp
 from langgraph.managed.is_last_step import RemainingStepsManager
 from langgraph.types import Command
 
-from assistant_agent.media.visual_perception.history_probe import (
-    VisualObservationHistoryProbe,
-)
 from assistant_agent.media.runtime_media import without_uploaded_media_messages
 from assistant_agent.native_agent.assistant_prompt import (
     PersonaModelSettingsMiddleware,
@@ -513,7 +510,6 @@ def build_assistant_agent(
     interrupt_tool_names: set[str] | frozenset[str] = frozenset(),
     browser_tools: Sequence[BaseTool] = (),
     additional_middleware: Sequence[AgentMiddleware] = (),
-    visual_history_probe: VisualObservationHistoryProbe | None = None,
     live_view_resolver: Callable[[str, str, str], Any] | None = None,
     current_location: str | None = None,
     memory_backend: MemoryBackend | None = None,
@@ -606,7 +602,6 @@ def build_assistant_agent(
                 },
             ),
             ConditionalToolExposureMiddleware(
-                visual_history_probe,
                 live_view_resolver,
             ),
             TodoListMiddleware(
@@ -708,7 +703,6 @@ def build_general_purpose_worker(
     tool_profiles: Sequence[ToolProfile] = (),
     general_purpose_tool_names: set[str] | frozenset[str] = frozenset(),
     interrupt_tool_names: set[str] | frozenset[str] = frozenset(),
-    visual_history_probe: VisualObservationHistoryProbe | None = None,
     live_view_resolver: Callable[[str, str, str], Any] | None = None,
     current_location: str | None = None,
 ):
@@ -767,7 +761,6 @@ def build_general_purpose_worker(
     middleware.extend(
         [
             ConditionalToolExposureMiddleware(
-                visual_history_probe,
                 live_view_resolver,
             ),
             PerToolCallLimitMiddleware(max_parallel_calls_per_tool=12),
