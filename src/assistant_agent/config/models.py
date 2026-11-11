@@ -291,8 +291,8 @@ class ImageGenerationConfig:
     image_generation_base_url: str | None = None
     image_generation_model: str | None = None
     image_generation_adapter_kind: str = "mock"
-    image_generation_mock_file: str | None = None
-    image_editing_mock_file: str | None = None
+    image_generation_mock_file: str | None = "/home/lenovo1/assistant_cqy/outputs/generate_mock.jpg"
+    image_editing_mock_file: str | None = "/home/lenovo1/assistant_cqy/outputs/edit_mock.jpg"
     qwen_image_default_size: str = "1024*1024"
     qwen_image_edit_model: str | None = None
     qwen_image_prompt_extend: bool = True

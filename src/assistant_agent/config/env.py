@@ -523,8 +523,14 @@ def _load_tool_config(source: Mapping[str, str], mode: ProviderMode) -> ToolConf
             image_generation_base_url=resolved.base_url,
             image_generation_model=resolved.model,
             image_generation_adapter_kind=resolved.adapter_kind,
-            image_generation_mock_file=source.get("IMAGE_GENERATION_MOCK_FILE") or None,
-            image_editing_mock_file=source.get("IMAGE_EDITING_MOCK_FILE") or None,
+            image_generation_mock_file=(
+                source.get("IMAGE_GENERATION_MOCK_FILE")
+                or ImageGenerationConfig.image_generation_mock_file
+            ),
+            image_editing_mock_file=(
+                source.get("IMAGE_EDITING_MOCK_FILE")
+                or ImageGenerationConfig.image_editing_mock_file
+            ),
             qwen_image_default_size=source.get("QWEN_IMAGE_DEFAULT_SIZE", "1024*1024"),
             qwen_image_edit_model=source.get("QWEN_IMAGE_EDIT_MODEL") or None,
             qwen_image_prompt_extend=_bool(source.get("QWEN_IMAGE_PROMPT_EXTEND"), True),

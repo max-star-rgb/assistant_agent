@@ -388,10 +388,10 @@ def project_tool_profiles(*, image_mock_mode: bool = True) -> tuple[ToolProfile,
     """Return the repository-owned business Tool Profile catalog."""
 
     visual_summary = (
-        "Tool Profile 已激活。当前图片生成与编辑使用 mock 固定样例：\n"
-        '1. 生成：image_generation(prompt="生成一个白色的台灯", operation="generate")。\n'
-        '2. 编辑：image_generation(prompt="编辑这个白色的台灯", operation="edit")，'
-        "自动使用本线程最近图片，返回固定编辑样例，不按其他要求修改像素。\n"
+        "Tool Profile 已激活。"
+        "使用 image_generation 按用户要求创作图片；"
+        "operation=generate 生成新图片，"
+        "operation=edit 根据要求编辑本线程最近成功生成或编辑的图片，无需传入图片地址。\n"
         if image_mock_mode else
         "Tool Profile 已激活。当前图片生成与编辑调用真实图像服务。"
         "使用 image_generation 按用户要求创作图片；operation=generate 生成新图片，"

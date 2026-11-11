@@ -260,8 +260,12 @@ python -m compileall -q src/assistant_agent/tools src/assistant_agent/mcp
 mock 工具的 `prompt` schema 接受两个固定示例：生成使用 `生成一个白色的台灯`，编辑使用 `编辑这个白色的台灯`。
 对应 mock adapter 的 `prompt` / `prompt_used` 固定为各自示例，成功 observation 返回固定摘要、状态与图片数量。
 真实 adapter 接受自由提示词。
-这是操作者显式选择的本地 mock，不是真实 Provider 失败后的回退；未配置文件时，real 模式仍不注册 mock 图像工具。
-`IMAGE_EDITING_MOCK_FILE=<本地图片路径>` 指定 mock 编辑样例；未配置时编辑返回可解释错误。
+这是操作者显式选择的本地 mock，不是真实 Provider 失败后的回退。
+Mock 生成和编辑默认分别使用硬编码路径 `/home/lenovo1/assistant_cqy/outputs/generate_mock.jpg` 和
+`/home/lenovo1/assistant_cqy/outputs/edit_mock.jpg`；`IMAGE_GENERATION_MOCK_FILE` 和
+`IMAGE_EDITING_MOCK_FILE` 非空时可覆盖各自默认路径。样例缺失或无效时返回错误。
+全局 real 且真实服务配置齐全时，只需切换 `MULTIMODAL_AGENT_IMAGE_PROVIDER=mock|qwen` 并重启服务，
+即可切换图片生成与编辑的实现；3D 配置和最近成功图片选择规则保持不变。
 mock 编辑校验源图后输出固定文件，不实际按 prompt 修改像素。
 全局 `MULTIMODAL_AGENT_PROVIDER_MODE=real` 下，设置 `MULTIMODAL_AGENT_IMAGE_PROVIDER=qwen`、有效的
 `QWEN_API_KEY`（兼容既有 alias）、同地域 `QWEN_IMAGE_BASE_URL` 和 `QWEN_IMAGE_MODEL=qwen-image-3.0`
